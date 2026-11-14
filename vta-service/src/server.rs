@@ -332,6 +332,9 @@ pub struct AppState {
     /// row, priority-ordered. A migration-safe baseline is boot-installed if
     /// empty. Durable operator security config.
     pub policy_ks: KeyspaceHandle,
+    /// The compiled active policy set, kept until `policy_ks` is written again
+    /// (#2623) — the PDP no longer parses and compiles every module per task.
+    pub policy_cache: Arc<crate::policy::PolicyCache>,
     /// Task-execution consent: pending approvals + granted consents the PDP's
     /// `requireConsent` disposition uses. Distinct from `consent_ks` (messaging).
     pub task_consent_ks: KeyspaceHandle,
@@ -830,6 +833,7 @@ pub async fn build_app_state(
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
         memory_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks,
+        policy_cache: Arc::new(crate::policy::PolicyCache::new()),
         task_consent_ks,
         #[cfg(feature = "webvh")]
         drains_ks,

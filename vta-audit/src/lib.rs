@@ -444,17 +444,29 @@ pub async fn cleanup_expired_logs(
 /// never count a removal twice; the loser re-reads and carries on.
 pub async fn cleanup_logs_before(audit_ks: &KeyspaceHandle, cutoff: u64) -> Result<u64, AppError> {
     let cutoff_key = format!("log:{cutoff:020}:");
-    let mut keys: Vec<Vec<u8>> = audit_ks
-        .prefix_keys("log:")
-        .await?
-        .into_iter()
-        .filter(|k| k.as_slice() < cutoff_key.as_bytes())
-        .collect();
-    keys.sort();
-
+    // Keys are `log:{ts:020}:{id}`, so time-ordered: page forward from the
+    // oldest and stop at the first key at or past the cutoff. The sweep reads
+    // what expired, not the whole retained log — whose key list alone stops
+    // fitting in one vsock frame at a few hundred thousand rows (#2626).
+    let mut pages = audit_ks.scan_pager(vti_common::store::ScanOpts::new("log:", PRUNE_CHUNK));
     let mut removed = 0u64;
-    for chunk in keys.chunks(PRUNE_CHUNK) {
-        removed += prune_chunk(audit_ks, chunk).await?;
+    loop {
+        let page = pages.next_page().await?;
+        if page.is_empty() {
+            break;
+        }
+        let keys: Vec<Vec<u8>> = page
+            .into_iter()
+            .map(|(k, _)| k)
+            .take_while(|k| k.as_slice() < cutoff_key.as_bytes())
+            .collect();
+        let reached_cutoff = keys.len() < PRUNE_CHUNK;
+        if !keys.is_empty() {
+            removed += prune_chunk(audit_ks, &keys).await?;
+        }
+        if reached_cutoff {
+            break;
+        }
     }
     Ok(removed)
 }

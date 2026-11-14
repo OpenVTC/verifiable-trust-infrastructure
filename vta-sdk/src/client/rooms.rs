@@ -1026,7 +1026,7 @@ pub fn room_read_marker_payload(
     if let Some(schema) =
         vti_specs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1)
     {
-        trust_tasks_rs::validate::against_schema(schema, &payload).map_err(|e| {
+        crate::schema_cache::check(schema, &payload).map_err(|e| {
             VtaError::Validation(format!("rooms/keys/read-marker/set request: {e}"))
         })?;
     }
@@ -1207,7 +1207,7 @@ pub fn room_label_payload(
     if let Some(schema) =
         vti_specs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1)
     {
-        trust_tasks_rs::validate::against_schema(schema, &serde_json::to_value(&payload)?)
+        crate::schema_cache::check(schema, &serde_json::to_value(&payload)?)
             .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
     }
     Ok(payload)

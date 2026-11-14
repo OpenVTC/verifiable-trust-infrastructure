@@ -1163,7 +1163,7 @@ pub async fn list_vault_entries(
     let raw = vault.prefix_iter_raw("vault:").await?;
     let mut out = Vec::with_capacity(raw.len());
     for (_, bytes) in raw {
-        let stored: StoredVaultEntry = serde_json::from_slice(&bytes)?;
+        let stored: EntryOnly = serde_json::from_slice(&bytes)?;
         if !matches_filter(&stored.entry, filter) {
             continue;
         }
@@ -1179,6 +1179,57 @@ pub async fn list_vault_entries(
         }
     });
     Ok(out)
+}
+
+/// A stored row read for its metadata only: the `secret` member is skipped by
+/// the parser, never materialised (#2627) — listing has no use for it.
+#[derive(Deserialize)]
+struct EntryOnly {
+    entry: VaultEntry,
+}
+
+/// Stored rows one page of [`list_vault_entries_page`] reads.
+const LIST_SCAN_PAGE: usize = 256;
+
+/// One page of vault entries matching `filter` and `visible`, in `id` order,
+/// strictly after `after`: up to `limit` entries, and whether more match.
+///
+/// Rows are `vault:{id}`, so storage order is `id` order and a page is a range
+/// read from the cursor that stops once one entry past the page matches — not
+/// every entry decoded (secrets included) per page (#2627). Returns the
+/// metadata projection only; the secret half of each row is never decoded.
+pub async fn list_vault_entries_page(
+    vault: &KeyspaceHandle,
+    filter: &VaultListFilter<'_>,
+    visible: impl Fn(&VaultEntry) -> bool,
+    after: Option<&str>,
+    limit: usize,
+) -> Result<(Vec<VaultEntry>, bool), AppError> {
+    let mut opts = crate::store::ScanOpts::new("vault:", LIST_SCAN_PAGE);
+    if let Some(after) = after {
+        opts = opts.after(vault_key(after));
+    }
+    let mut pages = vault.scan_pager(opts);
+    let mut out = Vec::new();
+    loop {
+        let page = pages.next_page().await?;
+        if page.is_empty() {
+            return Ok((out, false));
+        }
+        for (_, bytes) in page {
+            let stored: EntryOnly = serde_json::from_slice(&bytes)?;
+            if after.is_some_and(|after| stored.entry.id.as_str() <= after)
+                || !matches_filter(&stored.entry, filter)
+                || !visible(&stored.entry)
+            {
+                continue;
+            }
+            if out.len() == limit {
+                return Ok((out, true));
+            }
+            out.push(stored.entry);
+        }
+    }
 }
 
 fn matches_filter(entry: &VaultEntry, filter: &VaultListFilter<'_>) -> bool {

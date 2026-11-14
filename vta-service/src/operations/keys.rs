@@ -34,7 +34,10 @@ use crate::keys::{
     self, KeyOrigin, KeyRecord, KeyStatus, KeyType, encode_private_multibase,
     encode_public_multibase,
 };
-use crate::store::KeyspaceHandle;
+use crate::store::{KeyspaceHandle, ScanOpts};
+
+/// Key records one page of a `keys/list` scan reads from the store (#2627).
+const LIST_SCAN_PAGE: usize = 256;
 
 pub struct CreateKeyParams {
     pub key_type: KeyType,
@@ -587,64 +590,89 @@ pub async fn list_keys(
     // filter, not an authorization gate; the gate is here.
     auth.require_read()?;
 
-    let raw = keys_ks.prefix_iter_raw("key:").await?;
-
-    let mut records: Vec<KeyRecord> = Vec::with_capacity(raw.len());
-    let mut skipped = 0usize;
-    for (key, value) in raw {
-        // Skip (don't abort on) a corrupt row: one undeserializable key
-        // record must not break key listing for every other key.
-        let record: KeyRecord = match serde_json::from_slice(&value) {
-            Ok(r) => r,
-            Err(e) => {
-                skipped += 1;
-                tracing::warn!(
-                    key = %String::from_utf8_lossy(&key),
-                    error = %e,
-                    "skipping undeserializable key row in list_keys"
-                );
-                continue;
-            }
-        };
-        if let Some(ref status) = params.status
-            && record.status != *status
-        {
-            continue;
-        }
-        if let Some(ref ctx) = params.context_id
-            && record.context_id.as_deref() != Some(ctx.as_str())
-        {
-            continue;
-        }
-        if !auth.is_super_admin() {
-            match record.context_id {
-                Some(ref ctx) if auth.has_context_access(ctx) => {}
-                _ => continue,
-            }
-        }
-        records.push(record);
-    }
-    if skipped > 0 {
-        tracing::warn!(channel, skipped, "list_keys skipped corrupt rows");
-    }
-
     // Keyset pagination (`keys/list/0.2`): records in `key_id` order, a page
     // resuming strictly after the last id the previous one returned, under the
     // filters its cursor was minted for. A cursor this VTA did not issue for
     // these filters is refused rather than guessed at.
-    records.sort_by(|a, b| a.key_id.cmp(&b.key_id));
     let filters = list_cursor_filters(&params);
-    if let Some(cursor) = params.cursor.as_deref() {
-        let after = open_list_cursor(cursor, &filters).ok_or_else(|| {
+    let after = match params.cursor.as_deref() {
+        Some(cursor) => Some(open_list_cursor(cursor, &filters).ok_or_else(|| {
             AppError::Validation(
                 "keys/list: the cursor was not issued by this VTA for these filters; list \
                  again from the first page"
                     .into(),
             )
-        })?;
-        records.retain(|r| r.key_id > after);
-    }
+        })?),
+        None => None,
+    };
     let limit = usize::try_from(params.limit.unwrap_or(50)).unwrap_or(usize::MAX);
+
+    // Rows are `key:{key_id}`, so storage order is `key_id` order: a page is a
+    // range read from the cursor that stops once one more record than the page
+    // passes the filters (#2627) — not every key record decoded and sorted per
+    // page, which made walking the list quadratic and, over vsock, one frame
+    // that stops fitting.
+    let mut opts = ScanOpts::new("key:", LIST_SCAN_PAGE);
+    if let Some(after) = &after {
+        opts = opts.after(format!("key:{after}"));
+    }
+    let mut pages = keys_ks.scan_pager(opts);
+    let mut records: Vec<KeyRecord> = Vec::new();
+    let mut skipped = 0usize;
+    'scan: loop {
+        let page = pages.next_page().await?;
+        if page.is_empty() {
+            break;
+        }
+        for (key, value) in page {
+            // Skip (don't abort on) a corrupt row: one undeserializable key
+            // record must not break key listing for every other key.
+            let record: KeyRecord = match serde_json::from_slice(&value) {
+                Ok(r) => r,
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!(
+                        key = %String::from_utf8_lossy(&key),
+                        error = %e,
+                        "skipping undeserializable key row in list_keys"
+                    );
+                    continue;
+                }
+            };
+            if let Some(ref status) = params.status
+                && record.status != *status
+            {
+                continue;
+            }
+            if let Some(ref ctx) = params.context_id
+                && record.context_id.as_deref() != Some(ctx.as_str())
+            {
+                continue;
+            }
+            if !auth.is_super_admin() {
+                match record.context_id {
+                    Some(ref ctx) if auth.has_context_access(ctx) => {}
+                    _ => continue,
+                }
+            }
+            // The row's key names the id the cursor resumes after; a record whose
+            // `key_id` disagreed with its row would otherwise be served out of order.
+            if let Some(after) = &after
+                && record.key_id <= *after
+            {
+                continue;
+            }
+            records.push(record);
+            if records.len() > limit {
+                break 'scan;
+            }
+        }
+    }
+    if skipped > 0 {
+        tracing::warn!(channel, skipped, "list_keys skipped corrupt rows");
+    }
+
+    records.sort_by(|a, b| a.key_id.cmp(&b.key_id));
     let more = records.len() > limit;
     records.truncate(limit);
     let next_cursor = more

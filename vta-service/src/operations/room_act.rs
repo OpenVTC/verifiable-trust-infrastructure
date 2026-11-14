@@ -324,7 +324,7 @@ pub fn check_schema(document: &Value) -> Result<(), AppError> {
         ))
     })?;
     let payload = document.get("payload").cloned().unwrap_or(Value::Null);
-    trust_tasks_rs::validate::against_schema(schema, &payload).map_err(|e| {
+    vta_sdk::schema_cache::check(schema, &payload).map_err(|e| {
         AppError::Validation(format!(
             "the `{bare}` payload does not validate against its schema: {}",
             e.messages().join("; ")

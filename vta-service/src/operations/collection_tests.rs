@@ -1039,3 +1039,36 @@ async fn vti_ntf_091_listing_filters_and_pages() {
         Err(CollectionError::CursorInvalid)
     ));
 }
+
+/// #2628: the plan's candidate set is built once while nothing it reads
+/// changes; a kick, a new DID or an ACL change rebuilds it on the next pass.
+#[tokio::test]
+async fn the_candidate_set_is_rebuilt_only_when_its_inputs_change_or_on_a_kick() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (state, _dir) = state().await;
+    let builds = || state.collection.candidate_builds.load(SeqCst);
+
+    current_plan(&state, Utc::now()).await.unwrap();
+    let after_first = builds();
+    let plan = current_plan(&state, Utc::now()).await.unwrap();
+    assert_eq!(builds(), after_first, "an unchanged store is not rebuilt");
+    assert_eq!(plan.len(), 1);
+
+    state.collection.kick();
+    current_plan(&state, Utc::now()).await.unwrap();
+    assert_eq!(builds(), after_first + 1, "a kick rebuilds");
+
+    // A DID created since is seen on the next pass, kick or not.
+    seed_persona(&state, OTHER, PERSONA2, Some(MEDIATOR)).await;
+    let plan = current_plan(&state, Utc::now()).await.unwrap();
+    assert_eq!(builds(), after_first + 2);
+    assert_eq!(plan.len(), 2);
+
+    // An identity becoming an ACL subject is excluded on the next pass.
+    let entry = crate::acl::AclEntry::new(PERSONA2, crate::acl::Role::Admin, "t");
+    crate::acl::store_acl_entry(&state.acl_ks, &entry)
+        .await
+        .unwrap();
+    let plan = current_plan(&state, Utc::now()).await.unwrap();
+    assert_eq!(plan.len(), 1, "an ACL subject is never collected for");
+}

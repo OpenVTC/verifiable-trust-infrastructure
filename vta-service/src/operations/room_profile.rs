@@ -333,7 +333,10 @@ pub fn profile_meets_its_schema(profile: &Value) -> bool {
         "host": "did:example:host",
         "profile": profile,
     });
-    <vti_specs::rooms::keys::profile::write::v0_1::Payload as trust_tasks_rs::validate::ValidatedPayload>::validate_value(&probe).is_ok()
+    vta_sdk::schema_cache::check_payload::<vti_specs::rooms::keys::profile::write::v0_1::Payload>(
+        &probe,
+    )
+    .is_ok()
 }
 
 /// The unsigned `SealedRecordBody` carrying `profile` as its author's statement — what
