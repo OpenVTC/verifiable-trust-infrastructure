@@ -211,6 +211,12 @@ updates:
       # leaves the root lock unable to satisfy the fuzz manifest.
       - dependency-name: "webauthn-rs*"
         versions: [">= 0.6"]
+      # The same rand_chacha 0.3 hold as the root entry (arkworks needs the
+      # rand 0.8 trait set; a 0.10 stream would re-key every PCS deployment).
+      # This entry resolves the workspace manifest, so without it a /fuzz run
+      # proposes the root bump the root entry refuses (#2737).
+      - dependency-name: "rand_chacha"
+        update-types: ["version-update:semver-major"]
 
   # ── npm: the VTC admin console ────────────────────────────────────────
   # `vtc-service/admin-ui` is built into the bundle the published
