@@ -243,6 +243,10 @@ mod error_code_census;
 #[cfg(test)]
 mod spec_pin_census;
 
+// A handler reads its payload as the generated type, not a parallel struct (#2574).
+#[cfg(test)]
+mod payload_type_census;
+
 // No served response carrying a token or secret member is kept in the
 // duplicate-execution record.
 #[cfg(test)]
