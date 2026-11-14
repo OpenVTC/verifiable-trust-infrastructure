@@ -16,6 +16,11 @@
 //!   (`body_parse_error_response`, `method_not_found`).
 //! - `not_implemented_yet` placeholder for Phase 3 slice stubs.
 //!
+//! The answer-building helpers are thin wrappers over
+//! `vti_trust_task_server::reject` (#2571), shared with the VTC: only the
+//! VTA's own `AppError` case (an upstream peer's failure) and the
+//! version-naming `method_not_found` are decided here.
+//!
 //! All helpers are `pub(super)` — visible to the dispatcher (`mod.rs`)
 //! and to the per-slice handler modules, but not to the wider crate.
 //! Callers outside `routes::trust_tasks` should not depend on these
@@ -24,12 +29,9 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
-use trust_tasks_https::status_for_code;
-use trust_tasks_rs::{
-    ErrorPayload, ErrorResponse, RejectReason, StandardCode, TrustTask, TrustTaskCode, TypeUri,
-};
-use uuid::Uuid;
+use trust_tasks_rs::{ErrorResponse, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
+use vti_trust_task_server::reject as shared;
 
 use crate::auth::AuthClaims;
 use crate::error::AppError;
@@ -108,286 +110,135 @@ impl IntoResponse for TrustTaskOutcome {
     }
 }
 
-/// Parse a trust-task document's `payload` field as the typed body
-/// `T`, or return a `MalformedRequest` rejection response.
-///
-/// Consolidates the per-handler boilerplate where the only thing that
-/// changes is the target type.
+// ─── Answers: the shared reject/response helpers (#2571) ─────────────────
+//
+// Building `#response` and `trust-task-error` documents, bounding `details`,
+// and mapping an `AppError` to a framework code all live in
+// `vti_trust_task_server::reject`, which the VTC uses too, so a transport or
+// spec rule (§7.2 ordering, the opaque `internalError`, the `details` bound) is
+// fixed once. These wrappers only lift the shared outcome into this service's
+// `TrustTaskOutcome`, which also carries `restart`.
+
+/// The one `trust-task-error` version this service emits.
+#[cfg(test)]
+pub(crate) use vti_trust_task_server::reject::framework_error_type_uri;
+use vti_trust_task_server::reject::task_family;
+
+impl From<vti_trust_task_server::TrustTaskOutcome> for TrustTaskOutcome {
+    fn from(outcome: vti_trust_task_server::TrustTaskOutcome) -> Self {
+        Self {
+            status: outcome.status,
+            body: outcome.body,
+            restart: false,
+        }
+    }
+}
+
+/// Parse a trust-task document's `payload` field as the typed body `T`, or
+/// return a `malformedRequest` refusal ([`shared::parse_payload`]).
 pub(super) fn parse_payload<T: serde::de::DeserializeOwned>(
     doc: &TrustTask<Value>,
 ) -> Result<T, TrustTaskOutcome> {
-    serde_json::from_value::<T>(doc.payload.clone()).map_err(|e| {
-        reject_with(
-            doc,
-            RejectReason::MalformedRequest {
-                reason: format!("payload parse: {e}"),
-            },
-        )
-    })
+    shared::parse_payload(doc).map_err(Into::into)
 }
 
-/// A `taskFailed` carrying a machine-readable `details.reason`.
+/// Map an `AppError` (the operation-layer error type) into a routed refusal.
 ///
-/// See the `NotFound` / `Conflict` / `Gone` arms of [`app_error_to_reject`] for
-/// why the code alone is not enough.
-fn task_failed_because(message: String, reason: &str) -> RejectReason {
-    RejectReason::TaskFailed {
-        reason: message,
-        details: Some(serde_json::json!({ "reason": reason })),
+/// The VTA's own case comes first, then [`shared::app_error_to_reject`], which
+/// is where every other mapping lives — as that function's documentation
+/// invites a service to:
+///
+/// - `ServiceError` at `502` / `504` → `taskFailed`, `details.reason`
+///   `upstream_unavailable`: a peer failed, not this VTA. A peer this VTA had
+///   to reach — a DID-hosting server, another agent — did not answer or
+///   refused. Left to the catch-all it went out as `internalError`, which tells
+///   the producer "this VTA broke" and points everyone at the wrong machine: a
+///   join that failed because the hosting server never answered its TSP
+///   request read, in openvtc, as an unexplained internal error in the user's
+///   own VTA. The cause still does not go on the wire — a bad-gateway message
+///   can carry a peer's URL, its transport error and the body it sent back, the
+///   class of detail the opaque `internalError` keeps off it — so the fixed
+///   text and `details.reason` say the *kind* of failure, and the operator's
+///   log says which peer and how.
+pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
+    match &err {
+        AppError::ServiceError { status, message }
+            if *status == StatusCode::BAD_GATEWAY || *status == StatusCode::GATEWAY_TIMEOUT =>
+        {
+            tracing::error!(cause = %message, "trust task failed: an upstream peer did not answer or refused");
+            reject_with(
+                doc,
+                RejectReason::TaskFailed {
+                    reason: UPSTREAM_UNAVAILABLE_MESSAGE.to_string(),
+                    details: Some(serde_json::json!({ "reason": reasons::UPSTREAM_UNAVAILABLE })),
+                },
+            )
+        }
+        _ => shared::app_error_to_reject(doc, &err).into(),
     }
 }
 
-/// Map an `AppError` (the operation-layer error type) into a routed
-/// trust-task error response with the appropriate framework reject
-/// code:
-///
-/// - `Authentication` / `Unauthorized` / `Forbidden` → `permission_denied`
-/// - `Validation` / `TrustTaskMalformed` / `InvalidCursor` → `malformed_request`
-/// - `NotFound` / `Conflict` / `Gone` → `task_failed`, each discriminated by a
-///   `details.reason` from [`vta_sdk::protocols::trust_task_reject_reasons`]
-/// - `ServiceError` at `502` / `504` → `task_failed`, `details.reason`
-///   `upstream_unavailable`: a peer failed, not this VTA
-/// - `NoMatchingProtocol` → `task_failed`, `details.reason`
-///   `no_matching_protocol` plus both transport sets
-/// - everything else → `internal_error`
-pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
-    let message = err.to_string();
-    let reason = match err {
-        AppError::Authentication(_) | AppError::Unauthorized(_) | AppError::Forbidden(_) => {
-            RejectReason::PermissionDenied { reason: message }
-        }
-        // A rejected pagination cursor is a caller fault, not a server
-        // one — REST already answers 400. Left in the `internal_error`
-        // fallback it would tell a consumer to retry the same cursor,
-        // when the correct response is to restart from the first page.
-        AppError::Validation(_) | AppError::TrustTaskMalformed(_) | AppError::InvalidCursor => {
-            RejectReason::MalformedRequest { reason: message }
-        }
-        // These three have no standard code of their own — §8.3 defines no
-        // `notFound` / `conflict` / `gone` — so all of them ride out under
-        // `taskFailed`. That is the correct wire code, but it is not enough on
-        // its own: a caller cannot tell "the row you asked for is absent" (very
-        // often a *normal* state it knows how to handle) from "this operation
-        // genuinely failed", and it loses the distinction the REST path keeps
-        // in an HTTP status and the DIDComm protocol-message path keeps in a
-        // problem-report code.
-        //
-        // So the discriminator goes in `details.reason`, the channel the
-        // consent gate already established for exactly this problem, and
-        // `VtaClient::trust_task_error` maps it back to the same typed
-        // `VtaError` variant the other two transports produce.
-        //
-        // Concretely: a VTA that has never had an approval rule has no
-        // `approvals` policy row, which is the shipping default. Every `pnm
-        // approvals` subcommand reads it through `policy/get/0.1` and is
-        // written to treat a missing row as an empty model — but with the type
-        // erased, that arm could never fire, so the whole surface failed on a
-        // fresh VTA, `require` included. That made the first rule
-        // uncreatable: `require` has to read the row before writing it.
-        //
-        // `Gone` rides here rather than in the `internal_error` fallback for a
-        // related reason: a consumed single-use resource is a terminal
-        // *caller-visible* outcome, and reporting it as an internal error tells
-        // the client to retry something that can never succeed again.
-        AppError::NotFound(_) => task_failed_because(message, reasons::NOT_FOUND),
-        AppError::Conflict(_) => task_failed_because(message, reasons::CONFLICT),
-        AppError::Gone(_) => task_failed_because(message, reasons::GONE),
-        // Framework 0.5.0, *What a `message` May Not Say*: a `message` MUST NOT
-        // reveal consumer-internal state. That rule is now normative for every
-        // code, and `internalError` is where this service leaked hardest — the
-        // cause went out verbatim, so a caller learned things like "ATM not
-        // configured — server cannot pack DIDComm envelopes" or "log entry has
-        // no update_keys": the deployment's shape, its configuration, and which
-        // internal invariant just broke.
-        //
-        // The producer needs one fact from an `internalError`: the failure was
-        // not its doing, so re-sending an identical document may work. The
-        // cause is what the *operator* needs, and it goes to the log where the
-        // operator is.
-        //
-        // Every other arm above is safe to pass through: they describe the
-        // caller's own request back to it (`not found`, `malformed`,
-        // `permission denied`), which is not consumer-internal state.
-        // A peer this VTA had to reach — a DID-hosting server, another agent —
-        // did not answer or refused. Left in the catch-all below it went out as
-        // `internalError`, which tells the producer "this VTA broke" and points
-        // everyone at the wrong machine: a join that failed because the hosting
-        // server never answered its TSP request read, in openvtc, as an
-        // unexplained internal error in the user's own VTA.
-        //
-        // The cause still does not go on the wire. A bad-gateway message can
-        // carry a peer's URL, its transport error and, from `send_rest`, the
-        // body it sent back — the same class of detail the `Internal` arm
-        // keeps off the wire. What the producer can act on is the *kind* of
-        // failure, so that is what the fixed text and `details.reason` say;
-        // which peer, and how it failed, is in the operator's log.
-        AppError::ServiceError { status, message }
-            if status == StatusCode::BAD_GATEWAY || status == StatusCode::GATEWAY_TIMEOUT =>
-        {
-            tracing::error!(cause = %message, "trust task failed: an upstream peer did not answer or refused");
-            task_failed_because(
-                UPSTREAM_UNAVAILABLE_MESSAGE.to_string(),
-                reasons::UPSTREAM_UNAVAILABLE,
-            )
-        }
-        // No transport in common with a peer this VTA had to reach. SPEC §8.3
-        // has no transport code, and none of its codes but `taskFailed` fits:
-        // the document was well formed (not `malformedRequest`, which is what
-        // this used to collapse into through `Validation`), and the peer is
-        // not down (not `unavailable` — a retry meets the same two sets). So
-        // `taskFailed`, with both sets in `details` for the client to name the
-        // transport to add. The sets are public: one is the peer's DID
-        // document, the other what any of this VTA's own documents shows.
-        AppError::NoMatchingProtocol(refusal) => RejectReason::TaskFailed {
-            reason: message,
-            details: Some(serde_json::json!({
-                "reason": reasons::NO_MATCHING_PROTOCOL,
-                "counterpartyDid": refusal.peer,
-                "ours": refusal.ours,
-                "theirs": refusal.theirs,
-            })),
-        },
-        // VTI-KEY-009, receiving side: relying on the request needs a method
-        // this VTA does not resolve.
-        AppError::UnsupportedDidMethod { method } => {
-            return reject_with_code(
-                doc,
-                TrustTaskCode::Standard(StandardCode::ProofInvalid),
-                message,
-                Some(serde_json::json!({
-                    "reason": reasons::UNSUPPORTED_DID_METHOD,
-                    "method": method,
-                })),
-            );
-        }
-        AppError::Internal(cause) => {
-            tracing::error!(cause = %cause, "trust task failed with an internal error");
-            RejectReason::InternalError {
-                reason: OPAQUE_INTERNAL_ERROR.to_string(),
-            }
-        }
-        other => {
-            tracing::error!(cause = %other, "trust task failed with an internal error");
-            RejectReason::InternalError {
-                reason: OPAQUE_INTERNAL_ERROR.to_string(),
-            }
-        }
-    };
-    reject_with(doc, reason)
-}
-
-/// Build a routed rejection document for the given reason and wrap it
-/// in an HTTP response. The framework computes the status code from
-/// the reject's standard code.
-/// What an `internalError` says on the wire.
-///
-/// Fixed text on purpose. Framework 0.5.0 forbids revealing consumer-internal
-/// state in a `message`, and an internal failure's cause is nothing but that.
-/// It tells the producer the one thing it can act on — the failure was not its
-/// document's fault — and nothing an unauthenticated caller could probe with.
-pub(super) const OPAQUE_INTERNAL_ERROR: &str =
-    "the consumer could not complete this task; the request itself was accepted";
-
 /// What an upstream failure says on the wire. Fixed for the same reason as
-/// [`OPAQUE_INTERNAL_ERROR`]; see the `ServiceError` arm of
-/// [`app_error_to_reject`].
+/// [`OPAQUE_INTERNAL_ERROR`](shared::OPAQUE_INTERNAL_ERROR); see [`app_error_to_reject`].
 pub(super) const UPSTREAM_UNAVAILABLE_MESSAGE: &str = "a service this VTA depends on did not answer or refused the request; \
      the VTA's log names which one and why";
 
-/// Framework 0.5.0, *Bounding `details`*: where a specification declares no
-/// bound, 4096 bytes of JCS and 16 immediate members apply.
-const DETAILS_MAX_JCS_BYTES: usize = 4096;
-/// Companion to [`DETAILS_MAX_JCS_BYTES`].
-const DETAILS_MAX_MEMBERS: usize = 16;
-
-/// Members a `details` may shed, in this order, before the whole of it is
-/// dropped — each paired with the member that replaces it and says how many
-/// items went (an array's length; `1` for anything else).
-///
-/// A member belongs here when it is a *convenience* the receiver can do
-/// without, and the rest of the `details` is what it cannot. The one entry:
-/// `auth:consent_required` carries one VTA-signed `task-consent/request` per
-/// approver so a requester can relay them where the VTA has no route. Each is
-/// around a kilobyte, so three approvers pass the default bound — and before
-/// this table the whole annex went, taking the digest, correlator and
-/// challenge with it: the requester was told consent was required and given
-/// nothing to act on (Keyring VTI-37). Shedding the requests keeps the
-/// ceremony's coordinates on the wire; the count tells the requester the
-/// relay copies exist and did not fit, rather than that there were none.
-///
-/// Whole or not at all: a partial list would read as "these are the
-/// approvers", and a requester relaying to the ones it was given would
-/// silently skip the rest.
-///
-/// Matched by member name on every bounded `details`. A rejection that does
-/// not carry one of these members is unaffected.
-const SHEDDABLE_DETAILS_MEMBERS: &[(&str, &str)] = &[("consentRequests", "consentRequestsOmitted")];
-
-/// Is `details` within the framework's default bound?
-///
-/// Uncanonicalisable is treated as out of bound: it cannot be measured, so it
-/// does not go out.
-fn details_within_bound(details: &Value) -> bool {
-    let too_many_members = details
-        .as_object()
-        .is_some_and(|o| o.len() > DETAILS_MAX_MEMBERS);
-    let too_large = serde_json_canonicalizer::to_string(details)
-        .map(|jcs| jcs.len() > DETAILS_MAX_JCS_BYTES)
-        .unwrap_or(true);
-    !too_many_members && !too_large
+/// A routed refusal for `reason`, `details` bounded ([`shared::reject_with`]).
+pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {
+    shared::reject_with(doc, reason).into()
 }
 
-/// Bring a `details` within the framework's bound, keeping the `code`.
-///
-/// `details` was the one error-payload member with no size bound, and it
-/// travels in the direction no producer-side bound reaches — the producer set
-/// a body limit on what it *sent*, and nothing limits what comes back. This
-/// service had a live instance: a policy denial puts the Rego module's
-/// `explanation` on the wire, and that string is written by whoever authored
-/// the policy, with no length anybody checked.
-///
-/// An oversized `details` first sheds the members in
-/// [`SHEDDABLE_DETAILS_MEMBERS`], in order, until it fits; if it still does
-/// not, it is **ignored, never grounds to discard the `code`** — the code is
-/// what the receiving party actually needs, and dropping the whole rejection
-/// because its annex was too long would turn a verbose policy into an
-/// unexplained failure. Omitting members to stay within the bound conforms;
-/// exceeding it does not.
-fn bound_details(details: Option<Value>) -> Option<Value> {
-    let mut details = details?;
-    if details_within_bound(&details) {
-        return Some(details);
-    }
-    let original_members = details.as_object().map(serde_json::Map::len);
+/// Refuse with an explicit code — a specification-extended one
+/// (`<slug>:<local>`, SPEC §8.5) a task declares, which [`RejectReason`]
+/// cannot express ([`shared::reject_with_code`]). Use it only for a code the
+/// task's specification actually declares.
+pub(super) fn reject_with_code(
+    doc: &TrustTask<Value>,
+    code: TrustTaskCode,
+    message: impl Into<String>,
+    details: Option<Value>,
+) -> TrustTaskOutcome {
+    shared::reject_with_code(doc, code, message, details).into()
+}
 
-    let mut shed: Vec<&str> = Vec::new();
-    for (member, marker) in SHEDDABLE_DETAILS_MEMBERS {
-        let Some(obj) = details.as_object_mut() else {
-            break;
-        };
-        let Some(removed) = obj.remove(*member) else {
-            continue;
-        };
-        let count = removed.as_array().map_or(1, Vec::len);
-        obj.insert((*marker).to_string(), Value::from(count));
-        shed.push(member);
-        if details_within_bound(&details) {
-            tracing::warn!(
-                shed = ?shed,
-                "error `details` exceeds the framework bound; shed the listed members \
-                 (their count went out in their place) and sent the rest with the code"
-            );
-            return Some(details);
-        }
-    }
+/// A routed `#response` with `payload`, answered `200`
+/// ([`shared::success_response`]).
+pub(super) fn success_response<R: serde::Serialize>(
+    doc: &TrustTask<Value>,
+    payload: R,
+) -> TrustTaskOutcome {
+    shared::success_response(doc, payload).into()
+}
 
-    tracing::warn!(
-        members = original_members,
-        shed = ?shed,
-        "error `details` exceeds the framework bound even after shedding; dropped the whole \
-         of it and the code still went out"
-    );
-    None
+/// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2), only
+/// for a task whose specification defines **no** success response
+/// ([`shared::acknowledge`]).
+pub(super) fn acknowledge(doc: &TrustTask<Value>) -> TrustTaskOutcome {
+    shared::acknowledge(doc).into()
+}
+
+/// A routed `ErrorResponse` with the status the framework's table gives its
+/// code ([`shared::error_response`]).
+pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
+    shared::error_response(err_doc).into()
+}
+
+/// An unrouted framework error for a body that did not parse as a Trust Task
+/// ([`shared::body_parse_error_response`]).
+pub(super) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
+    shared::body_parse_error_response(reason).into()
+}
+
+/// An unrouted `malformedRequest` carrying `reason` **verbatim**.
+///
+/// Not every malformed request is a malformed *document*. A transport binding
+/// can refuse a payload whose document would have parsed perfectly — a TSP
+/// frame that is not wrapped in the binding envelope, say — and telling that
+/// sender "body did not parse as a Trust Task document" sends them to inspect a
+/// document that is fine. During a binding cutover that is the single most
+/// misleading thing this service could say, so the wording stays the caller's.
+pub(crate) fn malformed_request_response(reason: String) -> TrustTaskOutcome {
+    shared::unrouted_error_response(RejectReason::MalformedRequest { reason }.into()).into()
 }
 
 /// The capability gate every gated task goes through.
@@ -439,41 +290,6 @@ pub(super) async fn require_capability(
     ))
 }
 
-pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {
-    // Bound `details` here rather than at each of the thirty construction
-    // sites: this is the one funnel every rejection passes through, so a new
-    // site cannot be added that skips the check.
-    let reason = match reason {
-        RejectReason::TaskFailed { reason, details } => RejectReason::TaskFailed {
-            reason,
-            details: bound_details(details),
-        },
-        other => other,
-    };
-    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
-    error_response(routed)
-}
-
-/// Reject with a **specification-extended** code (SPEC.md §8.5,
-/// `<slug>:<local>`) rather than one of the framework's standard codes.
-///
-/// [`RejectReason`] cannot express one: every variant maps to a
-/// [`StandardCode`](trust_tasks_rs::StandardCode), so a task whose own
-/// specification declares an error code has no way to put it on the wire
-/// through [`reject_with`] — the nearest fit, `TaskFailed`, says "attempted
-/// and could not complete", which is the wrong thing to tell a producer whose
-/// request was refused before anything was attempted. The framework itself is
-/// not the limitation: `ErrorPayload::new` takes any [`TrustTaskCode`], and
-/// `TrustTask::reject_with` takes a payload. This is the missing seam between
-/// the two.
-///
-/// Use it only for a code the task's specification actually declares. A code
-/// invented here is one no consumer can look up, which is worse than
-/// `taskFailed` — that at least means something everywhere.
-///
-/// `details` passes through [`bound_details`] exactly as in [`reject_with`],
-/// so this cannot become the construction site that skips the framework's
-/// size bound.
 /// Reject with a code the task's own specification declares
 /// (`<slug>:<local>`, SPEC §8.5), from its generated `error_codes`.
 #[cfg_attr(not(any(feature = "webvh", feature = "tee")), allow(dead_code))]
@@ -491,56 +307,6 @@ pub(super) fn reject_declared(
         message,
         None,
     )
-}
-
-pub(super) fn reject_with_code(
-    doc: &TrustTask<Value>,
-    code: TrustTaskCode,
-    message: impl Into<String>,
-    details: Option<Value>,
-) -> TrustTaskOutcome {
-    let mut payload = ErrorPayload::new(code).with_message(message);
-    if let Some(d) = bound_details(details) {
-        payload = payload.with_details(d);
-    }
-    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    error_response(routed)
-}
-
-/// Build a routed success document with the given payload and wrap
-/// it in an HTTP 200 response.
-pub(super) fn success_response<R: serde::Serialize>(
-    doc: &TrustTask<Value>,
-    payload: R,
-) -> TrustTaskOutcome {
-    let response_doc = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    let body = match serde_json::to_vec(&response_doc) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to serialise success response doc");
-            return reject_with(
-                doc,
-                RejectReason::InternalError {
-                    reason: format!("response serialisation: {e}"),
-                },
-            );
-        }
-    };
-    TrustTaskOutcome {
-        status: StatusCode::OK,
-        body,
-        restart: false,
-    }
-}
-
-/// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2): the
-/// originating type with `#response` and a payload of exactly `{}`.
-///
-/// Only for a task whose specification defines **no** success response — §4.4.2
-/// item 4 forbids it beside one that does. It attests that the task was
-/// received and performed, nothing more; the producer must not rely on it.
-pub(super) fn acknowledge(doc: &TrustTask<Value>) -> TrustTaskOutcome {
-    success_response(doc, serde_json::Map::new())
 }
 
 /// No reply at all. Every transport reads an empty body as "nothing goes back"
@@ -561,12 +327,13 @@ pub(super) fn silence() -> TrustTaskOutcome {
 /// stub via this helper, then replace with a real handler.
 #[allow(dead_code)]
 pub(super) fn not_implemented_yet(doc: TrustTask<Value>, reason: &str) -> TrustTaskOutcome {
-    let reject = RejectReason::TaskFailed {
-        reason: reason.to_string(),
-        details: None,
-    };
-    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reject);
-    error_response(routed)
+    reject_with(
+        &doc,
+        RejectReason::TaskFailed {
+            reason: reason.to_string(),
+            details: None,
+        },
+    )
 }
 
 /// Build an `unsupported_type` rejection for a type URI this VTA has never
@@ -586,17 +353,6 @@ fn unsupported_type(doc: TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
         format!("unsupported type: {type_uri}"),
         Some(serde_json::json!({ details::REQUESTED_TYPE: type_uri })),
     )
-}
-
-/// The family of a Trust Task Type URI: everything before its trailing
-/// version segment.
-///
-/// `…/spec/provision/integration/0.3` → `…/spec/provision/integration`. The
-/// version is always the last path segment (SPEC §3.1), so a plain
-/// `rsplit_once('/')` is the whole rule — no version grammar to parse, and a
-/// URI with no `/` simply has no family rather than panicking.
-fn task_family(type_uri: &str) -> Option<&str> {
-    type_uri.rsplit_once('/').map(|(family, _version)| family)
 }
 
 /// Versions of `type_uri`'s family that this VTA *does* dispatch, sorted.
@@ -675,101 +431,6 @@ pub(super) fn method_not_found(doc: TrustTask<Value>, type_uri: &str) -> TrustTa
             details::SERVED_VERSIONS: served,
         })),
     )
-}
-
-/// Wrap a routed `ErrorResponse` in an HTTP response with the right
-/// status code per the framework's status table.
-pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
-    let status = StatusCode::from_u16(status_for_code(&err_doc.payload.code))
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let body = serde_json::to_vec(&err_doc).unwrap_or_else(|_| Vec::new());
-    TrustTaskOutcome {
-        status,
-        body,
-        restart: false,
-    }
-}
-
-/// The framework's error-document Type URI — the one `TrustTask::reject_with`
-/// stamps on every *routed* rejection this service emits.
-///
-/// Named here because `trust-tasks-rs` keeps `trust_task_error_type_uri()`
-/// `pub(crate)`, so the only unrouted path — where there is no request document
-/// to reject from — has to write the value out. It said `0.1` while every
-/// routed reject went out as `0.3` (the framework has emitted `0.3` since its
-/// own 0.3 release, for the §8.2 `inResponseTo` member that `0.2`'s
-/// `additionalProperties: false` payload schema cannot admit). One service
-/// emitting two versions is a trap for exactly the consumer that pins one of
-/// them, which is not hypothetical: a client matching `0.1`/`0.2` by
-/// enumeration read every `0.3` rejection as a *success*.
-///
-/// Now `0.5`, tracking `trust-tasks-rs` 0.9. The framework moved twice for the
-/// same reason it moved to `0.3`: a new standard code that the older payload
-/// schema's `code` enum does not list and whose extended-code pattern does not
-/// match, so a document carrying it would fail to validate as the older
-/// version. `0.4` carries `idConflict` (framework 0.4, SPEC §8.3) and `0.5`
-/// carries `cancelled`. SPEC §5.2 forward-minor compatibility means a consumer
-/// pinned to `0.3` SHOULD still accept these.
-///
-/// Now `0.6`, tracking `trust-tasks-rs` 0.36: it carries `unsupportedExtension`
-/// and `indeterminate` (framework 0.7, SPEC §8.3), for the same reason.
-///
-/// The constant is pinned by `unrouted_and_routed_errors_agree_on_the_type_uri`
-/// below, which compares it against a real `reject_with`. When the framework
-/// bumps the version, that test fails rather than this service silently
-/// speaking two dialects again — which is exactly how this bump was caught.
-pub(crate) fn framework_error_type_uri() -> TypeUri {
-    "https://trusttasks.org/spec/trust-task-error/0.6"
-        .parse()
-        .expect("framework error Type URI parses")
-}
-
-/// Build a framework error document for a body-parse failure.
-/// Unrouted (no issuer / recipient) — the framework permits this on
-/// malformed-body failures since the producer can correlate on the
-/// response `id`.
-pub(super) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
-    malformed_request_response(format!(
-        "body did not parse as a Trust Task document: {reason}"
-    ))
-}
-
-/// An unrouted `malformedRequest` carrying `reason` **verbatim**.
-///
-/// Split out of [`body_parse_error_response`] because not every malformed
-/// request is a malformed *document*. A transport binding can refuse a payload
-/// whose document would have parsed perfectly — a TSP frame that is not wrapped
-/// in the binding envelope, say — and telling that sender "body did not parse as
-/// a Trust Task document" sends them to inspect a document that is fine. During
-/// a binding cutover that is the single most misleading thing this service could
-/// say, so the wording stays the caller's.
-pub(crate) fn malformed_request_response(reason: String) -> TrustTaskOutcome {
-    let reject = RejectReason::MalformedRequest { reason };
-    let payload: ErrorPayload = reject.into();
-    let type_uri: TypeUri = framework_error_type_uri();
-    let err = ErrorResponse {
-        id: format!("urn:uuid:{}", Uuid::new_v4()),
-        thread_id: None,
-        // Unrouted: there is no parent thread to name either, for the same
-        // reason there is no issuer — the body never parsed.
-        parent_thread_id: None,
-        type_uri,
-        issuer: None,
-        recipient: None,
-        issued_at: Some(chrono::Utc::now()),
-        expires_at: None,
-        payload,
-        context: None,
-        // No ceremony, for the same reason as `parent_thread_id` above: SPEC
-        // §7.1 carries the member forward from the request so a rejection stays
-        // inside the enactment it belonged to, and here there is no request to
-        // carry it from — the body never parsed into one. The *routed* rejects
-        // get this right for free, because `reject_with` copies it.
-        ceremony: None,
-        proof: None,
-        extra: Default::default(),
-    };
-    error_response(err)
 }
 
 // ─── Purpose of use (VTI-ACL-100 – 110) ──────────────────────────────────
@@ -871,6 +532,10 @@ pub(super) fn assert_reads_exactly_the_schema_members<T: serde::de::DeserializeO
 mod tests {
     use super::*;
     use serde_json::json;
+    use trust_tasks_rs::TypeUri;
+    use vti_trust_task_server::reject::{
+        DETAILS_MAX_JCS_BYTES, DETAILS_MAX_MEMBERS, OPAQUE_INTERNAL_ERROR, details_within_bound,
+    };
 
     fn doc() -> TrustTask<Value> {
         let uri: TypeUri = vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0
@@ -1519,5 +1184,122 @@ mod tests {
             !message.starts_with("internal error"),
             "a consumed resource must not report as a server fault: {message}"
         );
+    }
+
+    /// #2571: the VTA's mapping now falls through to the shared one. Every
+    /// `AppError` the VTA's own copy mapped still leaves with the same code and
+    /// `details.reason`; the four it used to collapse into `internalError`
+    /// (which tells a client to retry) now get the shared mapping.
+    #[test]
+    fn every_app_error_maps_to_the_code_it_did_before_the_merge() {
+        use axum::http::StatusCode as S;
+        let peer = || vti_common::error::NoMatchingProtocol {
+            peer: "did:webvh:Qm:peer.example".into(),
+            ours: vec![],
+            theirs: vec![],
+            note: None,
+        };
+        let cases: Vec<(AppError, &str, Option<&str>)> = vec![
+            // Mapped by the VTA's copy before the merge: unchanged.
+            (
+                AppError::Authentication("a".into()),
+                "permissionDenied",
+                None,
+            ),
+            (AppError::Unauthorized("a".into()), "permissionDenied", None),
+            (AppError::Forbidden("a".into()), "permissionDenied", None),
+            (AppError::Validation("a".into()), "malformedRequest", None),
+            (
+                AppError::TrustTaskMalformed("a".into()),
+                "malformedRequest",
+                None,
+            ),
+            (AppError::InvalidCursor, "malformedRequest", None),
+            (
+                AppError::NotFound("a".into()),
+                "taskFailed",
+                Some(reasons::NOT_FOUND),
+            ),
+            (
+                AppError::Conflict("a".into()),
+                "taskFailed",
+                Some(reasons::CONFLICT),
+            ),
+            (
+                AppError::Gone("a".into()),
+                "taskFailed",
+                Some(reasons::GONE),
+            ),
+            (
+                AppError::ServiceError {
+                    status: S::BAD_GATEWAY,
+                    message: "a".into(),
+                },
+                "taskFailed",
+                Some(reasons::UPSTREAM_UNAVAILABLE),
+            ),
+            (
+                AppError::ServiceError {
+                    status: S::GATEWAY_TIMEOUT,
+                    message: "a".into(),
+                },
+                "taskFailed",
+                Some(reasons::UPSTREAM_UNAVAILABLE),
+            ),
+            (
+                AppError::ServiceError {
+                    status: S::INTERNAL_SERVER_ERROR,
+                    message: "a".into(),
+                },
+                "internalError",
+                None,
+            ),
+            (
+                peer().into(),
+                "taskFailed",
+                Some(reasons::NO_MATCHING_PROTOCOL),
+            ),
+            (
+                AppError::UnsupportedDidMethod {
+                    method: "example".into(),
+                },
+                "proofInvalid",
+                Some(reasons::UNSUPPORTED_DID_METHOD),
+            ),
+            (AppError::Internal("a".into()), "internalError", None),
+            (AppError::SecretStore("a".into()), "internalError", None),
+            // Were `internalError` here; the shared mapping's answers now.
+            (
+                AppError::StepUpRequired("a".into()),
+                "permissionDenied",
+                None,
+            ),
+            (AppError::TrustTaskMissing, "malformedRequest", None),
+            (
+                AppError::IdempotencyKeyConflict,
+                "taskFailed",
+                Some(reasons::CONFLICT),
+            ),
+            (
+                AppError::ApprovalRequired {
+                    code: "auth:consent_required",
+                    details: json!({}),
+                },
+                "taskFailed",
+                Some("auth:consent_required"),
+            ),
+        ];
+        for (err, code, reason) in cases {
+            let label = format!("{err:?}");
+            let out = app_error_to_reject(&doc(), err);
+            let body: Value = serde_json::from_slice(&out.body).expect("reject body is JSON");
+            assert_eq!(body["payload"]["code"], code, "{label}: {body}");
+            assert_eq!(
+                body.pointer("/payload/details/reason")
+                    .and_then(Value::as_str),
+                reason,
+                "{label}: {body}"
+            );
+        }
     }
 }
