@@ -2,14 +2,36 @@
 //! the HTTPS door ([`crate::http`]) and the mediator session ([`crate::messaging`]) hand it the
 //! bytes as received and, where the transport proved one, the sender, and carry back what it
 //! returns.
+//!
+//! Every document goes through the workspace's one receive pipeline,
+//! [`vti_trust_task_server::Spine`] (#2576): size, freshness, expiry and recipient, the task's
+//! own published policy (`vti_specs::schema_index::spec_policy_for` — which tasks need a proof,
+//! a recipient and an `issuedAt` is the specification's to say, never a list kept here), the
+//! proof bound to the issuer, the transport sender bound to the proof, the duplicate-id record
+//! (VTI-OPS-025 … 029), and the signed answer. What is this service's own sits in the pieces it
+//! hands the pipeline:
+//!
+//! - [`Gate`] (`SpineHooks::before_proof`): the issuer is the transport-proven sender, the task
+//!   is one served here, and a cast is signed by a `did:key` (VTI-VOT-003) — all decided from
+//!   the document alone, before anything is resolved.
+//! - [`Verifier`]: which DIDs this service resolves on which binding ([`resolver_for`]), with a
+//!   deadline on verification.
+//! - [`freshness_for`]: the acceptance window, which a cast is not held to (VTI-VOT-004).
+//! - [`Ballots`]: the routing table, over the ballot box.
 
 use std::sync::Arc;
 
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde_json::Value;
-use trust_tasks_rs::{ErrorPayload, TrustTask, TrustTaskCode};
+use trust_tasks_rs::{FreshnessPolicy, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use uuid::Uuid;
+use vti_common::error::AppError;
+use vti_trust_task_server::reject::{app_error_to_reject, reject_with, reject_with_code};
+use vti_trust_task_server::{
+    ArrivalCtx, BoxFuture, Dispatcher, ProofVerifier, ResponseSigner, SizeTable, SpineHooks,
+    StoreAcceptedIds, TrustTaskOutcome,
+};
 use vti_voting::service::{Caller, ElectionVersion, Failure, VerifiedCast};
 
 use crate::boxes::{Boxes, Shard};
@@ -18,12 +40,16 @@ use crate::identity::Identity;
 
 const SPEC: &str = "https://trusttasks.org/spec/";
 
-/// How old a community's or a trustee's request may be: the window every VTI node applies
-/// (VTI-OPS-024), with its clock skew.
-fn acceptance_max_age() -> chrono::TimeDelta {
-    let window = vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW;
-    window.max_age + window.clock_skew
-}
+/// The keyspace the accepted-document-id record lives in (VTI-OPS-025 … 029), under
+/// `<data_dir>/store`. In the store rather than in the process: a document stating an
+/// `expiresAt` is acceptable for up to thirty days (VTI-OPS-028), so a restart inside its
+/// window is routine, and a record held only in memory would let its replay execute again.
+pub const ACCEPTED_IDS_KEYSPACE: &str = "accepted_ids";
+
+/// The largest document this service reads: axum's default body limit, which is what bounded
+/// the HTTPS door before the pipeline did. A task whose specification declares a larger bound
+/// is held to that instead.
+const MAX_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
 
 pub struct AppState {
     /// Every election, each under a lock of its own ([`crate::boxes`]): held only for what
@@ -45,15 +71,22 @@ pub struct AppState {
     /// Whether the identity's mediator session is connected right now, as its supervisor
     /// reports it; `None` without a provisioned identity (the HTTPS-only test `did:key`).
     pub messaging: Option<tokio::sync::watch::Receiver<bool>>,
+    /// The accepted-document-id record, shared by every binding (VTI-OPS-027).
+    accepted_ids: StoreAcceptedIds,
+    /// The keyspace behind [`Self::accepted_ids`], for [`Self::sweep_accepted_ids`].
+    accepted_ids_ks: vti_common::store::KeyspaceHandle,
 }
 
 impl AppState {
+    /// `accepted_ids` is the keyspace the duplicate-id record is kept in
+    /// ([`ACCEPTED_IDS_KEYSPACE`] in the service's store).
     #[must_use]
     pub fn new(
         ballot_boxes: Boxes,
         identity: Identity,
         resolver: vti_common::auth::TrustTaskVmResolver,
         communities: CommunitiesConfig,
+        accepted_ids: vti_common::store::KeyspaceHandle,
     ) -> Self {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         Self {
@@ -64,6 +97,8 @@ impl AppState {
             communities,
             cast_checks: tokio::sync::Semaphore::new(cores),
             messaging: None,
+            accepted_ids: StoreAcceptedIds::new(accepted_ids.clone()),
+            accepted_ids_ks: accepted_ids,
         }
     }
 
@@ -73,6 +108,16 @@ impl AppState {
     pub fn with_messaging(mut self, connected: tokio::sync::watch::Receiver<bool>) -> Self {
         self.messaging = Some(connected);
         self
+    }
+
+    /// Drop every accepted-id record whose retention has passed, returning how many. Run on a
+    /// timer: the record is read-through-expiry, so this only bounds the keyspace.
+    ///
+    /// # Errors
+    /// If the keyspace cannot be read or written.
+    pub async fn sweep_accepted_ids(&self) -> Result<usize, AppError> {
+        vti_trust_task_server::accepted_store::sweep_expired(&self.accepted_ids_ks, Utc::now())
+            .await
     }
 }
 
@@ -85,8 +130,8 @@ impl std::fmt::Debug for AppState {
 }
 
 /// One answer: the signed document, and the HTTP status the HTTPS binding gives it. `doc` is
-/// `None` when nothing could be answered — bytes that are not a document, or an answer that
-/// could not be signed.
+/// `None` when nothing could be answered — bytes that are not a document, an answer that could
+/// not be signed, or a duplicate with no recorded answer (`202` still running, `204` a read).
 #[derive(Debug)]
 pub struct Answer {
     pub status: StatusCode,
@@ -99,7 +144,7 @@ impl Answer {
     }
 }
 
-/// What a request's type names: one of this service's tasks, by slug.
+/// What a request's type names: one of this service's tasks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Task {
     Register,
@@ -122,123 +167,149 @@ enum Task {
     Authorize,
 }
 
-impl Task {
-    /// The task `type_uri` names, at whatever version it names it: `Ok` with that version when
-    /// it is one served ([`Task::versions`]), `Err(Some(task))` for a task served at another
-    /// version, `Err(None)` for anything else.
-    fn from_type(type_uri: &str) -> Result<(Self, &'static str), Option<Self>> {
-        // A request's `#request` fragment is optional (framework SPEC §4.4.1): the generated
-        // payload types, and so every peer sending through them, use the bare form.
-        let bare = type_uri.strip_suffix("#request").unwrap_or(type_uri);
-        let path = bare.strip_prefix(SPEC).ok_or(None)?;
-        let (slug, version) = path.rsplit_once('/').ok_or(None)?;
-        let task = Self::from_slug(slug).ok_or(None)?;
-        task.versions()
-            .iter()
-            .find(|v| **v == version)
-            .map(|v| (task, *v))
-            .ok_or(Some(task))
-    }
+/// A generated payload type's Type URI — the version pinned in `vti-specs-core`, never a
+/// literal.
+macro_rules! uri {
+    ($($path:ident)::+) => {
+        <vti_specs::voting::$($path)::+::Payload as trust_tasks_rs::Payload>::TYPE_URI
+    };
+}
 
-    /// The versions this service serves: `voting/election/{register,show}` at 0.4, whose
-    /// manifest admits the `credential` roll (voting/_shared/0.4, VTI-VOT-025), at 0.3, whose
-    /// manifest admits a `textReleaseThreshold` as low as 1 (voting/_shared/0.3, VTI-VOT-065),
-    /// and at 0.2, whose manifest admits 10 or more, for communities that send them;
-    /// `voting/board/read` at 0.2, whose lifecycle entries name their instants `…At`
-    /// (voting/_shared/0.2); every other task at 0.1.
-    fn versions(self) -> &'static [&'static str] {
-        match self {
-            Task::Register | Task::Show => &["0.4", "0.3", "0.2"],
-            Task::Read => &["0.2"],
-            _ => &["0.1"],
-        }
-    }
+/// **The routing table**: every Type URI this service serves, and the task it names. One
+/// entry per served version, each named by its generated payload type, so a version is served
+/// exactly when it is pinned and routed here — the slug and version are read off the URI
+/// ([`slug_of`]) rather than kept in a second and third table.
+///
+/// `voting/election/{register,show}` at 0.4, whose manifest admits the `credential` roll
+/// (voting/_shared/0.4, VTI-VOT-025), at 0.3, whose manifest admits a `textReleaseThreshold`
+/// as low as 1 (voting/_shared/0.3, VTI-VOT-065), and at 0.2, whose manifest admits 10 or
+/// more; `voting/board/read` at 0.2, whose lifecycle entries name their instants `…At`
+/// (voting/_shared/0.2); every other task at 0.1.
+#[allow(deprecated)] // older election versions stay served to communities that send them
+const SERVED: &[(&str, Task, Option<ElectionVersion>)] = &[
+    (
+        uri!(election::register::v0_4),
+        Task::Register,
+        Some(ElectionVersion::V0_4),
+    ),
+    (
+        uri!(election::register::v0_3),
+        Task::Register,
+        Some(ElectionVersion::V0_3),
+    ),
+    (
+        uri!(election::register::v0_2),
+        Task::Register,
+        Some(ElectionVersion::V0_2),
+    ),
+    (
+        uri!(election::show::v0_4),
+        Task::Show,
+        Some(ElectionVersion::V0_4),
+    ),
+    (
+        uri!(election::show::v0_3),
+        Task::Show,
+        Some(ElectionVersion::V0_3),
+    ),
+    (
+        uri!(election::show::v0_2),
+        Task::Show,
+        Some(ElectionVersion::V0_2),
+    ),
+    (uri!(election::close::v0_1), Task::Close, None),
+    (uri!(election::cancel::v0_1), Task::Cancel, None),
+    (uri!(ballot::cast::v0_1), Task::Cast, None),
+    (
+        uri!(ballot::cast_encrypted::v0_1),
+        Task::CastEncrypted,
+        None,
+    ),
+    (uri!(board::head::v0_1), Task::Head, None),
+    (uri!(board::read::v0_2), Task::Read, None),
+    (uri!(board::inclusion::v0_1), Task::Inclusion, None),
+    (uri!(board::consistency::v0_1), Task::Consistency, None),
+    (uri!(result::show::v0_1), Task::Result, None),
+    (uri!(trustees::enrol::v0_1), Task::Enrol, None),
+    (uri!(trustees::deal::v0_1), Task::Deal, None),
+    (uri!(trustees::confirm::v0_1), Task::Confirm, None),
+    (uri!(trustees::justify::v0_1), Task::Justify, None),
+    (uri!(trustees::decrypt::v0_1), Task::Decrypt, None),
+    (uri!(trustees::status::v0_1), Task::TrusteeStatus, None),
+    (uri!(trustees::authorize::v0_1), Task::Authorize, None),
+];
 
-    fn from_slug(rest: &str) -> Option<Self> {
-        Some(match rest {
-            "voting/election/register" => Task::Register,
-            "voting/election/show" => Task::Show,
-            "voting/election/close" => Task::Close,
-            "voting/election/cancel" => Task::Cancel,
-            "voting/ballot/cast" => Task::Cast,
-            "voting/board/head" => Task::Head,
-            "voting/board/read" => Task::Read,
-            "voting/board/inclusion" => Task::Inclusion,
-            "voting/board/consistency" => Task::Consistency,
-            "voting/result/show" => Task::Result,
-            "voting/ballot/cast-encrypted" => Task::CastEncrypted,
-            "voting/trustees/enrol" => Task::Enrol,
-            "voting/trustees/deal" => Task::Deal,
-            "voting/trustees/confirm" => Task::Confirm,
-            "voting/trustees/justify" => Task::Justify,
-            "voting/trustees/decrypt" => Task::Decrypt,
-            "voting/trustees/status" => Task::TrusteeStatus,
-            "voting/trustees/authorize" => Task::Authorize,
-            _ => return None,
-        })
-    }
+/// Every Type URI this service serves.
+pub fn served_uris() -> impl Iterator<Item = &'static str> {
+    SERVED.iter().map(|(uri, _, _)| *uri)
+}
 
-    fn slug(self) -> &'static str {
-        match self {
-            Task::Register => "voting/election/register",
-            Task::Show => "voting/election/show",
-            Task::Close => "voting/election/close",
-            Task::Cancel => "voting/election/cancel",
-            Task::Cast => "voting/ballot/cast",
-            Task::Head => "voting/board/head",
-            Task::Read => "voting/board/read",
-            Task::Inclusion => "voting/board/inclusion",
-            Task::Consistency => "voting/board/consistency",
-            Task::Result => "voting/result/show",
-            Task::CastEncrypted => "voting/ballot/cast-encrypted",
-            Task::Enrol => "voting/trustees/enrol",
-            Task::Deal => "voting/trustees/deal",
-            Task::Confirm => "voting/trustees/confirm",
-            Task::Justify => "voting/trustees/justify",
-            Task::Decrypt => "voting/trustees/decrypt",
-            Task::TrusteeStatus => "voting/trustees/status",
-            Task::Authorize => "voting/trustees/authorize",
-        }
-    }
+/// A Type URI without its `#request` fragment, which is optional (framework SPEC §4.4.1): the
+/// generated payload types, and so every peer sending through them, use the bare form.
+fn bare(type_uri: &str) -> &str {
+    type_uri.strip_suffix("#request").unwrap_or(type_uri)
+}
 
-    /// Tasks whose request proof is REQUIRED.
-    fn needs_proof(self) -> bool {
-        matches!(
-            self,
-            Task::Register
-                | Task::Close
-                | Task::Cancel
-                | Task::Cast
-                | Task::CastEncrypted
-                | Task::Enrol
-                | Task::Deal
-                | Task::Confirm
-                | Task::Justify
-                | Task::Decrypt
-                | Task::Authorize
-        )
-    }
+/// A Type URI's slug — `voting/ballot/cast` — read off the URI itself.
+fn slug_of(type_uri: &str) -> Option<&str> {
+    bare(type_uri)
+        .strip_prefix(SPEC)
+        .and_then(|path| path.rsplit_once('/'))
+        .map(|(slug, _)| slug)
+}
+
+/// The task `type_uri` names, when it is a version served here.
+fn served(type_uri: &str) -> Option<(Task, Option<ElectionVersion>)> {
+    let bare = bare(type_uri);
+    SERVED
+        .iter()
+        .find(|(uri, _, _)| *uri == bare)
+        .map(|(_, task, version)| (*task, *version))
 }
 
 impl Task {
     /// Tasks a community or a trustee signs: consequential, and signed by a DID that keeps its
-    /// key. Each is held to the acceptance window every VTI node applies (VTI-OPS-024), so a
-    /// copy of one is not a standing instruction. A cast is not: its key is made for that one
-    /// cast, the voter's agent may resend it until voting closes, and the ballot box answers a
-    /// resend as it did.
-    fn within_window(self) -> bool {
-        matches!(
+    /// key.
+    fn consequential(self) -> bool {
+        !matches!(
             self,
-            Task::Register
-                | Task::Close
-                | Task::Cancel
-                | Task::Enrol
-                | Task::Deal
-                | Task::Confirm
-                | Task::Justify
-                | Task::Decrypt
-                | Task::Authorize
+            Task::Show
+                | Task::Head
+                | Task::Read
+                | Task::Inclusion
+                | Task::Consistency
+                | Task::Result
+                | Task::TrusteeStatus
         )
+    }
+}
+
+/// The acceptance window `task` is held to.
+///
+/// - A community's or a trustee's request: the window every VTI node applies (VTI-OPS-024),
+///   `issuedAt` required, so a copy of one is not a standing instruction.
+/// - A cast: never older than voting allows, but not this window. Its key is made for that one
+///   cast and its sender may resend it until voting closes (VTI-VOT-003, VTI-VOT-004), and the
+///   ballot box answers a resend as it did; `issuedAt` is still required and may not be in the
+///   future. (A cast the voter's agent signs carries `expiresAt` = voting close, which bounds
+///   it under either policy.)
+/// - A read: no age bound, as before — it changes nothing, and its answer is what the board
+///   holds now. A future-dated `issuedAt` is still refused.
+fn freshness_for(task: Option<Task>) -> FreshnessPolicy {
+    let window = vti_trust_task_server::default_freshness_policy();
+    match task {
+        Some(Task::Cast | Task::CastEncrypted) => {
+            let mut cast = window;
+            cast.max_age = None;
+            cast
+        }
+        Some(t) if !t.consequential() => {
+            let mut read = window;
+            read.max_age = None;
+            read.require_issued_at = false;
+            read
+        }
+        _ => window,
     }
 }
 
@@ -276,9 +347,9 @@ fn named_election(task: Task, payload: &Value) -> (&str, &str) {
 ///
 /// A `did:key` or `did:peer` resolves with no I/O, on any binding. Any other DID needs a fetch
 /// the sender chose, so it is resolved only where the service has a reason to know the signer:
-/// a transport proved it (TSP, DIDComm — the sender is the issuer, checked above); or, on the
-/// HTTPS binding, which proves nobody, it is a community named in `[communities] allowed`, or a
-/// party the election the request names, held here, names (its community, auditors or
+/// a transport proved it (TSP, DIDComm — the sender is the issuer, checked by [`Gate`]); or, on
+/// the HTTPS binding, which proves nobody, it is a community named in `[communities] allowed`,
+/// or a party the election the request names, held here, names (its community, auditors or
 /// trustees) — and then only where that election's parties are themselves vouched for
 /// ([`parties_vouched_for`]). An open box (`allow_any`) names no community, so a stranger's
 /// DID is never fetched on its HTTPS door.
@@ -332,75 +403,21 @@ fn parties_vouched_for(state: &AppState, community: &str) -> bool {
     state.communities.allowed.iter().any(|c| c == community) || !resolves_locally(community)
 }
 
-fn status_for(code: &TrustTaskCode) -> StatusCode {
-    match code.to_string().as_str() {
-        "malformedRequest" => StatusCode::BAD_REQUEST,
-        "proofRequired" | "proofInvalid" => StatusCode::UNAUTHORIZED,
-        "permissionDenied" => StatusCode::FORBIDDEN,
-        "unsupportedType" | "unsupportedVersion" => StatusCode::NOT_FOUND,
-        "expired" => StatusCode::BAD_REQUEST,
-        "internalError" => StatusCode::INTERNAL_SERVER_ERROR,
-        "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
-        _ => StatusCode::UNPROCESSABLE_ENTITY,
-    }
-}
-
-/// Sign `doc` as this service and answer with it. An answer that cannot be signed is not sent:
-/// an unsigned receipt or head is evidence of nothing.
-async fn signed(state: &AppState, status: StatusCode, doc: Value) -> Answer {
-    let mut typed: TrustTask<Value> = match serde_json::from_value(doc) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(error = %e, "an answer did not form a Trust Task document");
-            return Answer::none(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
-    if let Err(e) =
-        vta_sdk::trust_task_sign::sign_in_place_with(&mut typed, &state.identity.key).await
-    {
-        tracing::error!(error = %e, "could not sign the answer; not sending it");
-        return Answer::none(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-    Answer {
-        status,
-        doc: serde_json::to_value(&typed).ok(),
-    }
-}
-
-fn error_doc(doc: &TrustTask<Value>, code: TrustTaskCode, message: &str) -> Value {
-    let payload = ErrorPayload::new(code).with_message(message);
-    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    serde_json::to_value(&routed).unwrap_or(Value::Null)
-}
-
-async fn refuse(
-    state: &AppState,
-    doc: &TrustTask<Value>,
-    code: TrustTaskCode,
-    message: &str,
-) -> Answer {
-    let status = status_for(&code);
-    signed(state, status, error_doc(doc, code, message)).await
-}
-
-fn standard(code: &str) -> TrustTaskCode {
-    code.parse()
-        .unwrap_or_else(|_| "internalError".parse().expect("a standard code"))
+fn standard(code: StandardCode) -> TrustTaskCode {
+    TrustTaskCode::Standard(code)
 }
 
 /// Answer one document, `body` exactly as received.
 ///
 /// `transport_sender` is the sender a transport proved (TSP, DIDComm authcrypt); `None` on a
-/// binding that proves nobody (HTTPS). Where there is one, the document's `issuer` must be it
-/// (framework §7.2 item 6, VTI-VOT-005) — a party cannot relay another's request as its own.
+/// binding that proves nobody (HTTPS). Where there is one, the document must carry a proof and
+/// its `issuer` must be the sender (framework §7.2 item 6, VTI-OPS-021, VTI-VOT-005) — a party
+/// cannot relay another's request as its own.
 pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str>) -> Answer {
-    let received: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(_) => return Answer::none(StatusCode::BAD_REQUEST),
-    };
-    let doc: TrustTask<Value> = match serde_json::from_value(received.clone()) {
-        Ok(d) => d,
-        Err(_) => return Answer::none(StatusCode::BAD_REQUEST),
+    // Bytes that are not a document are answered with nothing: there is nobody to address a
+    // signed refusal to.
+    let Ok(doc) = serde_json::from_slice::<TrustTask<Value>>(body) else {
+        return Answer::none(StatusCode::BAD_REQUEST);
     };
     // A reply or an error is never answered: answering an error with an error is the loop only
     // a rate limiter ends. This service sends no requests, so nothing waits for one either.
@@ -408,196 +425,285 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
     if type_uri.ends_with("#response") || type_uri.contains("/trust-task-error/") {
         return Answer::none(StatusCode::BAD_REQUEST);
     }
-    if let Some(sender) = transport_sender
-        && doc.issuer.as_deref() != Some(sender)
-    {
-        return refuse(
-            state,
-            &doc,
-            standard("permissionDenied"),
-            "the issuer is not the sender",
-        )
-        .await;
-    }
-    let (task, version) = match Task::from_type(&doc.type_uri.to_string()) {
-        Ok(served) => served,
-        Err(Some(task)) => {
-            let message = format!(
-                "this ballot box serves {} at {} only",
-                task.slug(),
-                task.versions().join(" and ")
-            );
-            return refuse(state, &doc, standard("unsupportedVersion"), &message).await;
-        }
-        Err(None) => {
-            return refuse(
-                state,
-                &doc,
-                standard("unsupportedType"),
-                "not a task this service serves",
-            )
-            .await;
-        }
+    let task = served(&type_uri).map(|(task, _)| task);
+
+    let ctx = match transport_sender {
+        // TSP and DIDComm alike report a sender the pipeline binds to the proof.
+        Some(sender) => ArrivalCtx::didcomm(sender.to_string()),
+        None => ArrivalCtx::rest(),
     };
-    let now = Utc::now();
-    if doc.expires_at.is_some_and(|t| t < now) {
-        return refuse(state, &doc, standard("expired"), "the document has expired").await;
-    }
-    if doc
-        .recipient
-        .as_deref()
-        .is_some_and(|r| r != state.identity.did)
-    {
-        return refuse(
-            state,
-            &doc,
-            standard("wrongRecipient"),
-            "addressed to another party",
-        )
-        .await;
-    }
+    let size = SizeTable::new(
+        MAX_DOCUMENT_BYTES,
+        vti_specs::schema_index::max_document_bytes_for,
+    );
+    let gate = Gate {
+        state,
+        transport_sender,
+    };
+    let verifier = Verifier {
+        state,
+        transport_sender,
+    };
+    let signer = AnswerSigner(&state.identity);
+    let ballots = Ballots { state };
+    // The policy of a task this service serves: an unserved type is `unsupportedType` or
+    // `unsupportedVersion` ([`Gate`]), never refused for what another version requires.
+    let policy = |type_uri: &str| {
+        served(type_uri)
+            .is_some()
+            .then(|| vti_specs::schema_index::spec_policy_for(type_uri))
+            .flatten()
+    };
+    let outcome =
+        vti_trust_task_server::Spine::new(&policy, &verifier, &gate, &state.accepted_ids, &ballots)
+            .with_size_gate(&size)
+            .with_freshness(freshness_for(task))
+            .with_signer(Some(&signer))
+            // A public read (a board, a result) is asked unsigned over TSP or DIDComm as over HTTPS;
+            // a task whose proof is REQUIRED is still refused unsigned on every transport.
+            .accepting_unsigned_optional_over_messaging()
+            .receive(&ctx, body)
+            .await;
 
-    // A signed request names its recipient (SPEC §4.8.2), and a consequential one when it was
-    // issued (each task's issuedAt requirement). A community's or a trustee's is also refused
-    // once older than the acceptance window, so a copy of one is not a standing instruction;
-    // and none is one for another ballot box.
-    if doc.proof.is_some() && doc.recipient.is_none() {
-        return refuse(
-            state,
-            &doc,
-            standard("malformedRequest"),
-            "a signed request names its recipient",
-        )
-        .await;
+    if outcome.body.is_empty() {
+        return Answer::none(outcome.status);
     }
-    if task.needs_proof() {
-        match doc.issued_at {
-            None => {
-                return refuse(
-                    state,
-                    &doc,
-                    standard("malformedRequest"),
-                    "issuedAt is required",
-                )
-                .await;
-            }
-            Some(at) if at > now + chrono::Duration::minutes(5) => {
-                return refuse(
-                    state,
-                    &doc,
-                    standard("malformedRequest"),
-                    "issuedAt is in the future",
-                )
-                .await;
-            }
-            Some(at) if task.within_window() && at + acceptance_max_age() < now => {
-                return refuse(
-                    state,
-                    &doc,
-                    standard("expired"),
-                    "issued longer ago than this ballot box accepts",
-                )
-                .await;
-            }
-            Some(_) => {}
+    match serde_json::from_slice::<Value>(&outcome.body) {
+        // An answer that could not be signed is not sent: an unsigned receipt or head is
+        // evidence of nothing.
+        Ok(doc) if doc.get("proof").is_some() => Answer {
+            status: outcome.status,
+            doc: Some(doc),
+        },
+        _ => {
+            tracing::error!(status = %outcome.status, "an answer could not be signed; not sending it");
+            Answer::none(outcome.status)
         }
     }
-    // A cast is signed by a key made for it alone (VTI-VOT-003): a did:key, which resolves
-    // without fetching anything an anonymous sender chose.
-    if matches!(task, Task::Cast | Task::CastEncrypted)
-        && !doc
-            .issuer
-            .as_deref()
-            .is_some_and(|i| i.starts_with("did:key:"))
-    {
-        return refuse(
-            state,
-            &doc,
-            standard("proofInvalid"),
-            "a cast is signed by a did:key made for it",
-        )
-        .await;
+}
+
+/// This service's own checks before any proof is read (`SpineHooks`), decided from the
+/// document alone so nothing is resolved for a request refused anyway.
+struct Gate<'a> {
+    state: &'a AppState,
+    transport_sender: Option<&'a str>,
+}
+
+#[async_trait::async_trait]
+impl SpineHooks for Gate<'_> {
+    async fn recipient(&self) -> Option<String> {
+        Some(self.state.identity.did.clone())
     }
 
-    // The signer, proven by the document's own proof over the bytes as received, and required
-    // to be the document's issuer (framework SPEC §4.7). Verifying resolves the proof's
-    // verification method, so both checks come first: the method must be the issuer's, and the
-    // issuer one this service will resolve ([`resolver_for`]).
-    let signer = if doc.proof.is_some() {
-        let Some(issuer) = doc.issuer.as_deref().filter(|i| {
-            proof_method(&received)
+    async fn before_proof(
+        &self,
+        doc: &TrustTask<Value>,
+        type_uri: &str,
+    ) -> Option<TrustTaskOutcome> {
+        // Over TSP or DIDComm the issuer must be the transport-proven sender. The pipeline
+        // binds the proof to the sender too; refusing here first keeps a relayed request from
+        // having anything resolved on its behalf.
+        if let Some(sender) = self.transport_sender
+            && doc.issuer.as_deref() != Some(sender)
+        {
+            return Some(reject_with_code(
+                doc,
+                standard(StandardCode::PermissionDenied),
+                "the issuer is not the sender",
+                None,
+            ));
+        }
+        let Some((task, _)) = served(type_uri) else {
+            let slug = slug_of(type_uri);
+            let versions: Vec<&str> = SERVED
+                .iter()
+                .filter(|(uri, _, _)| slug.is_some() && slug_of(uri) == slug)
+                .filter_map(|(uri, _, _)| uri.rsplit_once('/').map(|(_, v)| v))
+                .collect();
+            return Some(match slug {
+                Some(slug) if !versions.is_empty() => reject_with_code(
+                    doc,
+                    standard(StandardCode::UnsupportedVersion),
+                    format!(
+                        "this ballot box serves {slug} at {} only",
+                        versions.join(" and ")
+                    ),
+                    None,
+                ),
+                _ => reject_with_code(
+                    doc,
+                    standard(StandardCode::UnsupportedType),
+                    "not a task this service serves",
+                    None,
+                ),
+            });
+        };
+        // A cast is signed by a key made for it alone (VTI-VOT-003): a did:key, which resolves
+        // without fetching anything an anonymous sender chose.
+        if matches!(task, Task::Cast | Task::CastEncrypted)
+            && !doc
+                .issuer
+                .as_deref()
+                .is_some_and(|i| i.starts_with("did:key:"))
+        {
+            return Some(reject_with_code(
+                doc,
+                standard(StandardCode::ProofInvalid),
+                "a cast is signed by a did:key made for it",
+                None,
+            ));
+        }
+        None
+    }
+}
+
+/// The marker [`Verifier::verify`] answers a verification that ran out of time with, so
+/// [`Verifier::refusal`] can answer it `unavailable`.
+const VERIFY_TIMED_OUT: &str = "the signer's verification method did not resolve in time";
+
+/// The proof, verified over the document as received — by a resolver this service is willing
+/// to use for that signer on that binding ([`resolver_for`]), within [`PROOF_VERIFY_TIMEOUT`].
+struct Verifier<'a> {
+    state: &'a AppState,
+    transport_sender: Option<&'a str>,
+}
+
+#[async_trait::async_trait]
+impl ProofVerifier for Verifier<'_> {
+    async fn verify(&self, received: &Value, type_uri: &str) -> Result<String, AppError> {
+        // [`Gate`] refused anything not served before the proof was read.
+        let Some((task, _)) = served(type_uri) else {
+            return Err(AppError::Unauthorized(
+                "not a task this service serves".into(),
+            ));
+        };
+        // Verifying resolves the proof's verification method, so both checks come first: the
+        // method must be the issuer's, and the issuer one this service will resolve.
+        let Some(issuer) = received["issuer"].as_str().filter(|i| {
+            proof_method(received)
                 .is_some_and(|vm| vti_common::auth::check_issuer_binding(vm, i).is_ok())
         }) else {
-            return refuse(
-                state,
-                &doc,
-                standard("proofInvalid"),
-                "the proof is not the issuer's",
-            )
-            .await;
+            return Err(AppError::Unauthorized(
+                "the proof is not the issuer's".into(),
+            ));
         };
-        let Some(resolver) =
-            resolver_for(state, transport_sender, task, issuer, &doc.payload).await
+        let Some(resolver) = resolver_for(
+            self.state,
+            self.transport_sender,
+            task,
+            issuer,
+            &received["payload"],
+        )
+        .await
         else {
-            return refuse(
-                state,
-                &doc,
-                standard("permissionDenied"),
+            return Err(AppError::Forbidden(
                 "on this binding a request is signed by a did:key, by a community this ballot \
-                 box serves, or by a party the election it names lists",
-            )
-            .await;
+                 box serves, or by a party the election it names lists"
+                    .into(),
+            ));
         };
         let verified = tokio::time::timeout(
             PROOF_VERIFY_TIMEOUT,
-            vti_common::auth::verify_trust_task_proof_value(&received, resolver),
+            vti_common::auth::verify_trust_task_proof_value(received, resolver),
         )
         .await;
         let Ok(verified) = verified else {
             tracing::debug!("a request proof did not verify in time");
-            return refuse(
-                state,
-                &doc,
-                standard("unavailable"),
-                "the signer's verification method did not resolve in time",
-            )
-            .await;
+            return Err(AppError::Internal(VERIFY_TIMED_OUT.into()));
         };
-        match verified {
-            Ok(s) if doc.issuer.as_deref() == Some(s.as_str()) => Some(s),
-            Ok(_) => {
-                return refuse(
-                    state,
-                    &doc,
-                    standard("proofInvalid"),
-                    "the proof is not the issuer's",
-                )
-                .await;
-            }
-            Err(e) => {
-                // The resolver's own words stay in the log: they can name what it fetched.
-                tracing::debug!(error = %e, "a request proof did not verify");
-                return refuse(
-                    state,
-                    &doc,
-                    standard("proofInvalid"),
-                    "the proof does not verify",
-                )
-                .await;
-            }
-        }
-    } else {
-        None
-    };
-    if task.needs_proof() && signer.is_none() {
-        return refuse(
-            state,
-            &doc,
-            standard("proofRequired"),
-            "this task must be signed",
-        )
-        .await;
+        verified.map_err(|e| {
+            // The resolver's own words stay in the log: they can name what it fetched.
+            tracing::debug!(error = %e, "a request proof did not verify");
+            AppError::Unauthorized("the proof does not verify".into())
+        })
     }
+
+    /// `proofInvalid` for a proof that is not the issuer's or does not verify, `permissionDenied`
+    /// for a signer this binding does not resolve, and `unavailable` for a verification that
+    /// ran out of time — each with this service's own words, never the resolver's.
+    fn refusal(&self, doc: &TrustTask<Value>, err: &AppError) -> TrustTaskOutcome {
+        match err {
+            AppError::Unauthorized(m) => {
+                reject_with_code(doc, standard(StandardCode::ProofInvalid), m.clone(), None)
+            }
+            AppError::Forbidden(m) => reject_with_code(
+                doc,
+                standard(StandardCode::PermissionDenied),
+                m.clone(),
+                None,
+            ),
+            AppError::Internal(m) if m == VERIFY_TIMED_OUT => {
+                reject_with_code(doc, standard(StandardCode::Unavailable), m.clone(), None)
+            }
+            other => app_error_to_reject(doc, other),
+        }
+    }
+}
+
+/// Signs every answer as this service's DID.
+struct AnswerSigner<'a>(&'a Identity);
+
+#[async_trait::async_trait]
+impl ResponseSigner for AnswerSigner<'_> {
+    async fn sign_response_document(&self, doc: &mut Value) -> Result<(), AppError> {
+        let mut typed: TrustTask<Value> = serde_json::from_value(doc.clone())
+            .map_err(|e| AppError::Internal(format!("an answer is not a document: {e}")))?;
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut typed, &self.0.key)
+            .await
+            .map_err(|e| AppError::Internal(format!("could not sign the answer: {e}")))?;
+        *doc = serde_json::to_value(&typed)?;
+        Ok(())
+    }
+}
+
+/// The routing table behind the pipeline: [`SERVED`], over the ballot box.
+struct Ballots<'a> {
+    state: &'a AppState,
+}
+
+impl Dispatcher for Ballots<'_> {
+    fn dispatch<'a>(
+        &'a self,
+        ctx: &'a ArrivalCtx,
+        doc: TrustTask<Value>,
+        type_uri: &'a str,
+        received: Arc<Value>,
+    ) -> BoxFuture<'a, TrustTaskOutcome> {
+        Box::pin(run(
+            self.state,
+            ctx.verified_signer.clone(),
+            doc,
+            type_uri,
+            received,
+        ))
+    }
+
+    /// A consequential task's answer is kept, so its redelivery is answered with it — a cast's
+    /// receipt included. A read's is not: its answer is the board as it stands, and a replay
+    /// is owed nothing (`204`).
+    fn records_response(&self, type_uri: &str) -> bool {
+        served(type_uri).is_none_or(|(task, _)| task.consequential())
+    }
+}
+
+/// Run one task the pipeline admitted. `signer` is the proven signer, if the document carried
+/// a proof (its specification's policy has already required one where it must).
+async fn run(
+    state: &AppState,
+    signer: Option<String>,
+    doc: TrustTask<Value>,
+    type_uri: &str,
+    received: Arc<Value>,
+) -> TrustTaskOutcome {
+    let Some((task, version)) = served(type_uri) else {
+        return reject_with(
+            &doc,
+            RejectReason::UnsupportedType {
+                type_uri: type_uri.to_string(),
+            },
+        );
+    };
+    let now = Utc::now();
 
     // A cast's costly checks — the pairing, a tallied ballot's proofs — run without the ballot
     // box, so one sender's casts never hold up every other community's tasks (VTI-VOT-045).
@@ -605,7 +711,7 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
         Task::Cast | Task::CastEncrypted => {
             match check_cast(state, task, &doc.payload, now).await {
                 Ok(v) => v,
-                Err(f) => return refuse_failure(state, &doc, task, f).await,
+                Err(f) => return refuse_failure(&doc, type_uri, f),
             }
         }
         _ => None,
@@ -619,7 +725,7 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
     let boxes = Arc::clone(&state.ballot_boxes);
     let communities = state.communities.clone();
     let payload = doc.payload.clone();
-    let version = election_version(version);
+    let version = version.unwrap_or(ElectionVersion::V0_4);
     let locked = tokio::task::spawn_blocking(move || {
         let caller = signer.as_deref().map_or(Caller::Anonymous, Caller::Did);
         let signer_did = signer.as_deref().unwrap_or_default();
@@ -672,41 +778,46 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
     match outcome {
         Ok(payload) => {
             let response = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-            let value = serde_json::to_value(&response).unwrap_or(Value::Null);
-            signed(state, StatusCode::OK, value).await
+            match serde_json::to_vec(&response) {
+                Ok(body) => TrustTaskOutcome {
+                    status: StatusCode::OK,
+                    body,
+                },
+                Err(e) => reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: format!("the answer is unserialisable: {e}"),
+                    },
+                ),
+            }
         }
-        Err(f) => refuse_failure(state, &doc, task, f).await,
+        Err(f) => refuse_failure(&doc, type_uri, f),
     }
 }
 
-/// The `voting/election/{register,show}` version a served `version` names: 0.2, 0.3 or 0.4.
-fn election_version(version: &str) -> ElectionVersion {
-    match version {
-        "0.2" => ElectionVersion::V0_2,
-        "0.3" => ElectionVersion::V0_3,
-        _ => ElectionVersion::V0_4,
-    }
-}
-
-/// Answer a refusal the ballot box reported, under `task`'s own code where it is not standard.
-async fn refuse_failure(
-    state: &AppState,
+/// Answer a refusal the ballot box reported, under the task's own code where it is not
+/// standard — the extended code's slug read off the request's Type URI.
+fn refuse_failure(
     doc: &TrustTask<Value>,
-    task: Task,
+    type_uri: &str,
     Failure {
         local,
         standard: is_standard,
         reason,
         ..
     }: Failure,
-) -> Answer {
+) -> TrustTaskOutcome {
+    let slug = slug_of(type_uri).unwrap_or_default();
     let code = if is_standard {
-        standard(local)
+        local
+            .parse()
+            .unwrap_or(TrustTaskCode::Standard(StandardCode::InternalError))
     } else {
-        TrustTaskCode::new_extended(task.slug(), local).unwrap_or_else(|_| standard("taskFailed"))
+        TrustTaskCode::new_extended(slug, local)
+            .unwrap_or(TrustTaskCode::Standard(StandardCode::TaskFailed))
     };
-    tracing::info!(task = task.slug(), code = %code, %reason, "refused");
-    refuse(state, doc, code, &reason).await
+    tracing::info!(task = slug, code = %code, %reason, "refused");
+    reject_with_code(doc, code, reason, None)
 }
 
 fn box_unavailable() -> Failure {
@@ -778,4 +889,37 @@ fn registration_refused(
         });
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every served Type URI is a version VTI pins (so its policy comes from its own
+    /// specification, never "nothing to check"), and every pinned `voting/*` version is served
+    /// here — the routing table and the pin cannot drift apart.
+    #[test]
+    fn the_served_versions_are_exactly_the_pinned_voting_versions() {
+        for uri in served_uris() {
+            assert!(
+                vti_specs::schema_index::spec_policy_for(uri).is_some(),
+                "{uri} is served but not pinned"
+            );
+        }
+        let pinned: std::collections::BTreeSet<&str> = vti_specs::schema_index::type_uris()
+            .filter(|u| u.starts_with("https://trusttasks.org/spec/voting/"))
+            .filter(|u| !u.ends_with("#response"))
+            .collect();
+        let routed: std::collections::BTreeSet<&str> = served_uris().collect();
+        assert_eq!(pinned, routed);
+    }
+
+    #[test]
+    fn a_slug_is_read_off_the_uri() {
+        assert_eq!(
+            slug_of("https://trusttasks.org/spec/voting/ballot/cast/0.1#request"),
+            Some("voting/ballot/cast")
+        );
+        assert_eq!(slug_of("https://example.com/x/0.1"), None);
+    }
 }

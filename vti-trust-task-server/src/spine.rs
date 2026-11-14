@@ -41,7 +41,7 @@ use trust_tasks_rs::{FreshnessPolicy, RejectReason, SpecPolicy, TrustTask};
 use crate::TrustTaskOutcome;
 use crate::accepted::{Acceptance, AcceptedIdStore};
 use crate::context::ArrivalCtx;
-use crate::reject::{app_error_to_reject, body_parse_error_response, reject_with};
+use crate::reject::{body_parse_error_response, reject_with};
 use crate::sign::{ResponseSigner, sign_response};
 use crate::size::{SizeCharge, SizeGate, default_size_table};
 use crate::verify::ProofVerifier;
@@ -178,6 +178,7 @@ pub struct Spine<'a> {
     accepted_ids: &'a dyn AcceptedIdStore,
     dispatcher: &'a dyn Dispatcher,
     signer: Option<&'a dyn ResponseSigner>,
+    unsigned_optional_over_messaging: bool,
 }
 
 static DEFAULT_SIZE: std::sync::LazyLock<crate::size::SizeTable<fn(&str) -> Option<usize>>> =
@@ -204,6 +205,7 @@ impl<'a> Spine<'a> {
             accepted_ids,
             dispatcher,
             signer: None,
+            unsigned_optional_over_messaging: false,
         }
     }
 
@@ -222,6 +224,25 @@ impl<'a> Spine<'a> {
     /// Ask `admission` about each verified signer (step 3a').
     pub fn with_admission(mut self, admission: Option<&'a dyn VerifiedAdmission>) -> Self {
         self.admission = admission;
+        self
+    }
+
+    /// Over DIDComm and TSP, accept a document carrying **no** proof when its
+    /// specification declares the request proof OPTIONAL, exactly as HTTPS
+    /// does: it runs with no verified signer, as an anonymous request, and the
+    /// transport-reported sender confers nothing. Off by default, which
+    /// refuses every unsigned document on those transports.
+    ///
+    /// For a service whose public tasks (a discovery query, a public board
+    /// read) are asked over messaging by parties that do not sign them:
+    /// refusing there what HTTPS accepts would make the requirement depend on
+    /// the transport (VTI-OPS-021). A document that does carry a proof is
+    /// still verified and bound to the sender, and a task whose proof is
+    /// REQUIRED is refused unsigned on every transport (step 2c) — so this
+    /// never lets a transport property stand in for a document requirement
+    /// (VTI-OPS-093).
+    pub fn accepting_unsigned_optional_over_messaging(mut self) -> Self {
+        self.unsigned_optional_over_messaging = true;
         self
     }
 
@@ -294,7 +315,8 @@ impl<'a> Spine<'a> {
         let type_uri = doc.type_uri.for_routing().to_string();
 
         // 2c. The specification's own flag-driven rules, as it states them.
-        if let Some(policy) = self.policy.spec_policy_for(&type_uri)
+        let spec_policy = self.policy.spec_policy_for(&type_uri);
+        if let Some(policy) = spec_policy
             && let Err(reason) = policy.enforce(&doc)
         {
             tracing::info!(
@@ -342,7 +364,7 @@ impl<'a> Spine<'a> {
                 // A proof that is present and does not verify is always fatal.
                 Err(e) => {
                     self.settle(charge.as_ref(), None);
-                    return app_error_to_reject(&doc, &e);
+                    return self.verifier.refusal(&doc, &e);
                 }
             }
         } else {
@@ -359,6 +381,12 @@ impl<'a> Spine<'a> {
             let base = vta_sdk::did_scid::identity;
             match (ctx.verified_signer.as_deref(), ctx.sender_did.as_deref()) {
                 (Some(signer), Some(sender)) if base(signer) == base(sender) => {}
+                // An unsigned document whose specification makes the proof
+                // OPTIONAL, where the service accepts one as HTTPS does: it
+                // runs anonymous, and the sender is bound to nothing.
+                (None, _)
+                    if self.unsigned_optional_over_messaging
+                        && spec_policy.is_some_and(|p| !p.is_proof_required) => {}
                 (None, _) => {
                     tracing::warn!(type_uri, "messaging document carries no proof — refused");
                     return reject_with(&doc, RejectReason::ProofRequired);

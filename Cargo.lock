@@ -12962,6 +12962,8 @@ dependencies = [
  "vta-sdk",
  "vti-common",
  "vti-secrets",
+ "vti-specs",
+ "vti-trust-task-server",
  "vti-voting",
 ]
 
@@ -13020,6 +13022,7 @@ dependencies = [
  "affinidi-tdk",
  "anyhow",
  "async-trait",
+ "axum",
  "chrono",
  "clap",
  "dtg-credentials",
@@ -13041,6 +13044,7 @@ dependencies = [
  "vti-common",
  "vti-secrets",
  "vti-specs",
+ "vti-trust-task-server",
 ]
 
 [[package]]
