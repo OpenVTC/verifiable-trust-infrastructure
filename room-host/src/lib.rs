@@ -65,7 +65,7 @@ use axum::http::StatusCode;
 
 use axum::routing::post;
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde_json::Value;
 use trust_tasks_https::status_for_code;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
@@ -87,7 +87,7 @@ use vti_rooms::{
     storage,
 };
 use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
-use vti_trust_task_server::Acceptance;
+use vti_trust_task_server::ArrivalCtx;
 
 /// Default retention after a room's epoch lapses without renewal.
 const DEFAULT_RETENTION_DAYS: u32 = 90;
@@ -323,45 +323,16 @@ impl HostState {
 
     /// The presenter — proven by the document's own proof, never claimed in its payload.
     ///
-    /// Split out from [`Self::presenter_and_verifier`] because `rooms/create` needs this half
-    /// and only this half: a room that does not exist yet has issued no credentials, so there
-    /// is no chain to judge and nothing for a verifier to do.
-    ///
-    /// Verified over the document as received when [`dispatch`] recorded it — `doc` is then
-    /// that JSON's parse — and never over a re-serialisation of `doc`, which rewrites the
-    /// timestamps a producer signed (VTI-45). A `doc` that is not the recorded document (a
-    /// direct call in a test) is verified in its typed form, which can only refuse more.
-    async fn presenter(&self, doc: &TrustTask<Value>) -> Result<String, AppError> {
-        let received = RECEIVED.try_with(Arc::clone).ok().filter(|received| {
-            serde_json::from_value::<TrustTask<Value>>((**received).clone())
-                .is_ok_and(|parsed| &parsed == doc)
-        });
-        let signer = match received {
-            Some(received) => {
-                vti_common::auth::verify_trust_task_proof_value(&received, &self.resolver).await
-            }
-            None => vti_common::auth::verify_trust_task_proof_with(doc, &self.resolver).await,
-        }
-        .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))?;
-
-        // The proof must be the document's **issuer**'s (framework SPEC §4.7). A proof
-        // that verifies under some other DID's key is a valid signature by somebody else,
-        // and the issuer the document names — which a reply is addressed to — is then a
-        // claim nobody proved. The same refusal the VTC's spine makes.
-        if doc.issuer.as_deref() != Some(signer.as_str()) {
-            tracing::warn!(
-                security_alert = true,
-                issuer = ?doc.issuer,
-                %signer,
-                "request proof verifies under a key the document's issuer does not control"
-            );
-            return Err(AppError::Forbidden(
-                "request proof: the proof's verificationMethod does not belong to the \
-                 document's issuer (SPEC §4.7)"
-                    .into(),
-            ));
-        }
-        Ok(signer)
+    /// The spine ([`vti_trust_task_server::Spine`]) verified that proof over the document
+    /// **as received** and bound it to the document's `issuer` (framework SPEC §4.7) before
+    /// this request was dispatched; this reads what it proved. A document that reached a
+    /// handler without a proven signer has nothing to authorize, and is refused.
+    async fn presenter(&self, _doc: &TrustTask<Value>) -> Result<String, AppError> {
+        VERIFIED_SIGNER
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .ok_or_else(|| AppError::Forbidden("request proof: the document carries none".into()))
     }
 
     /// The presenter — proven, not claimed — and the verifier to judge their chain with.
@@ -552,42 +523,70 @@ async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> Answer 
     dispatch(&state, &body).await
 }
 
-// The inbound document as received, for the duration of its dispatch: the request proof is
-// verified over this JSON, never over a re-serialised `TrustTask` (VTI-45). A task-local
-// rather than a parameter so the eleven handlers keep one signature.
+// The signer the spine proved for the document being dispatched, for the duration of its
+// dispatch. A task-local rather than a parameter so the handlers keep one signature.
 tokio::task_local! {
-    static RECEIVED: Arc<Value>;
+    static VERIFIED_SIGNER: Option<String>;
 }
 
-/// **The one entry point**: a `rooms/*` document, routed by its own `type`, whatever carried
-/// it here.
+/// **The one entry point** for a document that arrived over HTTP: a `rooms/*` document,
+/// routed by its own `type`.
 ///
 /// One mount rather than five routes, because the document's `type` is its identity — the
-/// same shape the VTC's holder-facing surface uses. And one function rather than one per
-/// carrier, because a host that routed or authorized differently depending on how a request
-/// arrived would have as many authorization models as it has wires. HTTP, DIDComm and TSP
-/// all land here with the same bytes.
+/// same shape the VTC's holder-facing surface uses. And one pipeline for every carrier
+/// ([`dispatch_from`]), because a host that routed or authorized differently depending on
+/// how a request arrived would have as many authorization models as it has wires.
 ///
 /// Nothing about *who* is asking comes from the carrier. The presenter is taken from the
 /// document's own `eddsa-jcs-2022` proof and the authority from the chain it carries, so a
-/// request is exactly as authorized over a socket as over a POST — and a transport that
-/// authenticated its sender confers nothing extra, which is the property that lets this be
-/// one function at all.
+/// request is exactly as authorized over a socket as over a POST.
 pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
-    // It parsed as a Trust Task below, so it parses as JSON; `Null` only if it did not, in
-    // which case the typed parse refuses it first.
-    let received = Arc::new(serde_json::from_slice::<Value>(body).unwrap_or(Value::Null));
-    let mut answer = RECEIVED
-        .scope(received, dispatch_received(state, body))
-        .await;
-    // Signed here, once, so no handler and no carrier can forget to: HTTP, DIDComm and TSP
-    // all answer with what this returns. Refusals too, so a caller can attribute one.
-    sign_answer(state, &mut answer.document).await;
-    answer
+    dispatch_from(state, &ArrivalCtx::rest(), body).await
+}
+
+/// [`dispatch`], for a document a carrier delivered: `ctx` says which, and over DIDComm and
+/// TSP the sender it authenticated, which the spine requires the document's proof to bind
+/// (VTI-OPS-021/093).
+///
+/// This is the workspace's receive pipeline ([`vti_trust_task_server::Spine`]), the one the
+/// VTC runs, in its order: size, freshness and the acceptance window, expiry and the
+/// recipient binding, the task's own specification policy, the proof bound to `issuer`, the
+/// sender binding, the duplicate-id record, dispatch, and every answer signed — refusals too.
+pub async fn dispatch_from(state: &Arc<HostState>, ctx: &ArrivalCtx, body: &[u8]) -> Answer {
+    let size = DeclaredSizes;
+    let policy = vti_specs::schema_index::spec_policy_for;
+    let verifier =
+        vti_trust_task_server::ResolverProofVerifier::operational(state.resolver.clone());
+    let hooks = Hooks(state);
+    let accepted = vti_trust_task_server::StoreAcceptedIds::new(state.accepted_ids.clone());
+    let dispatcher = RoomDispatcher(Arc::clone(state));
+    let signer = state
+        .answer_signer
+        .get()
+        .map(|s| &**s as &dyn vti_trust_task_server::ResponseSigner);
+    let outcome =
+        vti_trust_task_server::Spine::new(&policy, &verifier, &hooks, &accepted, &dispatcher)
+            .with_size_gate(&size)
+            .with_signer(signer)
+            .receive(ctx, body)
+            .await;
+    Answer::from(outcome)
+}
+
+impl From<vti_trust_task_server::TrustTaskOutcome> for Answer {
+    fn from(outcome: vti_trust_task_server::TrustTaskOutcome) -> Self {
+        Self {
+            status: outcome.status.as_u16(),
+            // An empty body is an answer with no document: a duplicate still in flight
+            // (`202`) or one completed without a kept answer (`204`).
+            document: serde_json::from_slice(&outcome.body).unwrap_or(Value::Null),
+        }
+    }
 }
 
 /// Sign `doc` as this host, when it has a signer ([`HostState::set_answer_signer`]) and the
-/// document carries no proof yet. A signing failure leaves it unsigned and logs.
+/// document carries no proof yet. A signing failure leaves it unsigned and logs. For an
+/// answer produced outside [`dispatch`] (a carrier's own refusal).
 pub(crate) async fn sign_answer(state: &HostState, doc: &mut Value) {
     if let Some(signer) = state.answer_signer.get()
         && doc.is_object()
@@ -598,157 +597,104 @@ pub(crate) async fn sign_answer(state: &HostState, doc: &mut Value) {
     }
 }
 
-/// [`dispatch`], inside the scope that records the received document.
-async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
-    // A body that is not a Trust Task document cannot be *routed* — there is no issuer to
-    // address a rejection to and no thread to correlate it with — so this one case answers
-    // with an unrouted error, exactly as the VTC's `body_parse_error_response` does.
-    let doc: TrustTask<Value> = match serde_json::from_slice(body) {
-        Ok(d) => d,
-        Err(e) => {
-            return Answer {
-                status: 400,
-                document: json!({
-                    "error": format!("body is not a Trust Task document: {e}"),
-                }),
-            };
-        }
-    };
+/// The size gate: SPEC §12.4 and each task's `maxDocumentBytes`. A document larger than its
+/// specification declares is refused, measured over the document as received, before it is
+/// parsed. Tasks that declare no bound keep the transport's own limit, so the large-document
+/// tasks are exactly the ones that may be large — a chunk document is admitted at its bound,
+/// and nothing else is.
+struct DeclaredSizes;
 
-    // SPEC §12.4 and each task's `maxDocumentBytes`: a document larger than
-    // its specification declares is refused. Measured over the document as
-    // received. Tasks that declare no bound keep the transport's own limit, so
-    // the large-document tasks are exactly the ones that may be large — a chunk
-    // document is admitted at its bound, and nothing else is.
-    let type_uri = doc.type_uri.to_string();
-    let bare = type_uri.split('#').next().unwrap_or(&type_uri);
-    if let Some(max) = vti_specs::schema_index::max_document_bytes_for(bare)
-        && body.len() > max
+#[async_trait::async_trait]
+impl vti_trust_task_server::SizeGate for DeclaredSizes {
+    async fn admit(
+        &self,
+        body: &[u8],
+    ) -> Result<Option<vti_trust_task_server::SizeCharge>, vti_trust_task_server::TrustTaskOutcome>
     {
-        return reject(
-            &doc,
-            RejectReason::MalformedRequest {
-                reason: format!(
-                    "a `{bare}` document is {} bytes; its specification bounds it at {max}",
-                    body.len()
-                ),
-            },
-        );
-    }
-
-    // One instant for every temporal decision in this dispatch: the acceptance window and
-    // the replay record's retention are the same bound (SPEC §7.2, *Bounding the record*).
-    let now = chrono::Utc::now();
-
-    // SPEC §7.2 item 13 — the timestamp bounds and the acceptance window, the VTC's own
-    // (`VTI_ACCEPTANCE_WINDOW`, `issuedAt` required). Decided from the document alone, so
-    // before any resolution or verification work. Without it a captured request was good
-    // forever: the replay record below only remembers a document for its window.
-    if let Err(reason) = doc.validate_freshness(now, &freshness_policy()) {
-        return reject(&doc, reason);
-    }
-
-    // SPEC §7.2 items 4 + 5 — expiry, and the recipient binding: a document addressed to
-    // another host is not this host's to execute. A host with no DID yet has nothing to
-    // compare a `recipient` against, so only the expiry half applies — expressed as the
-    // same check against the document's own recipient, which it trivially matches.
-    let my_vid = state
-        .host_did()
-        .map(str::to_string)
-        .or_else(|| doc.recipient.clone())
-        .unwrap_or_default();
-    if let Err(reason) = doc.validate_basic(now, &my_vid) {
-        return reject(&doc, reason);
-    }
-
-    // SPEC §7.2 item 11 — the duplicate-execution record.
-    //
-    // Every carrier that reaches here is at-least-once. The mediator re-pushes a
-    // recipient's whole undelivered inbox when a socket enables live delivery and when a
-    // duplicate socket displaces an existing session, so a frame this host has already
-    // answered arrives again as routine traffic. Without a record, `put`, `mint` and
-    // `transfer` run a second time.
-    //
-    // The document's proof does not close this: a redelivered copy carries the same valid
-    // proof the first did. It *is* the first document.
-    //
-    // Every document is recorded, reads included. A read changes nothing, but a captured
-    // read replayed inside its window would otherwise be answered afresh — with whatever
-    // the room holds *now*, to whoever replays it. What differs for a read is only what is
-    // kept: its answer is not retained (a chunk download is large, and a replay is owed
-    // nothing), so a duplicate read is answered `204` with no body.
-    let keep_response = is_consequential(&doc.type_uri.to_string());
-
-    let retain_until = retain_until(&doc, now);
-    let claim = match vti_trust_task_server::StoreAcceptedIds::new(state.accepted_ids.clone())
-        .claim(&doc, retain_until, now)
-        .await
-    {
-        Ok(Acceptance::Fresh(claim)) => claim,
-        Ok(Acceptance::Duplicate {
-            prior_response,
-            in_flight,
-        }) => {
-            // §7.2 (*Disposition of a duplicate*): never `taskFailed` — the task did not
-            // fail, it already happened. Answering with the original result is what keeps
-            // a member whose reply was lost from retrying a write forever.
-            return match prior_response {
-                Some(document) => Answer {
-                    status: 200,
-                    document,
-                },
-                // Still running. `202` is the only honest code: `200` claims a result that
-                // does not exist yet, `409` a conflict that does not exist — it is the
-                // same document.
-                None if in_flight => Answer {
-                    status: 202,
-                    document: Value::Null,
-                },
-                None => Answer {
-                    status: 204,
-                    document: Value::Null,
-                },
-            };
+        let Some(type_uri) = vti_trust_task_server::size::peek_type(body) else {
+            // Not a document of any readable type: the parse refuses it next.
+            return Ok(None);
+        };
+        let bare = type_uri.split('#').next().unwrap_or(&type_uri);
+        if let Some(max) = vti_specs::schema_index::max_document_bytes_for(bare) {
+            vti_trust_task_server::size::check_size(body, max, |_| max)?;
         }
-        // A *different* document under an already-spent id. Digest-keyed precisely so this
-        // is refused rather than absorbed as a retry of the original.
-        Ok(Acceptance::Conflict) => {
-            return reject(&doc, RejectReason::IdConflict);
-        }
-        // Fail closed: a host that cannot establish whether a document is a duplicate has
-        // not satisfied item 11, so it must not execute. `unavailable` is retryable, which
-        // is the truthful signal; an undigestible document is the document's fault.
-        Err(e) => {
-            tracing::error!(error = ?e, id = %doc.id, "accepted-id record unavailable");
-            return reject(&doc, e.reject_reason());
-        }
-    };
+        Ok(None)
+    }
+}
 
-    let moved_room = doc.payload["roomId"].as_str().map(str::to_string);
-    let answer = route(state, doc).await;
+/// This host's points in the pipeline: its DID, once it has one.
+struct Hooks<'a>(&'a HostState);
 
-    // Whatever moved the room — a put of any kind, a curation, a retraction, a prune, a
-    // profile written — fires the watches it put past their watermark, alike
-    // (`rooms/watch/0.1` Host item 6). Only after the task committed, and never failing it.
-    if (200..300).contains(&answer.status)
-        && let Some(room_id) = &moved_room
-    {
-        state.room_moved(room_id).await;
+#[async_trait::async_trait]
+impl vti_trust_task_server::SpineHooks for Hooks<'_> {
+    async fn recipient(&self) -> Option<String> {
+        self.0.host_did().map(str::to_string)
     }
 
-    // Close out the claim. A success records its response so the redelivery this exists to
-    // absorb is answered with the result; a failure releases, or a document refused
-    // downstream of the claim would burn its id and a corrected resend under the same id
-    // would come back `202` (still in flight) until the record expired.
-    if (200..300).contains(&answer.status) {
-        claim
-            .completed(keep_response.then_some(&answer.document))
-            .await;
-    } else {
-        claim.release().await;
+    /// A host with no DID yet has nothing to compare a `recipient` against, so the spine
+    /// skips the binding — and with it the expiry half of SPEC §7.2 item 4. Applied here
+    /// instead, as the same check against the document's own recipient, which it trivially
+    /// matches: an expired document is refused by a host with or without an identity.
+    async fn before_proof(
+        &self,
+        doc: &TrustTask<Value>,
+        _type_uri: &str,
+    ) -> Option<vti_trust_task_server::TrustTaskOutcome> {
+        if self.0.host_did().is_some() {
+            return None;
+        }
+        let own = doc.recipient.clone().unwrap_or_default();
+        doc.validate_basic(chrono::Utc::now(), &own)
+            .err()
+            .map(|reason| vti_trust_task_server::reject::reject_with(doc, reason))
+    }
+}
+
+/// The routing table behind the spine.
+struct RoomDispatcher(Arc<HostState>);
+
+impl vti_trust_task_server::Dispatcher for RoomDispatcher {
+    fn dispatch<'a>(
+        &'a self,
+        ctx: &'a ArrivalCtx,
+        doc: TrustTask<Value>,
+        _type_uri: &'a str,
+        _received: Arc<Value>,
+    ) -> vti_trust_task_server::BoxFuture<'a, vti_trust_task_server::TrustTaskOutcome> {
+        Box::pin(async move {
+            let state = &self.0;
+            let moved_room = doc.payload["roomId"].as_str().map(str::to_string);
+            let answer = VERIFIED_SIGNER
+                .scope(ctx.verified_signer.clone(), route(state, doc))
+                .await;
+            // Whatever moved the room — a put of any kind, a curation, a retraction, a
+            // prune, a profile written — fires the watches it put past their watermark,
+            // alike (`rooms/watch/0.1` Host item 6). Only after the task committed, and
+            // never failing it.
+            if (200..300).contains(&answer.status)
+                && let Some(room_id) = &moved_room
+            {
+                state.room_moved(room_id).await;
+            }
+            vti_trust_task_server::TrustTaskOutcome {
+                status: StatusCode::from_u16(answer.status)
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                body: if answer.document.is_null() {
+                    Vec::new()
+                } else {
+                    serde_json::to_vec(&answer.document).unwrap_or_default()
+                },
+            }
+        })
     }
 
-    answer
+    /// A read's answer is not kept in the duplicate-execution record (a chunk download is
+    /// large, and a replay is owed nothing), so a duplicate read is answered `204`; a write's
+    /// is, so a redelivered write is answered with the result it already had.
+    fn records_response(&self, type_uri: &str) -> bool {
+        is_consequential(type_uri)
+    }
 }
 
 /// Route a document to its handler. Split out of [`dispatch`] so the replay record can be
@@ -857,26 +803,6 @@ fn is_consequential(type_uri: &str) -> bool {
 /// after the restart execute again (VTI-OPS-029). One host process owns its store; a
 /// replicated host would still need the record shared between replicas.
 pub const ACCEPTED_IDS_KEYSPACE: &str = "accepted_ids";
-
-/// The acceptance window: the VTC's (`VTI_ACCEPTANCE_WINDOW`, `issuedAt` required), so a
-/// document a VTC host would accept is accepted here and one it would refuse is refused.
-fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
-    vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
-        .freshness_policy()
-        .requiring_issued_at()
-}
-
-/// How long the duplicate-execution record for `doc` is kept: until this host would stop
-/// accepting it, plus the skew (VTI-OPS-029). Without an `expiresAt` that is `issuedAt +
-/// max_age`; with one, the `expiresAt`, up to thirty days after `issuedAt` (VTI-OPS-028).
-/// Never earlier, or a replay arriving while still acceptable executes twice; the horizon
-/// is what stops a producer stamping a distant `expiresAt` pinning its id for that long.
-fn retain_until(
-    doc: &TrustTask<Value>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    vti_common::trust_task::acceptance::retain_until(&freshness_policy(), doc, now)
-}
 
 /// `rooms/create/0.2`, which also records the room's record retention, and `rooms/create/0.3`,
 /// which also records its signal delay (0.2 records `randomised`).
@@ -2303,6 +2229,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use serde_json::json;
     use tower::ServiceExt;
     use vti_rooms::Visibility;
     use vti_rooms_dtg::test_support::{Party, RoomFixture};
@@ -2381,17 +2308,23 @@ mod tests {
         let last = proof.proof_value.pop().expect("non-empty proofValue");
         proof.proof_value.push(if last == '1' { '2' } else { '1' });
 
-        let resolver_failure = state.presenter(&resolver_fail_doc).await;
-        let bad_signature = state.presenter(&bad_sig_doc).await;
+        // The spine's proof step, as this host runs it: verified over the document as
+        // received, through this host's resolver.
+        use vti_trust_task_server::ProofVerifier as _;
+        let verifier =
+            vti_trust_task_server::ResolverProofVerifier::operational(state.resolver.clone());
+        let as_received = |d: &TrustTask<Value>| serde_json::to_value(d).expect("a document");
+        let resolver_failure = verifier.verify(&as_received(&resolver_fail_doc), "x").await;
+        let bad_signature = verifier.verify(&as_received(&bad_sig_doc), "x").await;
 
         match (resolver_failure, bad_signature) {
-            (Err(AppError::Forbidden(a)), Err(AppError::Forbidden(b))) => {
+            (Err(AppError::Unauthorized(a)), Err(AppError::Unauthorized(b))) => {
                 assert_eq!(
                     a, b,
                     "a resolver failure must render exactly as a bad signature does"
                 );
             }
-            other => panic!("expected both to be Forbidden errors, got {other:?}"),
+            other => panic!("expected both to be Unauthorized errors, got {other:?}"),
         }
     }
 
@@ -3448,12 +3381,10 @@ mod tests {
         })
         .await;
         let (status, body) = post_raw(&app, &doc).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert!(
-            body.to_string()
-                .contains("does not belong to the document's issuer"),
-            "{body}"
-        );
+        // The spine's refusal, as the VTC gives it: the proof is not the issuer's, so it
+        // proves nothing about the document (`proofInvalid`).
+        assert!(status.is_client_error(), "{status}: {body}");
+        assert_eq!(body["code"], "proofInvalid", "{body}");
     }
 
     /// The arrangement the whole design exists for, end to end through a host.
