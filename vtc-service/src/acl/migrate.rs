@@ -201,7 +201,7 @@ pub async fn migrate_on_boot(state: &AppState) -> Result<BootMigration, AppError
             .write(
                 "did:key:vtc-boot",
                 None,
-                vti_common::audit::AuditEvent::AclMigrated(vti_common::audit::AclMigratedData {
+                vtc_audit::AuditEvent::AclMigrated(vtc_audit::AclMigratedData {
                     migrated: out.migrated,
                     administrators: out.administrators,
                     lost_admin_authority: out.lost_admin_authority.clone(),

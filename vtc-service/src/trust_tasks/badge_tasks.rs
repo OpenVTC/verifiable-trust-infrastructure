@@ -18,7 +18,7 @@ use base64::Engine as _;
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::BadgeChangedData;
+use vtc_audit::BadgeChangedData;
 use vti_common::error::AppError;
 use vti_specs::vtc::badges::{
     awards::{

@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::audit::{AdminConsoleKeyData, AuditEvent};
+use vtc_audit::{AdminConsoleKeyData, AuditEvent};
 use vti_specs::auth::signing_key::{
     authorize::v0_1 as authorize, enroll::v0_2 as enroll, list::v0_1 as list,
     revoke::v0_1 as revoke,

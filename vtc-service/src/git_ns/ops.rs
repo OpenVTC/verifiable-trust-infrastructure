@@ -15,7 +15,7 @@
 
 use chrono::{DateTime, Timelike, Utc};
 use serde_json::json;
-use vti_common::audit::{AuditEvent, GitNsOperationData};
+use vtc_audit::{AuditEvent, GitNsOperationData};
 use vti_common::error::AppError;
 use vti_specs::git_ns::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,

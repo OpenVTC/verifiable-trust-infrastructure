@@ -253,7 +253,7 @@ async fn inviting_an_existing_member_is_a_conflict() {
 
 #[tokio::test]
 async fn issuing_an_invitation_emits_audit() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent};
+    use vtc_audit::{AuditEnvelope, AuditEvent};
 
     let fix = build().await;
     let req = issue_req(

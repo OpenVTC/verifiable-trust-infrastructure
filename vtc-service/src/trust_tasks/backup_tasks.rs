@@ -140,11 +140,8 @@ pub(super) async fn dispatch(
     // whatever the payload says.
     {
         use crate::acl::Capability::{BackupExport, BackupRestore};
-        let entry = match crate::acl::get_acl_entry(&state.acl_ks, &actor.did).await {
-            Ok(e) => e,
-            Err(e) => return Some(app_error_to_reject(&doc, &e)),
-        };
-        let can = |c| entry.as_ref().is_some_and(|e| e.can(c, None));
+        // The entry `admin_signer` read, not a second read of it.
+        let can = |c| actor.can(c, None);
         let (allowed, needed) = match handler {
             Op::InitiateExport | Op::GetChunk | Op::CompleteExport => {
                 (can(BackupExport), BackupExport)
@@ -173,6 +170,7 @@ pub(super) async fn dispatch(
     {
         return Some(reject);
     }
+    let actor = chunked_caller(&actor);
     Some(match handler {
         Op::InitiateExport => handle_initiate_export(state, &actor, doc).await,
         Op::GetChunk => handle_get_chunk(state, &actor, doc).await,
@@ -195,6 +193,23 @@ enum Op {
 }
 
 type Actor = vti_common::auth::extractor::AuthClaims;
+
+/// The caller as `vti_common::backup_transfer::chunked` takes it.
+///
+/// That API is shared with the VTA, whose gate is a super-admin claim, and it
+/// asks `require_super_admin` of what it is handed. The VTC's gate is the
+/// capability [`dispatch`] has already checked on the actor's live entry
+/// (`vtc.backup.export` / `vtc.backup.restore`), so the claim built here is
+/// the one that check answered: an administrator, community-wide — the value
+/// these handlers were always passed. It is built only here, after that check,
+/// and goes only to the chunked API (#2580).
+fn chunked_caller(actor: &crate::acl::AdminActor) -> Actor {
+    Actor {
+        did: actor.did.clone(),
+        role: vti_common::acl::Role::Admin,
+        ..Default::default()
+    }
+}
 
 // ─── Export ──────────────────────────────────────────────────────────────
 
@@ -674,16 +689,14 @@ async fn rerecord_waiver(
         .write(
             &actor.did,
             shown["bundleId"].as_str(),
-            vti_common::audit::AuditEvent::SingleAdminMode(
-                vti_common::audit::SingleAdminModeData {
-                    event: "consentWaived".into(),
-                    requirement: Some(Act::RestoreBackup.requirement().into()),
-                    task: Some(type_uri.clone()),
-                    digest: Some(vti_common::task_consent::payload_digest(&type_uri, &shown)?),
-                    kind: Some(Act::RestoreBackup.kind(&type_uri).into()),
-                    ..Default::default()
-                },
-            ),
+            vtc_audit::AuditEvent::SingleAdminMode(vtc_audit::SingleAdminModeData {
+                event: "consentWaived".into(),
+                requirement: Some(Act::RestoreBackup.requirement().into()),
+                task: Some(type_uri.clone()),
+                digest: Some(vti_common::task_consent::payload_digest(&type_uri, &shown)?),
+                kind: Some(Act::RestoreBackup.kind(&type_uri).into()),
+                ..Default::default()
+            }),
         )
         .await?;
     Ok(())
@@ -876,7 +889,7 @@ mod tests {
     use sha2::Digest as _;
     use vti_rooms_dtg::test_support::Party;
 
-    use super::super::members_admin_tests::{
+    use crate::trust_tasks::test_fixtures::{
         dispatch, dispatch_didcomm, error_code, payload_of, seed_acl, signed,
     };
 
@@ -1291,11 +1304,9 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter_map(|(_, v)| {
-                serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok()
-            })
+            .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
             .filter(|env| {
-                matches!(&env.event, vti_common::audit::AuditEvent::SingleAdminMode(d)
+                matches!(&env.event, vtc_audit::AuditEvent::SingleAdminMode(d)
                     if d.event == "consentWaived")
             })
             .count();

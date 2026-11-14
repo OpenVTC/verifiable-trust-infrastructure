@@ -17,9 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
 
-use vti_common::audit::{
-    AuditEvent, InvitationDeliveredData, InvitationIssuedData, InvitationRevokedData,
-};
+use vtc_audit::{AuditEvent, InvitationDeliveredData, InvitationIssuedData, InvitationRevokedData};
 use vti_common::error::AppError;
 
 use crate::acl::{VtcRole, get_acl_entry};

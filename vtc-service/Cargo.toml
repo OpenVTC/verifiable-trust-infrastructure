@@ -174,6 +174,8 @@ path = "tests/it/main.rs"
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.21", optional = true }
 vti-voting = { path = "../vti-voting", version = "0.17", optional = true }
 predicate-credential-system = { workspace = true, optional = true }
+# The community's audit-event vocabulary, over vti-common's envelope and writer.
+vtc-audit = { path = "../vtc-audit", version = "0.1", features = ["openapi"] }
 vti-rooms = { path = "../vti-rooms", version = "0.35" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37" }
 vti-common = { path = "../vti-common", version = "0.64", features = [
@@ -195,6 +197,9 @@ vti-common = { path = "../vti-common", version = "0.64", features = [
   # Room files in Google Cloud Storage (`rooms::storage_auth::gcs`), through
   # `object_store` with a room-scoped token per room.
   "blob-gcs",
+  # The bounded regorus engine `crate::policy` evaluates with (#2577).
+  # Spec §3-J + §7: regorus runs in-process; no external OPA sidecar.
+  "policy",
 ] }
 # Ambient and sealed storage authentication (`rooms::storage_auth`,
 # `vtc/storage/configs/create/0.2` "Room-scoped credentials"). An `s3` config on
@@ -398,9 +403,6 @@ multibase = { workspace = true }
 # presentation header + pseudonym tag in the verifier). Optional, pulled in by
 # the `bbs` feature; also a dev-dependency for non-bbs test parsing.
 ciborium = { workspace = true, optional = true }
-# Rego policy interpreter (Phase 2 M2.1). Hosted in `crate::policy`.
-# Spec §3-J + §7: regorus runs in-process; no external OPA sidecar.
-regorus = { workspace = true }
 url = { workspace = true, optional = true }
 # Argon2id for hashing admin-invite claim secrets (the out-of-band
 # code the invitee types alongside the install URL).

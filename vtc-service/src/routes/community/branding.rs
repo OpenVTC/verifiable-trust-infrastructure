@@ -9,7 +9,7 @@
 use axum::http::StatusCode;
 use tracing::info;
 use vta_sdk::protocols::vetting::read_branding;
-use vti_common::audit::{AuditEvent, CommunityBrandingUpdatedData};
+use vtc_audit::{AuditEvent, CommunityBrandingUpdatedData};
 use vti_common::error::AppError;
 
 use crate::community::branding::{fields_changed, load_branding, store_branding};

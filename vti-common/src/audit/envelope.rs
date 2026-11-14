@@ -1,5 +1,13 @@
-//! [`AuditEnvelope`] — the wire-stable shape that wraps every
-//! [`AuditEvent`].
+//! [`AuditEnvelope`] — the wire-stable shape that wraps every audit
+//! event.
+//!
+//! Generic over the event payload `E`: this crate owns the envelope, the
+//! hash chain and the HMAC actor hashing, and each service owns its own
+//! event vocabulary (`vtc-audit`'s `AuditEvent` for a community,
+//! `vta-audit`'s `VtaAuditEvent` for an agent). The payload is committed to
+//! through its `serde_json` encoding, so moving a vocabulary between crates
+//! leaves every stored chain verifiable as long as its serialized `type` /
+//! `data` tags are unchanged.
 //!
 //! Carries:
 //!
@@ -19,7 +27,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::event::AuditEvent;
 use super::key_store::KeyId;
 
 /// Envelope schema version. Bumps **only** on a breaking-shape change
@@ -53,12 +60,12 @@ pub const EVENT_VERSION: u32 = 1;
 
 /// A persisted audit-log entry.
 //
-// Note: deliberately NOT `ToSchema`. The `AuditEvent` payload enum fans out
+// Note: deliberately NOT `ToSchema`. A service's event payload enum fans out
 // into a large tree of variant-specific shapes; the single `/audit` read
 // endpoint documents its response body as an opaque object rather than drag
 // that whole surface into the OpenAPI components.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AuditEnvelope {
+pub struct AuditEnvelope<E> {
     /// Stable identifier for this specific event. Becomes the
     /// secondary-key component for cursor-based queries.
     pub event_id: Uuid,
@@ -119,10 +126,10 @@ pub struct AuditEnvelope {
     pub entry_hash: [u8; 32],
 
     /// The tagged event payload.
-    pub event: AuditEvent,
+    pub event: E,
 }
 
-impl AuditEnvelope {
+impl<E: Serialize> AuditEnvelope<E> {
     /// SHA-256 commitment over this envelope's **immutable** content,
     /// used to stamp [`Self::entry_hash`] at write time and to
     /// re-derive it during [`verify_chain`].
@@ -155,7 +162,7 @@ impl AuditEnvelope {
             }
             None => h.update([0u8]),
         }
-        let event_bytes = serde_json::to_vec(&self.event).expect("AuditEvent serializes");
+        let event_bytes = serde_json::to_vec(&self.event).expect("audit event serializes");
         h.update((event_bytes.len() as u64).to_be_bytes());
         h.update(&event_bytes);
         h.finalize().into()
@@ -183,7 +190,7 @@ pub enum ChainBreak {
 ///
 /// Pre-v2 envelopes (written before the chain existed) carry no hashes
 /// and are skipped; the chain re-anchors at the first v2 envelope.
-pub fn verify_chain(envelopes: &[AuditEnvelope]) -> Result<(), ChainBreak> {
+pub fn verify_chain<E: Serialize>(envelopes: &[AuditEnvelope<E>]) -> Result<(), ChainBreak> {
     let mut verifier = ChainVerifier::new();
     for env in envelopes {
         verifier.push(env)?;
@@ -249,7 +256,7 @@ impl ChainVerifier {
     ///
     /// On `Err` the verifier is left at the breaking entry and must
     /// not be reused — the chain past a break carries no meaning.
-    pub fn push(&mut self, env: &AuditEnvelope) -> Result<(), ChainBreak> {
+    pub fn push<E: Serialize>(&mut self, env: &AuditEnvelope<E>) -> Result<(), ChainBreak> {
         let index = self.index;
         self.index += 1;
 
@@ -360,6 +367,9 @@ pub(super) mod hash32_opt_b64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::test_event::TestEvent;
+
+    type AuditEnvelope = super::AuditEnvelope<TestEvent>;
 
     fn sample_envelope() -> AuditEnvelope {
         AuditEnvelope {
@@ -376,12 +386,7 @@ mod tests {
             target_did_plain: Some("did:key:z6Mk2".into()),
             prev_hash: GENESIS_HASH,
             entry_hash: GENESIS_HASH,
-            event: AuditEvent::CommunityProfileUpdated(
-                crate::audit::event::CommunityProfileUpdatedData {
-                    fields_changed: vec!["name".into()],
-                    ..Default::default()
-                },
-            ),
+            event: TestEvent::profile("name"),
         }
     }
 
@@ -466,11 +471,7 @@ mod tests {
         let a = chained_envelope(GENESIS_HASH, 0x01);
         let mut b = chained_envelope(a.entry_hash, 0x02);
         // Mutate covered content without restamping entry_hash.
-        b.event =
-            AuditEvent::CommunityProfileUpdated(crate::audit::event::CommunityProfileUpdatedData {
-                fields_changed: vec!["logoUrl".into()],
-                ..Default::default()
-            });
+        b.event = TestEvent::profile("logoUrl");
         match verify_chain(&[a, b]) {
             Err(ChainBreak::TamperedEntry { index, .. }) => assert_eq!(index, 1),
             other => panic!("expected TamperedEntry, got {other:?}"),

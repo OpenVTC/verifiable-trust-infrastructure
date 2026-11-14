@@ -42,7 +42,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
-use vti_common::audit::{AuditEvent, EndorsementTypeDeletedData, EndorsementTypeRegisteredData};
+use vtc_audit::{AuditEvent, EndorsementTypeDeletedData, EndorsementTypeRegisteredData};
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 

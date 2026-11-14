@@ -19,7 +19,7 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tracing::info;
-use vti_common::audit::{AuditEvent, CommunityProfileUpdatedData};
+use vtc_audit::{AuditEvent, CommunityProfileUpdatedData};
 use vti_common::error::AppError;
 
 use crate::community::{CommunityProfile, CommunityProfileUpdate, load_profile, store_profile};

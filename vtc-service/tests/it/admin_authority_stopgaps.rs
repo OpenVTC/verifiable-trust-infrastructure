@@ -122,7 +122,7 @@ async fn entry(fix: &Fixture, did: &str) -> Option<VtcAclEntry> {
 }
 
 /// Every audit row of `variant`, with its severity.
-async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vti_common::audit::AuditSeverity> {
+async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vtc_audit::AuditSeverity> {
     fix.vtc
         .state
         .audit_ks
@@ -130,7 +130,7 @@ async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vti_common::audit::Audi
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter(|env| env.event.variant_name() == variant)
         .map(|env| env.event.severity())
         .collect()
@@ -266,7 +266,7 @@ async fn vti_apv_019_a_two_admin_removal_takes_the_step_up_and_is_audited_critic
     assert!(entry(&fix, &b.did).await.is_none());
     assert_eq!(
         audit_rows(&fix, "AuthorityReducedUnopposed").await,
-        vec![vti_common::audit::AuditSeverity::Critical],
+        vec![vtc_audit::AuditSeverity::Critical],
         "exactly one Critical row"
     );
 }

@@ -134,7 +134,7 @@ async fn limits_audit(vtc: &TestVtc) -> Vec<Value> {
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter(|env| env.event.variant_name() == "RoomLimitsChanged")
         .map(|env| serde_json::to_value(&env.event).unwrap())
         .collect()

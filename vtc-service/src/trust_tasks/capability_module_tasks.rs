@@ -384,15 +384,15 @@ async fn handle_disable(
 
 #[cfg(test)]
 mod tests {
-    use super::super::members_admin_tests::{
-        assert_conforms, error_code, payload_of, seed_acl, signed,
-    };
     use super::super::{JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core};
     use super::*;
     use crate::capability_modules::ProjectionStatus;
     use crate::join::JoinTransport;
     use crate::registry::{MockRegistryClient, RegistryError};
     use crate::test_support::{TEST_VTC_DID, TestVtc};
+    use crate::trust_tasks::test_fixtures::{
+        assert_conforms, error_code, payload_of, seed_acl, signed,
+    };
     use std::sync::Arc;
     use vti_common::capability_client::{CapabilityReply, parse_capability_reply};
     use vti_rooms_dtg::test_support::Party;
@@ -504,17 +504,15 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter_map(|(_, v)| {
-                serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok()
-            })
+            .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
             .filter_map(|env| match env.event {
-                vti_common::audit::AuditEvent::CapabilityModuleChanged(d) => Some(d),
+                vtc_audit::AuditEvent::CapabilityModuleChanged(d) => Some(d),
                 _ => None,
             })
             .collect()
     }
 
-    use vti_common::audit::CapabilityModuleChangedData;
+    use vtc_audit::CapabilityModuleChangedData;
 
     // ── list ─────────────────────────────────────────────────────────────
 
@@ -559,7 +557,7 @@ mod tests {
     #[tokio::test]
     async fn the_capability_clients_own_list_request_is_answered() {
         let f = fixture().await;
-        let doc = super::super::members_admin_tests::sign(
+        let doc = crate::trust_tasks::test_fixtures::sign(
             &f.member,
             vti_common::capability_client::build_list_document(&f.member.did, TEST_VTC_DID),
         )

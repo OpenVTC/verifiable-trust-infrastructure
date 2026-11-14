@@ -558,15 +558,9 @@ async fn execute(
                      vtc.members.manage; ask an administrator who holds it, or keep the member"
                 )
             })?;
-            let (role, allowed_contexts) = crate::acl::resolve_auth_role(&state.acl_ks, decider)
+            let claims = crate::acl::AdminActor::resolve(&state.acl_ks, decider)
                 .await
                 .map_err(|e| e.to_string())?;
-            let claims = vti_common::auth::extractor::AuthClaims {
-                did: decider.to_string(),
-                role,
-                allowed_contexts,
-                ..Default::default()
-            };
             let mut op_payload = json!({ "did": member });
             if let Some(r) = &reason {
                 op_payload["reason"] = json!(r);

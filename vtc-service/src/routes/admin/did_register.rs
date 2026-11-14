@@ -14,7 +14,7 @@
 
 use chrono::{DateTime, Utc};
 use tracing::info;
-use vti_common::audit::{AuditEvent, CommunityDidLogInstalledData};
+use vtc_audit::{AuditEvent, CommunityDidLogInstalledData};
 use vti_common::error::AppError;
 use vti_specs::did_management::did::register::v0_1::{DidRecord, PayloadDidData, Response};
 

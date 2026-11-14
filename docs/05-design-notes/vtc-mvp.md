@@ -1134,7 +1134,7 @@ emitted from each lifecycle section (§4, §10, §6, §8, §14.6).
 per-key sensitivity: keys flagged `sensitive: true` redact
 `old_value` + `new_value` in the audit record (e.g., TLS paths;
 future webhook URLs with tokens). Complete catalog lives alongside
-the source in `vti-common::audit::events`.
+the source in `vtc-audit` (`vtc_audit::event`; in `vti-common` before #2568).
 
 **Phase 4 additions (M4.1.2 + D4 review — eight new variants):**
 - `VrcPublished { vrc_id, subject_did?, edge_type }` — self-issued

@@ -261,30 +261,63 @@ pub(crate) fn referenced_types(query: &DcqlQuery) -> Vec<String> {
     out
 }
 
+/// Why [`validate_accepts_query`] refused a query.
+///
+/// Typed at the source so the `vtc/schemas/accepts/register` handler picks its
+/// declared error code from the variant, never from the message's wording
+/// (#2578). Converts into [`AppError::Validation`] (a store failure into
+/// itself) with the message unchanged, for callers that only propagate.
+#[derive(Debug, thiserror::Error)]
+pub enum AcceptsQueryError {
+    /// The query is not a structurally valid DCQL query.
+    #[error("invalid DCQL query: {0}")]
+    InvalidQuery(String),
+    /// A credential query's `trusted_authorities` is one this verifier cannot
+    /// check (wrong format, empty, or not an `aki` entry).
+    #[error("{0}")]
+    UncheckableTrustedAuthorities(String),
+    /// The query names a credential type the schema store does not hold.
+    #[error(
+        "DCQL Accepts criterion references unregistered credential type `{0}` \
+         — register it in the schema store first"
+    )]
+    UnregisteredType(String),
+    /// Reading the schema store failed.
+    #[error(transparent)]
+    Store(#[from] AppError),
+}
+
+impl From<AcceptsQueryError> for AppError {
+    fn from(e: AcceptsQueryError) -> Self {
+        match e {
+            AcceptsQueryError::Store(e) => e,
+            other => AppError::Validation(other.to_string()),
+        }
+    }
+}
+
 /// Validate a DCQL query intended as an Accepts criterion: it must be a
 /// structurally-valid [`DcqlQuery`], **and** every credential type it references
 /// (`meta.vct_values`) must be a registered schema-store type.
 ///
-/// Returns the parsed [`DcqlQuery`] on success, or [`AppError::Validation`] for
-/// a malformed query or a dangling type reference.
+/// Returns the parsed [`DcqlQuery`] on success, or the [`AcceptsQueryError`]
+/// saying which check refused it.
 pub async fn validate_accepts_query(
     schemas_ks: &KeyspaceHandle,
     query: &Value,
-) -> Result<DcqlQuery, AppError> {
-    let dcql = DcqlQuery::from_json(query)
-        .map_err(|e| AppError::Validation(format!("invalid DCQL query: {e}")))?;
+) -> Result<DcqlQuery, AcceptsQueryError> {
+    let dcql =
+        DcqlQuery::from_json(query).map_err(|e| AcceptsQueryError::InvalidQuery(e.to_string()))?;
     for cq in &dcql.credentials {
         if let Some(authorities) = &cq.trusted_authorities {
-            check_trusted_authorities(&cq.id, &cq.format, authorities)?;
+            check_trusted_authorities(&cq.id, &cq.format, authorities)
+                .map_err(AcceptsQueryError::UncheckableTrustedAuthorities)?;
         }
     }
 
     for type_uri in referenced_types(&dcql) {
         if !schema_exists(schemas_ks, &type_uri).await? {
-            return Err(AppError::Validation(format!(
-                "DCQL Accepts criterion references unregistered credential type `{type_uri}` \
-                 — register it in the schema store first"
-            )));
+            return Err(AcceptsQueryError::UnregisteredType(type_uri));
         }
     }
     Ok(dcql)
@@ -300,13 +333,13 @@ fn check_trusted_authorities(
     id: &str,
     format: &str,
     authorities: &[affinidi_openid4vp::TrustedAuthoritiesQuery],
-) -> Result<(), AppError> {
+) -> Result<(), String> {
     use affinidi_openid4vp::TrustedAuthorityType;
     use base64::Engine as _;
     let refuse = |why: String| {
-        Err(AppError::Validation(format!(
+        Err(format!(
             "credential query `{id}`: trusted_authorities {why}"
-        )))
+        ))
     };
     if format != crate::join::criteria::SD_JWT_VC_FORMAT {
         return refuse(format!(

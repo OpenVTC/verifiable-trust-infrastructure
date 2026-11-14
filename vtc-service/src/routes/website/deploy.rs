@@ -11,7 +11,7 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use vti_common::audit::{AuditEvent, WebsiteBundleDeployedData};
+use vtc_audit::{AuditEvent, WebsiteBundleDeployedData};
 
 use crate::error::AppError;
 use crate::server::AppState;

@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tracing::warn;
-use vti_common::audit::{AuditEvent, DirectoryCardPublicationData};
+use vtc_audit::{AuditEvent, DirectoryCardPublicationData};
 use vti_common::error::AppError;
 use vti_common::store::{Batch, KeyspaceHandle};
 

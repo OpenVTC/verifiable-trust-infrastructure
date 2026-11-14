@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
-use vti_common::audit::AuditKey;
+use vtc_audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::{Batch, KeyspaceHandle};
@@ -161,13 +161,14 @@ const UPDATE_ATTEMPTS: usize = 64;
 ///
 /// Only the primary row is written: the secondary index carries just the edge
 /// id, which a lifecycle change never alters.
-async fn update_relationship_with<F>(
+async fn update_relationship_with<F, E>(
     primary: &KeyspaceHandle,
     id: Uuid,
     mut modify: F,
-) -> Result<Option<Relationship>, AppError>
+) -> Result<Option<Relationship>, E>
 where
-    F: FnMut(&mut Relationship) -> Result<bool, AppError>,
+    F: FnMut(&mut Relationship) -> Result<bool, E>,
+    E: From<AppError>,
 {
     let key = primary_key(id);
     for _ in 0..UPDATE_ATTEMPTS {
@@ -188,7 +189,29 @@ where
     }
     Err(AppError::Conflict(format!(
         "VRC {id} kept changing while its lifecycle was being recorded"
-    )))
+    ))
+    .into())
+}
+
+/// Why [`record_lifecycle_event`] did not record: the transition rules refused
+/// the event ([`LifecycleError`], typed so the caller picks a wire code from
+/// it, #2578), or something else failed — the edge is absent
+/// ([`AppError::NotFound`]), the row kept changing, or storage failed.
+#[derive(Debug, thiserror::Error)]
+pub enum LifecycleRecordError {
+    #[error(transparent)]
+    Refused(#[from] crate::credentials::lifecycle::LifecycleError),
+    #[error(transparent)]
+    Other(#[from] AppError),
+}
+
+impl From<LifecycleRecordError> for AppError {
+    fn from(e: LifecycleRecordError) -> Self {
+        match e {
+            LifecycleRecordError::Refused(e) => e.into(),
+            LifecycleRecordError::Other(e) => e,
+        }
+    }
 }
 
 /// Append a lifecycle event to one edge and persist the row.
@@ -213,13 +236,13 @@ pub async fn record_lifecycle_event(
     id: Uuid,
     kind: LifecycleEventKind,
     now: DateTime<Utc>,
-) -> Result<Relationship, AppError> {
+) -> Result<Relationship, LifecycleRecordError> {
     update_relationship_with(primary, id, |rel| {
         rel.lifecycle.record(kind.clone(), now)?;
-        Ok(true)
+        Ok::<_, LifecycleRecordError>(true)
     })
     .await?
-    .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))
+    .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")).into())
 }
 
 /// Record that `by_digest` displaces every edge this issuer already holds to
@@ -261,7 +284,7 @@ pub async fn supersede_prior_edges(
             continue;
         }
         let mut recorded = false;
-        update_relationship_with(primary, rel.id, |rel| {
+        update_relationship_with::<_, AppError>(primary, rel.id, |rel| {
             recorded = !rel.lifecycle.is_terminal();
             if recorded {
                 rel.lifecycle.record(
@@ -548,7 +571,7 @@ pub async fn counterparties_in_force(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use vti_common::audit::AuditKeyStore;
+    use vtc_audit::AuditKeyStore;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -907,7 +930,15 @@ mod tests {
         )
         .await
         .expect_err("nothing is suspended");
-        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+        assert!(
+            matches!(
+                err,
+                LifecycleRecordError::Refused(
+                    crate::credentials::lifecycle::LifecycleError::NotSuspended
+                )
+            ),
+            "{err:?}"
+        );
 
         let stored = get_relationship(&primary, rel.id).await.unwrap().unwrap();
         assert!(stored.lifecycle.is_empty(), "a refusal must not append");
@@ -925,7 +956,10 @@ mod tests {
         )
         .await
         .expect_err("no such edge");
-        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+        assert!(
+            matches!(err, LifecycleRecordError::Other(AppError::NotFound(_))),
+            "{err:?}"
+        );
     }
 
     /// Re-issuing to the same counterparty displaces the earlier edge. The

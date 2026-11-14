@@ -22,7 +22,7 @@ use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value as JsonValue};
-use vti_common::audit::{AuditEvent, MemberCredentialsReadData};
+use vtc_audit::{AuditEvent, MemberCredentialsReadData};
 use vti_specs::vtc::members::credentials::v0_1 as wire;
 
 use crate::acl::get_acl_entry;

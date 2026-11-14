@@ -594,13 +594,11 @@ pub(crate) async fn claim_finish(
             .write(
                 &admin_did,
                 Some(&admin_did),
-                vti_common::audit::AuditEvent::AdminPasskeyRegistered(
-                    vti_common::audit::AdminPasskeyData {
-                        credential_id_hex: cred_id_hex.clone(),
-                        label: "install".into(),
-                        transports: Vec::new(),
-                    },
-                ),
+                vtc_audit::AuditEvent::AdminPasskeyRegistered(vtc_audit::AdminPasskeyData {
+                    credential_id_hex: cred_id_hex.clone(),
+                    label: "install".into(),
+                    transports: Vec::new(),
+                }),
             )
             .await?;
     }
@@ -635,7 +633,7 @@ pub(crate) async fn claim_finish(
                         .as_deref()
                         .unwrap_or(&authority.issued_via),
                     Some(&admin_did),
-                    vti_common::audit::AuditEvent::AclGranted(vti_common::audit::AclChangeData {
+                    vtc_audit::AuditEvent::AclGranted(vtc_audit::AclChangeData {
                         did: admin_did.clone(),
                         role: "community-admin".into(),
                         contexts: entry.capability_list(),

@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use serde_json::Value;
 use tracing::info;
 use vta_sdk::protocols::join_requests::manifest::v0_4::ResponseRequestedAttributesItem as RequestedAttribute;
-use vti_common::audit::{AuditEvent, CommunityRequestedAttributesUpdatedData};
+use vtc_audit::{AuditEvent, CommunityRequestedAttributesUpdatedData};
 use vti_common::error::AppError;
 
 use crate::community::requested_attributes::{diff, load_requested, store_requested};

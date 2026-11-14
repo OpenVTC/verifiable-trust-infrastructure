@@ -23,7 +23,9 @@ use vta_sdk::protocols::audit_management::list::AuditLogEntry;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+pub mod event;
 pub mod sink;
+pub use event::{VtaAuditEnvelope, VtaAuditEvent, VtaAuditWriter, VtaOperationData};
 pub use sink::{
     AUDIT_KEY_CREATED, AuditSink, ChainedKeyspaceAuditSink, FanOutAuditSink, KeyspaceAuditSink,
     SYSTEM_ACTOR, SharedAuditSink, shared_chained_sink, shared_keyspace_sink,
@@ -495,7 +497,7 @@ async fn prune_chunk(audit_ks: &KeyspaceHandle, chunk: &[Vec<u8>]) -> Result<u64
             let Some(raw) = audit_ks.get_raw(key.clone()).await? else {
                 continue; // a concurrent sweep removed it
             };
-            if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&raw) {
+            if let Ok(env) = serde_json::from_slice::<VtaAuditEnvelope>(&raw) {
                 last_chained_hash = Some(hex::encode(env.entry_hash));
                 pruned_chained += 1;
             }

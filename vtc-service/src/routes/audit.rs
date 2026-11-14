@@ -19,7 +19,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use std::collections::{BTreeMap, BTreeSet};
-use vti_common::audit::{AuditEnvelope, ChainBreak, ChainVerifier};
+use vtc_audit::{AuditEnvelope, ChainBreak, ChainVerifier};
 use vti_common::error::AppError;
 
 use vti_common::pagination::{Cursor, MAX_LIMIT};
@@ -420,7 +420,7 @@ pub struct CheckpointReport {
 /// history rather than assuming the live signer. Recorded on the
 /// `verification_method` field so the data needed is already being persisted.
 async fn verify_checkpoint_state(state: &AppState) -> CheckpointReport {
-    use vti_common::audit::{CheckpointAudit, CheckpointBreak, verify_checkpoints};
+    use vtc_audit::{CheckpointAudit, CheckpointBreak, verify_checkpoints};
 
     let broken = |detail: String| CheckpointReport {
         status: "chainBroken".to_string(),

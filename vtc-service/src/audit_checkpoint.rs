@@ -1,7 +1,7 @@
 //! Emitting and verifying signed audit checkpoints (#708).
 //!
 //! The type, its signature scheme, and the threat model live in
-//! [`vti_common::audit::checkpoint`]. This module is the VTC-side wiring: the
+//! [`vtc_audit::checkpoint`]. This module is the VTC-side wiring: the
 //! periodic emitter that signs checkpoints with the community key, and the
 //! verifier that measures the live audit log against the newest one.
 //!
@@ -36,9 +36,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use vti_common::audit::{
-    AuditCheckpoint, AuditEnvelope, CheckpointAudit, CheckpointClaim, GENESIS_HASH,
-};
+use vtc_audit::{AuditCheckpoint, AuditEnvelope, CheckpointAudit, CheckpointClaim, GENESIS_HASH};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -247,7 +245,7 @@ pub async fn emit_checkpoint(
 /// Measure the live audit log against the newest signed checkpoint.
 ///
 /// `newest` is the last checkpoint from a **already-verified** chain — call
-/// [`vti_common::audit::verify_checkpoints`] first. Passing an unverified
+/// [`vtc_audit::verify_checkpoints`] first. Passing an unverified
 /// checkpoint here measures the log against something an adversary may have
 /// written, which proves nothing.
 pub async fn audit_against_checkpoint(
@@ -427,7 +425,7 @@ async fn emit_and_log(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vti_common::audit::verify_checkpoints;
+    use vtc_audit::verify_checkpoints;
 
     fn key() -> SigningKey {
         SigningKey::from_bytes(&[7u8; 32])

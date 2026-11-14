@@ -865,15 +865,15 @@ mod tests {
     use serde_json::{Value, json};
     use vti_rooms_dtg::test_support::Party;
 
-    use super::super::members_admin_tests::{
-        assert_conforms, error_code, payload_of, seed_acl, signed, unsigned,
-    };
     use super::super::{JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core};
     use super::*;
     use crate::acl::{VtcAclEntry, store_acl_entry};
     use crate::join::JoinTransport;
     use crate::members::{Member, get_member, store_member};
     use crate::test_support::TestVtc;
+    use crate::trust_tasks::test_fixtures::{
+        assert_conforms, error_code, payload_of, seed_acl, signed, unsigned,
+    };
 
     /// Every transport the spine is reached from.
     const TRANSPORTS: [JoinTransport; 3] = [

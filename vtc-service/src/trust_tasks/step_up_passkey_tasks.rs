@@ -368,7 +368,7 @@ mod tests {
     use axum::http::StatusCode;
     use serde_json::{Value, json};
     use uuid::Uuid;
-    use vti_common::audit::AuditEvent;
+    use vtc_audit::AuditEvent;
     use vti_common::auth::passkey::store::{
         PasskeyUser, get_all_passkeys, store_credential_mapping, store_passkey_user,
     };
@@ -377,7 +377,6 @@ mod tests {
         CreationChallengeResponse, PublicKeyCredential, RequestChallengeResponse,
     };
 
-    use super::super::members_admin_tests::{error_code, payload_of, seed_acl, signed, unsigned};
     use super::super::soft_authenticator::SoftEd25519Authenticator;
     use super::super::{
         JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, TrustTaskOutcome, dispatch_trust_task_core,
@@ -391,6 +390,7 @@ mod tests {
     use crate::join::JoinTransport;
     use crate::step_up_passkey::MAX_WRONG_CODES;
     use crate::test_support::TestVtc;
+    use crate::trust_tasks::test_fixtures::{error_code, payload_of, seed_acl, signed, unsigned};
     use trust_tasks_rs::TrustTask;
     use trust_tasks_rs::validate::ValidatedPayload;
 
@@ -684,7 +684,7 @@ mod tests {
             .unwrap();
         let mut out: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
         for (_, value) in rows {
-            if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&value)
+            if let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&value)
                 && let AuditEvent::StepUpPasskeyChanged(d) = env.event
             {
                 out.push((env.timestamp, d.stage));

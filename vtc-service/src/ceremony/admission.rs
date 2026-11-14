@@ -61,7 +61,7 @@
 
 use serde_json::json;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, MemberAdmittedDirectlyData};
+use vtc_audit::{AuditEvent, MemberAdmittedDirectlyData};
 
 use super::effects::{ADMISSION_ADD, ADMISSION_MAKE_MEMBERSHIP, EffectPlan};
 use super::execute::{self, AdmitOutcome, EffectOutcome};

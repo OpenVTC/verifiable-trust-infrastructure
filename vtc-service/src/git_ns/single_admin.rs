@@ -46,7 +46,7 @@
 
 use serde_json::{Value, json};
 use tracing::warn;
-use vti_common::audit::{AuditEvent, SingleAdminModeData};
+use vtc_audit::{AuditEvent, SingleAdminModeData};
 use vti_common::error::AppError;
 
 use crate::acl::admin_consent;

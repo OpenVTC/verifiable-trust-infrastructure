@@ -724,7 +724,7 @@ async fn rotation_id_is_single_use() {
 /// finish request, because the rotation signatures do not cover it.
 #[tokio::test]
 async fn rotation_reason_reaches_the_audit_envelope() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent, DidRotationReason};
+    use vtc_audit::{AuditEnvelope, AuditEvent, DidRotationReason};
 
     let fix = build_fixture().await;
 
@@ -775,7 +775,7 @@ async fn rotation_reason_reaches_the_audit_envelope() {
 /// something that reads as a claim the member never made.
 #[tokio::test]
 async fn rotation_without_a_reason_records_none() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent};
+    use vtc_audit::{AuditEnvelope, AuditEvent};
 
     let fix = build_fixture().await;
 

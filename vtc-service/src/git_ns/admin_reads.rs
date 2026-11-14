@@ -1353,7 +1353,7 @@ pub(crate) async fn activity_list(
     for env in
         crate::audit_index::git_ns_operations(&state.audit_ks, &state.audit_index_ks, None).await?
     {
-        let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event else {
+        let vtc_audit::AuditEvent::GitNsOperation(d) = env.event else {
             continue;
         };
         // A row for a namespace since unbound is still the history of a

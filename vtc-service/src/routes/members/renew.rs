@@ -33,7 +33,7 @@ use serde_json::{Value as JsonValue, json};
 use tracing::info;
 use uuid::Uuid;
 
-use vti_common::audit::{AuditEvent, MembershipRenewedData};
+use vtc_audit::{AuditEvent, MembershipRenewedData};
 use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
@@ -258,7 +258,7 @@ pub(crate) async fn renew_inner(
             .write(
                 &vtc_did,
                 Some(&caller_did),
-                AuditEvent::PersonhoodRevoked(vti_common::audit::PersonhoodRevokedData {
+                AuditEvent::PersonhoodRevoked(vtc_audit::PersonhoodRevokedData {
                     vmc_id: Some(vmc_id.clone()),
                     reason: "renewal-policy".into(),
                 }),

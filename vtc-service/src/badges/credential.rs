@@ -493,7 +493,7 @@ pub async fn issue_with_new_award(
     super::audit(
         state,
         given_by.unwrap_or(member_did),
-        vti_common::audit::BadgeChangedData {
+        vtc_audit::BadgeChangedData {
             badge_id: award.badge_id.clone(),
             award_id: Some(award.award_id.clone()),
             entry_id: Some(award.entry_id.clone()),

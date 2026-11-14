@@ -34,7 +34,7 @@ use crate::install::{InstallTokenSigner, InstallTokenStore};
 use crate::server::AppState;
 use crate::store::Store;
 use crate::supervisor::SupervisorKind;
-use vti_common::audit::{AuditKeyStore, AuditWriter};
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
 
 /// The default `vtc_did` used by [`TestVtc`] — a sentinel that satisfies

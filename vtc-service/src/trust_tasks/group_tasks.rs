@@ -24,7 +24,7 @@
 use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
+use vtc_audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
 use vti_common::error::AppError;
 use vti_common::pagination::Cursor;
 use vti_specs::vtc::groups::{

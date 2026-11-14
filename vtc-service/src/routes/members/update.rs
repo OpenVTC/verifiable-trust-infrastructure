@@ -37,7 +37,7 @@
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-use vti_common::audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
+use vtc_audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::session::now_epoch;
@@ -103,7 +103,7 @@ const FORGES_EXTENSION: &str = "forges";
 
 pub(crate) async fn update_member_inner(
     state: &AppState,
-    auth: &vti_common::auth::extractor::AuthClaims,
+    auth: &crate::acl::AdminActor,
     did: &str,
     req: UpdateMemberRequest,
 ) -> Result<MemberEnvelope, TaskError> {
@@ -336,7 +336,7 @@ pub(crate) async fn update_member_inner(
         // `admin` was refused at the top, so this is always a lateral move or
         // a demotion — the serialisation and the elevation gate the promotion
         // path needs are the ceremony's, not this handler's.
-        let granted = crate::ceremony::role_change_via_pipeline(
+        let granted = crate::ceremony::role_change_as(
             state,
             auth,
             did,

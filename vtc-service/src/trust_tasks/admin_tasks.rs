@@ -30,7 +30,6 @@
 
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 use vti_specs::audit::{list::v0_2 as audit_list, verify::v0_1 as audit_verify};
 use vti_specs::auth::revoke_session::v0_2 as revoke_session;
 use vti_specs::auth::sessions::list::v0_1 as sessions_list;
@@ -52,7 +51,7 @@ use super::helpers::{
     success_response, task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, capable_signer, parse_spec_payload};
-use crate::acl::{Capability, Role};
+use crate::acl::Capability;
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -132,7 +131,7 @@ async fn capable_with<P>(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
     cap: Capability,
-) -> Result<(AuthClaims, P), TrustTaskOutcome>
+) -> Result<(crate::acl::AdminActor, P), TrustTaskOutcome>
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
@@ -154,12 +153,12 @@ pub(super) async fn member_signer(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
-) -> Result<AuthClaims, TrustTaskOutcome> {
+) -> Result<crate::acl::MemberSigner, TrustTaskOutcome> {
     let Some(signer) = ctx.verified_signer.clone() else {
         return Err(reject_with(doc, RejectReason::ProofRequired));
     };
     if let Ok(admin) = admin_signer(state, ctx, doc).await {
-        return Ok(admin);
+        return Ok(crate::acl::MemberSigner { did: admin.did });
     }
     let entry = crate::acl::get_acl_entry(&state.acl_ks, &signer)
         .await
@@ -176,11 +175,7 @@ pub(super) async fn member_signer(
                 && !entry.is_suspended()
                 && !entry.is_application() =>
         {
-            Ok(AuthClaims {
-                did: signer,
-                role: Role::Reader,
-                ..Default::default()
-            })
+            Ok(crate::acl::MemberSigner { did: signer })
         }
         _ => Err(app_error_to_reject(
             doc,
@@ -607,7 +602,7 @@ async fn handle_sessions_list(
     if let Err(reject) = parse_spec_payload::<sessions_list::Payload>(&doc) {
         return reject;
     }
-    match crate::routes::auth::list_sessions_for(state, &actor).await {
+    match crate::routes::auth::list_sessions_for(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -647,7 +642,7 @@ async fn handle_revoke_session(
         _ => return malformed("name exactly one of `sessionId`, `all: true` or `subject`"),
     };
     let reason = payload.reason.map(|r| r.to_string());
-    match crate::routes::auth::revoke_sessions_task(state, &actor, target, reason).await {
+    match crate::routes::auth::revoke_sessions_task(state, &actor.did, target, reason).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }

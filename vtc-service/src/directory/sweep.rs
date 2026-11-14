@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, DirectoryCardChangedData, DirectoryFieldChangedData};
+use vtc_audit::{AuditEvent, DirectoryCardChangedData, DirectoryFieldChangedData};
 use vti_common::error::AppError;
 
 use super::{cards, fields};

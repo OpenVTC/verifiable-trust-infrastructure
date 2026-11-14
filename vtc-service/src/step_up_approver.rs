@@ -44,8 +44,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, StepUpApproverData};
-use vti_common::auth::extractor::AuthClaims;
+use vtc_audit::{AuditEvent, StepUpApproverData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
@@ -309,7 +308,7 @@ async fn is_delegated_key(state: &AppState, signer: &str) -> Result<bool, AppErr
 /// does not manage the factors of an administrator wider than itself.
 pub(crate) async fn admin_covers(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     subject: &str,
 ) -> Result<bool, AppError> {
     let Some(actor_entry) = crate::acl::get_acl_entry(&state.acl_ks, &actor.did).await? else {

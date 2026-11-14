@@ -33,7 +33,6 @@
 
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::auth::extractor::AuthClaims;
 use vti_specs::vtc::ceremonies::list::v0_1 as ceremonies_list;
 use vti_specs::vtc::community::profile::show::v0_1 as profile_show;
 use vti_specs::vtc::directory::query::v0_1 as directory_query;
@@ -139,7 +138,7 @@ async fn admin_with<P>(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
-) -> Result<(AuthClaims, P), TrustTaskOutcome>
+) -> Result<(crate::acl::AdminActor, P), TrustTaskOutcome>
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
@@ -154,7 +153,7 @@ async fn member_with<P>(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
-) -> Result<(AuthClaims, P), TrustTaskOutcome>
+) -> Result<(crate::acl::MemberSigner, P), TrustTaskOutcome>
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
@@ -290,15 +289,18 @@ async fn handle_members_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<members_list::Payload>(state, ctx, &doc).await {
-        return reject;
-    }
+    let actor = match admin_with::<members_list::Payload>(state, ctx, &doc).await {
+        Ok((actor, _)) => actor,
+        Err(reject) => return reject,
+    };
     // Whatever this read demands, the live `members` topic demands too
     // (`admin_events::read_capability`, one table for both).
     if let Some(cap) = crate::admin_events::read_capability(crate::admin_events::Topic::Members)
-        && let Err(reject) = super::capable_signer(state, ctx, &doc, cap, None).await
+        // The entry `admin_with` read, asked again — not resolved a second
+        // time (#2580).
+        && let Err(e) = actor.require(cap, None)
     {
-        return reject;
+        return app_error_to_reject(&doc, &e);
     }
     let query: crate::routes::members::read::ListMembersQuery = match parse_payload(&doc) {
         Ok(q) => q,
@@ -383,16 +385,19 @@ async fn handle_join_requests_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<join_requests_list::Payload>(state, ctx, &doc).await {
-        return reject;
-    }
+    let actor = match admin_with::<join_requests_list::Payload>(state, ctx, &doc).await {
+        Ok((actor, _)) => actor,
+        Err(reject) => return reject,
+    };
     // Whatever this read demands, the live `joinRequests` topic demands too
     // (`admin_events::read_capability`, one table for both).
     if let Some(cap) =
         crate::admin_events::read_capability(crate::admin_events::Topic::JoinRequests)
-        && let Err(reject) = super::capable_signer(state, ctx, &doc, cap, None).await
+        // The entry `admin_with` read, asked again — not resolved a second
+        // time (#2580).
+        && let Err(e) = actor.require(cap, None)
     {
-        return reject;
+        return app_error_to_reject(&doc, &e);
     }
     let query: crate::routes::join_requests::read::ListJoinRequestsQuery = match parse_payload(&doc)
     {

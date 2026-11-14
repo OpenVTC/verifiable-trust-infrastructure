@@ -460,7 +460,7 @@ pub async fn import_backup(
 /// Close ticket issuance on every restored election that could have issued a ticket since the
 /// backup was taken, auditing each ([`crate::elections::Elections::close_issuance_after_restore`]).
 async fn close_issuance_after_restore(state: &AppState) -> Result<(), AppError> {
-    use vti_common::audit::{AuditEvent, ElectionChangedData};
+    use vtc_audit::{AuditEvent, ElectionChangedData};
     let closed = state
         .elections
         .close_issuance_after_restore(Utc::now())

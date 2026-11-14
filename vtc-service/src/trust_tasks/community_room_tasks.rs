@@ -44,7 +44,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData, FieldChange};
+use vtc_audit::{AuditEvent, CommunityRoomChangedData, FieldChange};
 use vti_common::error::AppError;
 use vti_specs::rooms::owner::{
     group::{add::v0_3 as owner_add, create::v0_1 as owner_group_create},

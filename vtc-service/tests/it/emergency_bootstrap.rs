@@ -32,8 +32,8 @@ use tokio::sync::RwLock;
 use tower::ServiceExt;
 use vta_sdk::provision_client::EphemeralSetupKey;
 
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, list_acl_entries, store_acl_entry};
-use vti_common::audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::passkey::build_webauthn;
 use vti_common::auth::session::{

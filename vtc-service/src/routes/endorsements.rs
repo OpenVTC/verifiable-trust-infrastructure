@@ -42,7 +42,7 @@ use serde_json::Value as JsonValue;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use vta_sdk::protocols::members::STATEMENT_CREDENTIAL_TYPE;
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, CredentialIssuedData, CustomEndorsementIssuedData, CustomEndorsementRevokedData,
     StatusListFlippedData,
 };
@@ -464,7 +464,7 @@ async fn mint_and_record(
     body: IssueBody,
     request: &JsonValue,
     signer: &crate::credentials::LocalSigner,
-    audit_writer: &vti_common::audit::AuditWriter,
+    audit_writer: &vtc_audit::AuditWriter,
     id: Uuid,
 ) -> Result<IssueResponse, TaskError> {
     let community_check = body.endorsement_type == dtg_credentials::VETTED_V1;

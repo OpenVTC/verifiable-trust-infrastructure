@@ -14,7 +14,7 @@ use crate::error::TaskError;
 use crate::keys::seed_store::create_secret_store;
 use crate::server::AppState;
 use crate::store::keyspaces;
-use vti_common::audit::{AuditEvent, BackupData};
+use vtc_audit::{AuditEvent, BackupData};
 use vti_common::error::AppError;
 
 /// `{ envelope: … }` — the shape `vtc/backup/export/0.1` publishes.

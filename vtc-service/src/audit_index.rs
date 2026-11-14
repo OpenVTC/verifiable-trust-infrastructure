@@ -7,7 +7,7 @@
 //! those rows, so a read decodes only the rows it shows.
 //!
 //! **A projection, caught up before it is read.** The envelopes are written by
-//! `vti_common::audit::AuditWriter`, shared with the VTA, into a keyspace whose
+//! `vtc_audit::AuditWriter`, shared with the VTA, into a keyspace whose
 //! every row must be an envelope (chain-head recovery reads its last key, and
 //! verification counts any other row as unparseable). So the index cannot ride
 //! in the writer's batch. Instead it is a projection of the log with a cursor,
@@ -29,7 +29,7 @@
 //! write the same rows and the one that loses the cursor race resumes from
 //! the winner's cursor.
 
-use vti_common::audit::{AuditEnvelope, AuditEvent};
+use vtc_audit::{AuditEnvelope, AuditEvent};
 use vti_common::error::AppError;
 use vti_common::store::{Batch, KeyspaceHandle, ScanOpts};
 
@@ -129,7 +129,7 @@ pub async fn git_ns_operations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vti_common::audit::{AuditKeyStore, AuditWriter, GitNsOperationData};
+    use vtc_audit::{AuditKeyStore, AuditWriter, GitNsOperationData};
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 

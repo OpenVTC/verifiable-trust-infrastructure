@@ -12034,11 +12034,8 @@ dependencies = [
 name = "vta-policy"
 version = "0.37.0"
 dependencies = [
- "hex",
- "regorus",
  "serde",
  "serde_json",
- "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tracing",
@@ -12365,6 +12362,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vtc-audit"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "hmac 0.13.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "utoipa",
+ "vti-common",
+]
+
+[[package]]
 name = "vtc-client"
 version = "0.43.0"
 dependencies = [
@@ -12479,7 +12490,6 @@ dependencies = [
  "qrcode",
  "rand 0.10.2",
  "rcgen 0.14.10",
- "regorus",
  "regress 0.12.0",
  "reqwest",
  "serde",
@@ -12506,6 +12516,7 @@ dependencies = [
  "vta-cli-common",
  "vta-sdk",
  "vta-service",
+ "vtc-audit",
  "vtc-client",
  "vtc-service",
  "vti-common",
@@ -12562,6 +12573,7 @@ dependencies = [
  "object_store",
  "quick-xml 0.42.0",
  "rand 0.10.2",
+ "regorus",
  "reqwest",
  "serde",
  "serde_json",

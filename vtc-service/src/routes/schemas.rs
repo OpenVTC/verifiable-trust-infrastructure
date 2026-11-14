@@ -23,7 +23,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use tracing::info;
-use vti_common::audit::{AuditEvent, SchemaChangeData};
+use vtc_audit::{AuditEvent, SchemaChangeData};
 use vti_common::error::AppError;
 
 use crate::schemas::{

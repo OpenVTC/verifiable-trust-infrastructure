@@ -144,7 +144,7 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
          secret",
     ),
     (
-        "vti-common/src/audit/event.rs",
+        "vtc-audit/src/event.rs",
         "HiddenVettingChangedData",
         "token_labels",
         "the hidden-vetting token labels live after a change (`token/2026-10`, \

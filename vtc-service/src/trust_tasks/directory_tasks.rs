@@ -38,11 +38,10 @@ use base64::Engine as _;
 use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, DirectoryCardChangedData, DirectoryCardPublicationData, DirectoryExportedData,
     DirectoryFieldChangedData, DirectoryImageStoredData, DirectoryNoteAccessData,
 };
-use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
 use vti_specs::vtc::directory::{
     card::{
@@ -321,7 +320,7 @@ async fn as_card_member(
 }
 
 /// The audit writer, or a refusal: a directory write is never unaudited.
-fn writer(state: &AppState) -> Result<&vti_common::audit::AuditWriter, AppError> {
+fn writer(state: &AppState) -> Result<&vtc_audit::AuditWriter, AppError> {
     state
         .audit_writer
         .as_ref()
@@ -335,7 +334,7 @@ fn writer(state: &AppState) -> Result<&vti_common::audit::AuditWriter, AppError>
 
 async fn audit_field(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     key: &str,
     change: &str,
     widens: bool,
@@ -358,7 +357,7 @@ async fn audit_field(
 
 async fn audit_card(
     state: &AppState,
-    actor: &AuthClaims,
+    actor_did: &str,
     entry_id: &str,
     by: &str,
     fields: &[String],
@@ -366,7 +365,7 @@ async fn audit_card(
 ) -> Result<(), AppError> {
     writer(state)?
         .write(
-            &actor.did,
+            actor_did,
             None,
             AuditEvent::DirectoryCardChanged(DirectoryCardChangedData {
                 entry_id: entry_id.to_string(),
@@ -917,10 +916,7 @@ async fn handle_card_update(
         );
     };
     let did = member.member.did.clone();
-    let actor = AuthClaims {
-        did: did.clone(),
-        ..Default::default()
-    };
+    let actor = crate::acl::MemberSigner { did: did.clone() };
     let dir = &state.directory;
     let own = member
         .entry
@@ -958,7 +954,7 @@ async fn handle_card_update(
             Err(e) => return app_error_to_reject(&doc, &e),
         }
         if applied.widens {
-            match judge(state, &doc, &actor, &member.entry, &applied, "update").await {
+            match judge(state, &doc, &actor.did, &member.entry, &applied, "update").await {
                 Ok(None) => {}
                 Ok(Some(refusal)) => {
                     return declared_with(
@@ -976,7 +972,7 @@ async fn handle_card_update(
         }
         if let Err(e) = audit_card(
             state,
-            &actor,
+            &actor.did,
             &applied.card.entry_id,
             "member",
             &applied.changed,
@@ -1085,10 +1081,7 @@ async fn handle_card_present(
     // Item 6: nothing of the presentation outlives the claims the fields read.
     drop(presented);
 
-    let actor = AuthClaims {
-        did: did.clone(),
-        ..Default::default()
-    };
+    let actor = crate::acl::MemberSigner { did: did.clone() };
     let own = member
         .entry
         .label_set_by_subject
@@ -1110,7 +1103,7 @@ async fn handle_card_present(
         };
         if let Err(e) = audit_card(
             state,
-            &actor,
+            &actor.did,
             &applied.card.entry_id,
             "credential",
             &applied.changed,
@@ -1188,7 +1181,7 @@ fn present_error(
 async fn judge(
     state: &AppState,
     _doc: &TrustTask<Value>,
-    actor: &AuthClaims,
+    actor_did: &str,
     entry: &crate::acl::VtcAclEntry,
     applied: &cards::Applied,
     operation: &'static str,
@@ -1203,7 +1196,7 @@ async fn judge(
     let facts = WriteFacts {
         operation,
         now: Utc::now(),
-        actor_did: &actor.did,
+        actor_did,
         actor_role: Some(&role),
         actor_directory_admin: entry.can(Capability::DirectoryAdmin, None),
         card: &applied.card,
@@ -1271,7 +1264,7 @@ async fn handle_card_assert(
             Ok(Some(e)) => return assert_error(&doc, e),
             Err(e) => return app_error_to_reject(&doc, &e),
         }
-        match judge(state, &doc, &actor, &actor_entry, &applied, "assert").await {
+        match judge(state, &doc, &actor.did, &actor_entry, &applied, "assert").await {
             Ok(None) => {}
             Ok(Some(refusal)) => {
                 let mut details = json!({ "message": refusal.message });
@@ -1284,7 +1277,7 @@ async fn handle_card_assert(
         }
         if let Err(e) = audit_card(
             state,
-            &actor,
+            &actor.did,
             &entry_id,
             "admin",
             &applied.changed,

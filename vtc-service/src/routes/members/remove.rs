@@ -29,7 +29,6 @@ use vti_common::error::AppError;
 
 use crate::acl::admin_consent::Operation;
 use crate::acl::get_acl_entry;
-use crate::auth::AuthClaims;
 
 use crate::ceremony::{LeaveOutcome, remove_inner};
 use crate::error::TaskError;
@@ -95,7 +94,7 @@ const REASON_MAX: usize = 1024;
 /// binds its gesture and consent to (VTI-APV-019).
 pub(crate) async fn admin_remove_inner(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     target_did: &str,
     body: RemoveBody,
     op: Operation<'_>,

@@ -44,11 +44,11 @@ use crate::acl::{
     AdminAuthority, AdminRole, CapRef, Capability, CapabilityScope, VtcAclEntry, VtcActScope,
     VtcRole, delete_acl_entry, get_acl_entry, store_acl_entry,
 };
-use crate::auth::{AuthClaims, session::now_epoch};
+use crate::auth::session::now_epoch;
 use crate::error::{AppError, TaskError};
 use crate::members::get_member;
 use crate::server::AppState;
-use vti_common::audit::{
+use vtc_audit::{
     AclChangeData, AclRevokedData, AdminPromotedData, AuditEvent, CommunityRoleSetData,
 };
 use vti_common::pagination::{Cursor, MAX_LIMIT};
@@ -1027,8 +1027,8 @@ pub(crate) async fn commit_grant(
 pub(crate) fn self_label_audit(
     prior: Option<&VtcAclEntry>,
     entry: &VtcAclEntry,
-) -> vti_common::audit::MemberUpdatedData {
-    use vti_common::audit::{FieldChange, MemberUpdatedData};
+) -> vtc_audit::MemberUpdatedData {
+    use vtc_audit::{FieldChange, MemberUpdatedData};
     let old_label = prior.and_then(|p| p.label.clone());
     let old_mark = prior.is_some_and(|p| p.label_set_by_subject);
     let mut fields_changed = Vec::new();
@@ -1401,7 +1401,7 @@ pub(crate) enum RoleSetOutcome {
 /// applies the move at once and audits it.
 pub(crate) async fn set_community_role(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     prior: &VtcAclEntry,
     to_role: &VtcRole,
     reason: Option<&str>,
@@ -1490,7 +1490,9 @@ pub(crate) async fn set_community_role(
                     AuditEvent::AdminPromoted(AdminPromotedData {
                         previous_role: result.previous_role.clone(),
                         authorising_credential_id: String::new(),
-                        authorising_session_id: actor.session_id.clone(),
+                        // A signed document is not a session (#2580): there was
+                        // never a session to name here.
+                        authorising_session_id: String::new(),
                     }),
                 )
                 .await?;
@@ -1903,7 +1905,7 @@ pub(crate) async fn swap_key(
         .write(
             current,
             Some(new),
-            AuditEvent::AclKeyRotated(vti_common::audit::AclKeyRotatedData {
+            AuditEvent::AclKeyRotated(vtc_audit::AclKeyRotatedData {
                 old_did: current.to_string(),
                 new_did: new.to_string(),
                 role: role_string(&entry),
