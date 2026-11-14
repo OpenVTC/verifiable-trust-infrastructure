@@ -193,7 +193,7 @@ async fn main() {
         let entry = rooms_profile::RoomEntry {
             host,
             host_did,
-            signing_key,
+            signing_key_id: signing_key,
         };
         if let Err(e) = rooms_profile::cmd_use(room, entry, forget) {
             vta_cli_common::render::print_cli_error(e.as_ref());

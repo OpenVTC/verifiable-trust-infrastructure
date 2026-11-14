@@ -35,7 +35,7 @@ pub(crate) struct RoomEntry {
     pub(crate) host_did: Option<String>,
     /// The room's signing key id (an owner's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) signing_key: Option<String>,
+    pub(crate) signing_key_id: Option<String>,
 }
 
 impl RoomEntry {
@@ -46,8 +46,8 @@ impl RoomEntry {
         if other.host_did.is_some() {
             self.host_did = other.host_did;
         }
-        if other.signing_key.is_some() {
-            self.signing_key = other.signing_key;
+        if other.signing_key_id.is_some() {
+            self.signing_key_id = other.signing_key_id;
         }
     }
 }
@@ -123,7 +123,7 @@ pub(crate) fn cmd_use(
                 if let Some(h) = &e.host_did {
                     println!("    host DID:    {h}");
                 }
-                if let Some(k) = &e.signing_key {
+                if let Some(k) = &e.signing_key_id {
                     println!("    signing key: {k}");
                 }
             }
@@ -200,7 +200,7 @@ fn apply(mut cmd: clap::Command, d: &Defaults) -> clap::Command {
             "room_id" => d.room.as_deref(),
             "host" => d.entry.host.as_deref(),
             "host_did" => d.entry.host_did.as_deref(),
-            "signing_key" => d.entry.signing_key.as_deref(),
+            "signing_key" => d.entry.signing_key_id.as_deref(),
             _ => None,
         };
         if let Some(v) = value {
@@ -265,7 +265,7 @@ mod tests {
             RoomEntry {
                 host: Some("https://host-a".into()),
                 host_did: Some("did:webvh:host-a".into()),
-                signing_key: Some("key-a".into()),
+                signing_key_id: Some("key-a".into()),
             },
         );
         p.rooms.insert(

@@ -320,7 +320,7 @@ pub(crate) async fn run(
                             crate::rooms_profile::RoomEntry {
                                 host: Some(vtc.clone()),
                                 host_did: Some(vtc_did.clone()),
-                                signing_key: None,
+                                signing_key_id: None,
                             },
                             true,
                         );
