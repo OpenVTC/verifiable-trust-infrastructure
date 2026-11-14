@@ -63,6 +63,11 @@ src/
 └── website/            Public website handler, bundle + deploy, default site
 ```
 
+Before splitting a module out of this crate, read
+[`docs/05-design-notes/vtc-service-decomposition.md`](../docs/05-design-notes/vtc-service-decomposition.md):
+the step order (keyspace leaf, per-subsystem store structs, then the few
+extractable subsystems) and where the program deliberately stops.
+
 The admin SPA lives at `admin-ui/` (React + TS + Vite, baked into the binary at compile time by `build.rs` + `include_dir!`). The fallback public landing page lives at `website-default/` (plain HTML / CSS / JS, no build step).
 
 ## Operator docs
