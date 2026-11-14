@@ -103,7 +103,7 @@ pub(crate) const SHOW_ERR_CHANGED: &str = files_show::error_codes::CHANGED.code;
 pub(crate) const SHOW_ERR_RANGE_OUT_OF_BOUNDS: &str =
     files_show::error_codes::RANGE_OUT_OF_BOUNDS.code;
 // `files/delete`'s, `generations/list`'s and `rollback`'s declared codes are
-// used where they are raised — inside `routes::website::{files::delete,
+// used where they are raised — inside `website::ops::{files::delete,
 // generations::{list,rollback}}` — and not read again here, so they stay
 // `pub const` there rather than growing a second binding this module never
 // reads.
@@ -869,7 +869,7 @@ async fn handle_generations_list(state: &AppState, doc: TrustTask<Value>) -> Tru
 
 /// `vtc/website/rollback/0.1` — the managed-mode rollback
 /// `POST /v1/website/rollback/{gen_num}` used to serve. `generation` is a
-/// decimal string, matching the wire convention `routes::website::
+/// decimal string, matching the wire convention `website::ops::
 /// generations` already established (not `gen-N`, the directory name).
 async fn handle_rollback(state: &AppState, actor: &str, doc: TrustTask<Value>) -> TrustTaskOutcome {
     let payload: rollback::Payload = match parse_spec_payload(&doc) {

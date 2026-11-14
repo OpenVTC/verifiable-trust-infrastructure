@@ -28,7 +28,7 @@
 use std::sync::LazyLock;
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -44,6 +44,8 @@ use crate::policy::{
     new_policy, set_active_policy_id, store_policy, validate_purpose_package,
 };
 use crate::server::AppState;
+use vti_specs::policy::upsert::v0_3 as upsert;
+use vti_specs::vtc::policies::test::v0_1 as policy_test;
 
 /// Process-wide async mutex covering every activate-policy call so
 /// the predecessor pointer + audit envelope can't be skewed by a
@@ -54,98 +56,66 @@ static ACTIVATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // Request / response shapes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct UploadBody {
-    /// Human-readable module name (canonical-required).
-    pub name: String,
-    /// Full Rego source — canonical `module`. Bounded by
-    /// [`POLICY_SOURCE_MAX_BYTES`]; uploads above the cap are
-    /// rejected with 413.
-    pub module: String,
-    /// Optimistic-concurrency token. When present it MUST equal the
-    /// current highest revision for this purpose, else the caller is
-    /// writing over a revision it never saw.
-    #[serde(default)]
-    pub expected_version: Option<u32>,
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Canonical members this maintainer does not implement. Present
-    /// so they are *refused* rather than silently dropped — a caller
-    /// that sets `enabled: false` must not have it ignored.
-    // (`enabled: true` is the schema default and is accepted: it asks for
-    // nothing. See `unsupported`.)
-    #[serde(default)]
-    pub id: Option<Uuid>,
-    #[serde(default)]
-    pub applies_to: Option<Vec<String>>,
-    #[serde(default)]
-    pub priority: Option<i64>,
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    /// Ecosystem extension members. MUST carry
-    /// `org.openvtc.purpose` — see [`crate::policy::ops::read::PURPOSE_EXT_KEY`]
-    /// for why purpose is intrinsic here.
-    #[serde(default)]
-    pub ext: Option<serde_json::Value>,
+/// The decision slot an upsert's module serves.
+///
+/// Canonical `policy/upsert` has no `purpose` — a module there is
+/// purpose-agnostic and gains meaning only when activated. VTC
+/// cannot work that way (the purpose is baked into the Rego package
+/// and guarded), and it cannot be inferred either: only 4 of the 10
+/// purposes have an expected package. So it is required in `ext`,
+/// and its absence is an error rather than a guess.
+fn upsert_purpose(body: &upsert::Payload) -> Result<PolicyPurpose, AppError> {
+    let ext = body
+        .ext
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| AppError::Internal(format!("ext: {e}")))?;
+    let raw = ext
+        .as_ref()
+        .and_then(|e| e.get(crate::policy::ops::read::PURPOSE_EXT_KEY))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "ext.{} is required: this maintainer binds a policy's purpose \
+                 intrinsically (it is fixed by the module's Rego package), so it \
+                 cannot be deferred to activation as canonical policy/upsert assumes",
+                crate::policy::ops::read::PURPOSE_EXT_KEY,
+            ))
+        })?;
+    serde_json::from_value(serde_json::Value::String(raw.to_owned())).map_err(|e| {
+        AppError::Validation(format!("ext purpose {raw:?} is not a known purpose: {e}"))
+    })
 }
 
-impl UploadBody {
-    /// The decision slot this module serves.
-    ///
-    /// Canonical `policy/upsert` has no `purpose` — a module there is
-    /// purpose-agnostic and gains meaning only when activated. VTC
-    /// cannot work that way (the purpose is baked into the Rego package
-    /// and guarded), and it cannot be inferred either: only 4 of the 10
-    /// purposes have an expected package. So it is required in `ext`,
-    /// and its absence is an error rather than a guess.
-    fn purpose(&self) -> Result<PolicyPurpose, AppError> {
-        let raw = self
-            .ext
-            .as_ref()
-            .and_then(|e| e.get(crate::policy::ops::read::PURPOSE_EXT_KEY))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "ext.{} is required: this maintainer binds a policy's purpose \
-                     intrinsically (it is fixed by the module's Rego package), so it \
-                     cannot be deferred to activation as canonical policy/upsert assumes",
-                    crate::policy::ops::read::PURPOSE_EXT_KEY,
-                ))
-            })?;
-        serde_json::from_value(serde_json::Value::String(raw.to_owned())).map_err(|e| {
-            AppError::Validation(format!("ext purpose {raw:?} is not a known purpose: {e}"))
-        })
+/// The canonical `policy/upsert` members this maintainer does not implement,
+/// which an upsert carrying them is refused for rather than silently dropping
+/// — a caller that sets `enabled: false` must not have it ignored.
+fn upsert_unsupported(body: &upsert::Payload) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if body.applies_to.is_some() {
+        out.push("appliesTo");
     }
-
-    fn unsupported(&self) -> Vec<&'static str> {
-        let mut out = Vec::new();
-        if self.applies_to.is_some() {
-            out.push("appliesTo");
-        }
-        if self.priority.is_some() {
-            out.push("priority");
-        }
-        // `enabled` defaults to `true` in the schema, so `true` is the value
-        // every module here already has — and the generated `policy/upsert`
-        // payload always serialises it, so a client built on the canonical
-        // type cannot omit it. Refusing it would refuse every canonical
-        // caller. Only `false` asks for something this maintainer cannot do.
-        if self.enabled == Some(false) {
-            out.push("enabled");
-        }
-        if self.id.is_some() {
-            // Canonical lets a caller target an existing module id.
-            // Here the lineage is the purpose (one active module per
-            // purpose, monotone revisions), and revision ids are
-            // server-allocated — honouring a caller-supplied id would
-            // mean pretending to update a row we actually append past.
-            out.push("id");
-        }
-        out
+    if body.priority.is_some() {
+        out.push("priority");
     }
+    // `enabled` defaults to `true` in the schema, so `true` is the value
+    // every module here already has — and the generated `policy/upsert`
+    // payload always serialises it, so a client built on the canonical
+    // type cannot omit it. Refusing it would refuse every canonical
+    // caller. Only `false` asks for something this maintainer cannot do.
+    if !body.enabled {
+        out.push("enabled");
+    }
+    if body.id.is_some() {
+        // Canonical lets a caller target an existing module id.
+        // Here the lineage is the purpose (one active module per
+        // purpose, monotone revisions), and revision ids are
+        // server-allocated — honouring a caller-supplied id would
+        // mean pretending to update a row we actually append past.
+        out.push("id");
+    }
+    out
 }
 
 #[derive(Debug, Serialize)]
@@ -181,20 +151,6 @@ pub struct ActivateResponse {
     pub previous_policy_id: Option<Uuid>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct TestBody {
-    /// Rego query to evaluate against the candidate policy
-    /// (e.g. `"data.vtc.join.allow"`). Caller chooses the query so
-    /// `test` can be used to probe any rule in the module, not
-    /// just `allow`.
-    pub query: String,
-    /// JSON document fed to the policy as `input`. Mirrors the
-    /// shape M2.6 / M2.7 will pass in production.
-    pub input: JsonValue,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -219,15 +175,15 @@ pub struct TestResponse {
 /// settles the requester's gesture and another administrator's consent between
 /// this and the upload, so nobody is asked about a module the upload would
 /// refuse anyway. [`upload_inner`] still runs every check itself.
-pub(crate) fn precheck_upload(body: &UploadBody) -> Result<PolicyPurpose, AppError> {
-    let unsupported = body.unsupported();
+pub(crate) fn precheck_upload(body: &upsert::Payload) -> Result<PolicyPurpose, AppError> {
+    let unsupported = upsert_unsupported(body);
     if !unsupported.is_empty() {
         return Err(AppError::Validation(format!(
             "this maintainer does not implement {}",
             unsupported.join(", "),
         )));
     }
-    let purpose = body.purpose()?;
+    let purpose = upsert_purpose(body)?;
     if body.module.len() > POLICY_SOURCE_MAX_BYTES {
         return Err(AppError::Validation(format!(
             "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
@@ -273,8 +229,8 @@ pub(crate) async fn precheck_activate(
 /// failed at execution (`vtc-action-list.md` §4.2: every check that does not
 /// need the approval runs at submission). [`upload_inner`] makes them again
 /// when it runs.
-pub(crate) async fn check_upload(state: &AppState, body: &UploadBody) -> Result<(), AppError> {
-    let unsupported = body.unsupported();
+pub(crate) async fn check_upload(state: &AppState, body: &upsert::Payload) -> Result<(), AppError> {
+    let unsupported = upsert_unsupported(body);
     if !unsupported.is_empty() {
         return Err(AppError::Validation(format!(
             "this maintainer does not implement {}: it selects a policy by its \
@@ -284,7 +240,7 @@ pub(crate) async fn check_upload(state: &AppState, body: &UploadBody) -> Result<
             unsupported.join(", "),
         )));
     }
-    let purpose = body.purpose()?;
+    let purpose = upsert_purpose(body)?;
     if body.module.len() > POLICY_SOURCE_MAX_BYTES {
         return Err(AppError::Validation(format!(
             "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
@@ -295,7 +251,7 @@ pub(crate) async fn check_upload(state: &AppState, body: &UploadBody) -> Result<
     validate_purpose_package(&compiled, purpose)?;
     let current_version = max_version_for(&state.policies_ks, purpose).await?;
     if let Some(expected) = body.expected_version
-        && expected != current_version
+        && expected != u64::from(current_version)
     {
         return Err(AppError::Conflict(format!(
             "expectedVersion {expected} does not match the current revision \
@@ -311,9 +267,9 @@ pub(crate) async fn check_upload(state: &AppState, body: &UploadBody) -> Result<
 pub(crate) async fn upload_inner(
     state: &AppState,
     actor: &str,
-    body: UploadBody,
+    body: upsert::Payload,
 ) -> Result<UploadResponse, AppError> {
-    let unsupported = body.unsupported();
+    let unsupported = upsert_unsupported(&body);
     if !unsupported.is_empty() {
         return Err(AppError::Validation(format!(
             "this maintainer does not implement {}: it selects a policy by its \
@@ -323,7 +279,7 @@ pub(crate) async fn upload_inner(
             unsupported.join(", "),
         )));
     }
-    let purpose = body.purpose()?;
+    let purpose = upsert_purpose(&body)?;
 
     if body.module.len() > POLICY_SOURCE_MAX_BYTES {
         return Err(AppError::Validation(format!(
@@ -358,7 +314,7 @@ pub(crate) async fn upload_inner(
     // on the same purpose would each append a revision over the other's
     // read with no signal.
     if let Some(expected) = body.expected_version
-        && expected != current_version
+        && expected != u64::from(current_version)
     {
         return Err(AppError::Conflict(format!(
             "expectedVersion {expected} does not match the current revision \
@@ -369,10 +325,16 @@ pub(crate) async fn upload_inner(
     let version = current_version + 1;
     let was_created = current_version == 0;
 
-    let mut policy = new_policy(purpose, body.module, sha256, actor.to_string(), version);
+    let mut policy = new_policy(
+        purpose,
+        body.module.to_string(),
+        sha256,
+        actor.to_string(),
+        version,
+    );
     policy.id = id;
-    policy.name = Some(body.name.clone());
-    policy.description = body.description.clone();
+    policy.name = Some(body.name.to_string());
+    policy.description = body.description.map(String::from);
     store_policy(&state.policies_ks, &policy).await?;
     crate::admin_actions::record_effect(state).await;
 
@@ -515,7 +477,7 @@ pub(crate) async fn test(
     state: &AppState,
     actor: &str,
     id: Uuid,
-    body: TestBody,
+    body: policy_test::Payload,
 ) -> Result<TestResponse, TaskError> {
     let policy = get_policy(&state.policies_ks, id).await?.ok_or_else(|| {
         TaskError::declared(

@@ -77,16 +77,13 @@ pub(super) async fn handle_member_credentials(
 /// `adminRoleForbidden` — the gate is on the transition, not on the route, so
 /// it holds identically on both doors.
 ///
-/// # Why the payload is read twice
+/// # An absent `extensions`
 ///
 /// The generated `Payload` types `extensions` as a plain map with `default`, so
 /// an absent `extensions` and an empty one are the same value once parsed —
 /// and the operation's rule is that an absent field leaves the member's
-/// extensions **unchanged** while an empty object replaces them. Reading the
-/// same JSON into the route's own `UpdateMemberRequest`, whose fields are
-/// `Option`, keeps that distinction. The generated parse still runs, and runs
-/// first, because it is what validates the document against its published
-/// schema.
+/// extensions **unchanged** while an empty object replaces them. Whether it was
+/// sent is read from the document as received ([`crate::wire::sent`]).
 pub(super) async fn handle_member_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -108,12 +105,19 @@ pub(super) async fn handle_member_update(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    let req: crate::members::ops::update::UpdateMemberRequest = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    match crate::members::ops::update::update_member_inner(state, &actor, checked.did.as_str(), req)
-        .await
+    let extensions = crate::wire::sent(
+        &doc.payload,
+        "extensions",
+        Value::Object(checked.extensions.clone()),
+    );
+    match crate::members::ops::update::update_member_inner(
+        state,
+        &actor,
+        checked.did.as_str(),
+        &checked,
+        extensions,
+    )
+    .await
     {
         Ok(envelope) => success_response(&doc, envelope),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -142,17 +146,11 @@ pub(super) async fn handle_member_admin_remove(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    // Same reason as `update` above: `disposition` and `reason` are optional
-    // and the route's body type is the one that says so.
-    let body: crate::members::ops::remove::RemoveBody = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
     match crate::members::ops::remove::admin_remove_inner(
         state,
         &actor,
         checked.did.as_str(),
-        body,
+        &checked,
         crate::acl::admin_consent::Operation {
             type_uri: &doc.type_uri.for_routing().to_string(),
             payload: &doc.payload,

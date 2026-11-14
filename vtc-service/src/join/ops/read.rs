@@ -1,7 +1,7 @@
 //! `GET /v1/join-requests` + `GET /v1/join-requests/{id}` — admin
 //! read endpoints (M1.9.1).
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
 use vti_common::error::AppError;
@@ -15,24 +15,13 @@ use crate::server::AppState;
 pub const SHOW_ERR_NOT_FOUND: &str =
     vti_specs::vtc::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema, utoipa::IntoParams)]
-pub struct ListJoinRequestsQuery {
-    /// Filter by status. Default `pending` — the operator-facing
-    /// surface usually wants the work queue.
-    pub status: Option<JoinStatus>,
-    pub cursor: Option<String>,
-    pub limit: Option<usize>,
-}
-
 /// The admin work queue of join requests, `vtc/join-requests/list/0.2`: the
 /// signed document the spine serves (`trust_tasks::community_tasks`).
 pub(crate) async fn list_join_requests_inner(
     state: &AppState,
-    query: ListJoinRequestsQuery,
+    query: vti_specs::vtc::join_requests::list::v0_2::Payload,
 ) -> Result<Paginated<JoinRequest>, AppError> {
-    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
+    let limit = crate::wire::page_limit(query.limit, 50, MAX_LIMIT);
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -49,7 +38,8 @@ pub(crate) async fn list_join_requests_inner(
     // match lies further on — and `totalEstimate` is their exact count. It
     // used to be applied to each page after it was cut, which left pages
     // empty with a `nextCursor` and made a count a walk of every page.
-    let filter_status = query.status.unwrap_or(JoinStatus::Pending);
+    let filter_status: JoinStatus =
+        crate::wire::read_opt("status", query.status.as_ref())?.unwrap_or(JoinStatus::Pending);
     list_join_requests_filtered(
         &state.join_requests_ks,
         &audit_key,

@@ -796,7 +796,7 @@ fn credential() -> Value {
     })
 }
 
-/// A `MemberResponse` as `routes/members/read.rs:29` serialises one, with
+/// A `MemberResponse` as `members/ops/read.rs` serialises one, with
 /// every optional populated. Shared by list / show / update, which all
 /// return this type.
 fn member_response() -> Value {
@@ -822,7 +822,7 @@ fn member_response() -> Value {
 /// A `members/credentials/0.1` response as the route emits one.
 ///
 /// Built by the production projection
-/// (`routes::members::credentials::credentials_response`) over a member row
+/// (`members::ops::credentials::credentials_response`) over a member row
 /// populated the way issuance and receipt populate it, not transcribed: a
 /// fixture typed by hand here would keep passing after the projection changed.
 fn member_credentials_response() -> Value {
@@ -1180,7 +1180,7 @@ const KNOWN_DRIFT_COUNT: usize = 0;
 /// (`vta-sdk/src/protocols/members.rs:170`) fails this sweep — the typed
 /// witness re-serialises and the rename shows up. Adding
 /// `#[serde(rename = "wasRemoved")]` to `RemoveResponse.removed`
-/// (`routes/members/remove.rs:56`) does **not** — the transcribed witness
+/// (`members/ops/remove.rs`) does **not** — the transcribed witness
 /// keeps asserting the old spelling and the sweep stays green while the
 /// service breaks. That is the exact cost of the transcription, and it is why
 /// converting the table to typed fixtures is worth its own change rather than
@@ -1851,7 +1851,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::admin::bootstrap::v0_1::Payload,
             s::admin::bootstrap::v0_1::Response,
-            // `BootstrapRequest` — routes/admin/bootstrap.rs. Sent
+            // `BootstrapRequest` — install/ops/bootstrap.rs. Sent
             // `setup_session_token` until it gained `rename_all`, so a
             // conforming client's body failed as a missing required field —
             // and `claim/finish` had been handing that client a
@@ -1862,11 +1862,11 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::admin::invites::create::v0_2::Payload,
             s::admin::invites::create::v0_2::Response,
-            // `CreateInviteRequest` — routes/admin/invites.rs: a wallet
+            // `CreateInviteRequest` — install/ops/invites.rs: a wallet
             // invitation names `did`; a passkey invitation omits it (that
             // shape is held by `single_admin_mode.rs`'s `assert_conforms`).
             json!({ "did": OTHER_DID, "ttlSeconds": 3600, "label": "ops laptop invite" }),
-            // `CreateInviteResponse` — routes/admin/invites.rs.
+            // `CreateInviteResponse` — install/ops/invites.rs.
             json!({
                 "jti": REQUEST_ID,
                 "kind": "wallet",
@@ -1881,7 +1881,7 @@ fn table() -> Vec<Conformance> {
             s::admin::invites::list::v0_2::Response,
             // The payload has no required member.
             json!({}),
-            // `ListInvitesResponse` / `InviteSummary` — routes/admin/invites.rs.
+            // `ListInvitesResponse` / `InviteSummary` — install/ops/invites.rs.
             json!({
                 "invites": [
                     { "jti": REQUEST_ID, "kind": "passkey", "status": "issued",
@@ -1897,7 +1897,7 @@ fn table() -> Vec<Conformance> {
             // The REST route carries `jti` in the path and ignores the body,
             // so the canonical payload is consumable as-is.
             json!({ "jti": REQUEST_ID }),
-            // `RevokeInviteResponse` — routes/admin/invites.rs:129.
+            // `RevokeInviteResponse` — install/ops/invites.rs.
             json!({ "jti": REQUEST_ID })
         ),
         // ─── auth ────────────────────────────────────────────────────
@@ -1914,16 +1914,16 @@ fn table() -> Vec<Conformance> {
             s::auth::recognise::challenge::v0_2::Payload,
             s::auth::recognise::challenge::v0_2::Response,
             json!({}),
-            // `RecogniseChallengeResponse` — routes/recognise.rs. `expiresAt`
+            // `RecogniseChallengeResponse` — recognition/recognise.rs. `expiresAt`
             // is an RFC 3339 date-time from 0.2 (0.1 typed it Unix seconds).
             json!({ "nonce": "b7c1e0a94f2d4e8ab5c36f01d9e27a3c", "expiresAt": TS })
         ),
         checked!(
             s::auth::recognise::v0_3::Payload,
             s::auth::recognise::v0_3::Response,
-            // `RecogniseRequest` — routes/recognise.rs:82.
+            // `RecogniseRequest` — recognition/recognise.rs.
             json!({ "presentation": { "type": ["VerifiablePresentation"], "nonce": "b7c1e0" } }),
-            // `RecogniseResponse` — routes/recognise.rs:102.
+            // `RecogniseResponse` — recognition/recognise.rs.
             json!({
                 "sessionId": "xc-6f2b1a7c-9d3e-4c58-b0a1-2e7d4f6a8b9c",
                 "data": {
@@ -1940,7 +1940,7 @@ fn table() -> Vec<Conformance> {
             s::backup::export::v0_1::Response,
             // What `handle_backup_export` (trust_tasks/mod.rs) parses.
             json!({ "password": "correct-horse-battery-staple", "includeAudit": true }),
-            // `ExportResponse` (routes/backup.rs), what `export_inner` answers
+            // `ExportResponse` (backup/ops.rs), what `export_inner` answers
             // with — the envelope was returned bare until #1059.
             json!({ "envelope": backup_envelope() })
         ),
@@ -1950,7 +1950,7 @@ fn table() -> Vec<Conformance> {
             s::ceremonies::list::v0_1::Response,
             json!({}),
             // `CeremonyListResponse` — a top-level array until #1094
-            // (routes/ceremonies.rs:320).
+            // (ceremony/listing.rs).
             json!({ "ceremonies": [{
                 "purpose": "directory",
                 "pkg": "vtc.directory",
@@ -1969,7 +1969,7 @@ fn table() -> Vec<Conformance> {
             json!({}),
             // `CommunityProfileResponse` — nested as of #1094, with
             // `registryStatus` inside the profile where the canonical
-            // component defines it (routes/community/profile.rs:39).
+            // component defines it (community/ops/profile.rs).
             {
                 let mut v = community_profile();
                 v.as_object_mut()
@@ -1992,7 +1992,7 @@ fn table() -> Vec<Conformance> {
                 "relationshipIdentifierDefault": "pairwise",
                 "extensions": { "tier": "gold" },
             }),
-            // `UpdateProfileResponse` — routes/community/profile.rs:196.
+            // `UpdateProfileResponse` — community/ops/profile.rs.
             json!({ "profile": community_profile(), "fieldsChanged": ["name", "logoUrl"] })
         ),
         // ─── config ──────────────────────────────────────────────────
@@ -2007,7 +2007,7 @@ fn table() -> Vec<Conformance> {
             s::config::export::v0_1::Response,
             json!({}),
             // `ExportResponse` / `ConfigExportDocument` —
-            // routes/admin/config.rs:476 / :460.
+            // community/ops/config.rs / :460.
             json!({
                 "document": {
                     "schemaVersion": 1,
@@ -2020,7 +2020,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::config::import::v0_1::Payload,
             s::config::import::v0_1::Response,
-            // `ImportRequest` — routes/admin/config.rs:524. The document is
+            // `ImportRequest` — community/ops/config.rs. The document is
             // whatever `export` handed back, so it carries the same extra
             // member.
             json!({
@@ -2032,7 +2032,7 @@ fn table() -> Vec<Conformance> {
                 },
                 "confirm": true,
             }),
-            // `ImportResponse` — routes/admin/config.rs:560.
+            // `ImportResponse` — community/ops/config.rs.
             json!({
                 "status": "imported",
                 "profileChanges": [{ "key": "name", "oldValue": "Old", "newValue": "New" }],
@@ -2157,7 +2157,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::endorsement_types::register::v0_1::Payload,
             s::endorsement_types::register::v0_1::Response,
-            // `RegisterBody` — routes/endorsement_types.rs:51.
+            // `RegisterBody` — endorsement_types/ops.rs.
             json!({
                 "typeUri": "https://skills.example.com/v1/rust",
                 "claimSchema": { "type": "object" },
@@ -2176,14 +2176,14 @@ fn table() -> Vec<Conformance> {
             s::endorsement_types::delete::v0_1::Payload,
             s::endorsement_types::delete::v0_1::Response,
             json!({ "typeUri": "https://skills.example.com/v1/rust" }),
-            // `DeleteResponse` — routes/endorsement_types.rs:178.
+            // `DeleteResponse` — endorsement_types/ops.rs.
             json!({ "typeUri": "https://skills.example.com/v1/rust" })
         ),
         // ─── endorsements ────────────────────────────────────────────
         checked!(
             s::endorsements::issue::v0_1::Payload,
             s::endorsements::issue::v0_1::Response,
-            // `IssueBody` — routes/endorsements.rs:57, `typeUri` as of #1096.
+            // `IssueBody` — endorsements/ops.rs, `typeUri` as of #1096.
             json!({
                 "subjectDid": DID,
                 "typeUri": "https://skills.example.com/v1/rust",
@@ -2241,7 +2241,7 @@ fn table() -> Vec<Conformance> {
             .expect("RevokeResponse serialises")
         ),
         // ─── install ─────────────────────────────────────────────────
-        // The passkey install (`routes::install::{claim_start,claim_finish}`,
+        // The passkey install (`install::ops::{claim_start,claim_finish}`,
         // which build the start response from the generated type).
         checked!(
             s::install::claim::passkey::start::v0_1::Payload,
@@ -2257,7 +2257,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::install::claim::passkey::finish::v0_1::Payload,
             s::install::claim::passkey::finish::v0_1::Response,
-            // `ClaimFinishRequest` — routes/install.rs.
+            // `ClaimFinishRequest` — install/ops/mod.rs.
             json!({
                 "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                 "registrationId": REQUEST_ID,
@@ -2301,9 +2301,9 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::invitations::issue::v0_1::Payload,
             s::invitations::issue::v0_1::Response,
-            // `IssueInvitationBody` — routes/invitations.rs:42.
+            // `IssueInvitationBody` — join/invitations.rs.
             json!({ "subjectDid": DID, "validityDays": 14, "role": "moderator" }),
-            // `IssueInvitationResponse` — routes/invitations.rs:59.
+            // `IssueInvitationResponse` — join/invitations.rs.
             json!({ "subjectDid": DID, "validUntil": TS, "vic": credential() })
         ),
         checked!(
@@ -2311,7 +2311,7 @@ fn table() -> Vec<Conformance> {
             s::invitations::list::v0_1::Response,
             json!({}),
             // `InvitationListResponse` / `InvitationListItem` —
-            // routes/invitations.rs:254 / :225.
+            // join/invitations.rs / :225.
             json!({
                 "invitations": [{
                     "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
@@ -2328,7 +2328,7 @@ fn table() -> Vec<Conformance> {
             s::invitations::revoke::v0_1::Payload,
             s::invitations::revoke::v0_1::Response,
             json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222" }),
-            // `RevokeResponse` — routes/invitations.rs:297.
+            // `RevokeResponse` — join/invitations.rs.
             json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
                     "revokedAt": TS, "newlyRevoked": true })
         ),
@@ -2336,7 +2336,7 @@ fn table() -> Vec<Conformance> {
             s::invitations::deliver::v0_1::Payload,
             s::invitations::deliver::v0_1::Response,
             // `deliver` takes and returns the generated types themselves
-            // (routes/invitations.rs); the response is the `offer` channel's.
+            // (join/invitations.rs); the response is the `offer` channel's.
             json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222", "channel": "offer" }),
             json!({
                 "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
@@ -2366,10 +2366,10 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::join_requests::decide::v0_1::Payload,
             s::join_requests::decide::v0_1::Response,
-            // `DecideBody` — routes/join_requests/decide.rs:54; `id` is the
+            // `DecideBody` — join/ops/decide.rs; `id` is the
             // path segment and is consumable in the body.
             json!({ "id": REQUEST_ID, "decision": "approved", "reason": "verified out of band" }),
-            // `DecideResponse` — routes/join_requests/decide.rs:65. The
+            // `DecideResponse` — join/ops/decide.rs. The
             // approve arm populates both credentials; the reject arm omits
             // them and DOES conform, which is exactly why the witness has to
             // carry the approve arm.
@@ -2503,7 +2503,7 @@ fn table() -> Vec<Conformance> {
                 resend_credentials: true,
             }),
             // The rejected projection — the only one that carries the three
-            // members #1058 added (routes/join_requests/status.rs:140).
+            // members #1058 added (join/ops/status.rs).
             to_v(jr::JoinRequestStatusResponseBody {
                 request_id: uuid(),
                 status: "rejected".into(),
@@ -2525,10 +2525,10 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::admin_remove::v0_1::Payload,
             s::members::admin_remove::v0_1::Response,
-            // `RemoveBody` — routes/members/remove.rs:37; `did` is the path
+            // `RemoveBody` — members/ops/remove.rs; `did` is the path
             // segment and is consumable in the body.
             json!({ "did": DID, "disposition": "purge", "reason": "ToS violation" }),
-            // `RemoveResponse` — routes/members/remove.rs:53.
+            // `RemoveResponse` — members/ops/remove.rs.
             json!({ "did": DID, "disposition": "purge", "removed": true })
         ),
         checked!(
@@ -2602,7 +2602,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::update::v0_1::Payload,
             s::members::update::v0_1::Response,
-            // `UpdateMemberRequest` — routes/members/update.rs:57.
+            // `UpdateMemberRequest` — members/ops/update.rs.
             json!({ "did": DID, "role": "moderator", "label": "Ada Lovelace",
                     "publishConsent": true, "departurePreference": "historical",
                     "extensions": { "org": "acme" } }),
@@ -2627,16 +2627,16 @@ fn table() -> Vec<Conformance> {
             s::members::renew::v0_1::Payload,
             s::members::renew::v0_1::Response,
             json!({}),
-            // `RenewResponse` — routes/members/renew.rs:56.
+            // `RenewResponse` — members/ops/renew.rs.
             json!({ "did": DID, "vmc": credential(), "roleVac": credential(),
                     "personhood": true, "personhoodChanged": false })
         ),
         checked!(
             s::members::rotate_challenge::v0_1::Payload,
             s::members::rotate_challenge::v0_1::Response,
-            // `ChallengeBody` — routes/members/rotate.rs:193.
+            // `ChallengeBody` — members/ops/rotate.rs.
             json!({ "reason": "deviceLoss" }),
-            // `ChallengeResponse` — routes/members/rotate.rs:169.
+            // `ChallengeResponse` — members/ops/rotate.rs.
             json!({
                 "rotationId": REQUEST_ID,
                 "expiresAt": TS,
@@ -2647,10 +2647,10 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::rotate::v0_1::Payload,
             s::members::rotate::v0_1::Response,
-            // `FinishBody` — routes/members/rotate.rs:269.
+            // `FinishBody` — members/ops/rotate.rs.
             json!({ "rotationId": REQUEST_ID, "oldDid": DID, "newDid": OTHER_DID,
                     "oldSignature": "9a3f", "newSignature": "1c7b" }),
-            // `FinishResponse` — routes/members/rotate.rs:282.
+            // `FinishResponse` — members/ops/rotate.rs.
             json!({ "newDid": OTHER_DID, "method": "did:key",
                     "vmc": credential(), "roleVac": credential() })
         ),
@@ -2659,7 +2659,7 @@ fn table() -> Vec<Conformance> {
             s::members::self_remove::v0_1::Response,
             // The document form's body (vta-sdk). The REST route's
             // `RemoveBody` also accepts a `reason`, which it then ignores on
-            // self-remove (routes/members/remove.rs:86) — unspecced, but
+            // self-remove (members/ops/remove.rs) — unspecced, but
             // unreachable in any body a conforming client sends.
             to_v(jr::SelfRemoveBody {
                 disposition: Some("tombstone".into())
@@ -2673,17 +2673,17 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::solicit_vmc::v0_1::Payload,
             s::members::solicit_vmc::v0_1::Response,
-            // `RequestVmcBody` — routes/members/request_vmc.rs:26; the DID is
+            // `RequestVmcBody` — members/ops/request_vmc.rs; the DID is
             // the path segment.
             json!({ "memberDid": DID, "reason": "annual audit" }),
-            // `RequestVmcResponse` — routes/members/request_vmc.rs:35.
+            // `RequestVmcResponse` — members/ops/request_vmc.rs.
             json!({ "memberDid": DID, "requested": true, "threadId": REQUEST_ID })
         ),
         checked!(
             s::members::personhood::challenge::v0_1::Payload,
             s::members::personhood::challenge::v0_1::Response,
             json!({ "did": DID }),
-            // `ChallengeResponse` — routes/members/personhood.rs:138.
+            // `ChallengeResponse` — members/ops/personhood.rs.
             // The `ext` member carries the spoken match code. The
             // response schema is `additionalProperties: false`, so this
             // witness is what proves the code found a conformant home
@@ -2696,7 +2696,7 @@ fn table() -> Vec<Conformance> {
             s::members::personhood::assert::v0_2::Response,
             // The payload the spine's assert handler reads.
             json!({ "did": DID, "presentation": { "type": ["VerifiablePresentation"] } }),
-            // `AssertResponse` — routes/members/personhood.rs:206.
+            // `AssertResponse` — members/ops/personhood.rs.
             //
             // This note used to explain that the DELETE on the same mount
             // answered under *this* URI with `personhood: false`, and called
@@ -2713,7 +2713,7 @@ fn table() -> Vec<Conformance> {
             s::members::personhood::revoke::v0_1::Payload,
             s::members::personhood::revoke::v0_1::Response,
             json!({ "did": DID }),
-            // `RevokeResponse` — routes/members/personhood.rs:526. `vmc` and
+            // `RevokeResponse` — members/ops/personhood.rs. `vmc` and
             // `roleVac` are `skip_serializing_if`, so a revoke that re-mints
             // nothing sends neither; the component makes both optional and
             // pins `personhood` to `const false`.
@@ -2737,11 +2737,11 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::policies::test::v0_1::Payload,
             s::policies::test::v0_1::Response,
-            // `TestBody` — routes/policies/admin.rs:176; `id` is the path
+            // `TestBody` — policy/ops/admin.rs; `id` is the path
             // segment and is consumable in the body.
             json!({ "id": REQUEST_ID, "query": "data.vtc.directory.decision",
                     "input": { "purpose": "directory" } }),
-            // `TestResponse` — routes/policies/admin.rs:190.
+            // `TestResponse` — policy/ops/admin.rs.
             json!({ "id": REQUEST_ID, "purpose": "directory", "sha256": "3b9f0a1c8d2e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f809a1b2c3",
                     "result": { "result": [] } })
         ),
@@ -2750,7 +2750,7 @@ fn table() -> Vec<Conformance> {
             s::recognition::check::v0_1::Payload,
             s::recognition::check::v0_1::Response,
             json!({ "did": "did:web:other.example" }),
-            // `RecognitionCheck` — routes/recognition_admin.rs:31.
+            // `RecognitionCheck` — recognition/admin.rs.
             json!({ "did": "did:web:other.example", "recognised": false,
                     "registryConfigured": true, "error": "registry unreachable" })
         ),
@@ -2775,7 +2775,7 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // The reconciler's operator surface. These fixtures are transcribed
-        // from what `routes/registry_admin.rs` actually builds, and every
+        // from what `registry/admin.rs` actually builds, and every
         // field an operator acts on is present: the member DID in the clear,
         // the registry's verbatim error, and the attempt count that separates
         // "answered and refused" from "never answered".
@@ -2783,7 +2783,7 @@ fn table() -> Vec<Conformance> {
             s::registry::sync_jobs::list::v0_2::Payload,
             s::registry::sync_jobs::list::v0_2::Response,
             json!({ "state": "failed", "limit": 50 }),
-            // `job_wire` — routes/registry_admin.rs. A failed row carries no
+            // `job_wire` — registry/admin.rs. A failed row carries no
             // `nextAttemptAt`: it has no schedule, and claiming one would be
             // the response asserting something untrue.
             json!({
@@ -4009,7 +4009,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::join_requests::query::v0_1::Payload,
             s::join_requests::query::v0_1::Response,
-            // `SendQueryRequest` (routes/join_requests/present.rs) is read, never
+            // `SendQueryRequest` (join/ops/present.rs) is read, never
             // written, so it has no `Serialize` to build this from.
             json!({ "holderDid": DID, "criterionId": "membership" }),
             to_v(crate::join::ops::present::SendQueryResponse {
@@ -4284,7 +4284,7 @@ fn pcs_witnesses() -> Vec<Conformance> {
         // The community's own admin verb: turn hidden vetting on (or rotate its
         // parameters) for a criterion. Plain JSON fixtures rather than the generated
         // builder — the response nests `PublishedConfig`/`StoredConfig`, and this is
-        // exactly the shape `routes::vetting_hidden::publish_hidden_vetting_core`
+        // exactly the shape `vetting::hidden::publish_hidden_vetting_core`
         // builds, so the fixture doubles as a check that shape still matches.
         checked!(
             s::vetting::hidden::publish::v0_1::Payload,

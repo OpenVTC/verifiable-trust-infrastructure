@@ -116,28 +116,13 @@ impl MemberResponse {
 // GET /v1/members
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema, utoipa::IntoParams)]
-pub struct ListMembersQuery {
-    /// Filter by role, expressed in the same wire form
-    /// [`VtcRole`] uses (`"admin"`, `"moderator"`,
-    /// `"custom:editor"`, …). Applied before paging: the cursor walks only
-    /// matching members, and `totalEstimate` counts them.
-    pub role: Option<String>,
-    /// Pagination cursor (returned by a previous call).
-    pub cursor: Option<String>,
-    /// Page size. Clamped to `1..=200`.
-    pub limit: Option<usize>,
-}
-
 /// The paginated member list, `vtc/members/list/0.2`: the signed document the
 /// spine serves (`trust_tasks::community_tasks`).
 pub(crate) async fn list_members_inner(
     state: &AppState,
-    query: ListMembersQuery,
+    query: vti_specs::vtc::members::list::v0_2::Payload,
 ) -> Result<Paginated<MemberResponse>, AppError> {
-    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
+    let limit = crate::wire::page_limit(query.limit, 50, MAX_LIMIT);
 
     // Phase 1 reads the audit_key out of AppState's writer. The
     // writer is `Some` for every Phase 0 + Phase 1 path — install
@@ -193,7 +178,7 @@ pub(crate) async fn list_members_inner(
             if query
                 .role
                 .as_ref()
-                .is_some_and(|filter| entry.role.to_string() != *filter)
+                .is_some_and(|filter| entry.role.to_string() != filter.as_str())
             {
                 continue;
             }
@@ -220,7 +205,7 @@ pub(crate) async fn list_members_inner(
     // estimate is for.
     let total = match &decoded_cursor {
         Some(c) => c.snapshot_id,
-        None => count_listed(state, query.role.as_deref()).await?,
+        None => count_listed(state, query.role.as_ref().map(|r| r.as_str())).await?,
     };
     let total_estimate = Some(total);
     let next_cursor = if more {

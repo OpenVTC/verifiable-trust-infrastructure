@@ -569,10 +569,7 @@ async fn execute(
                 state,
                 &claims,
                 &member,
-                crate::members::ops::remove::RemoveBody {
-                    disposition: None,
-                    reason,
-                },
+                &serde_json::from_value(op_payload.clone()).map_err(|e| e.to_string())?,
                 admin_consent::Operation {
                     type_uri: crate::trust_tasks::MEMBER_ADMIN_REMOVE_TYPE,
                     payload: &op_payload,

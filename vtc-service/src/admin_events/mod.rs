@@ -864,11 +864,8 @@ async fn observe(
         // the same `limit: 1` read the console's badge and tile make.
         let pending = crate::join::ops::read::list_join_requests_inner(
             state,
-            crate::join::ops::read::ListJoinRequestsQuery {
-                status: Some(crate::join::JoinStatus::Pending),
-                cursor: None,
-                limit: Some(1),
-            },
+            serde_json::from_value(serde_json::json!({ "status": "pending", "limit": 1 }))
+                .map_err(|e| AppError::Internal(format!("join-requests/list payload: {e}")))?,
         )
         .await?
         .total_estimate

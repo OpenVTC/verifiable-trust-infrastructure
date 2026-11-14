@@ -37,7 +37,7 @@
 //!   and `StatusListFlipped`.
 
 use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -59,6 +59,7 @@ use crate::endorsements::{
 use crate::error::TaskError;
 use crate::server::AppState;
 use crate::status_list;
+use vti_specs::vtc::endorsements::issue::v0_1 as end_issue;
 
 const LIST_MAX_LIMIT: usize = 200;
 
@@ -97,27 +98,6 @@ pub const REVOKE_ERR_ALREADY_REVOKED: &str =
 
 // ─── Issue ───────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct IssueBody {
-    pub subject_did: String,
-    /// `typeUri`, the name the payload schema gives it. This carried an
-    /// explicit `#[serde(rename = "type")]` until #1096 — a deliberate
-    /// rename that simply disagreed with the spec.
-    #[serde(rename = "typeUri")]
-    pub endorsement_type: String,
-    pub claim: JsonValue,
-    /// Optional override; defaults to 30d.
-    #[serde(default)]
-    pub validity_seconds: Option<u64>,
-    /// The payload's vendor-namespaced extensions. Under `vetted/1` the
-    /// community reads [`UNIQUENESS_EXT`] from it; nothing in it is written
-    /// into the credential.
-    #[serde(default)]
-    pub ext: Option<serde_json::Map<String, JsonValue>>,
-}
-
 /// `ext` namespace on a `vtc/endorsements/issue/0.1` payload under `vetted/1`
 /// carrying the person's **uniqueness pseudonym** —
 /// `{ "org.openvtc.uniqueness": { "pseudonym": "<value>" } }`.
@@ -136,10 +116,16 @@ pub const UNIQUENESS_EXT: &str = "org.openvtc.uniqueness";
 /// not `{ "pseudonym": "<non-empty string>" }`, or when it rides a predicate
 /// other than `vetted/1`, which binds nothing.
 fn uniqueness_pseudonym(
-    body: &IssueBody,
+    body: &end_issue::Payload,
     community_check: bool,
 ) -> Result<Option<String>, AppError> {
-    let Some(ns) = body.ext.as_ref().and_then(|ext| ext.get(UNIQUENESS_EXT)) else {
+    let ext = body
+        .ext
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| AppError::Internal(format!("ext: {e}")))?;
+    let Some(ns) = ext.as_ref().and_then(|ext| ext.get(UNIQUENESS_EXT)) else {
         return Ok(None);
     };
     if !community_check {
@@ -294,9 +280,12 @@ fn check_community_vetted_claim(community_did: &str, claim: &JsonValue) -> Resul
 pub(crate) async fn issue_inner(
     state: &AppState,
     actor_did: &str,
-    body: IssueBody,
+    body: &end_issue::Payload,
     request: &JsonValue,
 ) -> Result<IssueResponse, TaskError> {
+    let endorsement_type = body.type_uri.as_str();
+    let subject_did = body.subject_did.as_str();
+    let claim = JsonValue::Object(body.claim.clone());
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -307,14 +296,13 @@ pub(crate) async fn issue_inner(
         .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
 
     // 2. Predicate registry consultation (D4 review).
-    let Some(registered) = get_type(&state.endorsement_types_ks, &body.endorsement_type).await?
-    else {
+    let Some(registered) = get_type(&state.endorsement_types_ks, endorsement_type).await? else {
         return Err(TaskError::declared(
             ISSUE_ERR_TYPE_NOT_REGISTERED,
             AppError::Validation(format!(
                 "endorsement-type-not-registered: '{}' is not a predicate registered with \
                  this community",
-                body.endorsement_type
+                endorsement_type
             )),
         ));
     };
@@ -326,9 +314,9 @@ pub(crate) async fn issue_inner(
     // party that ran the exchange — `witnessed/1` by a witness,
     // `presented/1` by the observer (vtc/endorsements/issue/0.1,
     // Conformance 2).
-    let community_check = body.endorsement_type == dtg_credentials::VETTED_V1;
+    let community_check = endorsement_type == dtg_credentials::VETTED_V1;
     if !community_check
-        && crate::credentials::task_context::requirement_for_predicate(Some(&body.endorsement_type))
+        && crate::credentials::task_context::requirement_for_predicate(Some(endorsement_type))
             == crate::credentials::task_context::Requirement::Required
     {
         return Err(TaskError::declared(
@@ -337,17 +325,17 @@ pub(crate) async fn issue_inner(
                 "'{}' is registered, but its profile requires a taskContext citing the \
                  exchange the statement was made in; the community cannot issue it \
                  through vtc/endorsements/issue",
-                body.endorsement_type
+                endorsement_type
             )),
         ));
     }
     // 3. Body-side validation. The builder enforces the same
     //    cap; we check here too so 400 surfaces cleanly
     //    before any state mutation.
-    if !body.claim.is_object() {
+    if !claim.is_object() {
         return Err(AppError::Validation("claim must be a JSON object".into()).into());
     }
-    let claim_bytes = serde_json::to_vec(&body.claim)
+    let claim_bytes = serde_json::to_vec(&claim)
         .map_err(|e| AppError::Internal(format!("serialise claim: {e}")))?;
     if claim_bytes.len() > CLAIM_MAX_BYTES {
         return Err(TaskError::declared(
@@ -370,7 +358,7 @@ pub(crate) async fn issue_inner(
     if let Some(schema) = registered.claim_schema.as_ref() {
         if let Err(detail) = crate::schemas::check_schema(schema) {
             error!(
-                type_uri = %body.endorsement_type,
+                type_uri = %endorsement_type,
                 %detail,
                 "stored claimSchema is not valid JSON Schema — issuance refused",
             );
@@ -378,11 +366,11 @@ pub(crate) async fn issue_inner(
                 "endorsement type '{}' has an invalid stored claimSchema ({detail}) — \
                  the claim was not at fault. An admin must delete and re-register the \
                  type with a valid JSON Schema before it can be issued against.",
-                body.endorsement_type
+                endorsement_type
             ))
             .into());
         }
-        crate::schemas::validate_instance(schema, &body.claim).map_err(|e| match e {
+        crate::schemas::validate_instance(schema, &claim).map_err(|e| match e {
             AppError::Validation(msg) => TaskError::declared(
                 ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
                 AppError::Validation(msg.replacen(
@@ -402,20 +390,17 @@ pub(crate) async fn issue_inner(
     // this community has no standing to make (`vetted/1`: a statement counts
     // for the one community it names).
     if community_check {
-        check_community_vetted_claim(signer.issuer_did(), &body.claim)?;
+        check_community_vetted_claim(signer.issuer_did(), &claim)?;
     }
-    let pseudonym = uniqueness_pseudonym(&body, community_check)?;
+    let pseudonym = uniqueness_pseudonym(body, community_check)?;
 
     // 4. Subject must be a current ACL member — operators
     //    that want cross-community endorsements layer their
     //    own policy (out of scope for Phase 4).
-    if get_acl_entry(&state.acl_ks, &body.subject_did)
-        .await?
-        .is_none()
-    {
+    if get_acl_entry(&state.acl_ks, subject_did).await?.is_none() {
         return Err(AppError::Validation(format!(
             "subject DID {} is not a current community member",
-            body.subject_did
+            subject_did
         ))
         .into());
     }
@@ -431,7 +416,7 @@ pub(crate) async fn issue_inner(
                 &state.members_ks,
                 signer.issuer_did(),
                 p,
-                &body.subject_did,
+                subject_did,
                 id,
             )
             .await?;
@@ -461,13 +446,16 @@ pub(crate) async fn issue_inner(
 async fn mint_and_record(
     state: &AppState,
     actor_did: &str,
-    body: IssueBody,
+    body: &end_issue::Payload,
     request: &JsonValue,
     signer: &crate::credentials::LocalSigner,
     audit_writer: &vtc_audit::AuditWriter,
     id: Uuid,
 ) -> Result<IssueResponse, TaskError> {
-    let community_check = body.endorsement_type == dtg_credentials::VETTED_V1;
+    let endorsement_type = body.type_uri.as_str();
+    let subject_did = body.subject_did.as_str();
+    let claim = JsonValue::Object(body.claim.clone());
+    let community_check = endorsement_type == dtg_credentials::VETTED_V1;
     // 5. Allocate status-list slot — locked RMW so a concurrent
     //    allocate/flip can't clobber this allocation (P0.1).
     let allocated = status_list::with_locked(
@@ -494,13 +482,13 @@ async fn mint_and_record(
     let credential_id = format!("urn:uuid:{id}");
     let validity = body
         .validity_seconds
-        .map(|s| Duration::seconds(s as i64))
+        .map(|s| Duration::seconds(i64::try_from(s.get()).unwrap_or(i64::MAX)))
         .unwrap_or(DEFAULT_STATEMENT_VALIDITY);
     let credential_value = if community_check {
         crate::credentials::dtg::issue_vetted_statement(
             signer,
-            &body.subject_did,
-            body.claim.clone(),
+            subject_did,
+            claim.clone(),
             request,
             &credential_id,
             &status_ref,
@@ -508,14 +496,9 @@ async fn mint_and_record(
         )
         .await?
     } else {
-        let params = StatementParams::new(
-            &body.subject_did,
-            &body.endorsement_type,
-            body.claim.clone(),
-            status_ref,
-        )
-        .with_id(&credential_id)
-        .with_validity(validity);
+        let params = StatementParams::new(subject_did, endorsement_type, claim.clone(), status_ref)
+            .with_id(&credential_id)
+            .with_validity(validity);
         let vsc = build_statement(signer, params).await?;
         serde_json::to_value(&vsc)
             .map_err(|e| AppError::Internal(format!("serialise statement: {e}")))?
@@ -531,10 +514,10 @@ async fn mint_and_record(
     let valid_until = now + validity;
     let end = Endorsement {
         id,
-        endorsement_type: body.endorsement_type.clone(),
+        endorsement_type: endorsement_type.to_string(),
         issuer_did: signer.issuer_did().to_string(),
-        subject_did: body.subject_did.clone(),
-        claim: body.claim.clone(),
+        subject_did: subject_did.to_string(),
+        claim: claim.clone(),
         status_list_index: slot,
         credential_id: credential_id.clone(),
         created_at: now,
@@ -551,10 +534,10 @@ async fn mint_and_record(
     audit_writer
         .write(
             actor_did,
-            Some(&body.subject_did),
+            Some(subject_did),
             AuditEvent::CustomEndorsementIssued(CustomEndorsementIssuedData {
                 endorsement_id: id.to_string(),
-                endorsement_type: body.endorsement_type.clone(),
+                endorsement_type: endorsement_type.to_string(),
                 status_list_index: slot,
             }),
         )
@@ -562,7 +545,7 @@ async fn mint_and_record(
     audit_writer
         .write(
             actor_did,
-            Some(&body.subject_did),
+            Some(subject_did),
             AuditEvent::VecIssued(CredentialIssuedData {
                 credential_id: credential_id.clone(),
                 credential_type: credential_type.into(),
@@ -575,14 +558,14 @@ async fn mint_and_record(
 
     info!(
         endorsement_id = %id,
-        endorsement_type = %body.endorsement_type,
-        subject = %body.subject_did,
+        endorsement_type = %endorsement_type,
+        subject = %subject_did,
         slot,
         "community statement issued"
     );
 
     if community_check {
-        deliver_to_subject(state, &body.subject_did, &credential_value).await;
+        deliver_to_subject(state, subject_did, &credential_value).await;
     }
 
     Ok(IssueResponse {

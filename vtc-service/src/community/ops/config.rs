@@ -47,8 +47,7 @@ use vtc_audit::{
 /// The map is wrapped (rather than `#[serde(flatten)]`ed to the top level) to
 /// match canonical `spec/config/patch/0.1`, whose envelope is
 /// `additionalProperties: false` around a single `overrides` object.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct PatchRequest {
     pub overrides: HashMap<String, Value>,
 }

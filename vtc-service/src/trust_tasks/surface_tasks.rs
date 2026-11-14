@@ -617,23 +617,19 @@ async fn handle_schemas_register(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_capable::<schemas_register::Payload>(
-        state,
-        ctx,
-        &doc,
-        crate::acl::Capability::SurfaceAdmin,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let body: crate::schemas::ops::RegisterSchemaBody = match parse_payload(&doc) {
+    let actor =
+        match super::capable_signer(state, ctx, &doc, crate::acl::Capability::SurfaceAdmin, None)
+            .await
+        {
+            Ok(a) => a.did,
+            Err(reject) => return reject,
+        };
+    let body = match parse_spec_payload::<schemas_register::Payload>(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
     if let Some(schema) = &body.credential_schema
-        && let Err(e) = jsonschema::validator_for(schema)
+        && let Err(e) = jsonschema::validator_for(&Value::Object(schema.0.clone()))
     {
         return declared(
             &doc,
@@ -1289,24 +1285,15 @@ async fn handle_join_query(
     // a DID the caller names. So it asks the capability that decides join
     // requests, not merely an administrative role.
     if let Err(reject) =
-        as_capable::<join_query::Payload>(state, ctx, &doc, crate::acl::Capability::JoinDecide)
-            .await
+        super::capable_signer(state, ctx, &doc, crate::acl::Capability::JoinDecide, None).await
     {
         return reject;
     }
-    let body: crate::join::ops::present::SendQueryRequest =
-        match serde_json::from_value(without_ext(&doc)) {
-            Ok(b) => b,
-            Err(e) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::MalformedRequest {
-                        reason: format!("payload: {e}"),
-                    },
-                );
-            }
-        };
-    match crate::join::ops::present::send_query_inner(state, body).await {
+    let body = match parse_spec_payload::<join_query::Payload>(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::join::ops::present::send_query_inner(state, &body).await {
         Ok(response) => success_response(&doc, response),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, JOIN_QUERY_ERR_CRITERION_NOT_FOUND, e),
         Err(e) => app_error_to_reject(&doc, &e),

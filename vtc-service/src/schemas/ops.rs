@@ -20,7 +20,6 @@
 //! every type it references is registered (in [`store_accepts`]).
 
 use chrono::Utc;
-use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use tracing::info;
 use vtc_audit::{AuditEvent, SchemaChangeData};
@@ -34,26 +33,14 @@ use crate::server::AppState;
 
 // ─── Per-type schema registry (Issues / Accepts) ─────────
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct RegisterSchemaBody {
-    pub type_uri: String,
-    #[serde(default)]
-    pub dtg_type: Option<String>,
-    #[serde(default)]
-    pub credential_schema: Option<JsonValue>,
-    pub kind: SchemaKind,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-/// `POST /v1/schemas` — register (or update) a per-type schema entry.
+/// `vtc/schemas/register/0.1` — register (or update) a per-type schema entry.
 pub(crate) async fn register_inner(
     state: &AppState,
     actor: &str,
-    body: RegisterSchemaBody,
+    body: vti_specs::vtc::schemas::register::v0_1::Payload,
 ) -> Result<SchemaEntry, AppError> {
+    let kind: SchemaKind = crate::wire::read_as("kind", &body.kind)?;
+    let credential_schema = body.credential_schema.map(|s| JsonValue::Object(s.0));
     let uri = body.type_uri.trim();
     if uri.is_empty() {
         return Err(AppError::Validation("type_uri cannot be empty".into()));
@@ -64,17 +51,17 @@ pub(crate) async fn register_inner(
         )));
     }
     // A credentialSchema, when present, must be a well-formed JSON Schema.
-    if let Some(schema) = &body.credential_schema {
+    if let Some(schema) = &credential_schema {
         jsonschema::validator_for(schema)
             .map_err(|e| AppError::Validation(format!("invalid credentialSchema: {e}")))?;
     }
 
     let entry = SchemaEntry {
         type_uri: uri.to_string(),
-        dtg_type: body.dtg_type,
-        credential_schema: body.credential_schema,
-        kind: body.kind,
-        description: body.description,
+        dtg_type: body.dtg_type.map(String::from),
+        credential_schema,
+        kind,
+        description: body.description.map(String::from),
         created_at: Utc::now(),
         created_by_did: actor.to_string(),
     };

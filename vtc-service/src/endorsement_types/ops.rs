@@ -15,7 +15,7 @@
 //!   call rather than two.
 //!
 //! The criterion half is the symmetric partner of the check in
-//! `routes::schemas::register_accepts`, which refuses a criterion
+//! `schemas::ops::register_accepts`, which refuses a criterion
 //! whose `statementType` is not registered. Without it, deleting
 //! a type strands a criterion in exactly the state registration
 //! forbids: applicants keep reading a manifest that requires a
@@ -39,7 +39,7 @@
 //! URIs from colliding with the keyspace prefix discipline.
 
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tracing::info;
 use vtc_audit::{AuditEvent, EndorsementTypeDeletedData, EndorsementTypeRegisteredData};
@@ -93,17 +93,6 @@ fn malformed_request_code() -> &'static str {
 
 // ─── Register ────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct RegisterBody {
-    pub type_uri: String,
-    #[serde(default)]
-    pub claim_schema: Option<JsonValue>,
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
 /// The largest `claimSchema` a registration accepts, measured serialised.
 ///
 /// The task publishes no bound, but the signed door caps a whole document at
@@ -126,7 +115,8 @@ pub const DESCRIPTION_MAX_CHARS: usize = 1024;
 pub(crate) async fn register_inner(
     state: &AppState,
     actor_did: &str,
-    body: RegisterBody,
+    body: &vti_specs::vtc::endorsement_types::register::v0_1::Payload,
+    claim_schema: Option<JsonValue>,
 ) -> Result<RegisterResponse, TaskError> {
     let audit_writer = state
         .audit_writer
@@ -152,7 +142,7 @@ pub(crate) async fn register_inner(
             )),
         ));
     }
-    if let Some(schema) = body.claim_schema.as_ref() {
+    if let Some(schema) = claim_schema.as_ref() {
         let size = serde_json::to_vec(schema)
             .map(|b| b.len())
             .unwrap_or(usize::MAX);
@@ -217,7 +207,7 @@ pub(crate) async fn register_inner(
     // every issuance of the type — a fault the issuing caller could neither
     // cause nor diagnose. Refusing at the one call that supplies the document
     // is the fix; naming the bad keyword is what makes the refusal actionable.
-    if let Some(schema) = body.claim_schema.as_ref()
+    if let Some(schema) = claim_schema.as_ref()
         && let Err(detail) = crate::schemas::check_schema(schema)
     {
         return Err(TaskError::declared(
@@ -232,8 +222,8 @@ pub(crate) async fn register_inner(
 
     let row = EndorsementType {
         type_uri: uri.to_string(),
-        claim_schema: body.claim_schema,
-        description: body.description.clone(),
+        claim_schema,
+        description: body.description.clone().map(String::from),
         created_at: Utc::now(),
         created_by_did: actor_did.to_string(),
     };
@@ -245,7 +235,7 @@ pub(crate) async fn register_inner(
             None,
             AuditEvent::EndorsementTypeRegistered(EndorsementTypeRegisteredData {
                 type_uri: uri.to_string(),
-                description: body.description,
+                description: body.description.clone().map(String::from),
             }),
         )
         .await?;
@@ -268,22 +258,13 @@ pub struct RegisterResponse {
 
 // ─── List ────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema, utoipa::IntoParams)]
-#[schema(as = EndorsementTypeListQuery)]
-pub struct ListQuery {
-    pub cursor: Option<String>,
-    pub limit: Option<usize>,
-}
-
 /// `vtc/endorsement-types/list/0.2`. A signed document served by the spine
 /// (`trust_tasks::community_tasks`).
 pub(crate) async fn list(
     state: &AppState,
-    query: ListQuery,
+    query: vti_specs::vtc::endorsement_types::list::v0_2::Payload,
 ) -> Result<Paginated<EndorsementType>, AppError> {
-    let limit = query.limit.unwrap_or(50).clamp(1, LIST_MAX_LIMIT);
+    let limit = crate::wire::page_limit(query.limit, 50, LIST_MAX_LIMIT);
     let audit_key = state
         .audit_writer
         .as_ref()

@@ -32,6 +32,7 @@ use crate::policy::{
     Policy, PolicyPurpose, get_active_policy_id, get_policy, list_policies_paginated,
 };
 use crate::server::AppState;
+use vti_specs::policy::{active::v0_1 as policy_active, list::v0_3 as policy_list};
 
 // ---------------------------------------------------------------------------
 // Wire shape
@@ -161,47 +162,21 @@ impl PolicyResponse {
 // GET /v1/policies
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema, utoipa::IntoParams)]
-pub struct ListPoliciesQuery {
-    /// Filter by purpose (wire-form camelCase). A VTC extension —
-    /// canonical has no purpose filter because purpose is not a
-    /// property of a module there.
-    pub purpose: Option<PolicyPurpose>,
-    /// Canonical `policy/list` parameters this maintainer does not
-    /// implement. Accepting them silently would tell a caller their
-    /// query was narrowed when it was not, so they are refused.
-    pub context_id: Option<String>,
-    pub enabled_only: Option<bool>,
-    /// `"active"` — only the row pointed at by each
-    /// `active_policies:<purpose>`. `"archived"` — every row that
-    /// is *not* the current active pointer. Omitted → all rows.
-    pub status: Option<PolicyStatusFilter>,
-    /// Pagination cursor (returned by a previous call).
-    pub cursor: Option<String>,
-    /// Page size. Clamped to `1..=200`.
-    pub limit: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-#[derive(utoipa::ToSchema)]
-pub enum PolicyStatusFilter {
-    Active,
-    Archived,
-}
-
-/// The listing `policy/list/0.3` answers, on the route and the spine alike.
+/// The listing `policy/list/0.3` answers, narrowed to `purpose` — the
+/// `ext` member [`PURPOSE_EXT_KEY`] the console names one by, since the
+/// canonical payload has no purpose filter.
 pub(crate) async fn list_policies_inner(
     state: &AppState,
-    query: ListPoliciesQuery,
+    query: policy_list::Payload,
+    purpose: Option<PolicyPurpose>,
 ) -> Result<PolicyListResponse, AppError> {
     let mut unsupported = Vec::new();
     if query.context_id.is_some() {
         unsupported.push("contextId");
     }
-    if query.enabled_only.is_some() {
+    // `enabledOnly: false` (the schema default) asks for every module, which
+    // is what this listing returns; only `true` asks for a filter it lacks.
+    if query.enabled_only {
         unsupported.push("enabledOnly");
     }
     if !unsupported.is_empty() {
@@ -213,33 +188,10 @@ pub(crate) async fn list_policies_inner(
         )));
     }
 
-    // `status=active` is resolved directly from the per-purpose active
-    // pointers, not the paginated keyspace scan. The purpose/status
-    // filters below run *after* pagination, so a small `limit` (the
-    // simulator's active-policy lookup sends `limit=1`) would drop the
-    // active row for every purpose whose row isn't in the first page —
-    // surfacing the active policy for one arbitrary purpose only. The
-    // active set is at most one row per `PolicyPurpose`, so resolve it
-    // deterministically and ignore limit/cursor.
-    if matches!(query.status, Some(PolicyStatusFilter::Active)) {
-        let mut items = Vec::new();
-        for purpose in PolicyPurpose::ALL {
-            if query.purpose.is_some_and(|f| f != purpose) {
-                continue;
-            }
-            if let Some(id) = get_active_policy_id(&state.active_policies_ks, purpose).await?
-                && let Some(p) = get_policy(&state.policies_ks, id).await?
-            {
-                items.push(PolicyResponse::from_policy(p, true));
-            }
-        }
-        return Ok(PolicyListResponse {
-            policies: items.iter().map(|r| (&r.policy).into()).collect(),
-            next_cursor: None,
-        });
-    }
-
-    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
+    let limit = query
+        .limit
+        .map_or(50, |l| usize::try_from(l.get()).unwrap_or(MAX_LIMIT))
+        .clamp(1, MAX_LIMIT);
 
     let audit_writer = state
         .audit_writer
@@ -269,21 +221,15 @@ pub(crate) async fn list_policies_inner(
         }
     }
 
-    let purpose_filter = query.purpose;
-    let status_filter = query.status;
+    let purpose_filter = purpose;
 
     let items: Vec<PolicyResponse> = page
         .items
         .into_iter()
         .filter(|p| purpose_filter.is_none_or(|f| p.purpose == f))
-        .filter_map(|p| {
+        .map(|p| {
             let is_active = active_ids.contains(&p.id);
-            match status_filter {
-                Some(PolicyStatusFilter::Active) if !is_active => return None,
-                Some(PolicyStatusFilter::Archived) if is_active => return None,
-                _ => {}
-            }
-            Some(PolicyResponse::from_policy(p, is_active))
+            PolicyResponse::from_policy(p, is_active)
         })
         .collect();
 
@@ -332,22 +278,16 @@ pub struct ActiveBinding {
     pub policy: PolicyModuleResponse,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[into_params(parameter_in = Query)]
-pub struct ActiveQuery {
-    /// Narrow to a single decision slot.
-    pub purpose: Option<PolicyPurpose>,
-    /// Not implemented — a VTC is not context-partitioned. Refused
-    /// rather than ignored, so a caller never reads a community-wide
-    /// binding as one scoped to their context.
-    pub context_id: Option<String>,
-}
-
 pub(crate) async fn active_policies(
     state: &AppState,
-    query: ActiveQuery,
+    query: policy_active::Payload,
 ) -> Result<ActiveBindingsResponse, AppError> {
+    let wanted: Option<PolicyPurpose> = query
+        .purpose
+        .as_ref()
+        .map(|p| serde_json::to_value(p).and_then(serde_json::from_value))
+        .transpose()
+        .map_err(|e| AppError::Validation(format!("purpose: {e}")))?;
     if query.context_id.is_some() {
         return Err(AppError::Validation(
             "this maintainer does not implement the contextId filter: a VTC is a \
@@ -358,7 +298,7 @@ pub(crate) async fn active_policies(
 
     let mut bindings = Vec::new();
     for purpose in PolicyPurpose::ALL {
-        if query.purpose.is_some_and(|f| f != purpose) {
+        if wanted.is_some_and(|f| f != purpose) {
             continue;
         }
         if let Some(id) = get_active_policy_id(&state.active_policies_ks, purpose).await?

@@ -23,7 +23,7 @@
 //! `departure_preference`, then the policy's chosen disposition, then
 //! `tombstone`.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use vti_common::error::AppError;
 
@@ -35,19 +35,6 @@ use crate::ceremony::{LeaveOutcome, remove_inner};
 use crate::error::TaskError;
 use crate::members::Disposition;
 use crate::server::AppState;
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct RemoveBody {
-    #[serde(default)]
-    pub disposition: Option<Disposition>,
-    /// Optional admin-only reason. Self-remove ignores this (the
-    /// member doesn't need to justify their own departure). Capped
-    /// at 1024 chars at the route layer.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,7 +83,7 @@ pub(crate) async fn admin_remove_inner(
     state: &AppState,
     actor: &crate::acl::AdminActor,
     target_did: &str,
-    body: RemoveBody,
+    body: &vti_specs::vtc::members::admin_remove::v0_1::Payload,
     op: Operation<'_>,
 ) -> Result<LeaveOutcome, TaskError> {
     let actor_did = actor.did.as_str();
@@ -109,7 +96,9 @@ pub(crate) async fn admin_remove_inner(
         )
         .into());
     }
-    let reason = body.reason.unwrap_or_default();
+    let reason = body.reason.clone().map(String::from).unwrap_or_default();
+    let disposition: Option<Disposition> =
+        crate::wire::read_opt("disposition", body.disposition.as_ref())?;
     if reason.len() > REASON_MAX {
         return Err(AppError::Validation(format!(
             "reason exceeds {REASON_MAX} chars (got {})",
@@ -131,15 +120,7 @@ pub(crate) async fn admin_remove_inner(
         ))
         .into());
     }
-    remove_inner(
-        state,
-        actor_did,
-        target_did,
-        body.disposition,
-        reason,
-        Some(op),
-    )
-    .await
+    remove_inner(state, actor_did, target_did, disposition, reason, Some(op)).await
 }
 
 // ---------------------------------------------------------------------------

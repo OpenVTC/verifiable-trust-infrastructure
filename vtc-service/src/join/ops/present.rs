@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use affinidi_openid4vp::DcqlQuery;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -228,19 +228,6 @@ pub async fn prepare_join_query(
     })
 }
 
-/// `POST /v1/join-requests/query` request — ask the VTC to prepare a join query
-/// for `holderDid` from the named Accepts criterion.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct SendQueryRequest {
-    /// The holder the query is for (delivered to it over DIDComm by the VTC or a
-    /// relayer — relayer ≠ holder is supported; the holder still proves binding).
-    pub holder_did: String,
-    /// The registered Accepts criterion whose DCQL query to send.
-    pub criterion_id: String,
-}
-
 /// `POST /v1/join-requests/query` response — the prepared query to deliver, and
 /// the thread the holder presents on.
 #[derive(Debug, Serialize)]
@@ -275,27 +262,30 @@ pub struct SendQueryResponse {
 /// a holder for a registered Accepts criterion. Auth: Admin.
 pub(crate) async fn send_query_inner(
     state: &AppState,
-    body: SendQueryRequest,
+    body: &vti_specs::vtc::join_requests::query::v0_1::Payload,
 ) -> Result<SendQueryResponse, AppError> {
     let thread_id = Uuid::new_v4().to_string();
-    let query = prepare_join_query(state, &thread_id, &body.criterion_id, Utc::now()).await?;
+    let query =
+        prepare_join_query(state, &thread_id, body.criterion_id.as_str(), Utc::now()).await?;
 
     // Best-effort DIDComm push. A failure (no mediator, unreachable holder) is not
     // fatal — the query is still returned for relay delivery.
-    let delivered = match push_credential_query(state, &body.holder_did, &thread_id, &query).await {
+    let delivered = match push_credential_query(state, body.holder_did.as_str(), &thread_id, &query)
+        .await
+    {
         Ok(()) => {
-            info!(holder = %body.holder_did, thread = %thread_id, "queued credential query for guaranteed delivery");
+            info!(holder = %body.holder_did.as_str(), thread = %thread_id, "queued credential query for guaranteed delivery");
             true
         }
         Err(e) => {
-            warn!(holder = %body.holder_did, thread = %thread_id, error = %e, "credential-query push failed — returning query for relay");
+            warn!(holder = %body.holder_did.as_str(), thread = %thread_id, error = %e, "credential-query push failed — returning query for relay");
             false
         }
     };
 
     Ok(SendQueryResponse {
         thread_id,
-        holder_did: body.holder_did,
+        holder_did: String::from(body.holder_did.clone()),
         query,
         delivered,
     })

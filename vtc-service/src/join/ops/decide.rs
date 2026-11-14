@@ -52,14 +52,11 @@ pub enum Decision {
     Rejected,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
+#[derive(Debug)]
 pub struct DecideBody {
     pub decision: Decision,
     /// Optional operator rationale, recorded in the audit trail.
     /// Chiefly useful with `rejected`.
-    #[serde(default)]
     pub reason: Option<String>,
 }
 

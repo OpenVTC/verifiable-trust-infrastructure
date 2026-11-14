@@ -249,7 +249,7 @@ async fn admit(
         label,
         // The authority an invitation's role implies; an invitation naming a
         // role that implies any was bounded by its inviter's own when it was
-        // issued (`routes::invitations`, vtc-admin-roles.md §6.3).
+        // issued (`join::invitations`, vtc-admin-roles.md §6.3).
         admin: role.implied_authority(),
         delegated_by: None,
         created_at: now_epoch(),

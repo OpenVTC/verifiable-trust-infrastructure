@@ -64,7 +64,7 @@ pub async fn show(
     })?;
 
     let signer = state.credential_signer.as_ref().ok_or_else(|| {
-        // Same shape `routes::install` returns when the secret
+        // Same shape `install::ops` returns when the secret
         // store is unset — operators get a clear "run setup first"
         // signal rather than an opaque 500.
         AppError::Internal(format!(

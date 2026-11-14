@@ -60,7 +60,6 @@ use crate::server::AppState;
     // Likewise the admin verbs with no route at all — signed documents only —
     // whose shapes the console's signed calls are typed by.
     components(schemas(
-        crate::policy::ops::read::PolicyStatusFilter,
         crate::git_ns::admin_reads::GitNsNamespaceList,
         crate::git_ns::admin_reads::GitNsRepoList,
         crate::git_ns::admin_reads::GitNsRightList,
@@ -74,7 +73,7 @@ use crate::server::AppState;
         crate::acl::ops::AclEntryEnvelope,
         vta_sdk::openapi::VetterList01Payload,
         vta_sdk::openapi::VetterList01Response,
-        crate::endorsement_types::ops::RegisterBody,
+        vta_sdk::openapi::EndorsementTypeRegister01Payload,
         crate::endorsement_types::ops::RegisterResponse,
         vta_sdk::openapi::EndorsementTypeDelete01Response,
         // The operational verbs the console signs (`trust_tasks::admin_tasks`).
@@ -319,7 +318,6 @@ use crate::server::AppState;
         crate::community::ops::config::ReloadResponse,
         crate::community::ops::config::RestartResponse,
         crate::install::ops::invites::ListInvitesResponse,
-        crate::install::ops::invites::CreateInviteRequest,
         crate::install::ops::invites::CreateInviteResponse,
         crate::install::ops::invites::RevokeInviteResponse,
         auth::SessionListResponse,
@@ -343,11 +341,9 @@ use crate::server::AppState;
         crate::recognition::admin::RecognitionCheck,
         crate::members::ops::read::RemovedMembersResponse,
         crate::members::ops::read::MemberEnvelope,
-        crate::members::ops::request_vmc::RequestVmcBody,
         crate::members::ops::request_vmc::RequestVmcResponse,
         crate::join::ops::read::JoinRequestEnvelope,
         crate::relationships::ops::RelationshipsGraph,
-        crate::join::invitations::IssueInvitationBody,
         crate::join::invitations::IssueInvitationResponse,
         crate::join::invitations::InvitationListResponse,
         crate::join::invitations::RevokeResponse,
@@ -1151,7 +1147,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // bearer token, #1084) was already served on the spine
         // (`trust_tasks::member_tasks::handle_relationships_publish`) —
         // `vtc-client` has signed it since #1845, and its bearer route
-        // (`routes::relationships::publish`, the twin `publish_inner` also
+        // (`relationships::ops::publish`, the twin `publish_inner` also
         // calls) had no caller left either.
         // The single Trust Task document endpoint (P0.5: governed unauth
         // chain). The holder-facing join ceremony verbs (submit/request,

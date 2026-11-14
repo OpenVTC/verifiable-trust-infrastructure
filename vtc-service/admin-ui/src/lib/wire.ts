@@ -660,28 +660,6 @@ export interface components {
          * @enum {string}
          */
         ConfigSource: "env" | "db" | "toml" | "default";
-        CreateInviteRequest: {
-            /**
-             * @description The DID a **wallet** invitation is for. Absent, the invitation is a
-             *     **passkey** invitation: the administrator's DID is derived from the
-             *     passkey the invitee registers.
-             */
-            did?: string | null;
-            /**
-             * @description Operator-supplied label for the ACL entry the invitation writes — now
-             *     for a wallet invitation whose DID has none, at the claim for a passkey
-             *     invitation. Ignored when a wallet invitation's DID already has one.
-             */
-            label?: string | null;
-            /**
-             * Format: int64
-             * @description Token TTL in seconds. Defaults to
-             *     [`INSTALL_TOKEN_DEFAULT_TTL_SECS`] (15 minutes) when omitted.
-             *     Cap at 24 h to keep stale invites from accumulating in the
-             *     keyspace.
-             */
-            ttlSeconds?: number | null;
-        };
         CreateInviteResponse: {
             /**
              * @description `true` when the call also wrote the ACL entry; `false` when a wallet
@@ -1897,23 +1875,6 @@ export interface components {
              */
             targetDid?: string | null;
         };
-        IssueInvitationBody: {
-            /**
-             * @description Optional role to grant the invitee on join (e.g. `member`, `moderator`,
-             *     `issuer`). Carried in the VIC's `credentialSubject.scopes` as
-             *     `role:<name>` and honored by the join policy. `admin` is refused — the
-             *     no-admin-via-join privilege ceiling would deny it anyway. Defaults to
-             *     `member` (absent scope).
-             */
-            role?: string | null;
-            /** @description The DID to invite (a prospective, non-member holder). */
-            subjectDid: string;
-            /**
-             * Format: int32
-             * @description Optional validity in days (1..=90); defaults to the 7-day VIC default.
-             */
-            validityDays?: number | null;
-        };
         IssueInvitationResponse: {
             /** @description Echo of the invited DID. */
             subjectDid: string;
@@ -2617,8 +2578,6 @@ export interface components {
          * @enum {string}
          */
         PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility" | "gitNamespace" | "admission" | "directoryWrite" | "groups";
-        /** @enum {string} */
-        PolicyStatusFilter: "active" | "archived";
         /**
          * @description The persisted profile plus the one field that is computed per request.
          *
@@ -2767,11 +2726,6 @@ export interface components {
              *     foreign DID is unrecognised).
              */
             registryConfigured: boolean;
-        };
-        RegisterBody: {
-            claimSchema?: components["schemas"]["Value"] | null;
-            description?: string | null;
-            typeUri: string;
         };
         RegisterFinishResponse: {
             credentialId: string;
@@ -2939,10 +2893,6 @@ export interface components {
          */
         RemovedMembersResponse: {
             removed: components["schemas"]["RemovedMember"][];
-        };
-        RequestVmcBody: {
-            /** @description Optional operator note ("renewal", "audit", …) relayed to the member. */
-            reason?: string | null;
         };
         RequestVmcResponse: {
             memberDid: string;
@@ -9711,6 +9661,33 @@ export interface components {
         VtcEndorsementTypesDeleteV0_1Response: {
             ext?: components["schemas"]["VtcEndorsementTypesDeleteV0_1Ext"];
             typeUri: string;
+        };
+        VtcEndorsementTypesRegisterV0_1EndorsementType: {
+            /** @description Optional JSON Schema a statement's `credentialSubject.object.value` must satisfy (opaque here) — for a registry predicate, the object schema its profile publishes. */
+            claimSchema?: Record<string, never>;
+            /** Format: date-time */
+            createdAt?: string;
+            /** @description The member who registered this endorsement type. An endorsement vocabulary is community-defined and shapes what every later endorsement can claim, so who introduced a type is audit-relevant in a way its creation time alone is not. */
+            createdByDid?: string;
+            description?: string;
+            /** @description The predicate IRI the community accepts, compared as an exact string. Always an absolute IRI: a DTG VSC predicate registry IRI (e.g. `https://registry.trustoverip.org/dtg/vsc/vetted/1`) or a community-namespace IRI defined in the registry's predicate definition format. The four core predicates — endorses/1, witnessed/1, vetted/1 and presented/1 under `https://registry.trustoverip.org/dtg/vsc/` — are seeded when the community starts. The reserved value `role:vetter`, which names the vetter-role record vtc/endorsements/* keeps beside statements, is never registered. */
+            typeUri: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcEndorsementTypesRegisterV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcEndorsementTypesRegisterV0_1Payload: {
+            /** @description Optional JSON Schema a statement's `credentialSubject.object.value` must satisfy (opaque here). */
+            claimSchema?: Record<string, never>;
+            description?: string;
+            ext?: components["schemas"]["VtcEndorsementTypesRegisterV0_1Ext"];
+            /** @description The predicate IRI to accept, an absolute IRI: a DTG VSC predicate registry IRI or a community-namespace IRI. The reserved value `role:vetter` is refused with `reserved`, and a value that is not an absolute IRI with `invalidUri`. */
+            typeUri: string;
+        };
+        VtcEndorsementTypesRegisterV0_1Response: {
+            endorsementType: components["schemas"]["VtcEndorsementTypesRegisterV0_1EndorsementType"];
+            ext?: components["schemas"]["VtcEndorsementTypesRegisterV0_1Ext"];
         };
         VtcGroupsBindingsAddV0_1BindingId: string;
         VtcGroupsBindingsAddV0_1BindingSpec: components["schemas"]["VtcGroupsBindingsAddV0_1RoomBindingSpec"] | components["schemas"]["VtcGroupsBindingsAddV0_1GrantsBindingSpec"] | components["schemas"]["VtcGroupsBindingsAddV0_1RoleBindingSpec"];

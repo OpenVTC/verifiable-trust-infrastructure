@@ -77,8 +77,8 @@ use vti_specs::vtc::relationships::{
 };
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, reject_with_code,
-    success_response, task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,
+    task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::get_acl_entry;
@@ -381,17 +381,17 @@ async fn handle_rotate_challenge(
         Ok(d) => d,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_spec_payload::<rotate_challenge::Payload>(&doc) {
-        return reject;
-    }
-    // The route's own body carries `reason` as the audit enum the challenge
-    // row stores; the generated parse above has already held it to the
-    // specification's `enum`.
-    let body: crate::members::ops::rotate::ChallengeBody = match parse_payload(&doc) {
+    let body = match parse_spec_payload::<rotate_challenge::Payload>(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::members::ops::rotate::challenge_inner(state, &caller, body.reason).await {
+    // `reason` as the audit enum the challenge row stores; the generated
+    // parse has already held it to the specification's `enum`.
+    let reason = match crate::wire::read_opt("reason", body.reason.as_ref()) {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    match crate::members::ops::rotate::challenge_inner(state, &caller, reason).await {
         Ok(res) => respond_as::<rotate_challenge::Response>(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -411,14 +411,11 @@ async fn handle_rotate(
         Ok(d) => d,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_spec_payload::<rotate::Payload>(&doc) {
-        return reject;
-    }
-    let body: crate::members::ops::rotate::FinishBody = match parse_payload(&doc) {
+    let body = match parse_spec_payload::<rotate::Payload>(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::members::ops::rotate::rotate_inner(state, &caller, body).await {
+    match crate::members::ops::rotate::rotate_inner(state, &caller, &body).await {
         // `rotate_inner` answers `vmc: null` when the swap succeeded and
         // re-issuing the credentials did not; the published response requires
         // both, so `respond_as` refuses that reply rather than send it. The
@@ -708,10 +705,7 @@ async fn handle_endorsements_issue(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    if let Err(reject) = parse_spec_payload::<end_issue::Payload>(&doc) {
-        return reject;
-    }
-    let body: crate::endorsements::ops::IssueBody = match parse_payload(&doc) {
+    let body = match parse_spec_payload::<end_issue::Payload>(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -727,7 +721,7 @@ async fn handle_endorsements_issue(
             );
         }
     };
-    match crate::endorsements::ops::issue_inner(state, &actor, body, &request).await {
+    match crate::endorsements::ops::issue_inner(state, &actor, &body, &request).await {
         Ok(res) => respond_as::<end_issue::Response>(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }

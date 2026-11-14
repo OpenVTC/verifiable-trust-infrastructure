@@ -7,7 +7,7 @@
 //! [`crate::members::inbound_vmc`]). This endpoint only dispatches the request —
 //! it does not block on the member's reply.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
 use vta_sdk::protocols::members::{MEMBER_REQUEST_VMC_TYPE, RequestMemberVmcBody};
@@ -16,15 +16,6 @@ use vti_common::error::AppError;
 use crate::error::TaskError;
 use crate::members::get_member;
 use crate::server::AppState;
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct RequestVmcBody {
-    /// Optional operator note ("renewal", "audit", …) relayed to the member.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,7 +39,8 @@ pub const SOLICIT_VMC_ERR_NOT_FOUND: &str =
 pub(crate) async fn request_vmc(
     state: &AppState,
     member_did: String,
-    body: RequestVmcBody,
+    // An optional operator note ("renewal", "audit", …) relayed to the member.
+    reason: Option<String>,
 ) -> Result<RequestVmcResponse, TaskError> {
     vti_common::identifier::validate_did("did", &member_did)?;
 
@@ -77,7 +69,7 @@ pub(crate) async fn request_vmc(
     let thread_id = Uuid::new_v4().to_string();
     let request = RequestMemberVmcBody {
         community_did,
-        reason: body.reason,
+        reason,
     };
     let request_body = serde_json::to_value(&request)
         .map_err(|e| AppError::Internal(format!("serialise request-vmc body: {e}")))?;

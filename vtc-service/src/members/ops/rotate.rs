@@ -194,22 +194,6 @@ pub struct ChallengeResponse {
     pub canonical_template: JsonValue,
 }
 
-/// Optional body for the challenge request.
-///
-/// Absent body, absent field, and `unspecified` all mean the same
-/// thing — the member declined to say. The endpoint predates this
-/// field, so clients that send no body at all stay valid.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct ChallengeBody {
-    /// Why the member is rotating. Self-asserted — see
-    /// [`DidRotatedData::rotation_reason`] for what this is and is not
-    /// evidence of.
-    #[serde(default)]
-    pub reason: Option<DidRotationReason>,
-}
-
 /// Mint a rotation challenge for `caller_did` — the operation behind the
 /// `vtc/members/rotate-challenge/0.1` Trust Task, which authorizes from the
 /// document's proof signer. Opening a ceremony has no bearer REST route: it
@@ -269,19 +253,6 @@ pub(crate) async fn challenge_inner(
 // Step 2 — finish
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct FinishBody {
-    pub rotation_id: Uuid,
-    pub old_did: String,
-    pub new_did: String,
-    /// Hex-encoded Ed25519 signature by the old DID's key.
-    pub old_signature: String,
-    /// Hex-encoded Ed25519 signature by the new DID's key.
-    pub new_signature: String,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -301,8 +272,16 @@ pub struct FinishResponse {
 pub(crate) async fn rotate_inner(
     state: &AppState,
     caller_did: &str,
-    mut body: FinishBody,
+    body: &vti_specs::vtc::members::rotate::v0_1::Payload,
 ) -> Result<FinishResponse, TaskError> {
+    let rotation_id: Uuid = body
+        .rotation_id
+        .parse()
+        .map_err(|_| AppError::Validation("rotationId is not a rotation identifier".into()))?;
+    let mut old_did = String::from(body.old_did.clone());
+    let mut new_did = String::from(body.new_did.clone());
+    let old_signature = String::from(body.old_signature.clone());
+    let new_signature = String::from(body.new_signature.clone());
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -310,35 +289,33 @@ pub(crate) async fn rotate_inner(
 
     // 1. Authenticated session must match `oldDid` — by identity, so a
     //    did:scid member that signed in with its `src` matches (VTI-KEY-160).
-    if !vta_sdk::did_scid::same_reference(caller_did, &body.old_did) {
+    if !vta_sdk::did_scid::same_reference(caller_did, &old_did) {
         return Err(AppError::Forbidden(format!(
             "authenticated DID ({caller_did}) does not match oldDid ({})",
-            body.old_did
+            old_did
         ))
         .into());
     }
 
     // 2. Method detection. M2.15.1 ships did:key; M2.15.2
     //    extends to did:webvh via a resolver walk.
-    let method = method_of(&body.new_did)?;
+    let method = method_of(&new_did)?;
 
     // 3. Consume the challenge row. Single-use: `take_challenge`
     //    removes it before we run any further checks.
-    let challenge = take_challenge(state, body.rotation_id)
-        .await?
-        .ok_or_else(|| {
-            TaskError::declared(
-                ROTATE_ERR_ROTATION_EXPIRED,
-                AppError::Validation(format!(
-                    "rotation challenge {} not found or already consumed",
-                    body.rotation_id
-                )),
-            )
-        })?;
-    if challenge.did != body.old_did {
+    let challenge = take_challenge(state, rotation_id).await?.ok_or_else(|| {
+        TaskError::declared(
+            ROTATE_ERR_ROTATION_EXPIRED,
+            AppError::Validation(format!(
+                "rotation challenge {} not found or already consumed",
+                rotation_id
+            )),
+        )
+    })?;
+    if challenge.did != old_did {
         return Err(AppError::Forbidden(format!(
             "rotation challenge was issued for {}, not {}",
-            challenge.did, body.old_did
+            challenge.did, old_did
         ))
         .into());
     }
@@ -347,13 +324,13 @@ pub(crate) async fn rotate_inner(
             ROTATE_ERR_ROTATION_EXPIRED,
             AppError::Validation(format!(
                 "rotation challenge {} expired at {}",
-                body.rotation_id, challenge.expires_at
+                rotation_id, challenge.expires_at
             )),
         ));
     }
 
     // 4. Reject same-DID rotations (no-op churn).
-    if body.old_did == body.new_did {
+    if old_did == new_did {
         return Err(AppError::Validation(
             "oldDid and newDid must differ — same-DID rotation is a no-op".into(),
         )
@@ -362,9 +339,9 @@ pub(crate) async fn rotate_inner(
 
     // 5. Verify both signatures over the canonical payload.
     let payload = canonical_signing_bytes(
-        body.rotation_id,
-        &body.old_did,
-        &body.new_did,
+        rotation_id,
+        &old_did,
+        &new_did,
         challenge.expires_at.timestamp(),
     )?;
     // Both DIDs are verified by the rules of their own method: the old DID is
@@ -375,34 +352,31 @@ pub(crate) async fn rotate_inner(
     // keys was not proven. Status and message are unchanged.
     let signature_invalid =
         |e: String| TaskError::declared(ROTATE_ERR_SIGNATURE_INVALID, AppError::Validation(e));
-    verify_signature_of(state, &body.old_did, &payload, &body.old_signature)
+    verify_signature_of(state, &old_did, &payload, &old_signature)
         .await?
         .map_err(|e| signature_invalid(format!("oldSignature failed: {e}")))?;
-    verify_signature_of(state, &body.new_did, &payload, &body.new_signature)
+    verify_signature_of(state, &new_did, &payload, &new_signature)
         .await?
         .map_err(|e| signature_invalid(format!("newSignature failed: {e}")))?;
     // The member is recorded under the identity it presented: a did:scid's DID,
     // without the `src` its signature was resolved through (VTI-KEY-164,
     // VTI-VTC-004).
-    body.new_did = vta_sdk::did_scid::identity(&body.new_did);
-    body.old_did = vta_sdk::did_scid::identity(&body.old_did);
+    new_did = vta_sdk::did_scid::identity(&new_did);
+    old_did = vta_sdk::did_scid::identity(&old_did);
 
     // 6. Refuse if the new DID already has an ACL row (would
     //    collide).
-    if get_acl_entry(&state.acl_ks, &body.new_did).await?.is_some() {
+    if get_acl_entry(&state.acl_ks, &new_did).await?.is_some() {
         return Err(AppError::Conflict(format!(
             "newDid {} already has an ACL row — refusing to clobber",
-            body.new_did
+            new_did
         ))
         .into());
     }
 
     // 6a. The member's election tickets follow them (VTI-VOT-022), before anything moves and
     //     with issuance held until the rotation is done.
-    let _tickets = state
-        .elections
-        .carry_tickets(&body.old_did, &body.new_did)
-        .await?;
+    let _tickets = state.elections.carry_tickets(&old_did, &new_did).await?;
 
     // 7. Move the ACL row. `KeyspaceHandle::swap` commits the
     // insert-new + remove-old pair as one write batch — one journal
@@ -410,23 +384,20 @@ pub(crate) async fn rotate_inner(
     // sequential store/delete pattern had a window where a crash or
     // a competing handler could observe both rows live and treat
     // the rotated member as having two valid identities.
-    let mut acl = get_acl_entry(&state.acl_ks, &body.old_did)
+    let mut acl = get_acl_entry(&state.acl_ks, &old_did)
         .await?
         .ok_or_else(|| {
-            AppError::Internal(format!(
-                "ACL row for {} disappeared mid-rotation",
-                body.old_did
-            ))
+            AppError::Internal(format!("ACL row for {} disappeared mid-rotation", old_did))
         })?;
-    acl.did = body.new_did.clone();
+    acl.did = new_did.clone();
     // One batch with the entry's authority and grant-holder index rows, so a
     // rotated administrator is never missing from them (#2602).
-    match crate::acl::move_acl_entry(&state.acl_ks, &body.old_did, None, &acl).await? {
+    match crate::acl::move_acl_entry(&state.acl_ks, &old_did, None, &acl).await? {
         vti_common::store::MoveOutcome::Moved => {}
         vti_common::store::MoveOutcome::SourceMissing => {
             return Err(AppError::Conflict(format!(
                 "ACL row for {} was removed mid-rotation",
-                body.old_did
+                old_did
             ))
             .into());
         }
@@ -435,7 +406,7 @@ pub(crate) async fn rotate_inner(
         _ => {
             return Err(AppError::Conflict(format!(
                 "ACL row for newDid {} was created mid-rotation",
-                body.new_did
+                new_did
             ))
             .into());
         }
@@ -443,20 +414,20 @@ pub(crate) async fn rotate_inner(
 
     // 8. Move the Member row. Same swap discipline. Skipped when no
     // member row exists (member-less rotation is rare but legal).
-    if let Some(mut m) = get_member(&state.members_ks, &body.old_did).await? {
-        m.did = body.new_did.clone();
+    if let Some(mut m) = get_member(&state.members_ks, &old_did).await? {
+        m.did = new_did.clone();
         let member_moved = state
             .members_ks
             .swap(
-                format!("members:{}", body.old_did).into_bytes(),
-                format!("members:{}", body.new_did).into_bytes(),
+                format!("members:{}", old_did).into_bytes(),
+                format!("members:{}", new_did).into_bytes(),
                 &m,
             )
             .await?;
         if !member_moved {
             return Err(AppError::Conflict(format!(
                 "member row for newDid {} was created mid-rotation",
-                body.new_did
+                new_did
             ))
             .into());
         }
@@ -464,15 +435,15 @@ pub(crate) async fn rotate_inner(
 
     // 8a. The directory card follows, keeping its entry identifier: everything
     // that refers to the entry is unaffected (VTI-DIR-122).
-    crate::directory::cards::rotate(state.directory.ks(), &body.old_did, &body.new_did).await?;
+    crate::directory::cards::rotate(state.directory.ks(), &old_did, &new_did).await?;
 
     // 8b. A rotated administrator is the same granter under a new name, not a
     // departed one: the entries it delegated follow it (VTI-ACL-071).
-    crate::acl::delegation::repoint(state, &body.old_did, &body.new_did).await?;
+    crate::acl::delegation::repoint(state, &old_did, &new_did).await?;
 
     // 9. Revoke every session keyed on the old DID.
     let sessions = list_sessions(&state.sessions_ks).await?;
-    for s in sessions.iter().filter(|s| s.did == body.old_did) {
+    for s in sessions.iter().filter(|s| s.did == old_did) {
         let _ = delete_session(&state.sessions_ks, &s.session_id).await;
     }
 
@@ -481,7 +452,7 @@ pub(crate) async fn rotate_inner(
     //     leaves the credential pointers null — the operator
     //     can recover via the renewal endpoint.
     let (vmc_value, vec_value, vmc_id, vac_id) =
-        match reissue_credentials(state, &body.new_did, &acl).await {
+        match reissue_credentials(state, &new_did, &acl).await {
             Ok(out) => out,
             Err(e) => {
                 warn!(error = %e, "rotation succeeded but credential re-issuance failed");
@@ -493,11 +464,11 @@ pub(crate) async fn rotate_inner(
     //     principal) per spec §10.5.
     audit_writer
         .write(
-            &body.new_did,
-            Some(&body.old_did),
+            &new_did,
+            Some(&old_did),
             AuditEvent::DidRotated(DidRotatedData {
-                old_did: body.old_did.clone(),
-                new_did: body.new_did.clone(),
+                old_did: old_did.clone(),
+                new_did: new_did.clone(),
                 method: method.to_string(),
                 vmc_id,
                 role_vac_id: vac_id,
@@ -508,14 +479,14 @@ pub(crate) async fn rotate_inner(
         .await?;
 
     info!(
-        old_did = %body.old_did,
-        new_did = %body.new_did,
+        old_did = %old_did,
+        new_did = %new_did,
         method,
         "DID rotated"
     );
 
     Ok(FinishResponse {
-        new_did: body.new_did,
+        new_did,
         method: method.to_string(),
         vmc: vmc_value,
         role_vac: vec_value,

@@ -3,7 +3,7 @@
 //! The HTTP `/v1/auth/recognise` route hard-wires a live
 //! `DIDCacheClient` for foreign-issuer key resolution, which
 //! is impractical to fake in a unit test. We exercise
-//! `routes::recognise::mint_recognised_session` directly —
+//! `recognition::recognise::mint_recognised_session` directly —
 //! it takes an already-`VerifiedForeignCredential` (typestate
 //! proof of "this passed the four hardening checks") and is
 //! the load-bearing route-level surface. The M3.9 verifier
@@ -385,7 +385,7 @@ mod holder_binding {
         // The VMC's wire tag is `MembershipCredential` — with no `Verifiable`
         // prefix. That prefix once lived in the constant's *name* only; the tag is what
         // `dtg-credentials` emits and what the VTC stamps, and it's what
-        // `routes::recognise` matches on. Hand-rolling the wrong string here made
+        // `recognition::recognise` matches on. Hand-rolling the wrong string here made
         // every VP that got as far as the credential lookup 400 with
         // "presentation has no MembershipCredential" — so the three holder-binding
         // assertions below could never be reached. Use the constant, not a literal.

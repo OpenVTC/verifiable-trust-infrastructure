@@ -295,15 +295,13 @@ pub(super) async fn handle_config_import(
 /// and the only one the REST route asks. `createdByDid` and the audit row name
 /// the signer.
 ///
-/// # Why the payload is read twice
+/// # An absent `claimSchema`
 ///
-/// The generated parse runs first because it is what validates the document
-/// against its published schema. The operation then reads the payload as the
-/// route's `RegisterBody`, because the generated type folds an **absent**
-/// `claimSchema` and an empty one into the same default map, and the stored
-/// row keeps them apart. Issuance treats the two alike — `{}` admits any
-/// claim — but a listing shows which one the operator registered, and the
-/// bearer route stores what it was sent, so this door does too.
+/// The generated type folds an **absent** `claimSchema` and an empty one into
+/// the same default map, and the stored row keeps them apart: issuance treats
+/// the two alike — `{}` admits any claim — but a listing shows which one the
+/// operator registered. So whether it was sent is read from the document as
+/// received ([`crate::wire::sent`]).
 ///
 /// # Size
 ///
@@ -321,15 +319,18 @@ pub(super) async fn handle_endorsement_type_register(
             Ok(a) => a,
             Err(reject) => return reject,
         };
-    let _checked: endorsement_type_register::Payload = match parse_spec_payload(&doc) {
+    let body: endorsement_type_register::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    let body: crate::endorsement_types::ops::RegisterBody = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    match crate::endorsement_types::ops::register_inner(state, &actor.did, body).await {
+    let claim_schema = crate::wire::sent(
+        &doc.payload,
+        "claimSchema",
+        Value::Object(body.claim_schema.clone()),
+    );
+    match crate::endorsement_types::ops::register_inner(state, &actor.did, &body, claim_schema)
+        .await
+    {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }

@@ -54,8 +54,7 @@ use vti_specs::vtc::relationships::graph::v0_2 as relationships_graph;
 
 use super::admin_tasks::member_signer;
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, success_response,
-    task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, reject_with, success_response, task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::server::AppState;
@@ -250,11 +249,8 @@ async fn handle_endorsement_types_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<endorsement_types_list::Payload>(state, ctx, &doc).await {
-        return reject;
-    }
-    let query: crate::endorsement_types::ops::ListQuery = match parse_payload(&doc) {
-        Ok(q) => q,
+    let query = match admin_with::<endorsement_types_list::Payload>(state, ctx, &doc).await {
+        Ok((_, query)) => query,
         Err(reject) => return reject,
     };
     match crate::endorsement_types::ops::list(state, query).await {
@@ -288,8 +284,8 @@ async fn handle_members_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_with::<members_list::Payload>(state, ctx, &doc).await {
-        Ok((actor, _)) => actor,
+    let (actor, query) = match admin_with::<members_list::Payload>(state, ctx, &doc).await {
+        Ok(p) => p,
         Err(reject) => return reject,
     };
     // Whatever this read demands, the live `members` topic demands too
@@ -301,10 +297,6 @@ async fn handle_members_list(
     {
         return app_error_to_reject(&doc, &e);
     }
-    let query: crate::members::ops::read::ListMembersQuery = match parse_payload(&doc) {
-        Ok(q) => q,
-        Err(reject) => return reject,
-    };
     match crate::members::ops::read::list_members_inner(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -362,11 +354,13 @@ async fn handle_members_solicit_vmc(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let body = crate::members::ops::request_vmc::RequestVmcBody {
-        reason: payload.reason.map(|r| r.to_string()),
-    };
-    match crate::members::ops::request_vmc::request_vmc(state, payload.member_did.to_string(), body)
-        .await
+    let reason = payload.reason.map(|r| r.to_string());
+    match crate::members::ops::request_vmc::request_vmc(
+        state,
+        payload.member_did.to_string(),
+        reason,
+    )
+    .await
     {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -380,8 +374,8 @@ async fn handle_join_requests_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_with::<join_requests_list::Payload>(state, ctx, &doc).await {
-        Ok((actor, _)) => actor,
+    let (actor, query) = match admin_with::<join_requests_list::Payload>(state, ctx, &doc).await {
+        Ok(p) => p,
         Err(reject) => return reject,
     };
     // Whatever this read demands, the live `joinRequests` topic demands too
@@ -394,10 +388,6 @@ async fn handle_join_requests_list(
     {
         return app_error_to_reject(&doc, &e);
     }
-    let query: crate::join::ops::read::ListJoinRequestsQuery = match parse_payload(&doc) {
-        Ok(q) => q,
-        Err(reject) => return reject,
-    };
     match crate::join::ops::read::list_join_requests_inner(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -456,12 +446,8 @@ async fn handle_invitations_issue(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _checked) = match member_with::<invitation_issue::Payload>(state, ctx, &doc).await {
+    let (actor, body) = match member_with::<invitation_issue::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
-        Err(reject) => return reject,
-    };
-    let body: crate::join::invitations::IssueInvitationBody = match parse_payload(&doc) {
-        Ok(b) => b,
         Err(reject) => return reject,
     };
     match crate::join::invitations::issue(state, &actor.did, body).await {

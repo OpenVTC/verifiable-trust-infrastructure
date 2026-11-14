@@ -34,7 +34,7 @@
 //! for the same reason: it was enforced on the VIC path and the recognition
 //! path and on nothing else, so an expired VRC became a permanent graph edge
 //! (#1069). It is a free function rather than part of [`classify_dtg`] because
-//! `classify_dtg` is also used as a *filter*: `routes/recognise.rs:329` walks a
+//! `classify_dtg` is also used as a *filter*: `recognition/recognise.rs` walks a
 //! presentation's `verifiableCredential` array and skips entries that are not
 //! DTG credentials, since a VP may legitimately carry others. Folding the
 //! window check into it would turn an expired role VAC into a silently skipped
@@ -58,7 +58,7 @@
 //! already implement `validFrom <= now < validUntil` with the same boundary
 //! this module uses, and each carries semantics the shared check does not:
 //! recognition also *clamps* the minted session TTL to the earliest
-//! `validUntil` across the pair (`routes/recognise.rs:408-417`), and both
+//! `validUntil` across the pair (`recognition/recognise.rs`), and both
 //! require `validUntil` to be present at all. Routing them through here would
 //! either duplicate their checks or weaken them. Three implementations was the
 //! problem; replacing two working ones with one weaker one is not the fix.
@@ -139,7 +139,7 @@ pub fn statement_predicate(claims: &JsonValue) -> Option<String> {
 /// Says nothing about signatures, validity windows or revocation. This answers
 /// only "is this a DTG credential, and which one" — deliberately, so it stays
 /// usable as a filter over a presentation that may carry non-DTG credentials
-/// (`routes/recognise.rs:329`). For the window check see
+/// (`recognition/recognise.rs`). For the window check see
 /// [`check_validity_window`]; a caller that wants both wants
 /// [`require_dtg_type`].
 pub fn classify_dtg(doc: &JsonValue) -> Result<DTGCredentialType, AppError> {
@@ -236,13 +236,13 @@ pub fn require_dtg_type(
 /// credentials outside their window and to check revocation via the governing
 /// trust registry. That section is marked *informative*, so this is a
 /// conformance expectation rather than a normative MUST — but a VRC is the
-/// longest-lived credential in the graph and `routes/relationships.rs` read
+/// longest-lived credential in the graph and `relationships/ops.rs` read
 /// neither field before this, so an expired one became a permanent edge
 /// (#1069).
 ///
 /// On the revocation half: VRCs deliberately carry no `credentialStatus`.
 /// Planning-review D7 makes VRC revocation a row deletion, not a status-list
-/// bit flip — see the module doc of `routes/relationships.rs`. A reader
+/// bit flip — see the module doc of `relationships/ops.rs`. A reader
 /// comparing this file against the specification should read that as a
 /// deliberate divergence, not a second gap. Where a credential *does* carry a
 /// status block, the path that consumes it checks it
@@ -266,7 +266,7 @@ pub fn require_dtg_type(
 /// years, so a grace period of any plausible size changes nothing operationally
 /// while making "expired" a fuzzy predicate that disagreed with the two paths
 /// this is meant to align with — both compare exactly. Contrast
-/// `PUBLISH_AUTHORIZATION_MAX_AGE_SECS` in `routes/relationships.rs`, which
+/// `PUBLISH_AUTHORIZATION_MAX_AGE_SECS` in `relationships/ops.rs`, which
 /// does allow skew: that bounds a five-minute freshness window, where skew is a
 /// real fraction of the budget.
 ///

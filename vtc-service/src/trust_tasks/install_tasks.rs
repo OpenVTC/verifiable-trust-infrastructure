@@ -30,9 +30,9 @@
 //! The WebAuthn ceremony itself (`navigator.credentials.create()`) runs
 //! client-side regardless of which wire envelope carries its challenge and
 //! response, so wrapping the same request/response bodies
-//! `routes::install::{claim_start,claim_finish}` already built in a signed
+//! `install::ops::{claim_start,claim_finish}` already built in a signed
 //! Trust Task document changes nothing about the ceremony — only the
-//! transport. `routes::admin::bootstrap::bootstrap` needed no such
+//! transport. `install::ops::bootstrap::bootstrap` needed no such
 //! adaptation; it already took nothing but the setup-session token.
 
 use super::routing::{Routes, on};

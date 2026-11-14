@@ -34,7 +34,6 @@
 //! to or from any role that does is refused here with the same code and sent
 //! to `vtc/members/role/set`, whose passkey gesture is bound to the move.
 
-use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use vtc_audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
@@ -64,29 +63,6 @@ use crate::members::ops::read::{MemberEnvelope, MemberResponse};
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::server::AppState;
 
-/// Body of the PATCH request. Every field is optional; a request
-/// with no fields is a no-op (200 with the current row).
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct UpdateMemberRequest {
-    pub role: Option<VtcRole>,
-    /// Human-readable name for this member, shown wherever their DID is
-    /// rendered (admin UI, `vtc acl list`).
-    ///
-    /// The label lives on the ACL row, so until now it was writable only via
-    /// `acl/grant` — a whole re-grant to correct a typo in a display name.
-    /// An empty string clears it; omitting the field leaves it unchanged.
-    pub label: Option<String>,
-    /// Trust-registry publication consent. Only `false` changes anything: an
-    /// administrator may withdraw a member's consent, never grant it —
-    /// `true` for a member who has not consented is refused with
-    /// `vtc/members/update:consentGrantForbidden`.
-    pub publish_consent: Option<bool>,
-    pub departure_preference: Option<Disposition>,
-    pub extensions: Option<JsonValue>,
-}
-
 /// Apply one `vtc/members/update/0.1` on behalf of `auth` — the whole of the
 /// operation, with no transport in it.
 ///
@@ -105,15 +81,21 @@ pub(crate) async fn update_member_inner(
     state: &AppState,
     auth: &crate::acl::AdminActor,
     did: &str,
-    req: UpdateMemberRequest,
+    req: &vti_specs::vtc::members::update::v0_1::Payload,
+    extensions: Option<JsonValue>,
 ) -> Result<MemberEnvelope, TaskError> {
     vti_common::identifier::validate_did("did", did)?;
+    let role: Option<VtcRole> = crate::wire::read_opt("role", req.role.as_ref())?;
+    let label: Option<String> = req.label.clone().map(String::from);
+    let publish_consent = req.publish_consent;
+    let departure_preference: Option<Disposition> =
+        crate::wire::read_opt("departurePreference", req.departure_preference.as_ref())?;
 
     // Declared, and refused before anything is read or written: the
     // specification's consumer conformance for this task is "if `role` is
     // `admin`, return `adminRoleForbidden` and change nothing". The message
     // names the replacement so an operator is not left to find it.
-    if matches!(req.role, Some(VtcRole::Admin)) {
+    if matches!(role, Some(VtcRole::Admin)) {
         return Err(TaskError::declared(
             UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
             AppError::Validation(format!(
@@ -129,7 +111,7 @@ pub(crate) async fn update_member_inner(
     // administrative authority (VTI-ACL-030): that takes a passkey gesture
     // bound to the operation, which only `vtc/members/role/set` carries. This door
     // moves community roles that carry no administrative authority.
-    if let Some(next) = &req.role {
+    if let Some(next) = &role {
         let held = get_acl_entry(&state.acl_ks, did)
             .await?
             .is_some_and(|e| e.is_administrator());
@@ -152,7 +134,7 @@ pub(crate) async fn update_member_inner(
     // member-row fields (publish consent, departure preference, extensions)
     // are not authority and stay editable.
     let self_edit = auth.did == did;
-    if self_edit && req.role.is_some() {
+    if self_edit && role.is_some() {
         return Err(crate::acl::ops::own_role_refusal(
             crate::acl::admin_consent::single_admin_mode(state).await,
         )
@@ -185,7 +167,7 @@ pub(crate) async fn update_member_inner(
     // Registry consent only goes down from here. Refused before anything is
     // written, so a request that also carries other fields changes nothing.
     // Setting it to what it already is (either value) is a no-op, not a grant.
-    if req.publish_consent == Some(true) && !member.publish_consent {
+    if publish_consent == Some(true) && !member.publish_consent {
         return Err(TaskError::declared(
             UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
             AppError::Validation(format!(
@@ -202,7 +184,7 @@ pub(crate) async fn update_member_inner(
     // re-reads the member to repoint its role VAC) sees them.
     let mut fields_changed: Vec<String> = Vec::new();
     let mut changes: Vec<FieldChange> = Vec::new();
-    if let Some(consent) = req.publish_consent
+    if let Some(consent) = publish_consent
         && consent != member.publish_consent
     {
         changes.push(FieldChange {
@@ -213,7 +195,7 @@ pub(crate) async fn update_member_inner(
         member.publish_consent = consent;
         fields_changed.push("publishConsent".into());
     }
-    if let Some(pref) = req.departure_preference
+    if let Some(pref) = departure_preference
         && pref != member.departure_preference
     {
         changes.push(FieldChange {
@@ -231,7 +213,7 @@ pub(crate) async fn update_member_inner(
     // account — past the one-account-per-member rule and every check the
     // bridge's `accountLinked` passes — and the bridge would then give that
     // account the member's forge role. A replacement keeps whatever is linked.
-    let extensions = match req.extensions {
+    let extensions = match extensions {
         Some(ext) if ext.get(FORGES_EXTENSION).is_some() => {
             return Err(AppError::Validation(format!(
                 "`extensions.{FORGES_EXTENSION}` holds the member's linked forge accounts and is \
@@ -292,7 +274,7 @@ pub(crate) async fn update_member_inner(
     // The label lives on the ACL row, not the member row. Written before any
     // role change so the ceremony (which re-reads the ACL entry) picks it up
     // rather than overwriting it from a stale copy.
-    if let Some(ref requested) = req.label {
+    if let Some(ref requested) = label {
         let trimmed = requested.trim();
         let new_label = if trimmed.is_empty() {
             None
@@ -328,7 +310,7 @@ pub(crate) async fn update_member_inner(
     }
 
     // Role change → the role-change ceremony.
-    let role_change = match req.role {
+    let role_change = match role {
         Some(new_role) if new_role != acl.role => Some(new_role),
         _ => None,
     };

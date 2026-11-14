@@ -15,8 +15,7 @@
 //! returned page; the next page returns entries strictly less than
 //! that key.
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use std::collections::{BTreeMap, BTreeSet};
 use vtc_audit::{AuditEnvelope, ChainBreak, ChainVerifier};
@@ -29,32 +28,16 @@ const AUDIT_SCAN_CHUNK: usize = 256;
 
 use crate::server::AppState;
 use tracing::info;
+use vti_specs::audit::list::v0_2 as audit_list;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuditQuery {
-    /// Return only entries recorded at or after this time.
-    pub from: Option<DateTime<Utc>>,
-    /// Return only entries recorded strictly before this time.
-    pub to: Option<DateTime<Utc>>,
-    /// Return only entries whose `action` equals this value — the
-    /// event variant name, e.g. `MemberRemoved`.
-    pub action: Option<String>,
-    /// Return only entries whose actor DID equals this value. Matches
-    /// the plaintext, so RTBF-redacted rows are never returned by an
-    /// actor filter (canonical requires exactly this).
-    pub actor: Option<String>,
-    /// Not supported by this maintainer — see [`unsupported_filters`].
-    pub outcome: Option<String>,
-    /// Not supported by this maintainer — see [`unsupported_filters`].
-    pub context_id: Option<String>,
-    /// Page size (`limit`). Clamped to `1..=200`. Defaults to 50.
-    pub limit: Option<usize>,
-    /// Pagination cursor (returned by a previous call).
-    pub cursor: Option<String>,
+/// What `audit/list/0.2`'s filters mean here, over the generated payload.
+trait AuditFilters {
+    fn unsupported_filters(&self) -> Vec<&'static str>;
+    fn cursor_binding(&self) -> Vec<u8>;
+    fn matches(&self, env: &AuditEnvelope) -> bool;
 }
 
-impl AuditQuery {
+impl AuditFilters for audit_list::Payload {
     /// Canonical `audit/list` defines `outcome` and `contextId`, but this
     /// maintainer tracks neither: the envelope has no envelope-level
     /// outcome (only one variant carries an `outcome` inside its own
@@ -92,8 +75,8 @@ impl AuditQuery {
         };
         field(self.from.map(|t| t.to_rfc3339()).as_deref());
         field(self.to.map(|t| t.to_rfc3339()).as_deref());
-        field(self.action.as_deref());
-        field(self.actor.as_deref());
+        field(self.action.as_ref().map(|a| a.as_str()));
+        field(self.actor.as_ref().map(|a| a.as_str()));
         out
     }
 
@@ -230,7 +213,7 @@ pub struct AuditListResponse {
 pub(crate) async fn list_audit(
     state: &AppState,
     actor: &str,
-    query: AuditQuery,
+    query: audit_list::Payload,
 ) -> Result<AuditListResponse, AppError> {
     let unsupported = query.unsupported_filters();
     if !unsupported.is_empty() {
@@ -241,7 +224,7 @@ pub(crate) async fn list_audit(
         )));
     }
 
-    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
+    let limit = crate::wire::page_limit(query.limit, 50, MAX_LIMIT);
 
     let audit_writer = state
         .audit_writer

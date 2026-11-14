@@ -27,7 +27,7 @@
 //!    `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
 //!
 //! 2. `GET /v1/members/{did}/relationships` — see
-//!    `src/routes/members/relationships.rs`. Owns its own
+//!    `src/members/ops/relationships.rs`. Owns its own
 //!    file because the URL is rooted under `/v1/members/`.
 //!
 //! 3. `vtc/relationships/revoke/{0.1,0.2}` — issuer-only

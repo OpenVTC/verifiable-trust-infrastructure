@@ -48,8 +48,8 @@ use vti_specs::vtc::registry::{
 };
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, reject_with_code,
-    success_response, task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,
+    task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, capable_signer, parse_spec_payload};
 use crate::acl::Capability;
@@ -271,17 +271,11 @@ async fn handle_audit_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _checked) =
+    let (actor, query) =
         match capable_with::<audit_list::Payload>(state, ctx, &doc, Capability::AuditRead).await {
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    // The route's own query type: its filters, its cursor binding and its
-    // refusal of the filters this maintainer does not implement.
-    let query: crate::audit_ops::AuditQuery = match parse_payload(&doc) {
-        Ok(q) => q,
-        Err(reject) => return reject,
-    };
     match crate::audit_ops::list_audit(state, &actor.did, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -481,17 +475,13 @@ async fn handle_invites_create(
             ),
         );
     }
-    let (actor, _checked) =
+    let (actor, request) =
         match capable_with::<invite_create::Payload>(state, ctx, &doc, Capability::RolesAssign)
             .await
         {
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    let request: crate::install::ops::invites::CreateInviteRequest = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(reject) => return reject,
-    };
     let plan = match crate::install::ops::invites::check_invite(state, &actor, &request).await {
         Ok(p) => p,
         Err(e) => return task_error_to_reject(&doc, &e),
@@ -503,7 +493,7 @@ async fn handle_invites_create(
         let stake = crate::acl::AdminAuthority::community_admin().conferring();
         // A passkey invitation always grants (create 0.2 item 4), for a DID
         // that does not exist until it is claimed.
-        let (subject, reason, summary) = match request.did.as_deref() {
+        let (subject, reason, summary) = match request.did.as_ref().map(|d| d.as_str()) {
             Some(did) => (
                 did,
                 format!("Invite {did} to become a community administrator of this community"),

@@ -85,6 +85,8 @@ pub mod vetting;
 pub mod vta_link;
 pub mod webauthn;
 pub mod website;
+/// Generated payload members read as this crate's own types (#2574).
+pub(crate) mod wire;
 
 // `test_support` is gated internally on `any(test, feature = "test-support")`.
 // A `#[cfg(...)]` here would hide the module from the crate's own `cargo

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use crate::acl::{VtcAclEntry, VtcRole, list_acl_entries, store_acl_entry};
 use axum::http::StatusCode;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::info;
 use uuid::Uuid;
 use vtc_audit::{AuditEvent, AuditWriter, CommunityInstalledData};
@@ -37,9 +37,6 @@ use crate::error::TaskError;
 use crate::install::InstallTokenSigner;
 use crate::server::AppState;
 
-#[derive(Deserialize, utoipa::ToSchema)]
-#[schema(as = AdminBootstrapRequest)]
-#[serde(rename_all = "camelCase")]
 pub struct BootstrapRequest {
     pub setup_session_token: String,
 }

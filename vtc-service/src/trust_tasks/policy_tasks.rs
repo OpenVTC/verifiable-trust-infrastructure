@@ -37,8 +37,8 @@ use vti_specs::policy::{
 use vti_specs::vtc::policies::test::v0_1 as policy_test;
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, extended_code, parse_payload, reject_with_code,
-    success_response, task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, extended_code, reject_with_code, success_response,
+    task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
@@ -113,18 +113,14 @@ async fn handle_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<policy_list::Payload>(state, ctx, &doc).await {
-        return reject;
-    }
-    // The route's own query: its refusal of the filters this maintainer does
-    // not implement, and its cursor binding.
-    let mut query: policy_read::ListPoliciesQuery = match parse_payload(&doc) {
-        Ok(q) => q,
+    let query = match admin_with::<policy_list::Payload>(state, ctx, &doc).await {
+        Ok((_, query)) => query,
         Err(reject) => return reject,
     };
+    let mut purpose = None;
     if let Some(raw) = doc.payload["ext"][policy_read::PURPOSE_EXT_KEY].as_str() {
         match serde_json::from_value::<PolicyPurpose>(Value::String(raw.to_owned())) {
-            Ok(purpose) => query.purpose = Some(purpose),
+            Ok(p) => purpose = Some(p),
             Err(e) => {
                 return app_error_to_reject(
                     &doc,
@@ -136,7 +132,7 @@ async fn handle_list(
             }
         }
     }
-    match policy_read::list_policies_inner(state, query).await {
+    match policy_read::list_policies_inner(state, query, purpose).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -172,11 +168,8 @@ async fn handle_active(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<policy_active::Payload>(state, ctx, &doc).await {
-        return reject;
-    }
-    let query: policy_read::ActiveQuery = match parse_payload(&doc) {
-        Ok(q) => q,
+    let query = match admin_with::<policy_active::Payload>(state, ctx, &doc).await {
+        Ok((_, query)) => query,
         Err(reject) => return reject,
     };
     match policy_read::active_policies(state, query).await {
@@ -206,7 +199,7 @@ async fn handle_upsert(
     // Any `vtc.policy.admin` first, so a stranger learns nothing about the
     // payload; then the one for this revision's purpose (`policy:<purpose>`,
     // vtc-admin-roles.md §4–§5), once the payload says which it is.
-    let (actor, _) = match admin_with::<policy_upsert::Payload>(state, ctx, &doc).await {
+    let (actor, body) = match admin_with::<policy_upsert::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -215,12 +208,6 @@ async fn handle_upsert(
     {
         return app_error_to_reject(&doc, &e);
     }
-    // The route's own body: its purpose binding through `ext`, and its refusal
-    // of the selection hints this maintainer does not honour.
-    let body: policy_admin::UploadBody = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
     let purpose = match policy_admin::precheck_upload(&body) {
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -419,11 +406,7 @@ async fn handle_test(
         Ok(id) => id,
         Err(reject) => return reject,
     };
-    let body: policy_admin::TestBody = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    match policy_admin::test(state, &actor.did, id, body).await {
+    match policy_admin::test(state, &actor.did, id, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }

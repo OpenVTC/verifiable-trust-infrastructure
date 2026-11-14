@@ -13,7 +13,7 @@
 //! REST surface over it.
 
 use chrono::{Duration, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tracing::info;
 
@@ -33,23 +33,6 @@ use crate::status_list;
 /// onboarding artifact, not a standing credential.
 const MAX_VALIDITY_DAYS: i64 = 90;
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct IssueInvitationBody {
-    /// The DID to invite (a prospective, non-member holder).
-    pub subject_did: String,
-    /// Optional validity in days (1..=90); defaults to the 7-day VIC default.
-    #[serde(default)]
-    pub validity_days: Option<u32>,
-    /// Optional role to grant the invitee on join (e.g. `member`, `moderator`,
-    /// `issuer`). Carried in the VIC's `credentialSubject.scopes` as
-    /// `role:<name>` and honored by the join policy. `admin` is refused — the
-    /// no-admin-via-join privilege ceiling would deny it anyway. Defaults to
-    /// `member` (absent scope).
-    #[serde(default)]
-    pub role: Option<String>,
-}
-
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct IssueInvitationResponse {
@@ -67,8 +50,13 @@ pub struct IssueInvitationResponse {
 pub(crate) async fn issue(
     state: &AppState,
     actor: &str,
-    body: IssueInvitationBody,
+    body: vti_specs::vtc::invitations::issue::v0_1::Payload,
 ) -> Result<IssueInvitationResponse, TaskError> {
+    let subject_did = String::from(body.subject_did);
+    let validity_days = body
+        .validity_days
+        .map(|d| u32::try_from(d.get()).unwrap_or(u32::MAX));
+    let role = body.role.map(String::from);
     let signer = state
         .credential_signer
         .as_ref()
@@ -85,25 +73,22 @@ pub(crate) async fn issue(
     .await?;
 
     // An invite is for a *prospective* member.
-    if !body.subject_did.starts_with("did:") {
+    if !subject_did.starts_with("did:") {
         return Err(AppError::Validation("subjectDid must be a DID".into()).into());
     }
     // "Already a member" means a *current* (ACL-present) member — not a departed
     // one whose tombstone Member row lingers after a Tombstone/Historical
     // removal. A departed member can be re-invited (re-join overwrites the
     // tombstone with a fresh membership), so gate on the ACL, not the Member row.
-    if get_acl_entry(&state.acl_ks, &body.subject_did)
-        .await?
-        .is_some()
-    {
+    if get_acl_entry(&state.acl_ks, &subject_did).await?.is_some() {
         return Err(AppError::Conflict(format!(
             "{} is already a current member — no invitation needed",
-            body.subject_did
+            subject_did
         ))
         .into());
     }
 
-    let validity = match body.validity_days {
+    let validity = match validity_days {
         Some(d) if d == 0 || (d as i64) > MAX_VALIDITY_DAYS => {
             return Err(AppError::Validation(format!(
                 "validityDays must be between 1 and {MAX_VALIDITY_DAYS}"
@@ -117,7 +102,7 @@ pub(crate) async fn issue(
     // A role grant on the invite must parse to a known role and may never be
     // `admin` — a join can't grant admin (host privilege ceiling), so we refuse
     // it at issuance rather than mint an invite that would be denied on redeem.
-    if let Some(role) = body.role.as_deref() {
+    if let Some(role) = role.as_deref() {
         // Only an unparseable role is `unknownRole`. `admin` parses and is
         // refused below as the privilege ceiling, which the specification
         // does not describe, so it stays the framework's own refusal.
@@ -161,7 +146,7 @@ pub(crate) async fn issue(
                 .into());
             }
             let seated = crate::acl::VtcAclEntry::new(
-                body.subject_did.clone(),
+                subject_did.clone(),
                 parsed.clone(),
                 parsed.implied_authority(),
                 actor,
@@ -181,9 +166,9 @@ pub(crate) async fn issue(
         signer,
         &state.status_lists_ks,
         &state.schemas_ks,
-        &body.subject_did,
+        &subject_did,
         validity,
-        body.role.as_deref(),
+        role.as_deref(),
     )
     .await?;
     let valid_until = vic
@@ -207,9 +192,9 @@ pub(crate) async fn issue(
         &state.invitations_ks,
         &InvitationRecord {
             id: id.clone(),
-            subject_did: body.subject_did.clone(),
+            subject_did: subject_did.clone(),
             slot,
-            role: body.role.clone(),
+            role: role.clone(),
             issued_by: actor.to_string(),
             issued_at: Utc::now(),
             valid_until: valid_until.clone(),
@@ -225,11 +210,11 @@ pub(crate) async fn issue(
         writer
             .write(
                 actor,
-                Some(&body.subject_did),
+                Some(&subject_did),
                 AuditEvent::InvitationIssued(InvitationIssuedData {
                     invitation_id: id.clone(),
-                    subject_did: body.subject_did.clone(),
-                    role: body.role.clone(),
+                    subject_did: subject_did.clone(),
+                    role: role.clone(),
                     valid_until: valid_until.clone().unwrap_or_default(),
                     status_list_index: Some(slot),
                 }),
@@ -239,13 +224,13 @@ pub(crate) async fn issue(
 
     info!(
         actor = %actor,
-        subject = %body.subject_did,
+        subject = %subject_did,
         vic_id = %id,
         "issued an invitation credential (VIC)"
     );
 
     Ok(IssueInvitationResponse {
-        subject_did: body.subject_did,
+        subject_did,
         valid_until,
         vic,
     })

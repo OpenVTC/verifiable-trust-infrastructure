@@ -9,15 +9,14 @@
 //! third-party invitation issuer is trusted, M2). The configured-registry status
 //! comes from `GET /v1/health/diagnostics`.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::warn;
 
 use vti_common::error::AppError;
 
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct CheckQuery {
     /// The issuer / community DID to test for recognition.
     pub did: String,

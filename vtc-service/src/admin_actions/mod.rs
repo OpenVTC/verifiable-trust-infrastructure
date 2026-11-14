@@ -1566,7 +1566,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
     notify_cooling_off_subject(state, &rec).await;
     if suspends(&rec) {
         // The subject is suspended now. A reduction binds the subject's
-        // sessions at once (`routes::acl`), and so does this: its live
+        // sessions at once (`acl::ops`), and so does this: its live
         // sessions go, and every request after is answered from the entry,
         // which refuses. It may sign in again to see why.
         match crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, &rec.subject).await {

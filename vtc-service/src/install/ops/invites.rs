@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tracing::info;
 use uuid::Uuid;
 use vtc_audit::{AdminInviteData, AuditEvent};
@@ -41,32 +41,11 @@ use crate::install::{
     claim_secret, mint_install_token, mint_passkey_install_token,
 };
 use crate::server::AppState;
+use vti_specs::vtc::admin::invites::create::v0_2 as invite_create;
 
 // ---------------------------------------------------------------------------
 // Wire shapes
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct CreateInviteRequest {
-    /// The DID a **wallet** invitation is for. Absent, the invitation is a
-    /// **passkey** invitation: the administrator's DID is derived from the
-    /// passkey the invitee registers.
-    #[serde(default)]
-    pub did: Option<String>,
-    /// Token TTL in seconds. Defaults to
-    /// [`INSTALL_TOKEN_DEFAULT_TTL_SECS`] (15 minutes) when omitted.
-    /// Cap at 24 h to keep stale invites from accumulating in the
-    /// keyspace.
-    #[serde(default)]
-    pub ttl_seconds: Option<u64>,
-    /// Operator-supplied label for the ACL entry the invitation writes — now
-    /// for a wallet invitation whose DID has none, at the claim for a passkey
-    /// invitation. Ignored when a wallet invitation's DID already has one.
-    #[serde(default)]
-    pub label: Option<String>,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -195,9 +174,9 @@ pub(crate) const PASSKEY_INVITATION_SUBJECT: &str = "urn:openvtc:vtc:admin-invit
 pub(crate) async fn check_invite(
     state: &AppState,
     actor: &crate::acl::AdminActor,
-    req: &CreateInviteRequest,
+    req: &invite_create::Payload,
 ) -> Result<InvitePlan, TaskError> {
-    if let Some(did) = req.did.as_deref()
+    if let Some(did) = req.did.as_ref().map(|d| d.as_str())
         && !did.starts_with("did:")
     {
         return Err(
@@ -205,7 +184,9 @@ pub(crate) async fn check_invite(
         );
     }
 
-    let ttl_seconds = req.ttl_seconds.unwrap_or(INSTALL_TOKEN_DEFAULT_TTL_SECS);
+    let ttl_seconds = req
+        .ttl_seconds
+        .map_or(INSTALL_TOKEN_DEFAULT_TTL_SECS, std::num::NonZeroU64::get);
     let out_of_range = || {
         AppError::Validation(format!(
             "ttl_seconds must be between 1 and {MAX_TTL_SECONDS}",
@@ -236,7 +217,7 @@ pub(crate) async fn check_invite(
     let mut invited = VtcAclEntry::new(
         req.did
             .clone()
-            .unwrap_or_else(|| "did:key:passkey-invitation".into()),
+            .map_or_else(|| "did:key:passkey-invitation".into(), String::from),
         VtcRole::Admin,
         crate::acl::AdminAuthority::community_admin(),
         actor.did.clone(),
@@ -259,7 +240,7 @@ pub(crate) async fn check_invite(
     // idempotent — leaves a pre-existing grant untouched (we don't downgrade
     // non-Admin DIDs here, since that would mean a separate role change is
     // needed first).
-    let Some(did) = req.did.as_deref() else {
+    let Some(did) = req.did.as_ref().map(|d| d.as_str()) else {
         // A passkey invitation always confers the authority (create 0.2
         // item 4).
         return Ok(InvitePlan {
@@ -294,7 +275,7 @@ pub(crate) async fn check_invite(
 pub(crate) async fn commit_invite(
     state: &AppState,
     actor: &crate::acl::AdminActor,
-    req: CreateInviteRequest,
+    req: invite_create::Payload,
     plan: InvitePlan,
 ) -> Result<CreateInviteResponse, TaskError> {
     let InvitePlan {
@@ -317,7 +298,7 @@ pub(crate) async fn commit_invite(
     };
     let expires_at = Utc::now() + ChronoDuration::seconds(ttl_seconds as i64);
 
-    let (minted, kind, acl_entry_created) = match req.did.as_deref() {
+    let (minted, kind, acl_entry_created) = match req.did.as_ref().map(|d| d.as_str()) {
         None => {
             // A passkey invitation: nothing in the ACL until the claim, whose
             // DID nobody knows yet. The authority it will confer — what a
@@ -339,7 +320,7 @@ pub(crate) async fn commit_invite(
                         label: Some(
                             req.label
                                 .clone()
-                                .unwrap_or_else(|| "admin invite (passkey)".into()),
+                                .map_or_else(|| "admin invite (passkey)".into(), String::from),
                         ),
                     },
                 )
@@ -367,7 +348,7 @@ pub(crate) async fn commit_invite(
                 let label = req
                     .label
                     .clone()
-                    .unwrap_or_else(|| "admin invite (web)".into());
+                    .map_or_else(|| "admin invite (web)".into(), String::from);
                 write_provisional_entry(
                     state,
                     &minted.jti,
@@ -422,17 +403,17 @@ pub(crate) async fn commit_invite(
         writer
             .write(
                 &actor.did,
-                req.did.as_deref(),
+                req.did.as_ref().map(|d| d.as_str()),
                 AuditEvent::AdminInviteCreated(AdminInviteData {
                     jti: minted.jti.to_string(),
-                    admin_did: req.did.clone(),
+                    admin_did: req.did.clone().map(String::from),
                 }),
             )
             .await?;
     }
 
     info!(
-        target_did = req.did.as_deref().unwrap_or("(passkey)"),
+        target_did = req.did.as_ref().map(|d| d.as_str()).unwrap_or("(passkey)"),
         jti = %minted.jti,
         ?kind,
         ttl_seconds,
