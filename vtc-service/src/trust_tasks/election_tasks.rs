@@ -41,10 +41,11 @@
 //! (`vti_voting::audit`). Auditors' attestations are evidence beside that, never instead of it.
 //! A certified result authorizes nothing by itself (item 12).
 
+use super::routing::{Routes, on};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use trust_tasks_rs::{RejectReason, TrustTask};
 use vtc_audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
 use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
@@ -72,27 +73,32 @@ use crate::elections::store::{self, ElectionRecord};
 use crate::error::AppError;
 use crate::server::AppState;
 
-pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by create/0.5, and still served
-pub(crate) const CREATE_0_4_TYPE: &str = <create_0_4::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by create/0.5, and still served
-pub(crate) const CREATE_0_3_TYPE: &str = <create_0_3::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const TOMBSTONE_SHOW_TYPE: &str =
+    <tombstone_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const SHOW_TYPE: &str = <show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[allow(deprecated)] // superseded by show/0.6, and still served
+#[cfg(test)]
+pub(crate) const SHOW_0_3_TYPE: &str = <show_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[allow(deprecated)] // superseded by show/0.6, and still served
+#[cfg(test)]
+pub(crate) const SHOW_0_2_TYPE: &str = <show_0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 #[allow(deprecated)] // superseded by list/0.5, and still served
-pub(crate) const LIST_0_3_TYPE: &str = <list_0_3::Payload as Payload>::TYPE_URI;
-pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by show/0.6, and still served
-pub(crate) const SHOW_0_3_TYPE: &str = <show_0_3::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by show/0.6, and still served
-pub(crate) const SHOW_0_2_TYPE: &str = <show_0_2::Payload as Payload>::TYPE_URI;
-pub(crate) const CLOSE_TYPE: &str = <close::Payload as Payload>::TYPE_URI;
-pub(crate) const CANCEL_TYPE: &str = <cancel::Payload as Payload>::TYPE_URI;
-pub(crate) const ISSUE_TYPE: &str = <issue::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by tickets/issue/0.3, and still served
-pub(crate) const ISSUE_0_1_TYPE: &str = <issue_0_1::Payload as Payload>::TYPE_URI;
-pub(crate) const CERTIFY_TYPE: &str = <certify::Payload as Payload>::TYPE_URI;
-pub(crate) const BALLOT_BOXES_LIST_TYPE: &str = <ballot_boxes_list::Payload as Payload>::TYPE_URI;
-pub(crate) const TOMBSTONE_SHOW_TYPE: &str = <tombstone_show::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const LIST_0_3_TYPE: &str = <list_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const BALLOT_BOXES_LIST_TYPE: &str =
+    <ballot_boxes_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 pub(crate) const TOMBSTONE_ERR_ELECTION_UNKNOWN: &str =
     tombstone_show::error_codes::ELECTION_UNKNOWN.code;
 
@@ -146,50 +152,29 @@ pub(crate) const CERTIFY_ERR_ELECTION_UNKNOWN: &str = certify::error_codes::ELEC
 pub(crate) const CERTIFY_ERR_NOT_TALLIED: &str = certify::error_codes::NOT_TALLIED.code;
 pub(crate) const CERTIFY_ERR_RESULT_MISMATCH: &str = certify::error_codes::RESULT_MISMATCH.code;
 
-/// Every URI [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    CREATE_TYPE,
-    CREATE_0_4_TYPE,
-    CREATE_0_3_TYPE,
-    LIST_TYPE,
-    LIST_0_3_TYPE,
-    SHOW_TYPE,
-    SHOW_0_3_TYPE,
-    SHOW_0_2_TYPE,
-    CLOSE_TYPE,
-    CANCEL_TYPE,
-    ISSUE_TYPE,
-    ISSUE_0_1_TYPE,
-    CERTIFY_TYPE,
-    BALLOT_BOXES_LIST_TYPE,
-    TOMBSTONE_SHOW_TYPE,
-];
-
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc, Shared::V0_4).await,
-        CREATE_0_4_TYPE => handle_create(state, ctx, doc, Shared::V0_3).await,
-        CREATE_0_3_TYPE => handle_create(state, ctx, doc, Shared::V0_2).await,
-        LIST_TYPE => handle_list(state, ctx, doc, false).await,
-        LIST_0_3_TYPE => handle_list(state, ctx, doc, true).await,
-        SHOW_TYPE => handle_show(state, ctx, doc, Shared::V0_4).await,
-        SHOW_0_3_TYPE => handle_show(state, ctx, doc, Shared::V0_3).await,
-        SHOW_0_2_TYPE => handle_show(state, ctx, doc, Shared::V0_2).await,
-        CLOSE_TYPE => handle_close(state, ctx, doc).await,
-        CANCEL_TYPE => handle_cancel(state, ctx, doc).await,
-        ISSUE_TYPE => handle_issue(state, ctx, doc, true).await,
-        ISSUE_0_1_TYPE => handle_issue(state, ctx, doc, false).await,
-        CERTIFY_TYPE => handle_certify(state, ctx, doc).await,
-        BALLOT_BOXES_LIST_TYPE => handle_ballot_boxes_list(state, ctx, doc).await,
-        TOMBSTONE_SHOW_TYPE => handle_tombstone_show(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+#[allow(deprecated)] // superseded versions stay served beside their successors
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, create::Payload => |state, ctx, doc| handle_create(state, ctx, doc, Shared::V0_4));
+    let routes = on!(routes, create_0_4::Payload => |state, ctx, doc| handle_create(state, ctx, doc, Shared::V0_3));
+    let routes = on!(routes, create_0_3::Payload => |state, ctx, doc| handle_create(state, ctx, doc, Shared::V0_2));
+    let routes =
+        on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc, false));
+    let routes =
+        on!(routes, list_0_3::Payload => |state, ctx, doc| handle_list(state, ctx, doc, true));
+    let routes =
+        on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc, Shared::V0_4));
+    let routes = on!(routes, show_0_3::Payload => |state, ctx, doc| handle_show(state, ctx, doc, Shared::V0_3));
+    let routes = on!(routes, show_0_2::Payload => |state, ctx, doc| handle_show(state, ctx, doc, Shared::V0_2));
+    let routes = on!(routes, close::Payload => |state, ctx, doc| handle_close(state, ctx, doc));
+    let routes = on!(routes, cancel::Payload => |state, ctx, doc| handle_cancel(state, ctx, doc));
+    let routes =
+        on!(routes, issue::Payload => |state, ctx, doc| handle_issue(state, ctx, doc, true));
+    let routes =
+        on!(routes, issue_0_1::Payload => |state, ctx, doc| handle_issue(state, ctx, doc, false));
+    let routes = on!(routes, certify::Payload => |state, ctx, doc| handle_certify(state, ctx, doc));
+    let routes = on!(routes, ballot_boxes_list::Payload => |state, ctx, doc| handle_ballot_boxes_list(state, ctx, doc));
+    on!(routes, tombstone_show::Payload => |state, ctx, doc| handle_tombstone_show(state, ctx, doc))
 }
 
 /// Which voting/_shared manifest a `create` or `show` request's version carries: 0.2 (create

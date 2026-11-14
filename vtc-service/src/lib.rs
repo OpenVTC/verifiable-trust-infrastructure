@@ -85,9 +85,13 @@ pub mod vetting;
 pub mod vta_link;
 pub mod webauthn;
 pub mod website;
+/// Generated payload members read as this crate's own types (#2574).
+pub(crate) mod wire;
 
 // `test_support` is gated internally on `any(test, feature = "test-support")`.
 // A `#[cfg(...)]` here would hide the module from the crate's own `cargo
 // test` builds (which don't pass `--features test-support`); the module
 // header handles the gating itself.
+/// The audit log's reads (`audit/list`, `audit/verify`).
+pub(crate) mod audit_ops;
 pub mod test_support;

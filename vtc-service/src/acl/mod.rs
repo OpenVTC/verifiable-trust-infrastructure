@@ -12,6 +12,8 @@ pub mod entry;
 pub mod granting;
 pub mod group_grant;
 pub mod migrate;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod resource_grant;
 pub mod role;
 pub mod roles;

@@ -318,7 +318,7 @@ pub async fn record_use(
 ///
 /// A full scan of the sessions keyspace: sessions are keyed by session id,
 /// not by subject, and this fires once per enrolment rather than on a hot
-/// path, the same trade-off [`crate::routes::members::rotate`] and
+/// path, the same trade-off [`crate::members::ops::rotate`] and
 /// `crate::emergency` make revoking a DID's sessions.
 pub(crate) async fn revoke_session_elevation(
     sessions: &KeyspaceHandle,

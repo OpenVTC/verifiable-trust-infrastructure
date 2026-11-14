@@ -894,9 +894,8 @@ const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
 /// accident.
 #[test]
 fn the_dispatched_set_declares_the_proofs_the_design_note_records() {
-    let dispatched: Vec<&str> = DISPATCHED_URIS
-        .iter()
-        .copied()
+    let dispatched: Vec<&str> = dispatched_uris()
+        .into_iter()
         .chain(crate::rooms::handlers::served_uris())
         .collect();
 

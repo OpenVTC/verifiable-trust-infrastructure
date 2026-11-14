@@ -37,6 +37,7 @@
 //! unrestricted administrator for incident response; anyone else is told
 //! `notFound`, as for a key never enrolled.
 
+use super::routing::{Routes, on};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -60,16 +61,8 @@ use crate::acl::console_key::{self, ConsoleKeyDelegation, EnrolError};
 use crate::error::AppError;
 use crate::server::AppState;
 
-/// `auth/signing-key/enroll/0.2`: with the identity's own `authorization`,
-/// and `replaces`.
-pub(crate) const ENROLL_TYPE: &str = <enroll::Payload as Payload>::TYPE_URI;
 /// Never dispatched: carried inside an `enroll/0.2` as its `authorization`.
 pub(crate) const AUTHORIZE_TYPE: &str = <authorize::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const REVOKE_TYPE: &str = <revoke::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[ENROLL_TYPE, LIST_TYPE, REVOKE_TYPE];
 
 pub(crate) const ENROLL_ERR_KEY_NOT_ISSUER: &str = enroll::error_codes::KEY_NOT_ISSUER.code;
 pub(crate) const ENROLL_ERR_SELF_DELEGATION: &str = enroll::error_codes::SELF_DELEGATION.code;
@@ -86,18 +79,11 @@ pub(crate) const ENROLL_ERR_REPLACE_NOT_FOUND: &str = enroll::error_codes::REPLA
 const MAX_LISTED_ACTIVE_KEYS: usize = 16;
 pub(crate) const REVOKE_ERR_NOT_FOUND: &str = revoke::error_codes::NOT_FOUND.code;
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        ENROLL_TYPE => handle_enroll(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        REVOKE_TYPE => handle_revoke(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, enroll::Payload => |state, ctx, doc| handle_enroll(state, ctx, doc));
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    on!(routes, revoke::Payload => |state, ctx, doc| handle_revoke(state, ctx, doc))
 }
 
 // ─── rate limits ─────────────────────────────────────────────────────────

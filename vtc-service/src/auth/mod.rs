@@ -1,3 +1,5 @@
+/// An administrator's own passkeys (`auth/passkey/*`).
+pub(crate) mod admin_passkeys;
 pub mod backend;
 
 pub use backend::VtcAuthBackend;

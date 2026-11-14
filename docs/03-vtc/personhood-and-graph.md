@@ -222,7 +222,7 @@ document's `id` and `taskDigestMultibase` its task digest. Issuance is
 admin-or-issuer gated, consumes a slot on the community's revocation status
 list and is recorded as an endorsement row, so withdrawing a check later is
 `vtc/endorsements/revoke/0.1` rather than anything personhood-specific
-(`vtc-service/src/routes/endorsements.rs`,
+(`vtc-service/src/endorsements/ops.rs`,
 `credentials::dtg::issue_vetted_statement`).
 
 A community enforcing one membership per person also passes the person's

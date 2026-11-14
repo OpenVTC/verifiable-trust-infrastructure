@@ -21,8 +21,9 @@
 //! ([`crate::acl::bound_step_up`], VTI-APV-015), as for enabling a capability module, so a
 //! stolen or delegated signing key alone cannot do any of it.
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
-use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
+use trust_tasks_rs::{StandardCode, TrustTask, TrustTaskCode};
 use vti_common::error::AppError;
 use vti_specs::vtc::networks::{
     deliver::v0_1 as deliver, evidence::v0_2 as evidence, groups::register::v0_2 as register,
@@ -38,30 +39,6 @@ use crate::acl::Capability;
 use crate::error::TaskError;
 use crate::networks::{self, NetError};
 use crate::server::AppState;
-
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
-pub(crate) const PREVIEW_TYPE: &str = <preview::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_TYPE: &str = <join::Payload as Payload>::TYPE_URI;
-pub(crate) const REPUDIATE_TYPE: &str = <repudiate::Payload as Payload>::TYPE_URI;
-pub(crate) const LEAVE_TYPE: &str = <leave::Payload as Payload>::TYPE_URI;
-pub(crate) const REGISTER_TYPE: &str = <register::Payload as Payload>::TYPE_URI;
-pub(crate) const EVIDENCE_TYPE: &str = <evidence::Payload as Payload>::TYPE_URI;
-pub(crate) const DELIVER_TYPE: &str = <deliver::Payload as Payload>::TYPE_URI;
-
-/// Every URI [`dispatch`] routes. `super::DISPATCHED_URIS` names each of these and
-/// `dispatcher_routes_every_dispatched_uri` holds the two in step.
-pub(crate) const URIS: &[&str] = &[
-    LIST_TYPE,
-    SHOW_TYPE,
-    PREVIEW_TYPE,
-    JOIN_TYPE,
-    REPUDIATE_TYPE,
-    LEAVE_TYPE,
-    REGISTER_TYPE,
-    EVIDENCE_TYPE,
-    DELIVER_TYPE,
-];
 
 /// The extended codes these tasks declare, each the value the generated
 /// `error_codes::*` constant carries (the error-code census checks they agree).
@@ -110,25 +87,20 @@ const DECLARED: &[&str] = &[
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 100;
 
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        PREVIEW_TYPE => handle_preview(state, ctx, doc).await,
-        JOIN_TYPE => handle_join(state, ctx, doc).await,
-        REPUDIATE_TYPE => handle_repudiate(state, ctx, doc).await,
-        LEAVE_TYPE => handle_leave(state, ctx, doc).await,
-        REGISTER_TYPE => handle_register(state, ctx, doc).await,
-        EVIDENCE_TYPE => handle_evidence(state, ctx, doc).await,
-        DELIVER_TYPE => handle_deliver(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes = on!(routes, preview::Payload => |state, ctx, doc| handle_preview(state, ctx, doc));
+    let routes = on!(routes, join::Payload => |state, ctx, doc| handle_join(state, ctx, doc));
+    let routes =
+        on!(routes, repudiate::Payload => |state, ctx, doc| handle_repudiate(state, ctx, doc));
+    let routes = on!(routes, leave::Payload => |state, ctx, doc| handle_leave(state, ctx, doc));
+    let routes =
+        on!(routes, register::Payload => |state, ctx, doc| handle_register(state, ctx, doc));
+    let routes =
+        on!(routes, evidence::Payload => |state, ctx, doc| handle_evidence(state, ctx, doc));
+    on!(routes, deliver::Payload => |state, ctx, doc| handle_deliver(state, ctx, doc))
 }
 
 // Answer with `body` held to the generated `#response` type and its schema

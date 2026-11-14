@@ -28,6 +28,7 @@
 //! step-up (the admin invite that writes an unrestricted entry), the gesture is
 //! instead bound to this one document ([`crate::acl::bound_step_up`]).
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_specs::audit::{list::v0_2 as audit_list, verify::v0_1 as audit_verify};
@@ -47,81 +48,65 @@ use vti_specs::vtc::registry::{
 };
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, reject_with_code,
-    success_response, task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,
+    task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, capable_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::error::AppError;
 use crate::server::AppState;
 
-pub(crate) const DIAGNOSTICS_TYPE: &str = <diagnostics::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const SYNC_JOBS_LIST_TYPE: &str = <sync_list::Payload as Payload>::TYPE_URI;
-pub(crate) const SYNC_JOBS_RETRY_TYPE: &str = <sync_retry::Payload as Payload>::TYPE_URI;
-pub(crate) const SYNC_JOBS_DISCARD_TYPE: &str = <sync_discard::Payload as Payload>::TYPE_URI;
-pub(crate) const RECORDS_LIST_TYPE: &str = <records_list::Payload as Payload>::TYPE_URI;
-pub(crate) const AUDIT_LIST_TYPE: &str = <audit_list::Payload as Payload>::TYPE_URI;
-pub(crate) const AUDIT_VERIFY_TYPE: &str = <audit_verify::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_SHOW_TYPE: &str = <config_show::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_PATCH_TYPE: &str = <config_patch::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_RELOAD_TYPE: &str = <config_reload::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_RESTART_TYPE: &str = <config_restart::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITES_LIST_TYPE: &str = <invite_list::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITES_CREATE_TYPE: &str = <invite_create::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITES_REVOKE_TYPE: &str = <invite_revoke::Payload as Payload>::TYPE_URI;
-pub(crate) const SESSIONS_LIST_TYPE: &str = <sessions_list::Payload as Payload>::TYPE_URI;
-pub(crate) const REVOKE_SESSION_TYPE: &str = <revoke_session::Payload as Payload>::TYPE_URI;
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    DIAGNOSTICS_TYPE,
-    SYNC_JOBS_LIST_TYPE,
-    SYNC_JOBS_RETRY_TYPE,
-    SYNC_JOBS_DISCARD_TYPE,
-    RECORDS_LIST_TYPE,
-    AUDIT_LIST_TYPE,
-    AUDIT_VERIFY_TYPE,
-    CONFIG_SHOW_TYPE,
-    CONFIG_PATCH_TYPE,
-    CONFIG_RELOAD_TYPE,
-    CONFIG_RESTART_TYPE,
-    INVITES_LIST_TYPE,
-    INVITES_CREATE_TYPE,
-    INVITES_REVOKE_TYPE,
-    SESSIONS_LIST_TYPE,
-    REVOKE_SESSION_TYPE,
-];
+#[cfg(test)]
+pub(crate) const RECORDS_LIST_TYPE: &str = <records_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const INVITES_LIST_TYPE: &str = <invite_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DIAGNOSTICS_TYPE: &str = <diagnostics::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CONFIG_SHOW_TYPE: &str = <config_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CONFIG_PATCH_TYPE: &str = <config_patch::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const AUDIT_VERIFY_TYPE: &str = <audit_verify::Payload as Payload>::TYPE_URI;
+
+pub(crate) const INVITES_CREATE_TYPE: &str = <invite_create::Payload as Payload>::TYPE_URI;
 
 /// Tasks whose response carries a bearer secret: an admin invite's claim code
 /// and install URL. The duplicate-execution record keeps no copy of these, so
 /// the secret does not sit in `accepted_ids` for the acceptance window.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITES_CREATE_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        DIAGNOSTICS_TYPE => handle_diagnostics(state, ctx, doc).await,
-        SYNC_JOBS_LIST_TYPE => handle_sync_jobs_list(state, ctx, doc).await,
-        SYNC_JOBS_RETRY_TYPE => handle_sync_jobs_retry(state, ctx, doc).await,
-        SYNC_JOBS_DISCARD_TYPE => handle_sync_jobs_discard(state, ctx, doc).await,
-        RECORDS_LIST_TYPE => handle_records_list(state, ctx, doc).await,
-        AUDIT_LIST_TYPE => handle_audit_list(state, ctx, doc).await,
-        AUDIT_VERIFY_TYPE => handle_audit_verify(state, ctx, doc).await,
-        CONFIG_SHOW_TYPE => handle_config_show(state, ctx, doc).await,
-        CONFIG_PATCH_TYPE => handle_config_patch(state, ctx, doc).await,
-        CONFIG_RELOAD_TYPE => handle_config_reload(state, ctx, doc).await,
-        CONFIG_RESTART_TYPE => handle_config_restart(state, ctx, doc).await,
-        INVITES_LIST_TYPE => handle_invites_list(state, ctx, doc).await,
-        INVITES_CREATE_TYPE => handle_invites_create(state, ctx, doc).await,
-        INVITES_REVOKE_TYPE => handle_invites_revoke(state, ctx, doc).await,
-        SESSIONS_LIST_TYPE => handle_sessions_list(state, ctx, doc).await,
-        REVOKE_SESSION_TYPE => handle_revoke_session(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, diagnostics::Payload => |state, ctx, doc| handle_diagnostics(state, ctx, doc));
+    let routes =
+        on!(routes, sync_list::Payload => |state, ctx, doc| handle_sync_jobs_list(state, ctx, doc));
+    let routes = on!(routes, sync_retry::Payload => |state, ctx, doc| handle_sync_jobs_retry(state, ctx, doc));
+    let routes = on!(routes, sync_discard::Payload => |state, ctx, doc| handle_sync_jobs_discard(state, ctx, doc));
+    let routes = on!(routes, records_list::Payload => |state, ctx, doc| handle_records_list(state, ctx, doc));
+    let routes =
+        on!(routes, audit_list::Payload => |state, ctx, doc| handle_audit_list(state, ctx, doc));
+    let routes = on!(routes, audit_verify::Payload => |state, ctx, doc| handle_audit_verify(state, ctx, doc));
+    let routes =
+        on!(routes, config_show::Payload => |state, ctx, doc| handle_config_show(state, ctx, doc));
+    let routes = on!(routes, config_patch::Payload => |state, ctx, doc| handle_config_patch(state, ctx, doc));
+    let routes = on!(routes, config_reload::Payload => |state, ctx, doc| handle_config_reload(state, ctx, doc));
+    let routes = on!(routes, config_restart::Payload => |state, ctx, doc| handle_config_restart(state, ctx, doc));
+    let routes =
+        on!(routes, invite_list::Payload => |state, ctx, doc| handle_invites_list(state, ctx, doc));
+    let routes = on!(routes, invite_create::Payload => |state, ctx, doc| handle_invites_create(state, ctx, doc));
+    let routes = on!(routes, invite_revoke::Payload => |state, ctx, doc| handle_invites_revoke(state, ctx, doc));
+    let routes = on!(routes, sessions_list::Payload => |state, ctx, doc| handle_sessions_list(state, ctx, doc));
+    on!(routes, revoke_session::Payload => |state, ctx, doc| handle_revoke_session(state, ctx, doc))
 }
 
 /// The signer, holding `cap` (`vtc-admin-roles.md` §4 "Gates"), and its
@@ -213,7 +198,7 @@ async fn handle_sync_jobs_list(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::registry_admin::sync_jobs_list(state, payload).await {
+    match crate::registry::admin::sync_jobs_list(state, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -235,7 +220,7 @@ async fn handle_sync_jobs_retry(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::registry_admin::sync_jobs_retry(state, &actor.did, payload).await {
+    match crate::registry::admin::sync_jobs_retry(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -253,7 +238,7 @@ async fn handle_sync_jobs_discard(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::registry_admin::sync_jobs_discard(state, &actor.did, payload).await {
+    match crate::registry::admin::sync_jobs_discard(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -271,7 +256,7 @@ async fn handle_records_list(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::registry_admin::records_list(state, payload).await {
+    match crate::registry::admin::records_list(state, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -286,18 +271,12 @@ async fn handle_audit_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _checked) =
+    let (actor, query) =
         match capable_with::<audit_list::Payload>(state, ctx, &doc, Capability::AuditRead).await {
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    // The route's own query type: its filters, its cursor binding and its
-    // refusal of the filters this maintainer does not implement.
-    let query: crate::routes::audit::AuditQuery = match parse_payload(&doc) {
-        Ok(q) => q,
-        Err(reject) => return reject,
-    };
-    match crate::routes::audit::list_audit(state, &actor.did, query).await {
+    match crate::audit_ops::list_audit(state, &actor.did, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -319,7 +298,7 @@ async fn handle_audit_verify(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::audit::verify_audit_chain_inner(state, &actor.did).await {
+    match crate::audit_ops::verify_audit_chain_inner(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -341,7 +320,7 @@ async fn handle_config_show(
     let keys: Option<Vec<String>> = payload
         .keys
         .map(|keys| keys.into_iter().map(|k| k.to_string()).collect());
-    match crate::routes::admin::config::get_config(state, keys.as_deref()).await {
+    match crate::community::ops::config::get_config(state, keys.as_deref()).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -363,7 +342,7 @@ async fn handle_config_patch(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let request = crate::routes::admin::config::PatchRequest {
+    let request = crate::community::ops::config::PatchRequest {
         overrides: payload.overrides.into_iter().collect(),
     };
     // VTI-CMP-090: any change to the trusted-witness list takes the gesture
@@ -376,7 +355,7 @@ async fn handle_config_patch(
     }
     // VTI-APV-020: lowering the consent threshold takes the gesture and the
     // consent of the threshold as it stands. Raising it does not.
-    match crate::routes::admin::config::lowered_threshold(state, &request.overrides).await {
+    match crate::community::ops::config::lowered_threshold(state, &request.overrides).await {
         Ok(None) => {}
         Ok(Some((from, to))) => {
             if let Err(refusal) = super::acl_tasks::settle_consent_gate(
@@ -398,7 +377,7 @@ async fn handle_config_patch(
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    match crate::routes::admin::config::patch_config(state, &actor.did, request).await {
+    match crate::community::ops::config::patch_config(state, &actor.did, request).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -416,7 +395,7 @@ async fn handle_config_reload(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::admin::config::reload_config(state, &actor.did).await {
+    match crate::community::ops::config::reload_config(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -434,7 +413,7 @@ async fn handle_config_restart(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::admin::config::restart_config(state, &actor.did).await {
+    match crate::community::ops::config::restart_config(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -452,14 +431,14 @@ async fn handle_invites_list(
     {
         return reject;
     }
-    match crate::routes::admin::invites::list_invites(state).await {
+    match crate::install::ops::invites::list_invites(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
 }
 
 /// `vtc/admin/invites/create/0.2`. Every check that decides the invite runs
-/// first ([`crate::routes::admin::invites::check_invite`]). A wallet invite for
+/// first ([`crate::install::ops::invites::check_invite`]). A wallet invite for
 /// a DID the community holds no entry for writes an **unrestricted** admin
 /// entry, and a passkey invite (no `did`) confers one when it is claimed, so
 /// either costs what an unrestricted `acl/grant` costs on this door: the
@@ -480,7 +459,7 @@ async fn handle_invites_create(
     // The authority check still comes first: a stranger learns nothing.
     if doc.payload["ttlSeconds"]
         .as_u64()
-        .is_some_and(|ttl| ttl > crate::routes::admin::invites::MAX_TTL_SECONDS)
+        .is_some_and(|ttl| ttl > crate::install::ops::invites::MAX_TTL_SECONDS)
     {
         if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RolesAssign, None).await {
             return reject;
@@ -488,26 +467,22 @@ async fn handle_invites_create(
         return task_error_to_reject(
             &doc,
             &crate::error::TaskError::declared(
-                crate::routes::admin::invites::CREATE_INVITE_ERR_TTL_TOO_LONG,
+                crate::install::ops::invites::CREATE_INVITE_ERR_TTL_TOO_LONG,
                 AppError::Validation(format!(
                     "ttl_seconds must be between 1 and {}",
-                    crate::routes::admin::invites::MAX_TTL_SECONDS
+                    crate::install::ops::invites::MAX_TTL_SECONDS
                 )),
             ),
         );
     }
-    let (actor, _checked) =
+    let (actor, request) =
         match capable_with::<invite_create::Payload>(state, ctx, &doc, Capability::RolesAssign)
             .await
         {
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    let request: crate::routes::admin::invites::CreateInviteRequest = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(reject) => return reject,
-    };
-    let plan = match crate::routes::admin::invites::check_invite(state, &actor, &request).await {
+    let plan = match crate::install::ops::invites::check_invite(state, &actor, &request).await {
         Ok(p) => p,
         Err(e) => return task_error_to_reject(&doc, &e),
     };
@@ -518,14 +493,14 @@ async fn handle_invites_create(
         let stake = crate::acl::AdminAuthority::community_admin().conferring();
         // A passkey invitation always grants (create 0.2 item 4), for a DID
         // that does not exist until it is claimed.
-        let (subject, reason, summary) = match request.did.as_deref() {
+        let (subject, reason, summary) = match request.did.as_ref().map(|d| d.as_str()) {
             Some(did) => (
                 did,
                 format!("Invite {did} to become a community administrator of this community"),
-                crate::routes::acl::unrestricted_grant_summary(did),
+                crate::acl::ops::unrestricted_grant_summary(did),
             ),
             None => (
-                crate::routes::admin::invites::PASSKEY_INVITATION_SUBJECT,
+                crate::install::ops::invites::PASSKEY_INVITATION_SUBJECT,
                 "Invite a new community administrator, who will sign in with a passkey".to_string(),
                 "Invite a new unrestricted administrator by passkey: whoever claims the \
                  invitation's install URL and claim code becomes one, under their passkey's own \
@@ -562,7 +537,7 @@ async fn handle_invites_create(
             return app_error_to_reject(&doc, &e);
         }
     }
-    match crate::routes::admin::invites::commit_invite(state, &actor, request, plan).await {
+    match crate::install::ops::invites::commit_invite(state, &actor, request, plan).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -580,7 +555,7 @@ async fn handle_invites_revoke(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::admin::invites::revoke_invite(state, &actor.did, &payload.jti).await {
+    match crate::install::ops::invites::revoke_invite(state, &actor.did, &payload.jti).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }

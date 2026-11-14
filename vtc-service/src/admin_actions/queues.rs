@@ -513,7 +513,7 @@ async fn execute(
             }
         }
         Act::JoinReview => {
-            use crate::routes::join_requests::decide::{DecideBody, Decision, decide_inner};
+            use crate::join::ops::decide::{DecideBody, Decision, decide_inner};
             let id = Uuid::parse_str(p["requestId"].as_str().unwrap_or_default())
                 .map_err(|e| format!("the join request id does not parse: {e}"))?;
             let response = decide_inner(
@@ -565,14 +565,11 @@ async fn execute(
             if let Some(r) = &reason {
                 op_payload["reason"] = json!(r);
             }
-            let outcome = crate::routes::members::remove::admin_remove_inner(
+            let outcome = crate::members::ops::remove::admin_remove_inner(
                 state,
                 &claims,
                 &member,
-                crate::routes::members::remove::RemoveBody {
-                    disposition: None,
-                    reason,
-                },
+                &serde_json::from_value(op_payload.clone()).map_err(|e| e.to_string())?,
                 admin_consent::Operation {
                     type_uri: crate::trust_tasks::MEMBER_ADMIN_REMOVE_TYPE,
                     payload: &op_payload,
@@ -580,10 +577,8 @@ async fn execute(
             )
             .await
             .map_err(|e| e.to_string())?;
-            serde_json::to_value(crate::routes::members::remove::RemoveResponse::from(
-                outcome,
-            ))
-            .map_err(|e| e.to_string())
+            serde_json::to_value(crate::members::ops::remove::RemoveResponse::from(outcome))
+                .map_err(|e| e.to_string())
         }
         _ => Err("not a queue item".into()),
     }
@@ -789,7 +784,7 @@ async fn try_raise_vetting_reviews(
     state: &AppState,
     open: Option<&std::collections::HashSet<String>>,
 ) -> Result<(), AppError> {
-    use crate::routes::vetting::{RevocationReviewState, revocation_rows};
+    use crate::vetting::ops::{RevocationReviewState, revocation_rows};
     let community = community_did(state).await;
     for row in revocation_rows(state).await? {
         if row.review_state != RevocationReviewState::NeedsReview {

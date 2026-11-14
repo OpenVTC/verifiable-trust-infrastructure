@@ -2221,7 +2221,7 @@ pub struct RevokeSessionResponse {
 /// Delete every session whose subject is `did`; returns the count revoked.
 ///
 /// Shared by [`revoke_sessions_task`] and the ACL-downgrade path in
-/// [`crate::routes::acl::update_acl`], which revokes a demoted admin's live
+/// [`crate::acl::ops::update_acl`], which revokes a demoted admin's live
 /// sessions so the still-valid JWT can't outlive the downgrade.
 pub(crate) async fn revoke_sessions_for_did(
     sessions: &KeyspaceHandle,

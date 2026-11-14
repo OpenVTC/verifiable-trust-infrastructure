@@ -31,6 +31,7 @@
 //! may send are reachable by those members for the first time; each is the
 //! party its handler already admitted.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_specs::vtc::ceremonies::list::v0_1 as ceremonies_list;
@@ -53,83 +54,80 @@ use vti_specs::vtc::relationships::graph::v0_2 as relationships_graph;
 
 use super::admin_tasks::member_signer;
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, success_response,
-    task_error_to_reject,
+    TrustTaskOutcome, app_error_to_reject, reject_with, success_response, task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::server::AppState;
 
-pub(crate) const PROFILE_SHOW_TYPE: &str = <profile_show::Payload as Payload>::TYPE_URI;
-pub(crate) const CEREMONIES_LIST_TYPE: &str = <ceremonies_list::Payload as Payload>::TYPE_URI;
-pub(crate) const DIRECTORY_QUERY_TYPE: &str = <directory_query::Payload as Payload>::TYPE_URI;
-pub(crate) const ENDORSEMENT_TYPES_LIST_TYPE: &str =
-    <endorsement_types_list::Payload as Payload>::TYPE_URI;
-pub(crate) const RECOGNITION_CHECK_TYPE: &str = <recognition_check::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_REMOVED_TYPE: &str = <members_removed::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_SHOW_TYPE: &str = <members_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_SOLICIT_VMC_TYPE: &str =
-    <members_solicit_vmc::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_REQUESTS_LIST_TYPE: &str = <join_requests_list::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_REQUESTS_SHOW_TYPE: &str = <join_requests_show::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const RELATIONSHIPS_GRAPH_TYPE: &str =
     <relationships_graph::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITATIONS_ISSUE_TYPE: &str = <invitation_issue::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const RECOGNITION_CHECK_TYPE: &str = <recognition_check::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const PROFILE_SHOW_TYPE: &str = <profile_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_SOLICIT_VMC_TYPE: &str =
+    <members_solicit_vmc::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_SHOW_TYPE: &str = <members_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_REMOVED_TYPE: &str = <members_removed::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const JOIN_REQUESTS_SHOW_TYPE: &str = <join_requests_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const JOIN_REQUESTS_LIST_TYPE: &str = <join_requests_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const INVITATIONS_LIST_TYPE: &str = <invitation_list::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITATIONS_REVOKE_TYPE: &str = <invitation_revoke::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ENDORSEMENT_TYPES_LIST_TYPE: &str =
+    <endorsement_types_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DIRECTORY_QUERY_TYPE: &str = <directory_query::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CEREMONIES_LIST_TYPE: &str = <ceremonies_list::Payload as Payload>::TYPE_URI;
+
+pub(crate) const INVITATIONS_ISSUE_TYPE: &str = <invitation_issue::Payload as Payload>::TYPE_URI;
 pub(crate) const INVITATIONS_DELIVER_TYPE: &str =
     <invitation_deliver::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    PROFILE_SHOW_TYPE,
-    CEREMONIES_LIST_TYPE,
-    DIRECTORY_QUERY_TYPE,
-    ENDORSEMENT_TYPES_LIST_TYPE,
-    RECOGNITION_CHECK_TYPE,
-    MEMBERS_LIST_TYPE,
-    MEMBERS_REMOVED_TYPE,
-    MEMBERS_SHOW_TYPE,
-    MEMBERS_SOLICIT_VMC_TYPE,
-    JOIN_REQUESTS_LIST_TYPE,
-    JOIN_REQUESTS_SHOW_TYPE,
-    RELATIONSHIPS_GRAPH_TYPE,
-    INVITATIONS_ISSUE_TYPE,
-    INVITATIONS_LIST_TYPE,
-    INVITATIONS_REVOKE_TYPE,
-    INVITATIONS_DELIVER_TYPE,
-];
 
 /// Tasks whose response carries a bearer secret: an issued invitation
 /// credential, and a delivery's offer code. The duplicate-execution record
 /// keeps no copy of these.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITATIONS_ISSUE_TYPE, INVITATIONS_DELIVER_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        PROFILE_SHOW_TYPE => handle_profile_show(state, ctx, doc).await,
-        CEREMONIES_LIST_TYPE => handle_ceremonies_list(state, ctx, doc).await,
-        DIRECTORY_QUERY_TYPE => handle_directory_query(state, ctx, doc).await,
-        ENDORSEMENT_TYPES_LIST_TYPE => handle_endorsement_types_list(state, ctx, doc).await,
-        RECOGNITION_CHECK_TYPE => handle_recognition_check(state, ctx, doc).await,
-        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
-        MEMBERS_REMOVED_TYPE => handle_members_removed(state, ctx, doc).await,
-        MEMBERS_SHOW_TYPE => handle_members_show(state, ctx, doc).await,
-        MEMBERS_SOLICIT_VMC_TYPE => handle_members_solicit_vmc(state, ctx, doc).await,
-        JOIN_REQUESTS_LIST_TYPE => handle_join_requests_list(state, ctx, doc).await,
-        JOIN_REQUESTS_SHOW_TYPE => handle_join_requests_show(state, ctx, doc).await,
-        RELATIONSHIPS_GRAPH_TYPE => handle_relationships_graph(state, ctx, doc).await,
-        INVITATIONS_ISSUE_TYPE => handle_invitations_issue(state, ctx, doc).await,
-        INVITATIONS_LIST_TYPE => handle_invitations_list(state, ctx, doc).await,
-        INVITATIONS_REVOKE_TYPE => handle_invitations_revoke(state, ctx, doc).await,
-        INVITATIONS_DELIVER_TYPE => handle_invitations_deliver(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, profile_show::Payload => |state, ctx, doc| handle_profile_show(state, ctx, doc));
+    let routes = on!(routes, ceremonies_list::Payload => |state, ctx, doc| handle_ceremonies_list(state, ctx, doc));
+    let routes = on!(routes, directory_query::Payload => |state, ctx, doc| handle_directory_query(state, ctx, doc));
+    let routes = on!(routes, endorsement_types_list::Payload => |state, ctx, doc| handle_endorsement_types_list(state, ctx, doc));
+    let routes = on!(routes, recognition_check::Payload => |state, ctx, doc| handle_recognition_check(state, ctx, doc));
+    let routes = on!(routes, members_list::Payload => |state, ctx, doc| handle_members_list(state, ctx, doc));
+    let routes = on!(routes, members_removed::Payload => |state, ctx, doc| handle_members_removed(state, ctx, doc));
+    let routes = on!(routes, members_show::Payload => |state, ctx, doc| handle_members_show(state, ctx, doc));
+    let routes = on!(routes, members_solicit_vmc::Payload => |state, ctx, doc| handle_members_solicit_vmc(state, ctx, doc));
+    let routes = on!(routes, join_requests_list::Payload => |state, ctx, doc| handle_join_requests_list(state, ctx, doc));
+    let routes = on!(routes, join_requests_show::Payload => |state, ctx, doc| handle_join_requests_show(state, ctx, doc));
+    let routes = on!(routes, relationships_graph::Payload => |state, ctx, doc| handle_relationships_graph(state, ctx, doc));
+    let routes = on!(routes, invitation_issue::Payload => |state, ctx, doc| handle_invitations_issue(state, ctx, doc));
+    let routes = on!(routes, invitation_list::Payload => |state, ctx, doc| handle_invitations_list(state, ctx, doc));
+    let routes = on!(routes, invitation_revoke::Payload => |state, ctx, doc| handle_invitations_revoke(state, ctx, doc));
+    on!(routes, invitation_deliver::Payload => |state, ctx, doc| handle_invitations_deliver(state, ctx, doc))
 }
 
 /// The signer as an administrator, and its payload validated against the
@@ -172,7 +170,7 @@ async fn handle_profile_show(
     if let Err(reject) = member_with::<profile_show::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::community::profile::show_profile(state).await {
+    match crate::community::ops::profile::show_profile(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -186,7 +184,7 @@ async fn handle_ceremonies_list(
     if let Err(reject) = member_with::<ceremonies_list::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    success_response(&doc, crate::routes::ceremonies::list())
+    success_response(&doc, crate::ceremony::listing::list())
 }
 
 /// `vtc/directory/query/0.1` — the subject's record as the directory policy
@@ -251,14 +249,11 @@ async fn handle_endorsement_types_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<endorsement_types_list::Payload>(state, ctx, &doc).await {
-        return reject;
-    }
-    let query: crate::routes::endorsement_types::ListQuery = match parse_payload(&doc) {
-        Ok(q) => q,
+    let query = match admin_with::<endorsement_types_list::Payload>(state, ctx, &doc).await {
+        Ok((_, query)) => query,
         Err(reject) => return reject,
     };
-    match crate::routes::endorsement_types::list(state, query).await {
+    match crate::endorsement_types::ops::list(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -273,10 +268,10 @@ async fn handle_recognition_check(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let query = crate::routes::recognition_admin::CheckQuery {
+    let query = crate::recognition::admin::CheckQuery {
         did: payload.did.to_string(),
     };
-    match crate::routes::recognition_admin::check(state, query).await {
+    match crate::recognition::admin::check(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -289,8 +284,8 @@ async fn handle_members_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_with::<members_list::Payload>(state, ctx, &doc).await {
-        Ok((actor, _)) => actor,
+    let (actor, query) = match admin_with::<members_list::Payload>(state, ctx, &doc).await {
+        Ok(p) => p,
         Err(reject) => return reject,
     };
     // Whatever this read demands, the live `members` topic demands too
@@ -302,11 +297,7 @@ async fn handle_members_list(
     {
         return app_error_to_reject(&doc, &e);
     }
-    let query: crate::routes::members::read::ListMembersQuery = match parse_payload(&doc) {
-        Ok(q) => q,
-        Err(reject) => return reject,
-    };
-    match crate::routes::members::read::list_members_inner(state, query).await {
+    match crate::members::ops::read::list_members_inner(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -320,7 +311,7 @@ async fn handle_members_removed(
     if let Err(reject) = admin_with::<members_removed::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::members::read::list_removed(state).await {
+    match crate::members::ops::read::list_removed(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -335,7 +326,7 @@ async fn handle_members_show(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::members::read::show_member(state, payload.did.as_str()).await {
+    match crate::members::ops::read::show_member(state, payload.did.as_str()).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -363,13 +354,11 @@ async fn handle_members_solicit_vmc(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let body = crate::routes::members::request_vmc::RequestVmcBody {
-        reason: payload.reason.map(|r| r.to_string()),
-    };
-    match crate::routes::members::request_vmc::request_vmc(
+    let reason = payload.reason.map(|r| r.to_string());
+    match crate::members::ops::request_vmc::request_vmc(
         state,
         payload.member_did.to_string(),
-        body,
+        reason,
     )
     .await
     {
@@ -385,8 +374,8 @@ async fn handle_join_requests_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_with::<join_requests_list::Payload>(state, ctx, &doc).await {
-        Ok((actor, _)) => actor,
+    let (actor, query) = match admin_with::<join_requests_list::Payload>(state, ctx, &doc).await {
+        Ok(p) => p,
         Err(reject) => return reject,
     };
     // Whatever this read demands, the live `joinRequests` topic demands too
@@ -399,12 +388,7 @@ async fn handle_join_requests_list(
     {
         return app_error_to_reject(&doc, &e);
     }
-    let query: crate::routes::join_requests::read::ListJoinRequestsQuery = match parse_payload(&doc)
-    {
-        Ok(q) => q,
-        Err(reject) => return reject,
-    };
-    match crate::routes::join_requests::read::list_join_requests_inner(state, query).await {
+    match crate::join::ops::read::list_join_requests_inner(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -427,7 +411,7 @@ async fn handle_join_requests_show(
             },
         );
     };
-    match crate::routes::join_requests::read::show_join_request(state, id).await {
+    match crate::join::ops::read::show_join_request(state, id).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -443,7 +427,7 @@ async fn handle_relationships_graph(
     if let Err(reject) = admin_with::<relationships_graph::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::relationships::graph(state).await {
+    match crate::relationships::ops::graph(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -462,15 +446,11 @@ async fn handle_invitations_issue(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _checked) = match member_with::<invitation_issue::Payload>(state, ctx, &doc).await {
+    let (actor, body) = match member_with::<invitation_issue::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let body: crate::routes::invitations::IssueInvitationBody = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    match crate::routes::invitations::issue(state, &actor.did, body).await {
+    match crate::join::invitations::issue(state, &actor.did, body).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -485,7 +465,7 @@ async fn handle_invitations_list(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::invitations::list(state, &actor.did).await {
+    match crate::join::invitations::list(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -500,7 +480,7 @@ async fn handle_invitations_revoke(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::invitations::revoke(state, &actor.did, payload.id.to_string()).await {
+    match crate::join::invitations::revoke(state, &actor.did, payload.id.to_string()).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -516,7 +496,7 @@ async fn handle_invitations_deliver(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::invitations::deliver(state, &actor.did, payload).await {
+    match crate::join::invitations::deliver(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &crate::error::TaskError::from(e)),
     }

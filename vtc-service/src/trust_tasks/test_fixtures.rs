@@ -11,32 +11,15 @@ use trust_tasks_rs::TrustTask;
 use vti_rooms_dtg::test_support::Party;
 use vti_trust_task_server::TrustTaskOutcome;
 
-use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use crate::test_support::{TEST_VTC_DID, TestVtc};
+use crate::acl::{VtcRole, store_acl_entry};
+use crate::test_support::{TEST_VTC_DID, TestVtc, seeded_acl_entry};
 use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core};
 
 pub(crate) async fn seed_acl(vtc: &TestVtc, did: &str, role: VtcRole, contexts: Vec<String>) {
-    store_acl_entry(
-        &vtc.state.acl_ks,
-        &VtcAclEntry {
-            did: did.into(),
-            admin: crate::acl::legacy_seed_authority(&role, &contexts),
-            delegated_by: None,
-            role,
-            label: None,
-            created_at: 0,
-            created_by: "did:key:vtc-install".into(),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-            resource_grants: Vec::new(),
-            group_grants: Vec::new(),
-            label_set_by_subject: false,
-            suspension: None,
-        },
-    )
-    .await
-    .expect("seed ACL row");
+    let admin = crate::acl::legacy_seed_authority(&role, &contexts);
+    store_acl_entry(&vtc.state.acl_ks, &seeded_acl_entry(did, role, admin))
+        .await
+        .expect("seed ACL row");
 }
 
 /// The document as a real producer builds it — `issuer`, `recipient` and

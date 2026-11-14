@@ -116,7 +116,7 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "a webvh host's path label for the DID, not a BIP-39 phrase",
     ),
     (
-        "vtc-service/src/routes/vetting_hidden.rs",
+        "vtc-service/src/vetting/hidden.rs",
         "PublishHiddenVettingBody",
         "live_token_labels",
         "class-period labels like `token/2026-09`, the community's published drip schedule, not \

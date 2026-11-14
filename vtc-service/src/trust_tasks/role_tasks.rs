@@ -15,6 +15,7 @@
 //!   may approve (**VTI-ACL-042**, **VTI-ACL-071**). Built-in roles are never
 //!   defined, replaced or deleted.
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vtc_audit::{AdminRoleChangeData, AuditEvent};
@@ -28,34 +29,27 @@ use super::helpers::{
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::admin_consent::Act;
+use crate::acl::ops::conform;
 use crate::acl::roles::{self, DefinitionError, RoleDefinition};
 use crate::acl::{AdminRole, CapRef, Capability};
 use crate::auth::session::now_epoch;
 use crate::error::AppError;
-use crate::routes::acl::conform;
 use crate::server::AppState;
 
-pub(crate) const DEFINE_TYPE: &str = <define::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
+
 pub(crate) const DELETE_TYPE: &str = <delete::Payload as Payload>::TYPE_URI;
 
-/// Every URI this module routes.
-pub(crate) const URIS: &[&str] = &[DEFINE_TYPE, LIST_TYPE, SHOW_TYPE, DELETE_TYPE];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        DEFINE_TYPE => handle_define(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        DELETE_TYPE => handle_delete(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, define::Payload => |state, ctx, doc| handle_define(state, ctx, doc));
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    on!(routes, delete::Payload => |state, ctx, doc| handle_delete(state, ctx, doc))
 }
 
 fn refuse(

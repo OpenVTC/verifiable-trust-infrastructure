@@ -4,7 +4,23 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::join_requests::submit::v0_3::Payload => handle_submit);
+    let routes =
+        on!(routes, vti_specs::vtc::join_requests::manifest::v0_4::Payload => handle_manifest);
+    let routes = on!(routes, vti_specs::vtc::join_requests::status::v0_1::Payload => handle_status);
+    let routes =
+        on!(routes, vti_specs::vtc::join_requests::withdraw::v0_1::Payload => handle_withdraw);
+    let routes =
+        on!(routes, vti_specs::vtc::join_requests::supplement::v0_1::Payload => handle_supplement);
+    let routes =
+        on!(routes, vti_specs::vtc::members::self_remove::v0_1::Payload => handle_self_remove);
+    on!(routes, vti_specs::vtc::join_requests::decide::v0_1::Payload => handle_join_decide)
+}
 
 // ─── submit / request ────────────────────────────────────────────────────
 
@@ -266,7 +282,7 @@ pub(super) async fn handle_manifest(
     if let Some(refusal) = discovery_refusal(state, ctx, &doc).await {
         return refusal;
     }
-    crate::routes::join_requests::manifest::manifest(state)
+    crate::join::ops::manifest::manifest(state)
         .await
         .map(|r| success_response(&doc, r))
         .unwrap_or_else(|e| app_error_to_reject(&doc, &e))
@@ -344,7 +360,7 @@ pub(super) async fn handle_status(
     // repairs the applicant's record for every later poll.
     let result = match body.request_id {
         Some(request_id) => {
-            crate::routes::join_requests::status::status_inner(
+            crate::join::ops::status::status_inner(
                 state,
                 request_id,
                 applicant_did,
@@ -353,7 +369,7 @@ pub(super) async fn handle_status(
             .await
         }
         None => {
-            crate::routes::join_requests::status::status_by_applicant(
+            crate::join::ops::status::status_by_applicant(
                 state,
                 applicant_did,
                 body.resend_credentials,
@@ -675,12 +691,8 @@ pub(super) async fn handle_join_decide(
         }
     };
     let decision = match &checked.decision {
-        join_decide::PayloadDecision::Approved => {
-            crate::routes::join_requests::decide::Decision::Approved
-        }
-        join_decide::PayloadDecision::Rejected => {
-            crate::routes::join_requests::decide::Decision::Rejected
-        }
+        join_decide::PayloadDecision::Approved => crate::join::ops::decide::Decision::Approved,
+        join_decide::PayloadDecision::Rejected => crate::join::ops::decide::Decision::Rejected,
         // `PayloadDecision` is `#[non_exhaustive]`, so a later registry version
         // may add an outcome this build has no handling for. Refusing is the
         // only honest answer: mapping an unknown decision onto either of the
@@ -693,11 +705,11 @@ pub(super) async fn handle_join_decide(
             );
         }
     };
-    let body = crate::routes::join_requests::decide::DecideBody {
+    let body = crate::join::ops::decide::DecideBody {
         decision,
         reason: checked.reason.as_ref().map(|r| r.as_str().to_string()),
     };
-    match crate::routes::join_requests::decide::decide_inner(
+    match crate::join::ops::decide::decide_inner(
         state,
         &actor.did,
         ctx.transport.as_str(),
@@ -1098,7 +1110,7 @@ mod join_decide_profile_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::join_requests::decide::DECIDE_ERR_NOT_FOUND),
+            Some(crate::join::ops::decide::DECIDE_ERR_NOT_FOUND),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
@@ -1158,7 +1170,7 @@ mod join_decide_profile_tests {
         let out = dispatch(&fix.vtc, &second).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::join_requests::decide::DECIDE_ERR_NOT_PENDING),
+            Some(crate::join::ops::decide::DECIDE_ERR_NOT_PENDING),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
@@ -1179,7 +1191,7 @@ mod join_decide_profile_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::community::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED),
+            Some(crate::community::ops::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED),
             "{}",
             String::from_utf8_lossy(&out.body)
         );

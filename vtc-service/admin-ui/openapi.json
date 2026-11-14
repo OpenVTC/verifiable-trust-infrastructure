@@ -894,34 +894,6 @@
           "default"
         ]
       },
-      "CreateInviteRequest": {
-        "type": "object",
-        "properties": {
-          "did": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The DID a **wallet** invitation is for. Absent, the invitation is a\n**passkey** invitation: the administrator's DID is derived from the\npasskey the invitee registers."
-          },
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Operator-supplied label for the ACL entry the invitation writes — now\nfor a wallet invitation whose DID has none, at the claim for a passkey\ninvitation. Ignored when a wallet invitation's DID already has one."
-          },
-          "ttlSeconds": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Token TTL in seconds. Defaults to\n[`INSTALL_TOKEN_DEFAULT_TTL_SECS`] (15 minutes) when omitted.\nCap at 24 h to keep stale invites from accumulating in the\nkeyspace.",
-            "minimum": 0
-          }
-        }
-      },
       "CreateInviteResponse": {
         "type": "object",
         "required": [
@@ -3472,34 +3444,6 @@
           }
         }
       },
-      "IssueInvitationBody": {
-        "type": "object",
-        "required": [
-          "subjectDid"
-        ],
-        "properties": {
-          "role": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional role to grant the invitee on join (e.g. `member`, `moderator`,\n`issuer`). Carried in the VIC's `credentialSubject.scopes` as\n`role:<name>` and honored by the join policy. `admin` is refused — the\nno-admin-via-join privilege ceiling would deny it anyway. Defaults to\n`member` (absent scope)."
-          },
-          "subjectDid": {
-            "type": "string",
-            "description": "The DID to invite (a prospective, non-member holder)."
-          },
-          "validityDays": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int32",
-            "description": "Optional validity in days (1..=90); defaults to the 7-day VIC default.",
-            "minimum": 0
-          }
-        }
-      },
       "IssueInvitationResponse": {
         "type": "object",
         "required": [
@@ -4510,13 +4454,6 @@
           "groups"
         ]
       },
-      "PolicyStatusFilter": {
-        "type": "string",
-        "enum": [
-          "active",
-          "archived"
-        ]
-      },
       "ProfileWithStatus": {
         "allOf": [
           {
@@ -4693,33 +4630,6 @@
           "registryConfigured": {
             "type": "boolean",
             "description": "Whether a trust registry is configured at all (no-registry mode → every\nforeign DID is unrecognised)."
-          }
-        }
-      },
-      "RegisterBody": {
-        "type": "object",
-        "required": [
-          "typeUri"
-        ],
-        "properties": {
-          "claimSchema": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/Value"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "typeUri": {
-            "type": "string"
           }
         }
       },
@@ -4955,18 +4865,6 @@
             "items": {
               "$ref": "#/components/schemas/RemovedMember"
             }
-          }
-        }
-      },
-      "RequestVmcBody": {
-        "type": "object",
-        "properties": {
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional operator note (\"renewal\", \"audit\", …) relayed to the member."
           }
         }
       },
@@ -23062,6 +22960,84 @@
           "typeUri": {
             "type": "string",
             "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcEndorsementTypesRegisterV0_1EndorsementType": {
+        "type": "object",
+        "required": [
+          "typeUri"
+        ],
+        "properties": {
+          "claimSchema": {
+            "type": "object",
+            "description": "Optional JSON Schema a statement's `credentialSubject.object.value` must satisfy (opaque here) — for a registry predicate, the object schema its profile publishes."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdByDid": {
+            "type": "string",
+            "description": "The member who registered this endorsement type. An endorsement vocabulary is community-defined and shapes what every later endorsement can claim, so who introduced a type is audit-relevant in a way its creation time alone is not."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "typeUri": {
+            "type": "string",
+            "description": "The predicate IRI the community accepts, compared as an exact string. Always an absolute IRI: a DTG VSC predicate registry IRI (e.g. `https://registry.trustoverip.org/dtg/vsc/vetted/1`) or a community-namespace IRI defined in the registry's predicate definition format. The four core predicates — endorses/1, witnessed/1, vetted/1 and presented/1 under `https://registry.trustoverip.org/dtg/vsc/` — are seeded when the community starts. The reserved value `role:vetter`, which names the vetter-role record vtc/endorsements/* keeps beside statements, is never registered.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcEndorsementTypesRegisterV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcEndorsementTypesRegisterV0_1Payload": {
+        "type": "object",
+        "required": [
+          "typeUri"
+        ],
+        "properties": {
+          "claimSchema": {
+            "type": "object",
+            "description": "Optional JSON Schema a statement's `credentialSubject.object.value` must satisfy (opaque here)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcEndorsementTypesRegisterV0_1Ext"
+          },
+          "typeUri": {
+            "type": "string",
+            "description": "The predicate IRI to accept, an absolute IRI: a DTG VSC predicate registry IRI or a community-namespace IRI. The reserved value `role:vetter` is refused with `reserved`, and a value that is not an absolute IRI with `invalidUri`.",
+            "maxLength": 512,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcEndorsementTypesRegisterV0_1Response": {
+        "type": "object",
+        "required": [
+          "endorsementType"
+        ],
+        "properties": {
+          "endorsementType": {
+            "$ref": "#/components/schemas/VtcEndorsementTypesRegisterV0_1EndorsementType"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcEndorsementTypesRegisterV0_1Ext"
           }
         },
         "additionalProperties": false

@@ -296,7 +296,7 @@ async fn run_role_change(
     let next = live.as_ref().map(|prior| {
         let mut next = prior.clone();
         next.role = target.clone();
-        if crate::routes::acl::expressible_in_v0_1(prior) {
+        if crate::acl::ops::expressible_in_v0_1(prior) {
             next.admin = target.implied_authority();
         }
         next

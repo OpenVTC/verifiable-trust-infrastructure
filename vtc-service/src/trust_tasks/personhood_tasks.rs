@@ -3,7 +3,14 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::members::personhood::challenge::v0_1::Payload => handle_personhood_challenge);
+    on!(routes, vti_specs::vtc::members::personhood::assert::v0_2::Payload => handle_personhood_assert)
+}
 
 // ─── personhood ──────────────────────────────────────────────────────────
 
@@ -49,7 +56,7 @@ pub(super) async fn handle_personhood_challenge(
         Err(e) => return app_error_to_reject(&doc, &e),
     }
 
-    match crate::routes::members::personhood::challenge_inner(state, &body.did).await {
+    match crate::members::ops::personhood::challenge_inner(state, &body.did).await {
         Ok(res) => success_response(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -67,7 +74,7 @@ pub(super) async fn handle_personhood_challenge(
 /// That check is belt-and-braces rather than the gate. The gate is the
 /// presentation, exactly as the published task says: its `holder` must
 /// equal the subject and its `proof.challenge` must be the paired nonce,
-/// and [`challenge_inner`](crate::routes::members::personhood::challenge_inner)'s
+/// and [`challenge_inner`](crate::members::ops::personhood::challenge_inner)'s
 /// counterpart enforces both regardless of who relayed the document.
 pub(super) async fn handle_personhood_assert(
     state: &AppState,
@@ -122,13 +129,8 @@ pub(super) async fn handle_personhood_assert(
         }
     };
 
-    match crate::routes::members::personhood::assert_inner(
-        state,
-        &body.did,
-        &presentation,
-        &evidence,
-    )
-    .await
+    match crate::members::ops::personhood::assert_inner(state, &body.did, &presentation, &evidence)
+        .await
     {
         Ok(res) => success_response(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),

@@ -166,6 +166,8 @@ spec_types! {
     VetterShow01Response(vetters::show::v0_1::Response);
     /// `vtc/vetting/vetters/resend/0.2#response`.
     VetterResend02Response(vetters::resend::v0_2::Response);
+    /// `vtc/endorsement-types/register/0.1` payload.
+    EndorsementTypeRegister01Payload(endorsement_types::register::v0_1::Payload);
     /// `vtc/endorsement-types/delete/0.1#response`.
     EndorsementTypeDelete01Response(endorsement_types::delete::v0_1::Response);
     /// `vtc/vetting/vetters/profile/0.1`'s `VettingMethod`.

@@ -4,7 +4,18 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::members::vmc::v0_1::Payload => handle_member_vmc);
+    let routes = on!(routes, vti_specs::vtc::members::credentials::v0_1::Payload => handle_member_credentials);
+    let routes =
+        on!(routes, vti_specs::vtc::members::update::v0_1::Payload => handle_member_update);
+    let routes = on!(routes, vti_specs::vtc::members::admin_remove::v0_1::Payload => handle_member_admin_remove);
+    on!(routes, vti_specs::vtc::members::purge::v0_1::Payload => handle_member_purge)
+}
 
 /// `vtc/members/credentials/0.1` — the membership pair's bodies for one member.
 ///
@@ -34,7 +45,7 @@ pub(super) async fn handle_member_credentials(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::members::credentials::read_member_credentials(
+    match crate::members::ops::credentials::read_member_credentials(
         state,
         &actor.did,
         body.did.as_str(),
@@ -45,16 +56,16 @@ pub(super) async fn handle_member_credentials(
         // The task's one declared code, carried as a code rather than flattened
         // into `taskFailed` (SPEC §8.5) — the same distinction the REST route's
         // `CredentialsError` makes in its body.
-        Err(crate::routes::members::credentials::CredentialsError::NotFound(message)) => {
+        Err(crate::members::ops::credentials::CredentialsError::NotFound(message)) => {
             task_error_to_reject(
                 &doc,
                 &crate::error::TaskError::declared(
-                    crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
+                    crate::members::ops::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
                     AppError::NotFound(message),
                 ),
             )
         }
-        Err(crate::routes::members::credentials::CredentialsError::Other(e)) => {
+        Err(crate::members::ops::credentials::CredentialsError::Other(e)) => {
             app_error_to_reject(&doc, &e)
         }
     }
@@ -66,16 +77,13 @@ pub(super) async fn handle_member_credentials(
 /// `adminRoleForbidden` — the gate is on the transition, not on the route, so
 /// it holds identically on both doors.
 ///
-/// # Why the payload is read twice
+/// # An absent `extensions`
 ///
 /// The generated `Payload` types `extensions` as a plain map with `default`, so
 /// an absent `extensions` and an empty one are the same value once parsed —
 /// and the operation's rule is that an absent field leaves the member's
-/// extensions **unchanged** while an empty object replaces them. Reading the
-/// same JSON into the route's own `UpdateMemberRequest`, whose fields are
-/// `Option`, keeps that distinction. The generated parse still runs, and runs
-/// first, because it is what validates the document against its published
-/// schema.
+/// extensions **unchanged** while an empty object replaces them. Whether it was
+/// sent is read from the document as received ([`crate::wire::sent`]).
 pub(super) async fn handle_member_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -97,15 +105,17 @@ pub(super) async fn handle_member_update(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    let req: crate::routes::members::update::UpdateMemberRequest = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    match crate::routes::members::update::update_member_inner(
+    let extensions = crate::wire::sent(
+        &doc.payload,
+        "extensions",
+        Value::Object(checked.extensions.clone()),
+    );
+    match crate::members::ops::update::update_member_inner(
         state,
         &actor,
         checked.did.as_str(),
-        req,
+        &checked,
+        extensions,
     )
     .await
     {
@@ -136,17 +146,11 @@ pub(super) async fn handle_member_admin_remove(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    // Same reason as `update` above: `disposition` and `reason` are optional
-    // and the route's body type is the one that says so.
-    let body: crate::routes::members::remove::RemoveBody = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    match crate::routes::members::remove::admin_remove_inner(
+    match crate::members::ops::remove::admin_remove_inner(
         state,
         &actor,
         checked.did.as_str(),
-        body,
+        &checked,
         crate::acl::admin_consent::Operation {
             type_uri: &doc.type_uri.for_routing().to_string(),
             payload: &doc.payload,
@@ -156,7 +160,7 @@ pub(super) async fn handle_member_admin_remove(
     {
         Ok(outcome) => success_response(
             &doc,
-            crate::routes::members::remove::RemoveResponse::from(outcome),
+            crate::members::ops::remove::RemoveResponse::from(outcome),
         ),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -200,7 +204,7 @@ pub(super) async fn handle_member_purge(
     match crate::ceremony::purge_member(state, &actor.did, checked.did.as_str()).await {
         Ok(outcome) => success_response(
             &doc,
-            crate::routes::members::remove::RemoveResponse::from(outcome),
+            crate::members::ops::remove::RemoveResponse::from(outcome),
         ),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -816,7 +820,7 @@ mod members_admin_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND),
+            Some(crate::members::ops::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
@@ -838,7 +842,7 @@ mod members_admin_tests {
 
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::members::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN),
+            Some(crate::members::ops::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
@@ -864,7 +868,7 @@ mod members_admin_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::members::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN),
+            Some(crate::members::ops::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN),
             "{}",
             String::from_utf8_lossy(&out.body)
         );

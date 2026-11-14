@@ -185,7 +185,7 @@ async fn sweep_passkey_ceremonies(
     for (ks, extra) in [
         (
             passkey_ks,
-            &[crate::routes::admin::passkeys::REVOKE_TARGET_PREFIX][..],
+            &[crate::auth::admin_passkeys::REVOKE_TARGET_PREFIX][..],
         ),
         (
             member_passkey_ks,
@@ -489,7 +489,7 @@ mod tests {
         .unwrap();
         let console = store.keyspace("passkeys").unwrap();
         let portal = store.keyspace("member_passkeys").unwrap();
-        let revoke_pin = format!("{}r1", crate::routes::admin::passkeys::REVOKE_TARGET_PREFIX);
+        let revoke_pin = format!("{}r1", crate::auth::admin_passkeys::REVOKE_TARGET_PREFIX);
         let member_pin = format!("{}m1", crate::routes::member_portal::MEMBER_REG_PREFIX);
         store_pending(&console, revoke_pin.clone(), &"did\ncred")
             .await

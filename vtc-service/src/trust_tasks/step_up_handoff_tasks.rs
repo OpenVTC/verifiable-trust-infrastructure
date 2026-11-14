@@ -21,6 +21,7 @@
 //! no part of an approval (item 5): the step-up is still recorded only from an
 //! approve-response meeting that task's own checks.
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_specs::auth::step_up::approve_request::v0_5 as approve_request;
@@ -35,22 +36,11 @@ use crate::acl::bound_step_up::{self, HandoffShown};
 use crate::server::AppState;
 use vti_common::error::AppError;
 
-pub(crate) const SHOW_TYPE: &str = <show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 const APPROVE_REQUEST_TYPE: &str = <approve_request::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[SHOW_TYPE];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc))
 }
 
 /// `auth/step-up/requests/show/0.1`.

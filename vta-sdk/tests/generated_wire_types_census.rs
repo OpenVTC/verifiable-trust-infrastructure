@@ -170,43 +170,37 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
         "VaultSignTrustTaskResponseBody",
     ), // vault/sign-trust-task/0.1
     ("vta-service/src/trust_tasks/vault.rs", "VaultUpsertBody"), // vault/upsert/0.1
-    ("vtc-service/src/routes/admin/config.rs", "ExportResponse"), // vtc/config/export/0.1#response
-    ("vtc-service/src/routes/admin/config.rs", "ImportRequest"), // vtc/config/import/0.1
-    ("vtc-service/src/routes/admin/config.rs", "ImportResponse"), // vtc/config/import/0.1#response
+    ("vtc-service/src/community/ops/config.rs", "ExportResponse"), // vtc/config/export/0.1#response
+    ("vtc-service/src/community/ops/config.rs", "ImportRequest"), // vtc/config/import/0.1
+    ("vtc-service/src/community/ops/config.rs", "ImportResponse"), // vtc/config/import/0.1#response
     (
-        "vtc-service/src/routes/admin/passkeys.rs",
+        "vtc-service/src/auth/admin_passkeys.rs",
         "RegisteredCredential",
     ), // auth/passkey/list/0.1
-    ("vtc-service/src/routes/backup.rs", "ExportResponse"),   // vtc/backup/export/0.1
+    ("vtc-service/src/backup/ops.rs", "ExportResponse"),      // vtc/backup/export/0.1
     (
-        "vtc-service/src/routes/ceremonies.rs",
+        "vtc-service/src/ceremony/listing.rs",
         "CeremonyListResponse",
     ), // vtc/ceremonies/list/0.1
     (
-        "vtc-service/src/routes/endorsement_types.rs",
+        "vtc-service/src/endorsement_types/ops.rs",
         "RegisterResponse",
     ), // vtc/endorsement-types/register/0.1
+    ("vtc-service/src/endorsements/ops.rs", "EndorsementEnvelope"), // vtc/endorsements/show/0.1
+    ("vtc-service/src/join/ops/decide.rs", "Decision"),       // vtc/join-requests/decide/0.1
+    ("vtc-service/src/join/ops/read.rs", "JoinRequestEnvelope"), // vtc/join-requests/show/0.1
+    ("vtc-service/src/members/ops/read.rs", "MemberEnvelope"), // vtc/members/show/0.1
     (
-        "vtc-service/src/routes/endorsements.rs",
-        "EndorsementEnvelope",
-    ), // vtc/endorsements/show/0.1
-    ("vtc-service/src/routes/join_requests/decide.rs", "Decision"), // vtc/join-requests/decide/0.1
-    (
-        "vtc-service/src/routes/join_requests/read.rs",
-        "JoinRequestEnvelope",
-    ), // vtc/join-requests/show/0.1
-    ("vtc-service/src/routes/members/read.rs", "MemberEnvelope"), // vtc/members/show/0.1
-    (
-        "vtc-service/src/routes/members/read.rs",
+        "vtc-service/src/members/ops/read.rs",
         "RemovedMembersResponse",
     ), // vtc/members/removed/0.1
-    ("vtc-service/src/routes/website/files.rs", "DeleteResponse"), // vtc/website/files/delete/0.1
+    ("vtc-service/src/website/ops/files.rs", "DeleteResponse"), // vtc/website/files/delete/0.1
     (
-        "vtc-service/src/routes/website/generations.rs",
+        "vtc-service/src/website/ops/generations.rs",
         "GenerationsResponse",
     ), // vtc/website/generations/list/0.1
     (
-        "vtc-service/src/routes/website/generations.rs",
+        "vtc-service/src/website/ops/generations.rs",
         "RollbackResponse",
     ), // vtc/website/rollback/0.1
     ("vti-rooms/src/wire.rs", "ChainBody"),                   // rooms/epoch/chain/0.2

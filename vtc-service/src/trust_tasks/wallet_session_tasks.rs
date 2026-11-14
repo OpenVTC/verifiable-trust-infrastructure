@@ -17,10 +17,17 @@ use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, parse_payload, reject_with_code,
     success_response,
 };
+use super::routing::{Routes, on};
 use super::{JoinAuthCtx, resolve_holder};
 use crate::oid4vp::session::{self, RefusalReason, SessionPhase};
 use crate::oid4vp::wallet::{self, StartRefusal};
 use crate::server::AppState;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, start::Payload => handle_start);
+    on!(routes, status::Payload => handle_status)
+}
 
 /// `wallet-session/start/0.1`.
 pub(super) async fn handle_start(

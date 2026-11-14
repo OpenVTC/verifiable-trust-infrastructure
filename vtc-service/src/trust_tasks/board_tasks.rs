@@ -17,6 +17,7 @@
 //! signer's own key only. A board the caller may not see is `notFound`, exactly as one that
 //! does not exist, on every task. None has a REST route.
 
+use super::routing::{Routes, on};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
@@ -55,45 +56,19 @@ use crate::boards::{
 };
 use crate::server::AppState;
 
-pub(crate) const CREATE_TYPE: &str = <board_create::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_TYPE: &str = <board_update::Payload as Payload>::TYPE_URI;
-pub(crate) const DELETE_TYPE: &str = <board_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <board_list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const SHOW_TYPE: &str = <board_show::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_PROPOSE_TYPE: &str = <ideas_propose::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_UPDATE_TYPE: &str = <ideas_update::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_WITHDRAW_TYPE: &str = <ideas_withdraw::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_DECIDE_TYPE: &str = <ideas_decide::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_SELECT_TYPE: &str = <ideas_select::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_ADD_TYPE: &str = <notes_add::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const NOTES_LIST_TYPE: &str = <notes_list::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_WITHDRAW_TYPE: &str = <notes_withdraw::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_HIDE_TYPE: &str = <notes_hide::Payload as Payload>::TYPE_URI;
-pub(crate) const FACILITATORS_ADD_TYPE: &str = <facilitators_add::Payload as Payload>::TYPE_URI;
-pub(crate) const FACILITATORS_REMOVE_TYPE: &str =
-    <facilitators_remove::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <board_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const FACILITATORS_LIST_TYPE: &str = <facilitators_list::Payload as Payload>::TYPE_URI;
 
-/// Every type this module serves.
-pub(crate) const URIS: &[&str] = &[
-    CREATE_TYPE,
-    UPDATE_TYPE,
-    DELETE_TYPE,
-    LIST_TYPE,
-    SHOW_TYPE,
-    IDEAS_PROPOSE_TYPE,
-    IDEAS_UPDATE_TYPE,
-    IDEAS_WITHDRAW_TYPE,
-    IDEAS_DECIDE_TYPE,
-    IDEAS_SELECT_TYPE,
-    NOTES_ADD_TYPE,
-    NOTES_LIST_TYPE,
-    NOTES_WITHDRAW_TYPE,
-    NOTES_HIDE_TYPE,
-    FACILITATORS_ADD_TYPE,
-    FACILITATORS_REMOVE_TYPE,
-    FACILITATORS_LIST_TYPE,
-];
+pub(crate) const DELETE_TYPE: &str = <board_delete::Payload as Payload>::TYPE_URI;
 
 macro_rules! codes {
     ($($name:ident = $module:ident :: $code:ident;)*) => {
@@ -173,32 +148,35 @@ codes! {
     FACILITATORS_LIST_ERR_NOT_FOUND = facilitators_list::NOT_FOUND;
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        DELETE_TYPE => handle_delete(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        IDEAS_PROPOSE_TYPE => handle_propose(state, ctx, doc).await,
-        IDEAS_UPDATE_TYPE => handle_idea_update(state, ctx, doc).await,
-        IDEAS_WITHDRAW_TYPE => handle_idea_withdraw(state, ctx, doc).await,
-        IDEAS_DECIDE_TYPE => handle_decide(state, ctx, doc).await,
-        IDEAS_SELECT_TYPE => handle_select(state, ctx, doc).await,
-        NOTES_ADD_TYPE => handle_note_add(state, ctx, doc).await,
-        NOTES_LIST_TYPE => handle_notes_list(state, ctx, doc).await,
-        NOTES_WITHDRAW_TYPE => handle_note_withdraw(state, ctx, doc).await,
-        NOTES_HIDE_TYPE => handle_note_hide(state, ctx, doc).await,
-        FACILITATORS_ADD_TYPE => handle_facilitators_add(state, ctx, doc).await,
-        FACILITATORS_REMOVE_TYPE => handle_facilitators_remove(state, ctx, doc).await,
-        FACILITATORS_LIST_TYPE => handle_facilitators_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, board_create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, board_update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes =
+        on!(routes, board_delete::Payload => |state, ctx, doc| handle_delete(state, ctx, doc));
+    let routes = on!(routes, board_list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, board_show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_propose::Payload => |state, ctx, doc| handle_propose(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_update::Payload => |state, ctx, doc| handle_idea_update(state, ctx, doc));
+    let routes = on!(routes, ideas_withdraw::Payload => |state, ctx, doc| handle_idea_withdraw(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_decide::Payload => |state, ctx, doc| handle_decide(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_select::Payload => |state, ctx, doc| handle_select(state, ctx, doc));
+    let routes =
+        on!(routes, notes_add::Payload => |state, ctx, doc| handle_note_add(state, ctx, doc));
+    let routes =
+        on!(routes, notes_list::Payload => |state, ctx, doc| handle_notes_list(state, ctx, doc));
+    let routes = on!(routes, notes_withdraw::Payload => |state, ctx, doc| handle_note_withdraw(state, ctx, doc));
+    let routes =
+        on!(routes, notes_hide::Payload => |state, ctx, doc| handle_note_hide(state, ctx, doc));
+    let routes = on!(routes, facilitators_add::Payload => |state, ctx, doc| handle_facilitators_add(state, ctx, doc));
+    let routes = on!(routes, facilitators_remove::Payload => |state, ctx, doc| handle_facilitators_remove(state, ctx, doc));
+    on!(routes, facilitators_list::Payload => |state, ctx, doc| handle_facilitators_list(state, ctx, doc))
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────

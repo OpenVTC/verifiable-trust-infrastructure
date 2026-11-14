@@ -12,7 +12,7 @@
 //! ## Single entry point, shared by the bespoke flow
 //!
 //! [`apply`] is the one executor. The MVP's manual join-approve route
-//! ([`crate::routes::join_requests::decide::decide`]) is refactored
+//! ([`crate::join::ops::decide::decide`]) is refactored
 //! to go through it too — it builds an [`EffectPlan::Admit`] and calls
 //! [`apply`], so the pipeline genuinely supersedes the bespoke write
 //! path rather than duplicating it. The approve route's integration
@@ -249,7 +249,7 @@ async fn admit(
         label,
         // The authority an invitation's role implies; an invitation naming a
         // role that implies any was bounded by its inviter's own when it was
-        // issued (`routes::invitations`, vtc-admin-roles.md §6.3).
+        // issued (`join::invitations`, vtc-admin-roles.md §6.3).
         admin: role.implied_authority(),
         delegated_by: None,
         created_at: now_epoch(),
@@ -513,7 +513,7 @@ async fn remint(
     let now = crate::auth::session::now_epoch();
     let mut next = acl.clone();
     next.role = new_role.clone();
-    if crate::routes::acl::expressible_in_v0_1(&acl) {
+    if crate::acl::ops::expressible_in_v0_1(&acl) {
         next.admin = new_role.implied_authority();
     }
 

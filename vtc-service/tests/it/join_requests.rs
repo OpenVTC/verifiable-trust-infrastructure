@@ -26,7 +26,7 @@ use vtc_service::members::get_member;
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-/// Mirror of the constant in `vtc_service::routes::join_requests::submit`
+/// Mirror of the constant in `vtc_service::join::ops::submit`
 /// — the route module is `pub(crate)` so we can't import it from a
 /// test. Keeping a single-line copy here is cheaper than widening
 /// the module's visibility for one test.
@@ -1349,8 +1349,8 @@ const VTC_AUD: &str = "did:webvh:vtc.example.com:abc";
 /// MembershipCredential is issued inline.
 #[tokio::test]
 async fn credential_exchange_present_auto_admits_under_allow_policy() {
+    use vtc_service::join::ops::present::present_and_decide_join;
     use vtc_service::join::{JoinStatus, JoinTransport};
-    use vtc_service::routes::join_requests::present::present_and_decide_join;
 
     let fix = build_fixture().await;
     activate_join_policy(
@@ -1402,8 +1402,8 @@ async fn credential_exchange_present_auto_admits_under_allow_policy() {
 /// decision pipeline routed it; no auto-admit).
 #[tokio::test]
 async fn credential_exchange_present_defers_under_default_policy() {
+    use vtc_service::join::ops::present::present_and_decide_join;
     use vtc_service::join::{JoinStatus, JoinTransport};
-    use vtc_service::routes::join_requests::present::present_and_decide_join;
 
     let fix = build_fixture().await;
     let now = chrono::Utc::now();
@@ -1433,7 +1433,7 @@ async fn credential_exchange_present_defers_under_default_policy() {
 #[tokio::test]
 async fn credential_exchange_present_rejects_a_wrong_nonce() {
     use vtc_service::join::JoinTransport;
-    use vtc_service::routes::join_requests::present::present_and_decide_join;
+    use vtc_service::join::ops::present::present_and_decide_join;
 
     let fix = build_fixture().await;
     let now = chrono::Utc::now();
@@ -1468,8 +1468,8 @@ async fn credential_exchange_present_rejects_a_wrong_nonce() {
 #[tokio::test]
 async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop() {
     use vtc_service::credentials::present_challenge::{DEFAULT_CHALLENGE_TTL, consume, issue};
+    use vtc_service::join::ops::present::present_and_decide_join;
     use vtc_service::join::{JoinStatus, JoinTransport};
-    use vtc_service::routes::join_requests::present::present_and_decide_join;
 
     let fix = build_fixture().await;
     activate_join_policy(
@@ -1557,7 +1557,7 @@ const SAME_EXCHANGE_ONLY_JOIN_REGO: &str = "package vtc.join\nimport rego.v1\n\n
 #[tokio::test]
 async fn credential_exchange_present_refuses_a_witness_with_no_task_context() {
     use vtc_service::join::JoinTransport;
-    use vtc_service::routes::join_requests::present::present_and_decide_join;
+    use vtc_service::join::ops::present::present_and_decide_join;
 
     let fix = build_fixture().await;
     activate_join_policy(
@@ -1603,8 +1603,8 @@ async fn credential_exchange_present_refuses_a_witness_with_no_task_context() {
 /// requires it.
 #[tokio::test]
 async fn a_witness_from_this_exchange_satisfies_a_same_exchange_policy() {
+    use vtc_service::join::ops::present::present_and_decide_join;
     use vtc_service::join::{JoinStatus, JoinTransport};
-    use vtc_service::routes::join_requests::present::present_and_decide_join;
 
     let fix = build_fixture().await;
     activate_join_policy(&fix, SAME_EXCHANGE_ONLY_JOIN_REGO).await;
@@ -1645,8 +1645,8 @@ async fn a_witness_from_this_exchange_satisfies_a_same_exchange_policy() {
 /// the facts these two presentations are indistinguishable to the policy.
 #[tokio::test]
 async fn a_witness_from_another_exchange_cannot_satisfy_this_one() {
+    use vtc_service::join::ops::present::present_and_decide_join;
     use vtc_service::join::{JoinStatus, JoinTransport};
-    use vtc_service::routes::join_requests::present::present_and_decide_join;
 
     let fix = build_fixture().await;
     activate_join_policy(&fix, SAME_EXCHANGE_ONLY_JOIN_REGO).await;

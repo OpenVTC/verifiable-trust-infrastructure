@@ -39,6 +39,7 @@
 // not yet moved; their generated types are marked deprecated.
 #![allow(deprecated)]
 
+use super::routing::{Routes, on};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -76,16 +77,19 @@ use crate::rooms::community::{
 use crate::rooms::vta_access;
 use crate::server::AppState;
 
-/// 0.4: the room's description and tags, its profile written into it (0.3), and the host
-/// record's instants as RFC 3339 strings (`vtc/_shared/0.3/community-room`).
-pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
+/// 0.4 / 0.2: each room's state in its owner's lifecycle, and the `suspended` member state
+/// (`vtc/_shared/0.5/community-room`).
+#[cfg(test)]
+pub(crate) const LIST_V4_TYPE: &str = <list_v4::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const GET_V4_TYPE: &str = <get_v4::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_TYPE: &str = <update::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_ADD_TYPE: &str = <add::Payload as Payload>::TYPE_URI;
-/// 0.2: on `open` and `attributed` rooms the member's credentials are withdrawn at the
-/// room's host too (trust-tasks-tf #804).
-pub(crate) const MEMBERS_REMOVE_TYPE: &str = <remove::Payload as Payload>::TYPE_URI;
 
 /// The VTA's refusal when an earlier removal it was settling did not take effect
 /// (`rooms/owner/group/remove/0.4` item 8.2).
@@ -94,45 +98,6 @@ const EARLIER_REMOVAL_REFUSED: &str =
 /// The same refusal at an admission (`rooms/owner/group/add/0.3` item 6.1): an earlier
 /// removal from the room did not take effect, and nothing of the admission was done.
 const ADD_EARLIER_REMOVAL_REFUSED: &str = owner_add::error_codes::EARLIER_REMOVAL_REFUSED.code;
-pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
-/// `vtc/rooms/offers/list/0.4` — the current listing, with renewals (`renewsAt`).
-pub(crate) const OFFERS_LIST_TYPE: &str = <offers_list::Payload as Payload>::TYPE_URI;
-pub(crate) const OFFERS_ACCEPT_TYPE: &str = <accept::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERSHIPS_LIST_TYPE: &str = <memberships_list::Payload as Payload>::TYPE_URI;
-/// 0.4 / 0.2: each room's state in its owner's lifecycle, and the `suspended` member state
-/// (`vtc/_shared/0.5/community-room`).
-pub(crate) const LIST_V4_TYPE: &str = <list_v4::Payload as Payload>::TYPE_URI;
-pub(crate) const GET_V4_TYPE: &str = <get_v4::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_LIST_V2_TYPE: &str = <members_list_v2::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERSHIPS_LIST_V2_TYPE: &str =
-    <memberships_list_v2::Payload as Payload>::TYPE_URI;
-/// Archiving and removing a room ([`crate::rooms::community_lifecycle`]).
-pub(crate) const ARCHIVE_TYPE: &str = <archive::Payload as Payload>::TYPE_URI;
-pub(crate) const UNARCHIVE_TYPE: &str = <unarchive::Payload as Payload>::TYPE_URI;
-pub(crate) const REMOVE_ROOM_TYPE: &str = <remove_room::Payload as Payload>::TYPE_URI;
-pub(crate) const REMOVAL_CANCEL_TYPE: &str = <removal_cancel::Payload as Payload>::TYPE_URI;
-
-/// Every URI [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    CREATE_TYPE,
-    LIST_TYPE,
-    LIST_V4_TYPE,
-    GET_TYPE,
-    GET_V4_TYPE,
-    UPDATE_TYPE,
-    MEMBERS_ADD_TYPE,
-    MEMBERS_REMOVE_TYPE,
-    MEMBERS_LIST_TYPE,
-    MEMBERS_LIST_V2_TYPE,
-    OFFERS_LIST_TYPE,
-    OFFERS_ACCEPT_TYPE,
-    MEMBERSHIPS_LIST_TYPE,
-    MEMBERSHIPS_LIST_V2_TYPE,
-    ARCHIVE_TYPE,
-    UNARCHIVE_TYPE,
-    REMOVE_ROOM_TYPE,
-    REMOVAL_CANCEL_TYPE,
-];
 
 const OWNER_GROUP_CREATE: &str = <owner_group_create::Payload as Payload>::TYPE_URI;
 /// `rooms/owner/group/add/0.3`: an earlier removal the VTA settles first is reported as
@@ -151,33 +116,34 @@ const MEMBERS_CURSOR: &str = "community-room-members:";
 const OFFERS_CURSOR: &str = "community-room-offers:";
 const MEMBERSHIPS_CURSOR: &str = "community-room-memberships:";
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc, false).await,
-        LIST_V4_TYPE => handle_list(state, ctx, doc, true).await,
-        GET_TYPE => handle_get(state, ctx, doc, false).await,
-        GET_V4_TYPE => handle_get(state, ctx, doc, true).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
-        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
-        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc, false).await,
-        MEMBERS_LIST_V2_TYPE => handle_members_list(state, ctx, doc, true).await,
-        OFFERS_LIST_TYPE => handle_offers_list(state, ctx, doc).await,
-        OFFERS_ACCEPT_TYPE => handle_offers_accept(state, ctx, doc).await,
-        MEMBERSHIPS_LIST_TYPE => handle_memberships_list(state, ctx, doc, false).await,
-        MEMBERSHIPS_LIST_V2_TYPE => handle_memberships_list(state, ctx, doc, true).await,
-        ARCHIVE_TYPE => handle_archive(state, ctx, doc).await,
-        UNARCHIVE_TYPE => handle_unarchive(state, ctx, doc).await,
-        REMOVE_ROOM_TYPE => handle_remove_room(state, ctx, doc).await,
-        REMOVAL_CANCEL_TYPE => handle_removal_cancel(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc, false));
+    let routes =
+        on!(routes, list_v4::Payload => |state, ctx, doc| handle_list(state, ctx, doc, true));
+    let routes = on!(routes, get::Payload => |state, ctx, doc| handle_get(state, ctx, doc, false));
+    let routes =
+        on!(routes, get_v4::Payload => |state, ctx, doc| handle_get(state, ctx, doc, true));
+    let routes = on!(routes, update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes = on!(routes, add::Payload => |state, ctx, doc| handle_members_add(state, ctx, doc));
+    let routes =
+        on!(routes, remove::Payload => |state, ctx, doc| handle_members_remove(state, ctx, doc));
+    let routes = on!(routes, members_list::Payload => |state, ctx, doc| handle_members_list(state, ctx, doc, false));
+    let routes = on!(routes, members_list_v2::Payload => |state, ctx, doc| handle_members_list(state, ctx, doc, true));
+    let routes =
+        on!(routes, offers_list::Payload => |state, ctx, doc| handle_offers_list(state, ctx, doc));
+    let routes =
+        on!(routes, accept::Payload => |state, ctx, doc| handle_offers_accept(state, ctx, doc));
+    let routes = on!(routes, memberships_list::Payload => |state, ctx, doc| handle_memberships_list(state, ctx, doc, false));
+    let routes = on!(routes, memberships_list_v2::Payload => |state, ctx, doc| handle_memberships_list(state, ctx, doc, true));
+    let routes = on!(routes, archive::Payload => |state, ctx, doc| handle_archive(state, ctx, doc));
+    let routes =
+        on!(routes, unarchive::Payload => |state, ctx, doc| handle_unarchive(state, ctx, doc));
+    let routes =
+        on!(routes, remove_room::Payload => |state, ctx, doc| handle_remove_room(state, ctx, doc));
+    on!(routes, removal_cancel::Payload => |state, ctx, doc| handle_removal_cancel(state, ctx, doc))
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────

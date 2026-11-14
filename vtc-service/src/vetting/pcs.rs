@@ -91,7 +91,7 @@ fn mask_key(state: &AppState) -> Result<[u8; 32], ProtoError> {
 ///
 /// It hangs off the stored criterion, and reaches the join manifest as
 /// [`Self::published`] under the criterion's `vetting.ext[HIDDEN_VETTING_NS]`
-/// (`routes::join_requests::manifest::manifest_criterion`).
+/// (`join::ops::manifest::manifest_criterion`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HiddenVettingConfig {

@@ -943,7 +943,7 @@ pub fn validate_value(def: &ConfigKeyDef, value: &Value) -> Result<(), AppError>
             }
         }
         // The community's own DID is refused by the caller, which knows it
-        // (`routes::admin::config::check_against_community`).
+        // (`community::ops::config::check_against_community`).
         ConfigKeyKind::TrustedWitnessList => {
             crate::credentials::trusted_witnesses::parse_list(value, None)
                 .map(|_| ())

@@ -4,7 +4,7 @@
 //! ## The gap this closes
 //!
 //! #1075 fixed an instance — an expired VRC became a permanent graph edge
-//! because `routes/relationships.rs` read neither `validFrom` nor
+//! because `relationships/ops.rs` read neither `validFrom` nor
 //! `validUntil`. It did not fix the class. Nothing in this workspace
 //! established **precedence between a cryptographically valid but stale
 //! artifact and a later lifecycle event**, and the relationship graph had no

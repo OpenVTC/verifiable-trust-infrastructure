@@ -45,7 +45,7 @@
 //! - a role other than `member` is **assigning a role**: it takes
 //!   `vtc.roles.assign`, and the entry it seats is bounded by the actor's own
 //!   ([`crate::acl::granting::check_write`], `vtc-admin-roles.md` §6.3,
-//!   VTI-ACL-071) — the rule `routes::invitations` applies to an invitation's
+//!   VTI-ACL-071) — the rule `join::invitations` applies to an invitation's
 //!   role;
 //! - `admin`, or any role whose authority would confer authority-conferring
 //!   capabilities, is never seated this way: admit the member, then promote
@@ -445,7 +445,7 @@ async fn check_add(
         // Conferring a role is assigning one, and a role that implies
         // administrative authority is a grant of it, bounded by the actor's own
         // entry like any grant (vtc-admin-roles.md §6.3, VTI-ACL-071) — the
-        // rule an invitation's role is held to (`routes::invitations`).
+        // rule an invitation's role is held to (`join::invitations`).
         if !actor.can_any(Capability::RolesAssign) {
             return Err(not_permitted(format!(
                 "admitting {subject} as `{role}` assigns a role, which takes vtc.roles.assign; \
