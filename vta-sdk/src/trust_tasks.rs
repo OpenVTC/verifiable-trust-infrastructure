@@ -1005,10 +1005,19 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_4: &str =
 /// `spec/rooms/keys/browse/0.5` — [`TASK_ROOMS_KEYS_BROWSE_0_4`], and `order` passed
 /// through to the host's `rooms/records/list/0.7` (`newestFirst` opens a conversation at
 /// its head), `maxPages` to stop after so many host pages, and `cursor` / `nextCursor` to
-/// come back for the next (trust-tasks-tf #1088). Auth: `roomOpen` capability. The version
-/// this SDK sends.
+/// come back for the next (trust-tasks-tf #1088). Auth: `roomOpen` capability. Sent to a
+/// VTA that predates 0.6.
+#[allow(deprecated)] // superseded by 0.6, and still served
 pub const TASK_ROOMS_KEYS_BROWSE_0_5: &str =
     <vti_specs::rooms::keys::browse::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/browse/0.6` — [`TASK_ROOMS_KEYS_BROWSE_0_5`], and `beforeVersion`
+/// passed through to the host's `rooms/records/list/0.8`: an exclusive upper bound on
+/// `version`, so a surface loads older records from the lowest version it holds without
+/// keeping the host's cursor (trust-tasks-tf #1289). A host that cannot apply it is
+/// `hostRefused`. Auth: `roomOpen` capability. The version this SDK sends.
+pub const TASK_ROOMS_KEYS_BROWSE_0_6: &str =
+    <vti_specs::rooms::keys::browse::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/seal/0.2` — seal one record body with the room's current epoch key;
 /// it does not write. With `signAsPrincipal` the VTA signs the
@@ -2951,6 +2960,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_4,
     TASK_ROOMS_KEYS_BROWSE_0_5,
+    TASK_ROOMS_KEYS_BROWSE_0_6,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_SEAL_0_3,
     TASK_ROOMS_KEYS_ACT_0_8,

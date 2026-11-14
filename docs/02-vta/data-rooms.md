@@ -393,6 +393,17 @@ rejected before it reaches a room handler. And a VTC's Trust Task endpoint rides
 its governed chain, with a **64 KiB body cap**, which is the practical ceiling on
 a single record there; the `room-host` binary imposes neither.
 
+A client need not know either figure in advance: `rooms/info/0.5` (trust-tasks-tf
+#1289) states the host's own limits, so a writer refuses a record, or cuts a file,
+before it sends. `maxRecordDocumentBytes` is the largest `rooms/records/put`
+document the host accepts, measured as `maxDocumentBytes` measures it — a VTC
+states **65,536**; `room-host` keeps no per-record limit of its own (its HTTP body
+limit is the 2,097,152 bytes `rooms/records/put/0.6` declares), so it states none.
+`maxChunkSize` is the largest proxied chunk the host admits at its own size; both
+hosts state the transfer ceiling, **262,144** (a file segment of 262,128 bytes). File
+limits and per-member quotas are in `limits` and `usage.member.limits`, as before.
+`vtc_client`'s `room_info` asks 0.5 and falls back to 0.4, then 0.3.
+
 The host sets what it is entitled to set and nothing else: `epoch = 1`,
 `epochExpiresAt = now + 365 days`, `retentionDays` (default **90**), and the
 version counter. **Sign this one as the owner**: creation is the single verb no
@@ -1827,6 +1838,28 @@ through `rooms/keys/read/0.2`. Two rules a reader of a newest-first page keeps:
   `lastPrune.version`), never one from a later page: a record changed while the
   listing was read moved above it, and only that watermark finds it next time.
 
+**Loading older from a version.** A cursor is the host's and short-lived, so a
+surface that restarts loses it. `rooms/records/list/0.8` (trust-tasks-tf #1289) adds
+`beforeVersion`, an exclusive upper bound — the counterpart of `sinceVersion` — under
+either order: "load older" passes the lowest version the surface holds and gets the
+records below it, newest first, with no cursor kept. When `beforeVersion <=
+sinceVersion + 1` the page is empty, not an error. A cursor now belongs to the
+`order`, `sinceVersion` **and** `beforeVersion` it was issued under, and is refused
+`invalidCursor` under any other (both hosts append `s<since>` and `b<before>` to the
+0.7 shape, so a listing with neither bound issues exactly 0.7's cursor). A listing
+bounded above is never comparable against `recordCount`. Both hosts read it as a seek
+on the room's version index (#2712), so a page costs the rows it returns, not the
+room. 0.5 – 0.7 stay served.
+
+Through the VTA, `rooms/keys/browse/0.6` passes `beforeVersion` through to the host's
+list/0.8. At a host that does not serve list/0.8 a browse naming `beforeVersion` is
+`hostRefused` with the host's `unsupportedType` — never listed without the bound; one
+naming none falls back to list/0.7 as browse/0.5 does. The SDK's `room_browse` sends
+0.6 (`RoomBrowse::before_version`) and asks 0.5 of an older VTA only for a browse that
+names no `beforeVersion`. `pnm rooms list --newest --before-version N` (and `rooms read
+--newest --before-version N`) loads older from version `N`; each `--newest` page
+prints both the `--cursor` and the `--before-version` command for the page before.
+
 A reader looking for its authors' names reads at least 500 rows below the
 earliest record it shows (*Near the room's head*, above).
 
@@ -2421,8 +2454,11 @@ and `vtc-service` — the same tasks and versions on both:
 | `rooms/records/list/0.5` | `read` — every page carries the room's `lastPrune` |
 | `rooms/records/list/0.6` | `read` — rows add `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`) and `kind` (`open`) |
 | `rooms/records/list/0.7` | `read` — 0.6, and `order` (`oldestFirst` default, `newestFirst`); a cursor is refused `invalidCursor` under the other order |
+| `rooms/records/list/0.8` | `read` — 0.7, and `beforeVersion`, an exclusive upper bound under either order (`beforeVersion <= sinceVersion + 1` is an empty page); a cursor is refused `invalidCursor` under another `order`, `sinceVersion` or `beforeVersion` |
 | `rooms/create/0.2` | no chain — the signer must be the `ownerDid` (§8.4); records the room's `recordRetention` as given |
 | `rooms/info/0.3` | `read` — adds `recordRetention` and `lastPrune` |
+| `rooms/info/0.4` | `read` — adds the room's `signalDelay` |
+| `rooms/info/0.5` | `read` — adds the host's own limits: `maxRecordDocumentBytes` (a VTC states 65,536; `room-host` none) and `maxChunkSize` (262,144 on both) |
 | `rooms/records/prune/0.2` | `admin` — removes what the record retention makes eligible (§10.5) |
 | `rooms/records/retention/set/0.1` | `admin` — replaces the record retention (§10.5) |
 | `rooms/records/curate/0.1` | `curate` |
@@ -2462,7 +2498,7 @@ and `vtc-service` — the same tasks and versions on both:
 | `rooms/keys/read-marker/set/0.1` | `roomOpen` capability + acting as `member`; refused to a delegate. Forward only unless `rewind`; never audited or logged. A move sends `rooms/keys/read-marker/moved/0.1` to the member's other watching clients (coalesced, 3 s) |
 | `rooms/keys/profile/read/0.1` | `roomOpen` capability; reads at the host as the persona, presenting its `read` |
 | `rooms/keys/profile/write/0.1` | `roomOpen` capability; refused to a delegate. The persona's `write` and `curate` or `admin` (`noAuthority` before the host); clearing takes `curate` |
-| `rooms/keys/browse/0.3`, `0.4`, `0.5` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`). 0.5 lists with list/0.7, passing `order` through, stops at `maxPages`, and answers `nextCursor` exactly when `complete` is false; `newestFirst` at a host without list/0.7 is `hostRefused` |
+| `rooms/keys/browse/0.3`, `0.4`, `0.5`, `0.6` | `roomOpen` capability; passes the host's `lastPrune` through. 0.4 lists with `rooms/records/list/0.6` (else 0.5) and passes its `RecordMetadataV3` rows through as served: `createdAt`, `bodyStoredAt`, `createdBy` (`open`, `attributed`), `kind` (`open`). 0.5 lists with list/0.7, passing `order` through, stops at `maxPages`, and answers `nextCursor` exactly when `complete` is false; `newestFirst` at a host without list/0.7 is `hostRefused`. 0.6 lists with list/0.8 (else 0.7), passing `beforeVersion` through; `beforeVersion` at a host without list/0.8 is `hostRefused`, and a listing bounded by it is never compared |
 | `rooms/keys/read/0.1`, `0.2` | `roomOpen` capability. 0.2 fetches with `rooms/records/get/0.3` (else 0.2) and passes `createdAt`, `createdBy` and `bodyStoredAt` through; `keys` reads up to 32 records, each answered on its own in `results` (`notAttempted` past 512 KiB of answers or 15 s), repairing once per batch |
 | `rooms/keys/chain/0.2` | `roomOpen` capability; applies a relayed `epochFloor` (alone or with rungs) and reports the floor held |
 | `rooms/keys/backfill/0.2` | `roomOpen` capability; fetches with `rooms/epoch/chain/0.2`, applies and reports the floor |

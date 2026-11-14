@@ -4053,6 +4053,47 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_BROWSE_0_6,
+            checked!(
+                specs::rooms::keys::browse::v0_6::Payload,
+                specs::rooms::keys::browse::v0_6::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "order": "newestFirst",
+                    "beforeVersion": 30412,
+                    "limit": 50,
+                    "maxPages": 1
+                }),
+                // "Load older" from the lowest version held: bounded above, so never
+                // comparable against the room's count, and the host's cursor for the page
+                // before it — bound to the same `beforeVersion`.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "q4bZ0sYw9LkVnT2xHcRe1A",
+                        "version": 30411,
+                        "epoch": 7,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }],
+                    "complete": false,
+                    "nextCursor": "n30411b30412",
+                    "verification": {
+                        "priorRoots": "noneHeld",
+                        "anchor": "notChecked",
+                        "count": "notComparable",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 30120,
+                            "headVersion": 30412
+                        }
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_READ_0_2,
             checked!(
                 specs::rooms::keys::read::v0_2::Payload,

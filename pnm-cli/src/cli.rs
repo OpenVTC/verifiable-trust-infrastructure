@@ -836,7 +836,7 @@ pub(crate) enum RoomCommands {
         #[arg(long)]
         limit: Option<usize>,
         /// Open the conversation at its head: your VTA lists the room newest first
-        /// (`rooms/keys/browse/0.5`, the host's `rooms/records/list/0.7`) and stops after
+        /// (`rooms/keys/browse/0.6`, the host's `rooms/records/list/0.8`) and stops after
         /// `--pages` pages. Needs `--host-did`.
         #[arg(long)]
         newest: bool,
@@ -847,6 +847,11 @@ pub(crate) enum RoomCommands {
         /// the page before it.
         #[arg(long, requires = "newest")]
         cursor: Option<String>,
+        /// With `--newest`: only records below this version — "load older" from the lowest
+        /// version already shown, with no cursor to keep (`rooms/keys/browse/0.6`, the
+        /// host's `rooms/records/list/0.8`).
+        #[arg(long, requires = "newest")]
+        before_version: Option<u64>,
     },
 
     /// Read several records at once through your VTA (`rooms/keys/read/0.2`): it
@@ -858,7 +863,7 @@ pub(crate) enum RoomCommands {
         #[arg(required_unless_present = "newest", conflicts_with = "newest")]
         keys: Vec<String>,
         /// Read the conversation's newest records, in the order they were written: your
-        /// VTA lists the room newest first (`rooms/keys/browse/0.5`) and reads that page.
+        /// VTA lists the room newest first (`rooms/keys/browse/0.6`) and reads that page.
         #[arg(long)]
         newest: bool,
         /// With `--newest`: how many records to read from the head (default 50).
@@ -870,6 +875,10 @@ pub(crate) enum RoomCommands {
         /// With `--newest`: continue from the cursor an earlier `--newest` printed.
         #[arg(long, requires = "newest")]
         cursor: Option<String>,
+        /// With `--newest`: only records below this version — "load older" from the lowest
+        /// version already read (`rooms/keys/browse/0.6`).
+        #[arg(long, requires = "newest")]
+        before_version: Option<u64>,
         #[arg(long = "room")]
         room_id: String,
         /// Base URL of the host storing the room. Unused by this command, which reaches the

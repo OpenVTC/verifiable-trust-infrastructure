@@ -977,6 +977,15 @@ When adding a flow, add it here and a line to the root index.
   refused `invalidCursor` under the other; `sinceVersion` stays a lower bound; browse 0.5
   answers `nextCursor` exactly when `complete` is false, never compares a resumed listing,
   and answers `newestFirst` at a host without list/0.7 `hostRefused` — never oldest first.
+  **Load older by version** (`rooms/records/list/0.8`, `rooms/keys/browse/0.6`; #1289):
+  `beforeVersion` is an exclusive upper bound under either order, read as a seek on the
+  version index (`vti_rooms::storage::list_records_bounded`); the cursor is bound to order
+  **and** both bounds (`n<N>[s<S>][b<B>]`) — never relax that, a cursor read in another
+  band skips records silently. Browse 0.6 answers `beforeVersion` at a host without
+  list/0.8 `hostRefused`, never a listing without the bound. The page a list version reads
+  and its response are chosen once, in `vti_rooms::record_tasks::{ListAt, list_page,
+  list_response}`, for both hosts. `rooms/info/0.5`'s limits are each host's own
+  (`HostLimits`): the VTC's `maxRecordDocumentBytes` is its size gate's limit for put.
 - **Code**: `vti-rooms/src/{provenance,record_retention,record_tasks}.rs`,
   `vti-rooms/src/{storage,retention,sealed}.rs`, `room-host/src/{lib,files}.rs`,
   `vtc-service/src/rooms/{handlers,files}.rs`,
