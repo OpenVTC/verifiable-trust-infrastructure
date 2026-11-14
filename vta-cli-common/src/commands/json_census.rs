@@ -21,7 +21,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
         "prints the portable template JSON on every destination",
     ),
     (
-        "rooms.rs",
+        "rooms/files.rs",
         "cmd_rooms_file_get",
         "writes the file's bytes, not a description of them",
     ),
@@ -76,19 +76,34 @@ fn handlers(src: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Every `.rs` file under `dir`, module directories included.
+fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("src/commands") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|x| x == "rs") {
+            out.push(path);
+        }
+    }
+}
+
 #[test]
 fn every_read_handler_has_a_json_path() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
     let mut missing = Vec::new();
     let mut seen = 0;
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("src/commands")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .collect();
+    let mut files = Vec::new();
+    rust_files(&dir, &mut files);
     files.sort();
     for path in files {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        // Relative to `src/commands`, so a module directory's files are named
+        // `rooms/files.rs` — the census follows a split module (#2569).
+        let file = path
+            .strip_prefix(&dir)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let src = std::fs::read_to_string(&path).expect("read");
         for (name, body) in handlers(&src) {
             let words: Vec<&str> = name.split('_').collect();
