@@ -171,13 +171,13 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.21", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.22", optional = true }
 vti-voting = { path = "../vti-voting", version = "0.18", optional = true }
 predicate-credential-system = { workspace = true, optional = true }
 # The community's audit-event vocabulary, over vti-common's envelope and writer.
 vtc-audit = { path = "../vtc-audit", version = "0.1", features = ["openapi"] }
 vti-rooms = { path = "../vti-rooms", version = "0.36" }
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.38" }
 # The `rooms/*` handlers, shared with room-host behind one `RoomHost` trait (#2575).
 vti-rooms-host = { path = "../vti-rooms-host", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.65", features = [
@@ -277,7 +277,7 @@ futures-util = { workspace = true }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.13" }
+vti-specs = { path = "../vti-specs", version = "0.14" }
 # W3C VC builder + Data Integrity proof signing/verification. Used
 # by `crate::credentials` for VMC + VEC issuance (Phase 2 M2.9).
 # Same crates as `vta-sdk::provision_integration::credential` —
@@ -299,7 +299,7 @@ vti-vtn = { path = "../vti-vtn", version = "0.12", features = ["client", "resolv
 vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.11" }
 # Wallet sign-in (`auth/oob/*`, `crate::trust_tasks::oob_tasks`): the request
 # store, clocks, long poll and check order. Shared with the VTN service.
-vti-oob-server = { path = "../vti-oob-server", version = "0.9" }
+vti-oob-server = { path = "../vti-oob-server", version = "0.10" }
 # JSON Schema validation of issued credentials against their credentialSchema.
 jsonschema = { workspace = true }
 # DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.
@@ -443,7 +443,7 @@ trust-tasks-rs = { workspace = true }
 # through `vta_sdk::jws`.
 k256 = {workspace = true, features = ["ecdsa"]}# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.38", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "transport-harness"] }

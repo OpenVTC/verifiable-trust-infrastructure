@@ -52,7 +52,7 @@ async-trait = { workspace = true }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.13" }
+vti-specs = { path = "../vti-specs", version = "0.14" }
 uuid = { workspace = true }
 # Room-file chunks travel base64url in their Trust Task documents.
 base64 = { workspace = true }

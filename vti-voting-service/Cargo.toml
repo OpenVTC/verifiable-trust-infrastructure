@@ -37,7 +37,7 @@ trust-tasks-rs = { workspace = true }
 vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.11" }
 # The pinned `voting/*` versions: the routing table names each by its generated payload type,
 # and the pipeline reads each task's policy from the index (CLAUDE.md, "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.13" }
+vti-specs = { path = "../vti-specs", version = "0.14" }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

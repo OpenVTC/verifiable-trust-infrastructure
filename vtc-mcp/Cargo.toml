@@ -22,7 +22,7 @@ vtc-client = { path = "../vtc-client", version = "0.44", features = ["tsp"] }
 # accept, so the bridge would connect and then hear nothing.
 vta-sdk = { path = "../vta-sdk", version = "0.89", features = ["session", "tsp", "acl-setup", "crypto-provider"] }
 # The pinned Type URI index: the catalog `vtc_list_operations` is read from.
-vti-specs = { path = "../vti-specs", version = "0.13" }
+vti-specs = { path = "../vti-specs", version = "0.14" }
 # The per-operation guard and the call recorder, shared with `vta-mcp`.
 vti-mcp-common = { path = "../vti-mcp-common", version = "0.1" }
 # `elicitation` is what lets the bridge put a risky operation back in front of

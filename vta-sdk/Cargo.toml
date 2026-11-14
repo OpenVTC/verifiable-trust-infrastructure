@@ -354,7 +354,7 @@ trust-tasks-rs = { workspace = true }
 # Compiled payload schemas, cached (`schema_cache`, #2622): the release
 # `trust-tasks-rs` validates with, so the cached check is the same check.
 jsonschema-trust-tasks = { workspace = true }
-vti-specs = { path = "../vti-specs", version = "0.13" }
+vti-specs = { path = "../vti-specs", version = "0.14" }
 # The TSP binding (`tsp` feature). Carries `ENVELOPE_TYPE` — the payload wrapper
 # every Trust-Task TSP frame must use — so `tsp_binding` takes the URI from the
 # crate that defines the binding rather than writing it out locally. A binding

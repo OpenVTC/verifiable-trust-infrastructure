@@ -22,8 +22,8 @@ repository.workspace = true
 [dependencies]
 # `policy`: the bounded regorus engine shared with the VTC (#2577).
 vti-common = { path = "../vti-common", version = "0.65", features = ["policy"] }
-vta-config = { path = "../vta-config", version = "0.41" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.38" }
+vta-config = { path = "../vta-config", version = "0.42" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.39" }
 # Types only (default features off): the declarative approvals model + its Rego
 # synthesizer, shared with the CLI so both sides derive the same module.
 vta-sdk = { path = "../vta-sdk", version = "0.89", default-features = false }
