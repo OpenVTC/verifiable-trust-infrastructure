@@ -228,6 +228,15 @@ updates:
       prefix: "chore"
       include: scope
     groups:
+      # lucide-react (the icons) and lucide-static (the words each icon is filed
+      # under, for the badge picture builder's search) must be the same release:
+      # a tag file from another release names a different set of icons, and the
+      # builder's test that every icon has its words fails. Ungrouped, a major
+      # arrives as two PRs that each fail alone (#2734, #2736). Listed before
+      # `minor-and-patch` so it takes lucide's bumps of every kind.
+      lucide:
+        patterns:
+          - "lucide-*"
       minor-and-patch:
         update-types:
           - minor
