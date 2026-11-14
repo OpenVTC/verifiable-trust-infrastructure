@@ -357,6 +357,23 @@ pub async fn recompute(
     group: &Group,
     now: DateTime<Utc>,
 ) -> Result<Report, AppError> {
+    if group.kind != GroupKind::Dynamic || group.rule.is_none() {
+        return Ok(Report::default());
+    }
+    let subjects = crate::directory::read::subjects(state).await?;
+    recompute_over(state, group, &subjects, now).await
+}
+
+/// [`recompute`] over `subjects` read once for a whole pass, so a pass over G
+/// dynamic groups reads every member once rather than G times (#2600). The
+/// pass is short next to the sweeper's tick, and a fact that moves during it
+/// moves the bus and wakes the next pass.
+async fn recompute_over(
+    state: &AppState,
+    group: &Group,
+    subjects: &[crate::directory::project::Subject],
+    now: DateTime<Utc>,
+) -> Result<Report, AppError> {
     let mut report = Report::default();
     let (GroupKind::Dynamic, Some(rule)) = (group.kind, &group.rule) else {
         return Ok(report);
@@ -364,10 +381,9 @@ pub async fn recompute(
     let ks = state.directory.ks();
     let schema = crate::directory::fields::schema(ks).await?;
     let excluded = opt_outs(ks, &group.group_id).await?;
-    let subjects = crate::directory::read::subjects(state).await?;
     // A badge group's rule may read counts of the community's own records (VTI-BDG-015).
     let counts = if group.badge_id.is_some() && reads_counts(rule) {
-        crate::badges::rule_counts(state, &subjects).await?
+        crate::badges::rule_counts(state, subjects).await?
     } else {
         HashMap::new()
     };
@@ -536,11 +552,21 @@ async fn audit(state: &AppState, group: &Group, report: &Report) {
 }
 
 /// [`recompute`] every dynamic group.
+///
+/// The members are read once for the pass ([`recompute_over`]), and not at
+/// all while no dynamic group exists.
 pub async fn recompute_all(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
-    for group in super::all(state.directory.ks()).await? {
-        if group.kind == GroupKind::Dynamic
-            && let Err(e) = recompute(state, &group, now).await
-        {
+    let dynamic: Vec<Group> = super::all(state.directory.ks())
+        .await?
+        .into_iter()
+        .filter(|g| g.kind == GroupKind::Dynamic)
+        .collect();
+    if dynamic.is_empty() {
+        return Ok(());
+    }
+    let subjects = crate::directory::read::subjects(state).await?;
+    for group in &dynamic {
+        if let Err(e) = recompute_over(state, group, &subjects, now).await {
             tracing::warn!(group = %group.group_id, error = %e, "a dynamic group could not be recomputed");
         }
     }
@@ -548,6 +574,11 @@ pub async fn recompute_all(state: &AppState, now: DateTime<Utc>) -> Result<(), A
 }
 
 static WAKE: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+/// How long a kicked sweeper waits before its pass, so a burst of writes (a
+/// bulk admission writes a member, an ACL entry and a card per admission) is
+/// one recompute rather than one per write (#2600).
+const KICK_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// Wake the sweeper: something a rule reads may have changed.
 pub fn kick() {
@@ -560,10 +591,23 @@ pub fn spawn(state: AppState, mut shutdown: tokio::sync::watch::Receiver<bool>) 
     tokio::spawn(async move {
         let mut wait = FIRST_PASS;
         loop {
-            tokio::select! {
+            let kicked = tokio::select! {
                 _ = shutdown.changed() => return,
-                _ = tokio::time::sleep(wait) => {}
-                _ = WAKE.notified() => {}
+                _ = tokio::time::sleep(wait) => false,
+                _ = WAKE.notified() => true,
+            };
+            if kicked {
+                // Coalesce the burst: wait a moment, then take the permit any
+                // kick in that moment left, which this pass answers too.
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(KICK_DEBOUNCE) => {}
+                }
+                tokio::select! {
+                    biased;
+                    _ = WAKE.notified() => {}
+                    _ = std::future::ready(()) => {}
+                }
             }
             wait = TICK;
             if let Err(e) = recompute_all(&state, Utc::now()).await {

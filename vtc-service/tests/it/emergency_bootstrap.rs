@@ -227,6 +227,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
     let audit_checkpoint_ks = store.keyspace("audit_checkpoint").unwrap();
+    let audit_index_ks = store.keyspace("audit_index").unwrap();
     let outbox_ks = store.keyspace("outbox").unwrap();
     let tsp_relationships_ks = store.keyspace("tsp_relationships").unwrap();
     let invitations_ks = store.keyspace("invitations").unwrap();
@@ -416,6 +417,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks,
+        audit_index_ks,
         outbox_ks,
         tsp_relationships_ks,
         config: Arc::new(RwLock::new(config.clone())),

@@ -102,23 +102,40 @@ impl ChainState {
 /// Walk the audit keyspace in ascending (chronological) key order and measure
 /// the chain.
 ///
-/// O(log size). Called once per checkpoint interval and once per
-/// `GET /v1/audit/verify`, matching what that endpoint already does. A
-/// persisted head pointer would make this O(1); the checkpoint keyspace is the
-/// natural place for one, and is a follow-up rather than a prerequisite.
+/// Linear in the log's size: called once per checkpoint interval and once per
+/// `audit/verify` (which walks the whole log to verify it anyway). A persisted
+/// head/count pointer is deliberately **not** used (#2599): the count is what
+/// a checkpoint attests, and the truncation check compares it with what the
+/// log holds — a pointer kept beside the rows is exactly as rewritable as the
+/// rows by the store-level adversary checkpoints exist to catch, so it must be
+/// recounted from the rows themselves.
 ///
 /// Unparseable rows are counted, not fatal — one corrupt row must not stop the
 /// daemon from checkpointing everything around it. They are reported so the
 /// finding is visible.
 pub async fn measure_chain(audit_ks: &KeyspaceHandle) -> Result<(ChainState, usize), AppError> {
-    let mut pairs = audit_ks.prefix_iter_raw(Vec::new()).await?;
-    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let (state, unparseable, _) = measure_chain_finding(audit_ks, None).await?;
+    Ok((state, unparseable))
+}
+
+/// [`measure_chain`], also answering the `entry_hash` of the envelope `find`
+/// names, from the same walk — so a verify reads the log once for both rather
+/// than once more to find the checkpoint's anchor ([`find_entry_hash`]).
+pub async fn measure_chain_finding(
+    audit_ks: &KeyspaceHandle,
+    find: Option<Uuid>,
+) -> Result<(ChainState, usize, Option<[u8; 32]>), AppError> {
+    let pairs = audit_ks.prefix_iter_raw(Vec::new()).await?;
 
     let mut state = ChainState::empty();
     let mut unparseable = 0usize;
+    let mut found = None;
     for (key, value) in &pairs {
         match serde_json::from_slice::<AuditEnvelope>(value) {
             Ok(env) => {
+                if found.is_none() && find == Some(env.event_id) {
+                    found = Some(env.entry_hash);
+                }
                 if env.schema_version < 2 {
                     continue; // unchainable; the verifier skips these too
                 }
@@ -136,7 +153,7 @@ pub async fn measure_chain(audit_ks: &KeyspaceHandle) -> Result<(ChainState, usi
             }
         }
     }
-    Ok((state, unparseable))
+    Ok((state, unparseable, found))
 }
 
 /// Load every checkpoint in ascending (chronological) order.
@@ -238,8 +255,26 @@ pub async fn audit_against_checkpoint(
     newest: Option<&AuditCheckpoint>,
     state: &ChainState,
 ) -> Result<CheckpointAudit, AppError> {
+    let anchor = match newest {
+        Some(cp) if cp.head != GENESIS_HASH && state.entry_count >= cp.entry_count => {
+            find_entry_hash(audit_ks, cp.head_event_id).await?
+        }
+        _ => None,
+    };
+    Ok(judge_against_checkpoint(newest, state, anchor))
+}
+
+/// [`audit_against_checkpoint`] given `anchor`: the `entry_hash` the log now
+/// holds for the newest checkpoint's `head_event_id`, if any — as
+/// [`measure_chain_finding`] answers it from the measuring walk.
+#[must_use]
+pub fn judge_against_checkpoint(
+    newest: Option<&AuditCheckpoint>,
+    state: &ChainState,
+    anchor: Option<[u8; 32]>,
+) -> CheckpointAudit {
     let Some(cp) = newest else {
-        return Ok(CheckpointAudit::NoCheckpoints);
+        return CheckpointAudit::NoCheckpoints;
     };
 
     // The finding this whole mechanism exists for. Checked before the head
@@ -247,39 +282,38 @@ pub async fn audit_against_checkpoint(
     // that removed the head envelope would otherwise surface as the vaguer
     // `HeadMismatch`.
     if state.entry_count < cp.entry_count {
-        return Ok(CheckpointAudit::Truncated {
+        return CheckpointAudit::Truncated {
             attested: cp.entry_count,
             found: state.entry_count,
-        });
+        };
     }
 
     // The attested anchor must still be present and unaltered. A genesis
     // checkpoint (empty log at the time) has no anchor to find.
     if cp.head != GENESIS_HASH {
-        let found = find_entry_hash(audit_ks, cp.head_event_id).await?;
-        match found {
+        match anchor {
             Some(hash) if hash == cp.head => {}
             other => {
-                return Ok(CheckpointAudit::HeadMismatch {
+                return CheckpointAudit::HeadMismatch {
                     head_event_id: cp.head_event_id,
                     found: other.is_some(),
-                });
+                };
             }
         }
     }
 
-    Ok(CheckpointAudit::Consistent {
+    CheckpointAudit::Consistent {
         checkpoint_at: cp.checkpoint_at,
         attested_entries: cp.entry_count,
         unattested_entries: state.entry_count.saturating_sub(cp.entry_count),
-    })
+    }
 }
 
 /// The `entry_hash` of the envelope with `event_id`, if it is still there.
 ///
 /// The audit keyspace is keyed by `<timestamp>:<event_id>`, so there is no
-/// direct lookup by id alone — this scans. Called once per verify request,
-/// alongside a walk that is already O(n).
+/// direct lookup by id alone — this scans. A verify does not call it: it
+/// takes the anchor from its measuring walk ([`measure_chain_finding`]).
 async fn find_entry_hash(
     audit_ks: &KeyspaceHandle,
     event_id: Uuid,

@@ -42,7 +42,7 @@ use crate::acl::delegation::{self, DelegationReview};
 use crate::acl::granting::{self, GrantRefusal};
 use crate::acl::{
     AdminAuthority, AdminRole, CapRef, Capability, CapabilityScope, VtcAclEntry, VtcActScope,
-    VtcRole, delete_acl_entry, get_acl_entry, list_acl_entries, store_acl_entry,
+    VtcRole, delete_acl_entry, get_acl_entry, store_acl_entry,
 };
 use crate::auth::{AuthClaims, session::now_epoch};
 use crate::error::{AppError, TaskError};
@@ -287,15 +287,23 @@ struct Page {
     cursor: Option<String>,
 }
 
+/// Rows read from the ACL per step while a page is being filled.
+const SCAN_CHUNK: usize = 256;
+
+/// The page of entries `keep` admits, after the cursor's subject.
+///
+/// Seeks to the cursor and reads the ACL in key (= subject) order only until
+/// the page and one further match are found — never the whole ACL decoded,
+/// sorted and filtered per page, which made walking every page quadratic in
+/// the member count (#2601). The cursor is unchanged on the wire (the last
+/// subject returned, bound to `binding`), so one issued before this resumes.
 async fn page(
     state: &AppState,
-    matching: Vec<VtcAclEntry>,
+    keep: impl Fn(&VtcAclEntry) -> bool,
     page_size: Option<usize>,
     cursor: Option<&str>,
     binding: &[u8],
 ) -> Result<Page, AppError> {
-    let mut matching = matching;
-    matching.sort_by(|a, b| a.did.cmp(&b.did));
     let limit = page_size.unwrap_or(50).clamp(1, MAX_LIMIT);
     // Cursors are signed with the audit key, but the audit writer is optional:
     // without a key the whole set is one page and a supplied cursor is refused
@@ -304,28 +312,58 @@ async fn page(
         Some(w) => Some(w.active_key().await?),
         None => None,
     };
-    let start = match (cursor, &audit_key) {
-        (Some(wire), Some(key)) => {
-            let c = Cursor::decode_bound(wire, &key.key, binding)?;
-            matching
-                .iter()
-                .position(|e| e.did.as_bytes() > c.last_key.as_slice())
-                .unwrap_or(matching.len())
-        }
+    let after = match (cursor, &audit_key) {
+        (Some(wire), Some(key)) => Some(Cursor::decode_bound(wire, &key.key, binding)?.last_key),
         (Some(_), None) => return Err(AppError::InvalidCursor),
-        (None, _) => 0,
+        (None, _) => None,
     };
     let take = if audit_key.is_some() {
         limit
     } else {
-        matching.len()
+        usize::MAX
     };
-    let entries: Vec<VtcAclEntry> = matching[start..].iter().take(take).cloned().collect();
-    let truncated = start + entries.len() < matching.len();
+    let mut opts = vti_common::store::ScanOpts::new(b"acl:".to_vec(), SCAN_CHUNK);
+    if let Some(did) = &after {
+        let mut key = b"acl:".to_vec();
+        key.extend_from_slice(did);
+        opts = opts.after(key);
+    }
+    let mut pager = state.acl_ks.scan_pager(opts);
+    let mut entries: Vec<VtcAclEntry> = Vec::new();
+    let mut truncated = false;
+    'walk: loop {
+        let rows = pager.next_page().await?;
+        if rows.is_empty() {
+            break;
+        }
+        let mut chunk: Vec<VtcAclEntry> = Vec::with_capacity(rows.len());
+        for (k, v) in &rows {
+            match serde_json::from_slice::<VtcAclEntry>(v) {
+                Ok(e) => chunk.push(e),
+                Err(err) => tracing::warn!(
+                    key = %String::from_utf8_lossy(k),
+                    error = %err,
+                    "skipping unparseable acl entry"
+                ),
+            }
+        }
+        crate::acl::storage::resolve_entries(&state.acl_ks, &mut chunk).await?;
+        for e in chunk {
+            if !keep(&e) {
+                continue;
+            }
+            if entries.len() == take {
+                truncated = true;
+                break 'walk;
+            }
+            entries.push(e);
+        }
+    }
     let cursor = match (&audit_key, truncated) {
         (Some(key), true) => entries.last().map(|e| {
-            Cursor::new(e.did.as_bytes().to_vec(), matching.len() as u64)
-                .encode_bound(&key.key, binding)
+            // `snapshotId` is opaque and no longer the matching count, which
+            // a seek never learns.
+            Cursor::new(e.did.as_bytes().to_vec(), 0).encode_bound(&key.key, binding)
         }),
         _ => None,
     };
@@ -357,10 +395,8 @@ pub(crate) async fn list_entries(
     let direction = direction_owned.as_deref();
     let role = q.role.as_deref().map(String::as_str);
     let subject_prefix = q.subject_prefix.as_deref().map(String::as_str);
-    let matching: Vec<VtcAclEntry> = list_acl_entries(&state.acl_ks)
-        .await?
-        .into_iter()
-        .filter(|e| {
+    let keep = |e: &VtcAclEntry| -> bool {
+        ({
             role.is_none_or(|r| {
                 e.admin
                     .admin_role
@@ -370,13 +406,13 @@ pub(crate) async fn list_entries(
                     == r
             })
         })
-        // A VTC has no contexts: only an unrestricted act scope "acts in" one,
-        // and nothing holds a grant beneath one.
-        .filter(|e| {
+            // A VTC has no contexts: only an unrestricted act scope "acts in" one,
+            // and nothing holds a grant beneath one.
+            && ({
             q.context.is_none()
                 || (matches!(direction, Some("actingIn" | "any")) && e.admin.act.is_all())
         })
-        .filter(|e| {
+            && ({
             let mut held: Vec<CapRef> = if e.admin.act.is_all() {
                 e.admin.effective()
             } else {
@@ -412,8 +448,8 @@ pub(crate) async fn list_entries(
                 }),
             }
         })
-        .filter(|e| subject_prefix.is_none_or(|p| e.did.starts_with(p)))
-        .collect();
+            && (subject_prefix.is_none_or(|p| e.did.starts_with(p)))
+    };
     let binding = bind(&[
         Some("0.2"),
         role,
@@ -427,7 +463,7 @@ pub(crate) async fn list_entries(
         .limit
         .map(|n| usize::try_from(n.get()).unwrap_or(usize::MAX));
     let cursor = q.cursor.as_deref().map(String::as_str);
-    let p = page(state, matching, page_size, cursor, &binding).await?;
+    let p = page(state, keep, page_size, cursor, &binding).await?;
     let reviews = delegation::list(state).await?;
     let mut entries: Vec<Value> = Vec::with_capacity(p.entries.len());
     for e in &p.entries {
@@ -612,7 +648,7 @@ pub(crate) async fn other_unrestricted(
     did: &str,
     now: u64,
 ) -> Result<usize, AppError> {
-    Ok(list_acl_entries(&state.acl_ks)
+    Ok(crate::acl::list_authority_entries(&state.acl_ks)
         .await?
         .iter()
         .filter(|e| e.did != did && granting::is_unrestricted(e, now))
@@ -1880,11 +1916,8 @@ pub(crate) async fn swap_key(
                 "the rotation could not be audited, so it was not made: {e}"
             ))
         })?;
-    match state
-        .acl_ks
-        .move_if_unchanged(old_key, expected, format!("acl:{new}"), &successor)
-        .await?
-    {
+    // With its authority and grant-holder index rows, in the same batch.
+    match crate::acl::move_acl_entry(&state.acl_ks, current, Some(expected), &successor).await? {
         vti_common::store::MoveOutcome::Moved => {}
         vti_common::store::MoveOutcome::SourceMissing => {
             return Err(SwapError::SubjectNotFound(format!(
