@@ -34,6 +34,39 @@
 //! `axum::body::Bytes` and parse to `TrustTask<Value>` by hand so a
 //! malformed body produces a `trust-task-error` document (per
 //! framework SPEC §8.5) instead of axum's plain-text 400 default.
+//!
+//! ## Why this is not `vti_trust_task_server::Spine::receive` (#2571)
+//!
+//! The answers are shared: every refusal and response is built by
+//! `vti_trust_task_server::reject` (through the thin wrappers in [`helpers`],
+//! which add only the VTA's upstream-failure mapping), as are the accepted-id
+//! record and the freshness policy. The *pipeline* is not, deliberately, for
+//! now — adopting `Spine::receive` through `SpineHooks` and a `Dispatcher`
+//! cannot be done without changing behaviour, because the shared pipeline has
+//! no place for what the VTA's does between arrival and answer:
+//!
+//! - **Who the caller is.** `Spine::receive` takes a body and a proven signer;
+//!   the VTA authenticates by session (`AuthClaims` from a JWT, or a DIDComm /
+//!   TSP sender resolved to a session) and dispatches every handler with those
+//!   claims, including the zero-authority claim of a ceremony task and a
+//!   counterparty notification.
+//! - **What runs before the handler.** The PDP gate and DTTE consent
+//!   (`policy_gate`, `consent_request`), the operation budgets charged after
+//!   authentication and before the task runs (VTI-TRN-029, one per client DID
+//!   and one for senders without standing), and the idempotency record with
+//!   its abandoned-claim rules — none of which has a hook, and moving them into
+//!   `before_proof`/`after_proof` would reorder them relative to the spine's
+//!   own duplicate-id claim.
+//! - **What comes back.** The VTA's outcome carries `restart` (a config change
+//!   that applies on the next boot, fired only once the answer has left), the
+//!   `wire_v0_2` edge transforms rewrite documents on the way in and out, and
+//!   responses pass the response-schema conformance gate before signing.
+//!
+//! Each of those is a behaviour of the shared pipeline to design first (a hook
+//! for session-bound claims, a pre-dispatch gate, an outcome extension), after
+//! which this dispatcher can move onto it. Until then, a §7.2 or VTI-OPS rule
+//! changed in `vti_trust_task_server::spine` must be checked against
+//! `dispatch_trust_task_inner` / `dispatch_spine` here.
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};

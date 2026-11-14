@@ -31,7 +31,7 @@ use serde_json::Value;
 use vta_sdk::client::{CreateAclRequest, VtaClient};
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::trust_tasks::TASK_ACL_GRANT_0_3;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 mod common;
 

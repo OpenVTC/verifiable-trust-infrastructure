@@ -3,7 +3,7 @@
 
 use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::audit_management::list::ListAuditLogsBody;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 async fn signing_client(mock: &MockVta, seed: u8, role: &str, contexts: Vec<String>) -> VtaClient {
     let vta_did = mock.vta_did().to_string();

@@ -112,18 +112,8 @@ pub fn test_community_x25519_public() -> [u8; 32] {
     x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*secret)).to_bytes()
 }
 
-/// Pin jsonwebtoken's default `CryptoProvider` to `aws_lc` once per
-/// process. The workspace compiles `jsonwebtoken` with only the
-/// `aws_lc_rs` backend; when `cargo test` unifies features across crates
-/// the auto-select panics unless one provider is installed explicitly.
-/// Idempotent — safe to call from every test file.
-pub fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
+/// The fixtures both services share live in `vti_common::test_support` (#2572).
+pub use vti_common::test_support::{build_offline_atm, init_jwt_provider};
 
 /// Builder for a tempdir-backed in-process VTC under test.
 ///
@@ -1179,27 +1169,6 @@ impl Drop for MockVtc {
             handle.abort();
         }
     }
-}
-
-/// Build a fully-offline [`ATM`](affinidi_tdk::messaging::ATM) for unit tests
-/// that need `atm.unpack` without a live mediator. No secrets and no network
-/// mode are configured, so it can unpack a **plaintext** DIDComm envelope
-/// (which needs no keys) but not decrypt a JWE — exactly what the
-/// plaintext-forgery regression needs. Pair with [`MockVtc::start_with_atm`].
-pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
-    use affinidi_tdk::common::TDKSharedState;
-    use affinidi_tdk::common::config::TDKConfig;
-    use affinidi_tdk::messaging::config::ATMConfig;
-
-    let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
-        .await
-        .expect("TDK shared state");
-    affinidi_tdk::messaging::ATM::new(
-        ATMConfig::builder().build().expect("ATM config"),
-        std::sync::Arc::new(tdk),
-    )
-    .await
-    .expect("offline ATM")
 }
 
 /// Every Trust Task URI this VTC's dispatcher serves: its own list plus the

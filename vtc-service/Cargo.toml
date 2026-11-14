@@ -464,8 +464,9 @@ vti-voting-service = { path = "../vti-voting-service" }
 # A member's own VTA and `pnm elections` itself, for `tests/it/election_tasks.rs`'s
 # end-to-end vote: `MockVta` holds the member's key and runs the voter engine
 # (`vta/pcs/voter/*`, `vta/pcs/vote`), and `vta-cli-common`'s `cmd_ticket` / `cmd_vote` carry
-# its documents to this community over HTTP and the cast to the ballot box. Dev-only, path-only.
-vta-service = { path = "../vta-service", features = ["test-support", "rest"] }
+# its documents to this community over HTTP and the cast to the ballot box. Dev-only, path-only;
+# `vta-test-support` brings `vta-service` with it (#2570).
+vta-test-support = { path = "../vta-test-support" }
 vta-cli-common = { path = "../vta-cli-common" }
 # A key-role did:webs document for the VTC's own keys-by-role tests
 # (`setup::bundle` key_role_tests): the VTA mints a did:webs VTC this way, and

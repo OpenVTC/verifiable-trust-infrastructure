@@ -989,7 +989,7 @@ When adding a flow, add it here and a line to the root index.
 - **Code**: `vti-rooms/src/{provenance,record_retention,record_tasks}.rs`,
   `vti-rooms/src/{storage,retention,sealed}.rs`, `room-host/src/{lib,files}.rs`,
   `vtc-service/src/rooms/{handlers,files}.rs`,
-  `vta-service/src/operations/room_groups.rs` (`apply_epoch_floor`),
+  `vta-service/src/operations/room_groups/open.rs` (`apply_epoch_floor`),
   `vta-service/src/trust_tasks/{room_group,room_catch_up}.rs`,
   `vtc_client::rooms` (`prune_records`, `set_record_retention`, `prune_epoch_v2`, …),
   `pnm rooms records {prune,retention}`, `pnm rooms prune`.
@@ -1068,7 +1068,7 @@ When adding a flow, add it here and a line to the root index.
   is coalesced per (room, member) in `RoomKeyWatches` (in memory; the last setter is left
   out), pushed like `rooms/keys/changed` (one attempt window, no doorbell), never consumes
   the watch, and its send is never logged as delivered (R1.1).
-- **Code**: `vta-service/src/operations/room_groups.rs` (`ReadMarker`,
+- **Code**: `vta-service/src/operations/room_groups/personal.rs` (`ReadMarker`,
   `set_read_marker`), `vta-service/src/trust_tasks/{room_read_marker,room_read_marker_tests,room_label}.rs`,
   `vta-service/src/operations/room_key_watch.rs` (`schedule_moved`), `vta_sdk::client`
   (`room_read_marker_set`, `room_list_v0_3`, `room_read_marker_moved`),

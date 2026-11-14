@@ -68,9 +68,19 @@ const ALLOWED: &[(&str, usize, &str)] = &[
     ),
     // ── Network-reachable, but no caller-chosen path or key id ───────────
     (
-        "vta-service/src/operations/keys.rs",
-        6,
-        "create_key (path authorized by authorize_explicit_key_path or allocated under the context base), import_key, and the imported-key KEK in release_key_secret (behind get_key_secret) / get_key_secret_internal / sign_payload; derived keys go through derive_record_key",
+        "vta-service/src/operations/keys/records.rs",
+        3,
+        "create_key (path authorized by authorize_explicit_key_path or allocated under the context base) and import_key (the imported-key KEK); derived keys go through derive_record_key",
+    ),
+    (
+        "vta-service/src/operations/keys/secret.rs",
+        2,
+        "the imported-key KEK in release_key_secret (behind get_key_secret) and get_key_secret_internal; derived keys go through derive_record_key",
+    ),
+    (
+        "vta-service/src/operations/keys/sign.rs",
+        1,
+        "the imported-key KEK in sign_payload; derived keys go through derive_record_key",
     ),
     (
         "vta-service/src/operations/did_webvh/mod.rs",

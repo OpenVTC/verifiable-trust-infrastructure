@@ -5,7 +5,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use vta_sdk::client::VtaClient;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 /// Minimal HTTP/1.1 GET over a fresh TCP connection; returns the raw response.
 async fn http_get(addr: &str, path: &str) -> String {
@@ -313,7 +313,6 @@ async fn create_did_webvh_refuses_a_host_answer_not_signed_by_the_host() {
 /// advance on a failed publish, and the next update must reconcile (re-publish
 /// the pending log) and succeed. Before the reconcile guard, a failed publish
 /// advanced the key counter and the DID looped forever.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() {
     use vta_sdk::client::CreateDidWebvhRequest;
@@ -433,7 +432,6 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
 ///
 /// The precondition still has to work. `a_stale_caller_still_conflicts` below
 /// pins the other side.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
     use vta_sdk::client::CreateDidWebvhRequest;
@@ -539,7 +537,6 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
 /// matches neither the local head nor the confirmed marker, so it is still a
 /// lost update and must still be refused — otherwise the fix for the wedge
 /// would have quietly deleted the optimistic-concurrency guarantee.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn a_stale_caller_still_conflicts() {
     use vta_sdk::client::CreateDidWebvhRequest;
@@ -639,7 +636,6 @@ async fn a_stale_caller_still_conflicts() {
 /// Without the recovery fallback this is the permanent wedge: the key the
 /// current entry requires is invisible to `find_handle_by_hash`, so every
 /// update fails at signing and loops.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn a_superseded_signing_key_is_recovered_from_the_seed() {
     use vta_sdk::client::CreateDidWebvhRequest;
@@ -738,13 +734,11 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
 /// `rooms/keys/*` pair) was added. `dispatch_typed` now `Box::pin`s every arm,
 /// keeping that frame pointer-sized, so the default stack is enough. Kept here
 /// as the regression guard: unbox the seam and this overflows again.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn webvh_family_response_shapes() {
     webvh_family_response_shapes_inner().await;
 }
 
-#[cfg(feature = "webvh")]
 async fn webvh_family_response_shapes_inner() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -884,7 +878,7 @@ async fn webvh_family_response_shapes_inner() {
     // credential key all have to line up or `finish_passkey_registration`
     // refuses. The RP id is the `public_url`'s domain and the origin is the URL
     // itself, which is what `build_webauthn` derives.
-    let authenticator = vta_service::test_support::SoftAuthenticator::new(0x60);
+    let authenticator = vta_test_support::SoftAuthenticator::new(0x60);
     let registration = authenticator.register(
         "vta.test",
         "https://vta.test",
@@ -967,7 +961,7 @@ async fn webvh_family_response_shapes_inner() {
         .create_did_webvh(CreateDidWebvhRequest {
             context_id: "ctx1".into(),
             server_id: None,
-            url: Some(vta_service::test_support::STUB_WEBVH_DID_URL.into()),
+            url: Some(vta_test_support::STUB_WEBVH_DID_URL.into()),
             path: None,
             path_mode: None,
             domain: None,
@@ -1434,7 +1428,7 @@ async fn didcomm_enable_response_requests_reply_safe_restart() {
     // skips the live connection steps, but enable_didcomm still requires the
     // mediator DID to resolve and expose DIDCommMessaging + keyAgreement.
     let mediator_did = "did:webvh:mediator-scid:mediator.test";
-    let (_, mediator_key) = vta_service::test_support::did_for_seed(0x5E);
+    let (_, mediator_key) = vta_test_support::did_for_seed(0x5E);
     let mediator_key = mediator_key.rsplit('#').next().unwrap_or_default();
     let mediator_doc = serde_json::json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
@@ -1498,7 +1492,6 @@ async fn didcomm_enable_response_requests_reply_safe_restart() {
 // the hosting server, so a deletion that drops the record without reaching the
 // host leaves a live log nobody can update or remove.
 
-#[cfg(feature = "webvh")]
 async fn mint_did(client: &VtaClient, hosted: bool) -> String {
     mint_did_in(client, "ctx1", hosted).await
 }
@@ -1516,7 +1509,7 @@ async fn mint_did_in(client: &VtaClient, context_id: &str, hosted: bool) -> Stri
     } else {
         (
             None,
-            Some(vta_service::test_support::STUB_WEBVH_DID_URL.into()),
+            Some(vta_test_support::STUB_WEBVH_DID_URL.into()),
             None,
         )
     };
@@ -1558,7 +1551,6 @@ async fn mint_did_in(client: &VtaClient, context_id: &str, hosted: bool) -> Stri
 /// else. `webvh_host_deletes()` is the only witness that distinguishes the two
 /// outcomes — a local-record assertion passes either way, which is exactly why
 /// the defect survived.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn deleting_a_context_deletes_its_subtree_dids_on_the_hosting_server() {
     use vta_sdk::client::CreateContextRequest;
@@ -1609,7 +1601,6 @@ async fn deleting_a_context_deletes_its_subtree_dids_on_the_hosting_server() {
 /// going away, rather than switching the check off for the duration. Switching
 /// it off would let a context delete strand an unrelated context's identity —
 /// the very thing the blocker exists to prevent.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn a_context_delete_is_refused_when_an_outside_context_acts_as_one_of_its_dids() {
     use vta_sdk::client::CreateContextRequest;
@@ -1658,7 +1649,6 @@ async fn a_context_delete_is_refused_when_an_outside_context_acts_as_one_of_its_
 
 /// The unchanged path: a hosted DID's delete reaches the host, and the
 /// response reports no leftover.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn deleting_a_hosted_did_deletes_its_log_on_the_host() {
     let mock = MockVta::start_with_webvh_host().await;
@@ -1680,7 +1670,6 @@ async fn deleting_a_hosted_did_deletes_its_log_on_the_host() {
 /// A DID whose hosting server is no longer registered is refused, typed as a
 /// conflict, with the commands that fix it, and nothing is touched. The
 /// corrective sequence the refusal names then works.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn deleting_a_did_whose_server_is_unregistered_is_refused_until_it_is_registered_again() {
     use vta_sdk::client::AddWebvhServerRequest;
@@ -1744,7 +1733,6 @@ async fn deleting_a_did_whose_server_is_unregistered_is_refused_until_it_is_regi
 }
 
 /// A serverless DID has no host copy, so there is nothing to refuse over.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn deleting_a_serverless_did_needs_no_host() {
     let mock = MockVta::start_with_webvh_host().await;
@@ -1765,11 +1753,10 @@ async fn deleting_a_serverless_did_needs_no_host() {
 /// The explicit opt-in (offline `vta did-mgmt dids delete --local-only`):
 /// honoured only for an unregistered server, and the result says the host copy
 /// remains. Anywhere else it is refused rather than silently ignored.
-#[cfg(feature = "webvh")]
 #[tokio::test]
 async fn local_only_is_honoured_only_for_an_unregistered_server_and_says_what_remains() {
     use vta_service::operations::did_webvh::{DeleteDidOptions, WebvhDeps, delete_did_webvh_with};
-    use vta_service::test_support::super_admin_claims;
+    use vta_test_support::super_admin_claims;
 
     let mock = MockVta::start_with_webvh_host().await;
     let client = signing_client(&mock, 0x11, "admin", vec![]).await;

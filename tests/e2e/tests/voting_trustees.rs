@@ -34,7 +34,7 @@ use trust_tasks_rs::TrustTask;
 use vta_cli_common::commands::elections_trustee::{TrusteeTarget, cmd_step};
 use vta_sdk::client::{CreateContextRequest, CreateKeyRequest};
 use vta_sdk::keys::KeyType as VtaKeyType;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 use vti_voting::{
     election::{Election, ElectionId},
     rand::{SeedableRng, rngs::StdRng},

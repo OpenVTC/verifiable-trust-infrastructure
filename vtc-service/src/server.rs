@@ -10,8 +10,6 @@ use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver, secrets::Secret};
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use hkdf::Hkdf;
 use sha2::Sha256;
 
@@ -2718,7 +2716,7 @@ async fn init_auth(
 
     // 3. JWT signing key from config (random key, not derived from VTC keys)
     let jwt_keys = match &config.auth.jwt_signing_key {
-        Some(b64) => match decode_jwt_key(b64) {
+        Some(b64) => match JwtKeys::from_base64_seed(b64, "VTC") {
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
@@ -2848,18 +2846,6 @@ pub(crate) fn derive_storage_key(root: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.
-fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
-    let bytes = BASE64
-        .decode(b64)
-        .map_err(|e| AppError::Config(format!("invalid jwt_signing_key base64: {e}")))?;
-    let key_bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTC")?;
-    debug!("JWT signing key decoded successfully");
-    Ok(keys)
-}
-
 /// Construct the public-website state from operator config (Phase 5
 /// M5.4). Returns `None` when:
 ///
@@ -2906,29 +2892,7 @@ async fn build_website_state(
     })
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("received SIGINT"),
-        () = terminate => info!("received SIGTERM"),
-    }
-}
+use vti_common::runtime::shutdown_signal;
 
 /// How a wait for a background task's published handle ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

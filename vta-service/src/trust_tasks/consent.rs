@@ -228,11 +228,7 @@ struct ApproverListResponse {
     approvers: Vec<WireApprover>,
 }
 
-fn epoch_to_rfc3339(secs: u64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
-        .unwrap_or_default()
-        .to_rfc3339()
-}
+use vta_sdk::protocols::auth::epoch_to_rfc3339;
 
 impl From<ConsentGrant> for WireGrant {
     fn from(g: ConsentGrant) -> Self {

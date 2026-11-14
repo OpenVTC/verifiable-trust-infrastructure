@@ -1657,7 +1657,7 @@ async fn a_member_votes_from_pnm_through_their_own_vta() {
     use vta_cli_common::commands::elections::{VoteTarget, cmd_ticket, cmd_vote};
     use vta_sdk::client::{CreateContextRequest, CreateKeyRequest};
     use vta_sdk::keys::KeyType as VtaKeyType;
-    use vta_service::test_support::MockVta;
+    use vta_test_support::MockVta;
     use vtc_service::test_support::MockVtcTransport;
     use vti_voting_service::{
         AppState as BoxState,

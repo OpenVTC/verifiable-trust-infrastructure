@@ -1,0 +1,63 @@
+[package]
+name = "vta-test-support"
+description = "A mock Verifiable Trust Agent for tests: a real VTA on a loopback port, an optional stub DID hosting service, and DIDComm/TSP through an embedded mediator"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# Published: `openvtc-core` dev-depends on `MockVta` (its bootstrap, vault,
+# witness, voting and collection end-to-end tests), and took it from
+# `vta_service::test_support` until #2570 moved it here.
+publish.workspace = true
+readme = "README.md"
+
+[features]
+# DIDComm and TSP through an embedded `affinidi-messaging-test-mediator` into
+# the production inbound loop (`MockVta::start_with_transports`).
+transport-harness = [
+    "vta-service/transport-harness",
+    "dep:affinidi-messaging-test-mediator",
+    "dep:affinidi-messaging-sdk",
+]
+
+[dependencies]
+# The VTA itself, with its in-crate fixtures (`test_support`) on.
+vta-service = { path = "../vta-service", version = "0.81", default-features = false, features = [
+    "test-support",
+    "rest",
+    "didcomm",
+] }
+vta-sdk = { path = "../vta-sdk", version = "0.88" }
+vti-common = { path = "../vti-common", version = "0.64" }
+vti-specs = { path = "../vti-specs", version = "0.13" }
+affinidi-did-resolver-cache-sdk = { workspace = true }
+affinidi-messaging-core = { workspace = true }
+affinidi-messaging-sdk = { workspace = true, optional = true }
+affinidi-messaging-test-mediator = { workspace = true, optional = true }
+affinidi-tdk = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+multibase = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
+trust-tasks-rs = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-subscriber = { workspace = true }
+wiremock = { workspace = true }
+# The REST client and the URL-direct provisioning the mock's own tests drive.
+vta-sdk = { path = "../vta-sdk", features = ["client", "provision-client"] }
+
+[lints]
+workspace = true

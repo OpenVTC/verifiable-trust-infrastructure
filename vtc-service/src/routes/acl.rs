@@ -94,11 +94,8 @@ pub struct AclEntryEnvelope {
 }
 
 /// Unix epoch seconds → RFC3339, for canonical `date-time` fields.
-fn epoch_to_rfc3339(secs: u64) -> String {
-    chrono::DateTime::from_timestamp(secs as i64, 0)
-        .unwrap_or_default()
-        .to_rfc3339()
-}
+// The workspace's one rendering of an epoch as RFC 3339 (`Z`, whole seconds) (#2572).
+use vta_sdk::protocols::auth::epoch_to_rfc3339;
 
 /// Whether 0.1 can express `e`: its authority is exactly what its community
 /// role implies (CONVENTIONS §8).
@@ -2125,8 +2122,8 @@ mod tests {
         assert_eq!(json["subject"], "did:key:zABC");
         assert_eq!(json["role"], "admin");
         assert_eq!(json["scopes"], json!([]));
-        assert_eq!(json["createdAt"], "2023-11-14T22:13:20+00:00");
-        assert_eq!(json["expiresAt"], "2027-01-15T08:00:00+00:00");
+        assert_eq!(json["createdAt"], "2023-11-14T22:13:20Z");
+        assert_eq!(json["expiresAt"], "2027-01-15T08:00:00Z");
         for old in ["did", "allowed_contexts", "created_at", "expires_at"] {
             assert!(json.get(old).is_none(), "{old} should not be emitted");
         }

@@ -14,6 +14,9 @@ use vti_common::store::KeyspaceHandle;
 
 const DID_PREFIX: &str = "did:";
 
+// Read only by the `webs`-gated accessors; `purge_context` (built without the
+// feature) scans by prefix.
+#[cfg_attr(not(feature = "webs"), allow(dead_code))]
 fn did_key(did: &str) -> String {
     format!("{DID_PREFIX}{did}")
 }
