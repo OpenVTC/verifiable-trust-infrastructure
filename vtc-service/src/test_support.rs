@@ -2475,9 +2475,13 @@ mod transport_harness {
                     .await
                     .expect("bind the TSP peer's transport"),
             );
-            let service = Arc::new(MessagingService::new(
+            let service = Arc::new(MessagingService::with_receipts(
                 transport,
                 Arc::new(InMemoryOutboxStore::default()),
+                Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+                    (*atm).clone(),
+                    profile.clone(),
+                )),
             ));
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let mut stream = service.subscribe();

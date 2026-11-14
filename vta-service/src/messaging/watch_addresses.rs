@@ -187,9 +187,15 @@ async fn open_session(
             return Err(e);
         }
     };
-    let service = Arc::new(MessagingService::new(
+    // A host's `rooms/changed` may ask for a receipt; it is answered as the
+    // watch address, whose session this is (VTI-TRN-061).
+    let service = Arc::new(MessagingService::with_receipts(
         transport,
         Arc::new(InMemoryOutboxStore::new()),
+        Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+            (*atm).clone(),
+            profile.clone(),
+        )),
     ));
     let cancel = CancellationToken::new();
     tokio::spawn(inbound_loop(

@@ -30,7 +30,10 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 - **Trust Task push** (`trust_task_push`) — pushing a signed Trust Task to a
   peer over TSP > DIDComm > REST by what its DID document advertises: a durable
   record per push, one outbox attempt per transport, evidence-based settlement
-  and escalation (VTI-TRN-030/-040/-041/-042). The node lends its keyspace,
+  and escalation (VTI-TRN-030/-040/-041/-042). Every DIDComm/TSP attempt asks
+  for a delivery receipt under its outbox key; a relayed attempt to a recipient
+  not known to send receipts finishes `unconfirmable`, not escalated
+  (VTI-TRN-042 as amended, VTI-TRN-060 – 064). The node lends its keyspace,
   outbox, resolver and messaging through a `PushContext`. What a node pushes,
   and when, stay with the node.
 - **Cryptographic primitives with no service-specific policy** — the HMAC

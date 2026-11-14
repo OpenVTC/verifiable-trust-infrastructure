@@ -10,9 +10,12 @@
 //! [`super::tsp_inbound::dispatch_one`] and their reply is sealed + routed back
 //! over the same mediator socket.
 //!
-//! P2a uses [`MessagingService::new`] (consume-only receipts) — no receipt
-//! *emit* yet (that lands with the first `Guaranteed` VTA pushes in P2b); the
-//! consume half is always active, so the VTA still settles its own sends.
+//! The service is built [`MessagingService::with_receipts`]: a message that
+//! asks for a delivery receipt (a DIDComm `delivery_id` header, a TSP
+//! envelope's `deliveryId`) is receipted to its authenticated sender once it
+//! has been handed off, over the binding it arrived on (VTI-TRN-061). The
+//! consume half is always active, so a receipt settles the VTA's own sends —
+//! only from the party each was addressed to (VTI-TRN-062).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -228,11 +231,18 @@ pub async fn build_messaging(
     };
 
     let outbox: Arc<dyn OutboxStore> = Arc::new(VtiOutboxStore::new(outbox_ks));
-    // P2a uses `new` (not `with_receipts`) — no layer-receipt *emit* yet (P2b);
-    // the consume half is always active, so the VTA settles its own sends.
-    // Clone transport + outbox before `new` consumes them: the background loops
-    // need their own handles.
-    let service = Arc::new(MessagingService::new(transport.clone(), outbox.clone()));
+    // Receipts are emitted for every message that asks for one, as this VTA's
+    // own DID (VTI-TRN-061); consumed ones settle the VTA's sends (VTI-TRN-062).
+    // Clone transport + outbox before the constructor consumes them: the
+    // background loops need their own handles.
+    let service = Arc::new(MessagingService::with_receipts(
+        transport.clone(),
+        outbox.clone(),
+        Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+            (*atm).clone(),
+            profile.clone(),
+        )),
+    ));
     // Durable outbox: drain sends due entries + retries; outbox-drain confirms
     // Delivered on recipient pickup; confirmation sweep settles expired entries.
     // Dormant in P2a (no Guaranteed sends yet) but wired for P2b + restart
@@ -247,9 +257,12 @@ pub async fn build_messaging(
         outbox.clone(),
         Duration::from_secs(10),
     ));
-    tokio::spawn(affinidi_messaging_delivery::confirmation_loop(
+    // With the service's receipt reach: a relayed entry to a recipient not
+    // known to send receipts settles unconfirmable, not lost (VTI-TRN-064).
+    tokio::spawn(vti_common::outbox_store::confirmation_loop(
         outbox.clone(),
         Duration::from_secs(30),
+        service.receipt_reach(),
     ));
     // Settled entries are removed a week after their delivery window closed
     // (`VtiOutboxStore::terminal_before`), so the outbox holds what is in
