@@ -893,7 +893,6 @@ fn approve_request_payload(
     reason: &str,
     accepts: &[String],
 ) -> Result<approve_request::Payload, String> {
-    use trust_tasks_rs::validate::ValidatedPayload as _;
     let value = json!({
         "subject": subject,
         "sessionId": session_id,
@@ -903,7 +902,8 @@ fn approve_request_payload(
         "accepts": accepts,
         "ttlSeconds": STEP_UP_TTL_SECS,
     });
-    approve_request::Payload::validate_value(&value).map_err(|e| e.to_string())?;
+    vta_sdk::schema_cache::check_payload::<approve_request::Payload>(&value)
+        .map_err(|e| e.to_string())?;
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 

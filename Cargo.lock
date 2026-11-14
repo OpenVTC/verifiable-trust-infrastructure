@@ -12090,6 +12090,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hpke",
+ "jsonschema 0.46.10",
  "k256 0.14.0",
  "keyring-core",
  "multibase",

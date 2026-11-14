@@ -1,5 +1,5 @@
 use crate::error::AppError;
-use crate::store::{Batch, KeyspaceHandle};
+use crate::store::{Batch, KeyspaceHandle, RawKvPair, ScanOpts, ScanPager};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -581,10 +581,18 @@ pub async fn resolve_did_session(
     // and the creation only while there is still no row (two first messages
     // racing must not overwrite each other's — or a just-elevated — session).
     for _ in 0..SESSION_WRITE_ATTEMPTS {
+        // `last_seen` is written at the same granularity as REST's
+        // `touch_last_seen` (#2625): it only feeds the idle TTL, measured in
+        // hours, and writing it per message cost a store write (a vsock round
+        // trip in an enclave) serialised on this keyspace's write lock. A lapsed
+        // elevation is always written, so the downgrade persists at once.
         if let Some(session) = update_session_with(sessions, did, |s| {
-            s.last_seen = now;
-            s.downgrade_lapsed_elevation(now);
-            true
+            let lapsed = s.downgrade_lapsed_elevation(now);
+            let stale = now >= s.last_seen.saturating_add(LAST_SEEN_GRANULARITY_SECS);
+            if lapsed || stale {
+                s.last_seen = s.last_seen.max(now);
+            }
+            lapsed || stale
         })
         .await?
         {
@@ -894,6 +902,15 @@ pub async fn list_sessions(sessions: &KeyspaceHandle) -> Result<Vec<Session>, Ap
     Ok(result)
 }
 
+/// Rows one sweep page reads (#2626).
+const SWEEP_PAGE: usize = 512;
+
+/// The next non-empty page, or `None` once the walk is over.
+async fn next_page(pages: &mut ScanPager) -> Result<Option<Vec<RawKvPair>>, AppError> {
+    let page = pages.next_page().await?;
+    Ok((!page.is_empty()).then_some(page))
+}
+
 /// Remove expired sessions from the store.
 ///
 /// - `ChallengeSent` sessions expire after `challenge_ttl` seconds from `created_at`.
@@ -909,60 +926,66 @@ pub async fn cleanup_expired_sessions(
     sessions: &KeyspaceHandle,
     challenge_ttl: u64,
 ) -> Result<(), AppError> {
-    let entries = sessions.prefix_iter_raw("session:").await?;
     let now = now_epoch();
     let mut removed = 0u64;
-    let mut live_sessions: std::collections::HashSet<String> =
-        std::collections::HashSet::with_capacity(entries.len());
+    let mut live_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (key, value) in entries {
-        let session: Session = match serde_json::from_slice(&value) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
+    // Every pass below reads its rows a bounded page at a time, never one
+    // read of the whole prefix: over vsock that is one response frame, and a
+    // keyspace past 16 MiB would fail the sweep on every tick (#2626).
+    let mut pages = sessions.scan_pager(ScanOpts::new("session:", SWEEP_PAGE));
+    while let Some(page) = next_page(&mut pages).await? {
+        for (key, value) in page {
+            let session: Session = match serde_json::from_slice(&value) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
 
-        let expired = match session.state {
-            SessionState::ChallengeSent => now.saturating_sub(session.created_at) > challenge_ttl,
-            SessionState::Authenticated => {
-                if session.refresh_token.is_some() {
-                    // REST/JWT session (has a refresh token) — bounded by its
-                    // refresh-token deadline. Now that REST sessions are also
-                    // DID-keyed, the presence of a refresh token, not the key
-                    // shape, is what marks a JWT session.
-                    session
-                        .refresh_expires_at
-                        .is_none_or(|expires| now > expires)
-                } else if session.session_id == session.did {
-                    // Intrinsic-sender (DIDComm/TSP) canonical session — keyed on
-                    // the DID, no refresh token, reaped on idle. Fall back to
-                    // created_at for pre-migration rows whose last_seen is 0.
-                    let last = session.last_seen.max(session.created_at);
-                    now.saturating_sub(last) > INTRINSIC_SESSION_IDLE_TTL_SECS
-                } else {
-                    // Transient authenticated rows with neither a refresh token
-                    // nor a DID key (e.g. VTC cross-community recognise sessions)
-                    // — unchanged: expire on the next pass.
-                    session
-                        .refresh_expires_at
-                        .is_none_or(|expires| now > expires)
+            let expired = match session.state {
+                SessionState::ChallengeSent => {
+                    now.saturating_sub(session.created_at) > challenge_ttl
                 }
-            }
-        };
+                SessionState::Authenticated => {
+                    if session.refresh_token.is_some() {
+                        // REST/JWT session (has a refresh token) — bounded by its
+                        // refresh-token deadline. Now that REST sessions are also
+                        // DID-keyed, the presence of a refresh token, not the key
+                        // shape, is what marks a JWT session.
+                        session
+                            .refresh_expires_at
+                            .is_none_or(|expires| now > expires)
+                    } else if session.session_id == session.did {
+                        // Intrinsic-sender (DIDComm/TSP) canonical session — keyed on
+                        // the DID, no refresh token, reaped on idle. Fall back to
+                        // created_at for pre-migration rows whose last_seen is 0.
+                        let last = session.last_seen.max(session.created_at);
+                        now.saturating_sub(last) > INTRINSIC_SESSION_IDLE_TTL_SECS
+                    } else {
+                        // Transient authenticated rows with neither a refresh token
+                        // nor a DID key (e.g. VTC cross-community recognise sessions)
+                        // — unchanged: expire on the next pass.
+                        session
+                            .refresh_expires_at
+                            .is_none_or(|expires| now > expires)
+                    }
+                }
+            };
 
-        if expired {
-            // Only while the row is still the expired one read: a session
-            // touched (or resolved, or stepped up) since the scan is live
-            // again and stays, where an unconditional removal signed it out.
-            let mut batch = Batch::new();
-            batch.require_unchanged(key, value);
-            stage_session_removal(&mut batch, &session);
-            if sessions.apply_batch(batch).await?.is_applied() {
-                removed += 1;
+            if expired {
+                // Only while the row is still the expired one read: a session
+                // touched (or resolved, or stepped up) since the scan is live
+                // again and stays, where an unconditional removal signed it out.
+                let mut batch = Batch::new();
+                batch.require_unchanged(key, value);
+                stage_session_removal(&mut batch, &session);
+                if sessions.apply_batch(batch).await?.is_applied() {
+                    removed += 1;
+                } else {
+                    live_sessions.insert(session.session_id);
+                }
             } else {
                 live_sessions.insert(session.session_id);
             }
-        } else {
-            live_sessions.insert(session.session_id);
         }
     }
 
@@ -986,34 +1009,36 @@ pub async fn cleanup_expired_sessions(
     //
     // Sessions issued before the record existed have none; for those the
     // row is the only evidence, as it is on the refresh path.
-    let refresh_entries = sessions.prefix_iter_raw("refresh:").await?;
+    let mut pages = sessions.scan_pager(ScanOpts::new("refresh:", SWEEP_PAGE));
     let mut orphan_refresh_removed = 0u64;
-    for (key, value) in refresh_entries {
-        let session_id = match std::str::from_utf8(&value) {
-            Ok(s) => s.to_string(),
-            // Malformed; it can never authorise anything. Drop it.
-            Err(_) => {
+    while let Some(page) = next_page(&mut pages).await? {
+        for (key, value) in page {
+            let session_id = match std::str::from_utf8(&value) {
+                Ok(s) => s.to_string(),
+                // Malformed; it can never authorise anything. Drop it.
+                Err(_) => {
+                    sessions.remove(key).await?;
+                    orphan_refresh_removed += 1;
+                    continue;
+                }
+            };
+            // No row, nothing to refresh into — `/auth/refresh` answers
+            // `SessionNotFound` — whatever the current-token record says.
+            let Some(row) = sessions.get::<Session>(session_key(&session_id)).await? else {
                 sessions.remove(key).await?;
                 orphan_refresh_removed += 1;
                 continue;
+            };
+            let still_current = match current_refresh_hash(sessions, &session_id).await? {
+                Some(hash) => format!("refresh:{hash}").as_bytes() == key.as_slice(),
+                None => row
+                    .refresh_token
+                    .is_some_and(|live| refresh_key(&live).as_bytes() == key.as_slice()),
+            };
+            if !still_current {
+                sessions.remove(key).await?;
+                orphan_refresh_removed += 1;
             }
-        };
-        // No row, nothing to refresh into — `/auth/refresh` answers
-        // `SessionNotFound` — whatever the current-token record says.
-        let Some(row) = sessions.get::<Session>(session_key(&session_id)).await? else {
-            sessions.remove(key).await?;
-            orphan_refresh_removed += 1;
-            continue;
-        };
-        let still_current = match current_refresh_hash(sessions, &session_id).await? {
-            Some(hash) => format!("refresh:{hash}").as_bytes() == key.as_slice(),
-            None => row
-                .refresh_token
-                .is_some_and(|live| refresh_key(&live).as_bytes() == key.as_slice()),
-        };
-        if !still_current {
-            sessions.remove(key).await?;
-            orphan_refresh_removed += 1;
         }
     }
 
@@ -1022,17 +1047,19 @@ pub async fn cleanup_expired_sessions(
     // belongs to a session that was deleted or expired. Removing one that a
     // concurrent login is about to pair with a fresh row costs nothing: the
     // refresh path then falls back to the row, which names the same token.
-    let current_entries = sessions.prefix_iter_raw("refresh-current:").await?;
-    for (key, _) in current_entries {
-        let Some(session_id) = key
-            .strip_prefix(b"refresh-current:".as_slice())
-            .and_then(|id| std::str::from_utf8(id).ok())
-        else {
-            sessions.remove(key).await?;
-            continue;
-        };
-        if sessions.get_raw(session_key(session_id)).await?.is_none() {
-            sessions.remove(key).await?;
+    let mut pages = sessions.scan_pager(ScanOpts::new("refresh-current:", SWEEP_PAGE));
+    while let Some(page) = next_page(&mut pages).await? {
+        for (key, _) in page {
+            let Some(session_id) = key
+                .strip_prefix(b"refresh-current:".as_slice())
+                .and_then(|id| std::str::from_utf8(id).ok())
+            else {
+                sessions.remove(key).await?;
+                continue;
+            };
+            if sessions.get_raw(session_key(session_id)).await?.is_none() {
+                sessions.remove(key).await?;
+            }
         }
     }
 
@@ -1040,13 +1067,15 @@ pub async fn cleanup_expired_sessions(
     // removed each expired row's entry with it; this catches entries whose
     // row was removed or rewritten some other way, which
     // `list_pending_challenges` skips but never removes.
-    let pending_entries = sessions.prefix_iter_raw("pending-challenge:").await?;
-    for (key, value) in pending_entries {
-        let created_at = serde_json::from_slice::<PendingChallengeEntry>(&value)
-            .map(|e| e.created_at)
-            .unwrap_or(0);
-        if now.saturating_sub(created_at) > challenge_ttl {
-            sessions.remove(key).await?;
+    let mut pages = sessions.scan_pager(ScanOpts::new("pending-challenge:", SWEEP_PAGE));
+    while let Some(page) = next_page(&mut pages).await? {
+        for (key, value) in page {
+            let created_at = serde_json::from_slice::<PendingChallengeEntry>(&value)
+                .map(|e| e.created_at)
+                .unwrap_or(0);
+            if now.saturating_sub(created_at) > challenge_ttl {
+                sessions.remove(key).await?;
+            }
         }
     }
 
@@ -1056,21 +1085,23 @@ pub async fn cleanup_expired_sessions(
     // A nonce is orphan if its session record is gone (either expired-in-
     // this-pass or already cleaned up). Decoding the value is safe because
     // it's UTF-8 ASCII (the session_id) by construction.
-    let nonce_entries = sessions.prefix_iter_raw("nonce:").await?;
+    let mut pages = sessions.scan_pager(ScanOpts::new("nonce:", SWEEP_PAGE));
     let mut nonce_removed = 0u64;
-    for (key, value) in nonce_entries {
-        let session_id = match std::str::from_utf8(&value) {
-            Ok(s) => s,
-            Err(_) => {
-                // Malformed; treat as orphan and clean up.
+    while let Some(page) = next_page(&mut pages).await? {
+        for (key, value) in page {
+            let session_id = match std::str::from_utf8(&value) {
+                Ok(s) => s,
+                Err(_) => {
+                    // Malformed; treat as orphan and clean up.
+                    sessions.remove(key).await?;
+                    nonce_removed += 1;
+                    continue;
+                }
+            };
+            if !live_sessions.contains(session_id) {
                 sessions.remove(key).await?;
                 nonce_removed += 1;
-                continue;
             }
-        };
-        if !live_sessions.contains(session_id) {
-            sessions.remove(key).await?;
-            nonce_removed += 1;
         }
     }
 
@@ -1084,18 +1115,20 @@ pub async fn cleanup_expired_sessions(
     // holding a token from a session an operator already killed — is the
     // case most worth detecting, and dropping the record with the
     // session would blind exactly that.
-    let tombstones = sessions.prefix_iter_raw("rotated:").await?;
+    let mut pages = sessions.scan_pager(ScanOpts::new("rotated:", SWEEP_PAGE));
     let mut tombstones_removed = 0u64;
-    for (key, value) in tombstones {
-        let expired = match serde_json::from_slice::<RefreshTombstone>(&value) {
-            Ok(t) => now > t.expires_at,
-            // Malformed or written by an older schema — it can no longer
-            // be interpreted, so it cannot inform a decision. Drop it.
-            Err(_) => true,
-        };
-        if expired {
-            sessions.remove(key).await?;
-            tombstones_removed += 1;
+    while let Some(page) = next_page(&mut pages).await? {
+        for (key, value) in page {
+            let expired = match serde_json::from_slice::<RefreshTombstone>(&value) {
+                Ok(t) => now > t.expires_at,
+                // Malformed or written by an older schema — it can no longer
+                // be interpreted, so it cannot inform a decision. Drop it.
+                Err(_) => true,
+            };
+            if expired {
+                sessions.remove(key).await?;
+                tombstones_removed += 1;
+            }
         }
     }
 
@@ -1844,6 +1877,44 @@ mod tests {
         let stored = get_session(&ks, did).await.unwrap().unwrap();
         assert_eq!(stored.acr, "aal1");
         assert_eq!(stored.acr_expires_at, None);
+    }
+
+    /// #2625: a message inside `LAST_SEEN_GRANULARITY_SECS` of the last write
+    /// leaves the row as it is (no store write); one at or past it advances
+    /// `last_seen`; a lapsed elevation is persisted whatever the granularity.
+    #[tokio::test]
+    async fn resolve_did_session_writes_last_seen_at_the_rest_granularity() {
+        let (ks, _dir) = temp_sessions_ks();
+        let did = "did:key:zResolveGranular";
+        let now = now_epoch();
+        resolve_did_session(&ks, did, now).await.unwrap();
+        let raw_before = ks.get_raw(session_key(did)).await.unwrap().unwrap();
+
+        let seen = resolve_did_session(&ks, did, now + LAST_SEEN_GRANULARITY_SECS - 1)
+            .await
+            .unwrap();
+        assert_eq!(seen.last_seen, now, "inside the granularity: not advanced");
+        let raw_after = ks.get_raw(session_key(did)).await.unwrap().unwrap();
+        assert_eq!(raw_before, raw_after, "inside the granularity: no write");
+
+        let later = now + LAST_SEEN_GRANULARITY_SECS;
+        let seen = resolve_did_session(&ks, did, later).await.unwrap();
+        assert_eq!(seen.last_seen, later);
+        assert_eq!(
+            get_session(&ks, did).await.unwrap().unwrap().last_seen,
+            later
+        );
+
+        // A lapsed elevation is written even one second after the last touch.
+        let mut s = get_session(&ks, did).await.unwrap().unwrap();
+        s.acr = "aal2".into();
+        s.acr_expires_at = Some(later + 1);
+        update_session(&ks, &s).await.unwrap();
+        let seen = resolve_did_session(&ks, did, later + 1).await.unwrap();
+        assert_eq!(seen.acr, "aal1");
+        let stored = get_session(&ks, did).await.unwrap().unwrap();
+        assert_eq!(stored.acr, "aal1");
+        assert_eq!(stored.last_seen, later + 1);
     }
 
     #[tokio::test]
