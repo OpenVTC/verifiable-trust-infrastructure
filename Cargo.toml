@@ -44,6 +44,7 @@ members = [
   "vti-specs-vtn",
   "vti-rooms",
   "vti-rooms-dtg",
+  "vti-rooms-host",
   "vti-rooms-wasm",
   "vti-vtn",
   "vti-trust-task-server",
@@ -108,6 +109,7 @@ default-members = [
   "vti-vtn",
   "vti-trust-task-server",
   "vti-oob-server",
+  "vti-rooms-host",
 ]
 exclude = [
   "deploy/nitro/enclave-proxy",

@@ -63,6 +63,11 @@ trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
 vti-specs = { path = "../vti-specs", version = "0.13" }
+# The receive pipeline every Trust Task service shares, and its store-backed
+# duplicate-execution record (#2576).
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.10" }
+# `StatusCode`, the pipeline's outcome status.
+axum = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

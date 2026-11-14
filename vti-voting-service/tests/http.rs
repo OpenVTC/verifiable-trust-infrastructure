@@ -38,7 +38,27 @@ fn state_serving(dir: &std::path::Path, communities: CommunitiesConfig) -> Arc<A
         identity,
         vti_common::auth::TrustTaskVmResolver::did_key_only(),
         communities,
+        accepted_ids(dir),
     ))
+}
+
+/// The accepted-id keyspace of the store under `dir`: one store per process, as the service
+/// opens it, shared by every state a test builds over the same directory (a "restart").
+fn accepted_ids(dir: &std::path::Path) -> vti_common::store::KeyspaceHandle {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    static STORES: LazyLock<Mutex<HashMap<std::path::PathBuf, vti_common::store::Store>>> =
+        LazyLock::new(Mutex::default);
+    let mut stores = STORES.lock().unwrap();
+    let store = stores.entry(dir.to_path_buf()).or_insert_with(|| {
+        vti_common::store::Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.join("store"),
+        })
+        .unwrap()
+    });
+    store
+        .keyspace(vti_voting_service::dispatch::ACCEPTED_IDS_KEYSPACE)
+        .unwrap()
 }
 
 /// A registration of `community`'s election `id` on the box `service_did`.
@@ -311,7 +331,7 @@ async fn vti_vot_065_a_threshold_below_ten_is_registered_and_shown_at_0_3_only()
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["payload"]["manifest"]["textReleaseThreshold"], 3);
     let (status, answer) = send(&svc, show("0.2", "small").await).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["payload"]["code"], "unsupportedVersion");
 
     // Ten or more: registered under 0.2, as a community from before 0.3 sends it, and shown
@@ -380,7 +400,11 @@ async fn vti_vot_025_a_credential_roll_is_registered_and_shown_at_0_4_only() {
     assert_eq!(answer["payload"]["manifest"]["roll"]["rule"], "credential");
     for version in ["0.2", "0.3"] {
         let (status, answer) = send(&svc, show(version, "roll").await).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{version}: {answer}");
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{version}: {answer}"
+        );
         assert_eq!(answer["payload"]["code"], "unsupportedVersion");
     }
 
@@ -495,7 +519,7 @@ async fn an_election_over_http_with_a_restart() {
         doc("election/register", &service_did, None, register.clone()).await,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(answer["payload"]["code"], "proofRequired");
     assert_eq!(signed_by(&answer).await, service_did);
 
@@ -605,7 +629,19 @@ async fn an_election_over_http_with_a_restart() {
         head2["payload"]["head"]["rootHash"],
         head["payload"]["head"]["rootHash"]
     );
-    let (_, again) = send(&restarted, cast_doc).await;
+    // The same document again is a redelivery: the duplicate-id record, kept in the store
+    // across the restart, answers it with the first answer itself (VTI-OPS-025 … 029).
+    let (_, redelivered) = send(&restarted, cast_doc).await;
+    assert_eq!(redelivered, receipt);
+    // The same cast in a new document is a resend: the ballot box answers it as it did.
+    let resend = doc(
+        "ballot/cast",
+        &service_did,
+        Some(&one_time),
+        json!({ "community": community.did, "electionId": "board-2027", "cast": cast }),
+    )
+    .await;
+    let (_, again) = send(&restarted, resend).await;
     assert_eq!(again["payload"]["outcome"], "alreadyCounted");
     assert_eq!(
         again["payload"]["receiptToken"],
@@ -744,7 +780,7 @@ async fn trustees_enrol_over_http() {
         doc("trustees/enrol", &service_did, None, enrol.clone()).await,
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     let (status, answer) = send(
         &svc,
         doc(
@@ -841,7 +877,7 @@ async fn a_request_names_its_recipient_and_a_cast_its_did_key() {
     let mut cast = doc("ballot/cast", &st.identity.did, Some(&community), payload).await;
     cast["issuer"] = json!("did:webvh:QmSomewhere:attacker.example");
     let (status, answer) = send(&st, cast).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -968,14 +1004,14 @@ async fn the_https_door_resolves_only_a_signer_it_has_a_reason_to_know() {
     // A party the election names is resolved: here the test resolver cannot, so the proof
     // fails — after the door let it through.
     let (status, answer) = send(&svc, naming_method(signed_read.clone(), auditor)).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
 
     // A verification method that is not the issuer's is refused before it is resolved.
     let mut mismatched = signed_read.clone();
     mismatched["proof"]["verificationMethod"] = json!(format!("{stranger}#key-0"));
     let (status, answer) = send(&svc, mismatched).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
 
     // A did:key signer still reads.
@@ -1041,7 +1077,7 @@ async fn a_verification_method_without_a_fragment_is_refused() {
     .await;
     read["proof"]["verificationMethod"] = json!(community.did);
     let (status, answer) = send(&svc, read).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1070,7 +1106,7 @@ async fn an_allowed_community_is_resolved_on_the_https_door_and_an_open_box_name
     )
     .await;
     let (status, answer) = send(&svc, naming_method(signed, listed)).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["payload"]["code"], "proofInvalid", "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -1107,7 +1143,7 @@ async fn a_communitys_request_older_than_the_acceptance_window_is_refused() {
         (Utc::now() - Duration::minutes(20)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     );
     let (status, answer) = send(&svc, sign(old, &community).await).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     assert_eq!(answer["payload"]["code"], "expired", "{answer}");
 
     let mut recent = doc("election/register", &service_did, None, register).await;
@@ -1117,5 +1153,96 @@ async fn a_communitys_request_older_than_the_acceptance_window_is_refused() {
     );
     let (status, answer) = send(&svc, sign(recent, &community).await).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The duplicate-id record (VTI-OPS-025 … 027, #2576): a registration redelivered is answered
+/// with its first answer and not executed again; a different document reusing its `id` is
+/// `idConflict`; a replayed read is answered with nothing.
+#[tokio::test]
+async fn vti_ops_025_a_redelivered_document_is_answered_once() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let svc = state(&dir);
+    let service_did = svc.identity.did.clone();
+    let community = Identity::from_seed(&[44; 32]).unwrap();
+
+    let register = doc(
+        "election/register",
+        &service_did,
+        Some(&community),
+        registration(&community, &service_did, "e-dup"),
+    )
+    .await;
+    let (status, first) = send(&svc, register.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, again) = send(&svc, register.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(
+        first, again,
+        "a redelivery is answered with the first answer"
+    );
+
+    let mut other = doc(
+        "election/register",
+        &service_did,
+        None,
+        registration(&community, &service_did, "e-dup-2"),
+    )
+    .await;
+    other["id"] = register["id"].clone();
+    other["issuer"] = json!(community.did);
+    let (status, answer) = send(&svc, sign(other, &community).await).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert_eq!(answer["payload"]["code"], "idConflict", "{answer}");
+
+    let head = doc(
+        "board/head",
+        &service_did,
+        None,
+        json!({ "community": community.did, "electionId": "e-dup" }),
+    )
+    .await;
+    let (status, answer) = send(&svc, head.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (status, _) = send(&svc, head).await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "a replayed read is owed nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A public read is asked unsigned over TSP or DIDComm as over HTTPS (VTI-OPS-021), and runs
+/// anonymous; a task whose proof is REQUIRED is refused unsigned there too.
+#[tokio::test]
+async fn an_unsigned_read_over_messaging_is_answered_and_a_close_is_not() {
+    let dir = std::env::temp_dir().join(format!("vti-voting-service-{}", Uuid::new_v4()));
+    let st = state(&dir);
+    let auditor = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let payload = json!({ "community": "did:key:z6MkCommunity", "electionId": "e1" });
+
+    let mut read = doc("board/head", &st.identity.did, None, payload.clone()).await;
+    read["issuer"] = json!(auditor);
+    let out = vti_voting_service::dispatch::answer(
+        &st,
+        &serde_json::to_vec(&read).unwrap(),
+        Some(auditor),
+    )
+    .await;
+    let answer = out.doc.expect("answered");
+    assert_ne!(answer["payload"]["code"], "proofRequired", "{answer}");
+    signed_by(&answer).await;
+
+    let mut close = doc("election/close", &st.identity.did, None, payload).await;
+    close["issuer"] = json!(auditor);
+    let out = vti_voting_service::dispatch::answer(
+        &st,
+        &serde_json::to_vec(&close).unwrap(),
+        Some(auditor),
+    )
+    .await;
+    let answer = out.doc.expect("answered");
+    assert_eq!(answer["payload"]["code"], "proofRequired", "{answer}");
     let _ = std::fs::remove_dir_all(&dir);
 }

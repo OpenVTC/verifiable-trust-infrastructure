@@ -325,10 +325,11 @@ self-contained: `bridge.rs` (2,809) needs messaging and outbound, `ops.rs`
 operations. Name the incremental-build win from step 0 before doing it.
 
 `rooms/` should **not** become a `vtc-rooms` crate. Its handler layer
-(`handlers.rs` 4,013, `files.rs` 1,095) duplicates `room-host`'s, and #2575
-moves the shared bodies into `vti-rooms` (or `vti-rooms-host`) behind a
-`RoomHost` trait. That *is* the rooms extraction. What stays in `vtc-service`
-is the `RoomHost` implementation and what only a community has:
+duplicated `room-host`'s, and #2575 moved the shared bodies into
+`vti-rooms-host` behind a `RoomHost` trait. That *is* the rooms extraction, and
+it has landed. What stays in `vtc-service` is the `RoomHost` implementation
+(`rooms/handlers.rs`: keyspaces, registration governed by the `rooms` policy,
+the per-room charge, the audit sink) and what only a community has:
 `community*.rs`, `departures.rs`, `vta_access.rs`, `vta_storage.rs`,
 `storage_configs.rs`, `migration.rs`. Step 2's `RoomsStores` is the natural
 thing the VTC's `RoomHost` implementation wraps.
@@ -363,9 +364,9 @@ it, because an extraction PR must be a move.
 7. **#2580 — `AdminActor`**, then **3e `vtc-acl`**.
 8. **3d `vtc-registry`** (pure half), then **3c** if still wanted, with **3b**
    folded in.
-9. **#2575 — shared rooms handlers** with `room-host`. Can run in parallel with
-   6–8; it depends only on step 2's `RoomsStores` (to keep the VTC's
-   `RoomHost` implementation small).
+9. **#2575 — shared rooms handlers** with `room-host`: done
+   (`vti-rooms-host`). Step 2's `RoomsStores` would shrink the VTC's
+   `RoomHost` implementation further.
 10. **3f `vtc-git-ns`** (pure core), if step 0's numbers justify it.
 
 ## Publishing

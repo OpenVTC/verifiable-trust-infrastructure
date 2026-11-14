@@ -132,6 +132,16 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         }]),
     )
     .unwrap();
+    // The ballot box's duplicate-id record (VTI-OPS-025 … 029), in a store of its own as the
+    // service opens one under its data directory.
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+        data_dir: store_dir.path().to_path_buf(),
+    })
+    .unwrap();
+    let accepted_ids = store
+        .keyspace(vti_voting_service::dispatch::ACCEPTED_IDS_KEYSPACE)
+        .unwrap();
     let box_state = Arc::new(AppState::new(
         vti_voting_service::boxes::Boxes::new(&box_did),
         Identity {
@@ -144,6 +154,7 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         },
         vti_common::auth::TrustTaskVmResolver::did_key_only(),
         vti_voting_service::config::CommunitiesConfig::any(),
+        accepted_ids,
     ));
     let server = tokio::spawn(axum::serve(listener, router(box_state.clone())).into_future());
 

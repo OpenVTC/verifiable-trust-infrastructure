@@ -42,7 +42,7 @@ feature, so the default-feature reproduction the report printed never touched
 it. A dependency break of this shape is fixed upstream or by a raised floor,
 never by a change here.
 
-**37 of 48 crates publish.** The count is of workspace members; the
+**38 of 49 crates publish.** The count is of workspace members; the
 authoritative list of the eleven that set `publish = false` is in
 [RELEASING.md](../../RELEASING.md#what-gets-published), and
 `scripts/check-docs.py` holds both to the manifests. (`vti-fuzz` and the

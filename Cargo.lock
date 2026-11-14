@@ -9232,7 +9232,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-didcomm",
- "trust-tasks-https",
  "trust-tasks-rs",
  "trust-tasks-tsp",
  "uuid",
@@ -9241,6 +9240,7 @@ dependencies = [
  "vti-common",
  "vti-rooms",
  "vti-rooms-dtg",
+ "vti-rooms-host",
  "vti-secrets",
  "vti-specs",
  "vti-trust-task-server",
@@ -12523,6 +12523,7 @@ dependencies = [
  "vti-oob-server",
  "vti-rooms",
  "vti-rooms-dtg",
+ "vti-rooms-host",
  "vti-secrets",
  "vti-specs",
  "vti-trust-task-server",
@@ -12738,6 +12739,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "vti-rooms-host"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tracing",
+ "trust-tasks-rs",
+ "uuid",
+ "vti-common",
+ "vti-rooms",
+ "vti-rooms-dtg",
+ "vti-specs-rooms",
+ "vti-trust-task-server",
+]
+
+[[package]]
 name = "vti-rooms-wasm"
 version = "0.1.0"
 dependencies = [
@@ -12941,6 +12961,8 @@ dependencies = [
  "vta-sdk",
  "vti-common",
  "vti-secrets",
+ "vti-specs",
+ "vti-trust-task-server",
  "vti-voting",
 ]
 
@@ -12999,6 +13021,7 @@ dependencies = [
  "affinidi-tdk",
  "anyhow",
  "async-trait",
+ "axum",
  "chrono",
  "clap",
  "dtg-credentials",
@@ -13020,6 +13043,7 @@ dependencies = [
  "vti-common",
  "vti-secrets",
  "vti-specs",
+ "vti-trust-task-server",
 ]
 
 [[package]]

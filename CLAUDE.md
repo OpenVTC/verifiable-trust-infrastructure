@@ -94,13 +94,12 @@ Layer 5 (longest internal chain 5):
   vti-oob-server         → vti-common, vti-specs-core, vti-trust-task-server
   vti-rooms-dtg          → vta-sdk, vti-common, vti-rooms
   vti-rooms-wasm         → vti-rooms
-  vti-voting-service     → vta-sdk, vti-common, vti-secrets, vti-voting
-  vti-witness            → vta-sdk, vti-common, vti-secrets, vti-specs
+  vti-voting-service     → vta-sdk, vti-common, vti-secrets, vti-specs,
+                           vti-trust-task-server, vti-voting
+  vti-witness            → vta-sdk, vti-common, vti-secrets, vti-specs,
+                           vti-trust-task-server
 
 Layer 6 (longest internal chain 6):
-  room-host              → vta-sdk, vtc-client, vti-common, vti-rooms,
-                           vti-rooms-dtg, vti-secrets, vti-specs,
-                           vti-trust-task-server
   vta-cli-common         → vta-sdk, vtc-client, vti-common, vti-rooms,
                            vti-specs
   vta-keys               → vta-config, vta-keyspaces, vta-sdk, vti-common,
@@ -109,20 +108,25 @@ Layer 6 (longest internal chain 6):
   vta-support            → vta-config, vta-keyspaces, vta-sdk, vti-common
   vta-sweepers           → vta-audit, vta-keyspaces, vta-vault, vti-common
   vtc-mcp                → vta-sdk, vtc-client, vti-mcp-common, vti-specs
-  vtc-service            → vta-sdk, vtc-audit, vti-common, vti-oob-server,
-                           vti-rooms, vti-rooms-dtg, vti-secrets, vti-specs,
-                           vti-trust-task-server, vti-vetting-pcs, vti-voting,
-                           vti-vtn
+  vti-rooms-host         → vti-common, vti-rooms, vti-rooms-dtg,
+                           vti-specs-rooms, vti-trust-task-server
 
 Layer 7 (longest internal chain 7):
   cnm-cli                → vta-cli-common, vta-sdk, vtc-client, vti-specs,
                            vti-voting
   pnm-cli                → vta-cli-common, vta-sdk
+  room-host              → vta-sdk, vtc-client, vti-common, vti-rooms,
+                           vti-rooms-dtg, vti-rooms-host, vti-secrets,
+                           vti-specs, vti-trust-task-server
   vta-backup             → vta-config, vta-keys, vta-keyspaces, vta-sdk,
                            vta-support, vti-common
   vta-external           → vta-keys, vta-sdk, vti-common, vti-specs
   vta-tee                → vta-config, vta-keys, vta-keyspaces, vta-support,
                            vti-common
+  vtc-service            → vta-sdk, vtc-audit, vti-common, vti-oob-server,
+                           vti-rooms, vti-rooms-dtg, vti-rooms-host,
+                           vti-secrets, vti-specs, vti-trust-task-server,
+                           vti-vetting-pcs, vti-voting, vti-vtn
 
 Layer 8 (longest internal chain 8):
   vta-service            → vta-audit, vta-backup, vta-cli-common, vta-config,
@@ -153,7 +157,7 @@ Layer 9 (longest internal chain 9):
 | `vta-vault` | **Holder credential vault**: storage, query, receive/verify, present, status refresh, and the archival lifecycle (`VaultStatus {Active,Archived,Deleted}`) |
 | `vti-vetting-pcs` | **Hidden vetting** on the Predicate Credential System: the community's `issuer` and `verifier` (`vtc-service`, feature `vetting-pcs`) and the member-side `vetter` / `applicant` engines the VTA runs as its principal's PCS engine (`vta/pcs/*`). Feature `harness`: an in-process community (`vtc::Vtc`) for end-to-end tests. Docs: `docs/02-vta/pcs-engine.md` |
 | `vti-vtn` | **The Verifiable Trust Network protocol** (VTI-VTN-*): listings, membership offers and acknowledgements, repudiation, entry lifecycle, Bitstring Status Lists, network index and DTG graph, directory, role/group registration (the signed `vtn/groups/register` request, accepted by a `groupRegistered` VSC), signed broadcast envelopes and hop chains, network room passes. Verification takes a purpose-checked `KeyResolver` and accepts proof sets. Feature `client`: `VtnClient` with `vtn/*` Trust Tasks signed by the caller and addressed to the expected network DID (`VtnClient::task`), and `StatusChecker`. Shared by `vtc-service` (a community as a network member) and the VTN service, which lives in its own repository and depends on this crate — never the reverse |
-| `vti-trust-task-server` | **The Trust Task receive pipeline**: per-type size, freshness, expiry and recipient, the spec's own policy, proof bound to `issuer`, messaging sender binding, admission, the duplicate-id record, dispatch, signed replies (refusals too); the reject/response helpers and an axum `POST /v1/trust-tasks` handler. Services inject the spec policy, size gate, proof verifier, hooks, id store, dispatcher and signer as traits; depends on no service and no `vti-specs-*` crate. Used by `vtc-service` and the VTN service |
+| `vti-trust-task-server` | **The Trust Task receive pipeline**: per-type size, freshness, expiry and recipient, the spec's own policy, proof bound to `issuer`, messaging sender binding, admission, the duplicate-id record, dispatch, signed replies (refusals too); the reject/response helpers and an axum `POST /v1/trust-tasks` handler. Services inject the spec policy, size gate, proof verifier, hooks, id store, dispatcher and signer as traits; depends on no service and no `vti-specs-*` crate. Used by `vtc-service`, `vti-voting-service`, `vti-witness` and the VTN service |
 | `vti-oob-server` | **Wallet sign-in** (`auth/oob/*`, a wallet approving a browser's key `K_b`): the request store and compare-and-set, the claim and decision clocks, the `redeem` long poll, the `did:key` precheck (T21) and the check order of `request`/`claim`/`prove`/`respond`/`redeem`/`cancel`; `delegation` reads a key a grant armed as its approver. The host implements `OobHost` (records keyspace, DID and origin, step signer, carried-proof verifiers, accepted-id record, per-audience gate and `signingScope`, audit, and what `redeem` issues) and defines its audiences. Depends on no service; reads only the `auth/oob` types from `vti-specs-core`. Used by `vtc-service` (sessions and cookies) and the VTN service (a delegated key) |
 | `vti-voting` | **Community voting** (VTI-VOT-001 – 100): registrar, voter, ballot box, board, tally, audit, trustees. Unaudited protocol code over audited group operations (detail: `vti-voting/CLAUDE.md`) |
 | `vti-voting-service` | **The voting service** (`publish = false`): a host service holding ballot boxes for any number of communities, never a roster; TSP > DIDComm, HTTPS only as the sessionless cast door (VTI-VOT-004) (detail: `vti-voting-service/CLAUDE.md`) |
@@ -180,6 +184,7 @@ Layer 9 (longest internal chain 9):
 | `vta-persona` | VTA persona store: the holder's own identity attributes, the profiles projected over them, the bindings assigning a profile to a persona DID, and the contacts peers disclose |
 | `vti-rooms` | **Data rooms** without the service: storage, wire types, authorization (`authz::authorize`), revocation lists, retention, watches — run by both hosts (`room-host`, `vtc-service`) and the VTA (detail: `docs/02-vta/data-rooms.md`) |
 | `vti-rooms-dtg` | The DTG credential-chain verifier for data rooms (room-signed lists, credential facts, profile statements) |
+| `vti-rooms-host` | **The `rooms/*` handler layer**, written once for both hosts: one `AsyncDispatcher` over a small object-safe `RoomHost` trait (keyspaces, verifier resolver, audit sink, charge hook, registration governance, limits); `served_uris` and `is_consequential` are read off the registrations. `room-host` and `vtc-service` each implement `RoomHost` and receive through their own `Spine` (#2575) |
 | `vti-rooms-wasm` | A data room's member half for the browser — MLS group custody, record sealing, the epoch key chain — compiled to WebAssembly (`publish = false`; built by `scripts/build-rooms-wasm-npm.sh`) |
 | `room-host` | A host service that stores data-room records for rooms it does not govern — a delivery service, not a community (`publish = false`) |
 | `vti-webauthn` | DID-VM-resolved WebAuthn assertion verifier (the `webauthn-vti-v1` cryptosuite), used by `vta-service` |
@@ -371,6 +376,14 @@ and stay in `trust_tasks_rs`.
   does). Use the generated type. A crate wanting a shorter path re-exports it, as
   `vta_sdk::protocols::vetting` does, and takes type URI constants from
   `<Payload as trust_tasks_rs::Payload>::TYPE_URI`, not a literal.
+  **One recorded exemption — `vti_rooms::wire` (#2581):** a request is still
+  received and dispatched as its generated type (`vti-rooms-host`), and nothing
+  there implements `Payload`; but the storage records, the host's reading of an
+  accepted request, and the response bodies stay hand-written because they are
+  also what a host stores. The obligation that pays for it: every serde type in
+  `wire.rs` is validated against the published schema in
+  `vti-rooms/tests/schema_conformance.rs`, and `tests/wire_census.rs` fails on
+  one that is not. No other crate gets this exemption by analogy.
 - **Look a Type URI up in `vti_specs::schema_index`**, never
   `trust_tasks_rs::schema_index` (which knows only the framework's own specs).
   It answers for exactly the pinned versions: `None` means "not pinned", and a
@@ -627,7 +640,7 @@ Mechanics: [`RELEASING.md`](RELEASING.md).
   baseline resolves without a lockfile. Read what
   `scripts/semver-build-failure.py` attributes it to before blaming our crate
   (#1667).
-- **37 of 48 crates publish**; the eleven that do not set `publish = false`
+- **38 of 49 crates publish**; the eleven that do not set `publish = false`
   with a comment saying why. `vtc-service` publishes as a binary with pre-built web
   bundles — a new `include_dir!` / `include_str!` outside tests must sit inside
   its `include` list. `vta-service` publishes because `openvtc-core`

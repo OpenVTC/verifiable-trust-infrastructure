@@ -80,6 +80,25 @@ const BOX: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const AUDITOR: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
 const SPEC: &str = "https://trusttasks.org/spec/";
 
+/// A ballot box's duplicate-id record (VTI-OPS-025 … 029), in a store of its own as the
+/// voting service opens one under its data directory. Hold the directory and the store for
+/// as long as the ballot box runs.
+fn ballot_box_accepted_ids() -> (
+    tempfile::TempDir,
+    vti_common::store::Store,
+    vti_common::store::KeyspaceHandle,
+) {
+    let dir = tempfile::tempdir().expect("a store directory");
+    let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+        data_dir: dir.path().to_path_buf(),
+    })
+    .expect("open the ballot box's store");
+    let ks = store
+        .keyspace(vti_voting_service::dispatch::ACCEPTED_IDS_KEYSPACE)
+        .expect("the accepted-id keyspace");
+    (dir, store, ks)
+}
+
 /// The current version of each `vtc/elections/*` task: create at 0.5 and show at 0.6 (the
 /// voting/_shared/0.4 manifest), list at 0.5, tickets/issue at 0.3, the rest at 0.1.
 fn uri(task: &str) -> String {
@@ -1489,6 +1508,7 @@ async fn an_open_election_runs_against_a_real_ballot_box_over_a_mediator() {
         box_secrets[0].get_private_keymultibase().unwrap(),
     )
     .unwrap();
+    let (_box_store_dir, _box_store, box_accepted_ids) = ballot_box_accepted_ids();
     let box_state = Arc::new(BoxState::new(
         vti_voting_service::boxes::Boxes::new(&box_did),
         Identity {
@@ -1500,6 +1520,7 @@ async fn an_open_election_runs_against_a_real_ballot_box_over_a_mediator() {
             allowed: vec![community.clone()],
             ..Default::default()
         },
+        box_accepted_ids,
     ));
     let (stop, stopped) = tokio::sync::watch::channel(false);
     let session = tokio::spawn(supervise(
@@ -1715,6 +1736,7 @@ async fn a_member_votes_from_pnm_through_their_own_vta() {
         box_secrets[0].get_private_keymultibase().unwrap(),
     )
     .unwrap();
+    let (_box_store_dir, _box_store, box_accepted_ids) = ballot_box_accepted_ids();
     let box_state = Arc::new(BoxState::new(
         vti_voting_service::boxes::Boxes::new(&box_did),
         Identity {
@@ -1726,6 +1748,7 @@ async fn a_member_votes_from_pnm_through_their_own_vta() {
             allowed: vec![community.clone()],
             ..Default::default()
         },
+        box_accepted_ids,
     ));
     let box_server = tokio::spawn(
         axum::serve(box_listener, vti_voting_service::router(box_state.clone())).into_future(),

@@ -23,7 +23,8 @@
 //!
 //! # The §7.2 pipeline
 //!
-//! In order, each step deciding before the next does any work:
+//! Classify, then the workspace's one receive pipeline,
+//! [`vti_trust_task_server::Spine`] (#2576):
 //!
 //! 1. **Classify** (`vta_sdk::inbound`). A `trust-task-error` or a
 //!    `#response` is a reply. This service sends no requests, so no waiter
@@ -37,20 +38,21 @@
 //!    identity's DID. Each identity holds its own socket, so the frame
 //!    reached *this* identity; a document addressed to anyone else — another
 //!    witness of this service, the operator's VTA — is refused here.
-//! 5. **Consistency** (item 6): an in-band `issuer` must be the
-//!    transport-proven sender.
-//! 6. **Routing**: an unserved type is refused before any proof is verified,
-//!    so an unanswerable request cannot make this service resolve DIDs.
-//! 7. **Specification policy** (items 5b, 7a, 8, §7.3 17): what the task's
+//! 5. **Specification policy** (items 5b, 7a, 8, §7.3 17): what the task's
 //!    own specification declares — recipient, proof, `issuedAt` required.
-//! 8. **Proof** (item 7): verified over the document *as received*, and its
-//!    signer must be the document's `issuer` (§4.7).
-//! 9. **Duplicate execution** (item 11), for the two witness tasks, which are
-//!    consequential: the document's `id` is claimed in the store-backed record
-//!    ([`crate::replay`]) with a digest of the whole document. The same
-//!    document again is answered with the first reply; a different document
-//!    under the same `id` is `idConflict`. Discovery changes nothing and keeps
-//!    no record.
+//! 6. **Consistency** (item 6, [`Gate`]): an in-band `issuer` must be the
+//!    transport-proven sender; and **routing**: an unserved type is refused
+//!    before any proof is verified, so an unanswerable request cannot make
+//!    this service resolve DIDs.
+//! 7. **Proof** (item 7): verified over the document *as received*, and its
+//!    signer must be the document's `issuer` (§4.7) and the sender. A
+//!    document with no proof runs only where its specification makes the
+//!    proof OPTIONAL (discovery), as it would over HTTPS (VTI-OPS-021).
+//! 8. **Duplicate execution** (item 11, VTI-OPS-025 … 029): the document's
+//!    `id` is claimed in the store-backed record
+//!    ([`vti_trust_task_server::StoreAcceptedIds`]) with a digest of the
+//!    whole document. The same document again is answered with the first
+//!    reply; a different document under the same `id` is `idConflict`.
 //!
 //! # Every reply is this identity's
 //!
@@ -71,14 +73,16 @@ use trust_tasks_rs::specs::trust_task_discovery::v0_4;
 use trust_tasks_rs::validate::ValidatedPayload;
 use vti_specs::witness::session;
 
-use trust_tasks_rs::{
-    DocumentDigest, ErrorPayload, Payload, RejectReason, ReplayGuard, ReplayVerdict,
-    TransportContext, TransportHandler, TrustTask,
-};
-use vta_sdk::trust_task_proof::{TrustTaskVmResolver, verify_trust_task_proof_value};
+use trust_tasks_rs::{Payload, RejectReason, TransportContext, TransportHandler, TrustTask};
+use vta_sdk::trust_task_proof::TrustTaskVmResolver;
 use vta_sdk::trust_task_sign::{HolderKey, sign_in_place_with};
-use vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW;
+use vti_common::error::AppError;
 use vti_common::trust_task::discovery;
+use vti_trust_task_server::reject::{app_error_to_reject, error_response, reject_with};
+use vti_trust_task_server::{
+    ArrivalCtx, BoxFuture, Dispatcher, ProofVerifier, ResponseSigner, SizeTable, Spine, SpineHooks,
+    TrustTaskOutcome,
+};
 
 use crate::witness::Witnessing;
 
@@ -99,9 +103,6 @@ pub const SERVED: &[&str] = &[
     WITNESS_SESSION_V0_2,
     WITNESS_SESSION_SUBMIT_V0_2,
 ];
-
-/// The served types that change state, and so keep a §7.2 item 11 record.
-const CONSEQUENTIAL: &[&str] = &[WITNESS_SESSION_V0_2, WITNESS_SESSION_SUBMIT_V0_2];
 
 /// One witness identity, as the dispatcher needs it: who it is, the key it
 /// signs with (replies and VWCs alike: `#key-0` is both `authentication` and
@@ -192,31 +193,16 @@ pub enum DropReason {
     Duplicate,
 }
 
-/// What [`evaluate`] decided.
-enum Evaluated {
-    /// A reply to sign, and — for a consequential task — the duplicate-record
-    /// claim to settle once it is signed.
-    Reply {
-        unsigned: Value,
-        settle: Option<Settle>,
-    },
-    /// A duplicate: the reply the first execution produced, already signed.
-    Repeat(Value),
-}
-
-/// A claim on the duplicate-execution record, settled after signing.
-struct Settle {
-    guard: crate::replay::AcceptedIds,
-    id: String,
-    digest: DocumentDigest,
-    /// Whether the task succeeded. A success records its reply, so a
-    /// redelivery is answered with it; a refusal releases the `id`, so a
-    /// corrected resend under it is not `idConflict`.
-    succeeded: bool,
-}
+/// The largest document an identity reads: the workspace's request cap (`MAX_BODY_SIZE`). A
+/// task whose specification declares a larger bound is held to that instead.
+const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 
 /// Answer one inbound document addressed to `identity`, from the
 /// transport-proven `sender`.
+///
+/// `now` is the instant the witness tasks themselves run at (session expiry,
+/// eviction, the VWC's dates). The pipeline's acceptance window is decided on
+/// the clock, as every node's is.
 pub async fn answer(
     identity: &IdentityContext,
     sender: &str,
@@ -224,27 +210,64 @@ pub async fn answer(
     resolver: &TrustTaskVmResolver,
     now: DateTime<Utc>,
 ) -> Outcome {
-    let (unsigned, settle) = match evaluate(identity, sender, document, resolver, now).await {
-        Ok(Evaluated::Reply { unsigned, settle }) => (unsigned, settle),
-        Ok(Evaluated::Repeat(signed)) => return Outcome::Reply(signed),
-        Err(reason) => return Outcome::Drop(reason),
+    // 1. Classify, on the JSON as received: a reply is never answered.
+    let Ok(received) = serde_json::from_slice::<Value>(document) else {
+        return Outcome::Drop(DropReason::NotJson);
     };
-    let signed = sign(identity, unsigned).await;
-    if let Some(settle) = settle {
-        let settled = match (&signed, settle.succeeded) {
-            (Ok(reply), true) => settle.guard.record_response(&settle.id, Some(reply)).await,
-            _ => settle.guard.release(&settle.id, &settle.digest).await,
-        };
-        if let Err(e) = settled {
-            tracing::warn!(identity = %identity.name, error = %e, "duplicate record not settled");
-        }
+    if !vta_sdk::inbound::classify(&received).may_answer() {
+        return Outcome::Drop(DropReason::Error);
     }
-    match signed {
-        Ok(signed) => Outcome::Reply(signed),
-        Err(e) => {
+    if vta_sdk::inbound::names_a_reply(&received) {
+        return Outcome::Drop(DropReason::UnclaimedReply);
+    }
+    // 2. Bytes that are not a document have no thread to answer on.
+    if serde_json::from_value::<TrustTask<Value>>(received).is_err() {
+        return Outcome::Drop(DropReason::NotATrustTask);
+    }
+
+    // Steps 3 – 9: the workspace's one receive pipeline (#2576).
+    let size = SizeTable::new(
+        MAX_DOCUMENT_BYTES,
+        vti_specs::schema_index::max_document_bytes_for,
+    );
+    // The policy of a task this identity serves: an unserved type is
+    // `unsupportedType` ([`Gate`]), never refused for a proof another
+    // service's specification requires.
+    let policy = |type_uri: &str| {
+        SERVED
+            .contains(&type_uri)
+            .then(|| vti_specs::schema_index::spec_policy_for(type_uri))
+            .flatten()
+    };
+    let gate = Gate { identity, sender };
+    let verifier = Verifier { resolver };
+    let accepted = identity.witnessing.accepted_ids();
+    let routes = Routes {
+        identity,
+        sender,
+        document,
+        resolver,
+        now,
+    };
+    let signer = ReplySigner { identity, sender };
+    let outcome = Spine::new(&policy, &verifier, &gate, &accepted, &routes)
+        .with_size_gate(&size)
+        .with_signer(Some(&signer))
+        // Discovery is asked unsigned; its proof is OPTIONAL on every transport.
+        .accepting_unsigned_optional_over_messaging()
+        .receive(&ArrivalCtx::didcomm(sender.to_string()), document)
+        .await;
+
+    // A duplicate still running, or whose first answer was not kept: nothing
+    // to repeat (SPEC §7.2, *Disposition of a duplicate*: never `taskFailed`).
+    if outcome.body.is_empty() {
+        return Outcome::Drop(DropReason::Duplicate);
+    }
+    match serde_json::from_slice::<Value>(&outcome.body) {
+        Ok(reply) if reply.get("proof").is_some() => Outcome::Reply(reply),
+        _ => {
             tracing::error!(
                 identity = %identity.name,
-                error = %e,
                 "could not sign a reply; sending nothing rather than an unsigned answer"
             );
             Outcome::Drop(DropReason::SigningFailed)
@@ -252,133 +275,182 @@ pub async fn answer(
     }
 }
 
-/// The §7.2 pipeline, ending in an unsigned reply or a reason to send none.
-async fn evaluate(
-    identity: &IdentityContext,
-    sender: &str,
-    document: &[u8],
-    resolver: &TrustTaskVmResolver,
+/// This identity's own checks before any proof is read: the in-band parties
+/// against what the transport proved, and routing, so an unanswerable request
+/// cannot make this service resolve DIDs.
+struct Gate<'a> {
+    identity: &'a IdentityContext,
+    sender: &'a str,
+}
+
+#[async_trait::async_trait]
+impl SpineHooks for Gate<'_> {
+    /// Each identity holds its own socket, so the frame reached *this*
+    /// identity; a document addressed to anyone else is refused.
+    async fn recipient(&self) -> Option<String> {
+        Some(self.identity.did.clone())
+    }
+
+    async fn before_proof(
+        &self,
+        doc: &TrustTask<Value>,
+        type_uri: &str,
+    ) -> Option<TrustTaskOutcome> {
+        let transport = WitnessTransport {
+            sender: self.sender,
+            recipient: &self.identity.did,
+        };
+        if let Err(mismatch) = transport.resolve_parties(doc) {
+            return Some(reject_with(doc, RejectReason::IdentityMismatch(mismatch)));
+        }
+        if !SERVED.contains(&type_uri) {
+            return Some(reject_with(doc, unserved(type_uri)));
+        }
+        None
+    }
+}
+
+/// The proof over the document as received. A proof that does not verify is
+/// `proofInvalid`, with the verifier's reason.
+struct Verifier<'a> {
+    resolver: &'a TrustTaskVmResolver,
+}
+
+#[async_trait::async_trait]
+impl ProofVerifier for Verifier<'_> {
+    async fn verify(&self, received: &Value, _type_uri: &str) -> Result<String, AppError> {
+        vti_trust_task_server::verify::verify_received_proof(self.resolver, received).await
+    }
+
+    fn refusal(&self, doc: &TrustTask<Value>, err: &AppError) -> TrustTaskOutcome {
+        match err {
+            AppError::Unauthorized(reason) => reject_with(
+                doc,
+                RejectReason::ProofInvalid {
+                    reason: reason.clone(),
+                },
+            ),
+            other => app_error_to_reject(doc, other),
+        }
+    }
+}
+
+/// Every reply is this identity's: its `issuer` is this identity's DID — set
+/// here, never copied from the request (a framework builder copies the
+/// request's `recipient`, which on a misaddressed document names someone
+/// else) — its `recipient` the proven sender it goes back to, and it is signed
+/// with this identity's own key. Refusals the pipeline makes included.
+struct ReplySigner<'a> {
+    identity: &'a IdentityContext,
+    sender: &'a str,
+}
+
+#[async_trait::async_trait]
+impl ResponseSigner for ReplySigner<'_> {
+    async fn sign_response_document(&self, reply: &mut Value) -> Result<(), AppError> {
+        let mut doc: TrustTask<Value> = serde_json::from_value(reply.clone())
+            .map_err(|e| AppError::Internal(format!("a reply is not a document: {e}")))?;
+        doc.issuer = Some(self.identity.did.clone());
+        doc.recipient = Some(self.sender.to_string());
+        sign_in_place_with(&mut doc, &self.identity.signing_key)
+            .await
+            .map_err(|e| AppError::Internal(format!("could not sign a reply: {e}")))?;
+        *reply = serde_json::to_value(doc)?;
+        Ok(())
+    }
+}
+
+/// The routing table behind the pipeline: [`SERVED`].
+struct Routes<'a> {
+    identity: &'a IdentityContext,
+    sender: &'a str,
+    /// The document exactly as its bytes arrived: a session is kept verbatim,
+    /// because the VWC's task digest is computed over it.
+    document: &'a [u8],
+    resolver: &'a TrustTaskVmResolver,
     now: DateTime<Utc>,
-) -> Result<Evaluated, DropReason> {
-    // 1. Classify, on the JSON as received.
-    let received: Value = serde_json::from_slice(document).map_err(|_| DropReason::NotJson)?;
-    if !vta_sdk::inbound::classify(&received).may_answer() {
-        return Err(DropReason::Error);
+}
+
+impl Dispatcher for Routes<'_> {
+    fn dispatch<'a>(
+        &'a self,
+        _ctx: &'a ArrivalCtx,
+        doc: TrustTask<Value>,
+        type_uri: &'a str,
+        _received: Arc<Value>,
+    ) -> BoxFuture<'a, TrustTaskOutcome> {
+        Box::pin(self.route(doc, type_uri))
     }
-    if vta_sdk::inbound::names_a_reply(&received) {
-        return Err(DropReason::UnclaimedReply);
-    }
+}
 
-    // 2. Parse.
-    let doc: TrustTask<Value> =
-        serde_json::from_value(received.clone()).map_err(|_| DropReason::NotATrustTask)?;
-
-    let refuse = |payload: ErrorPayload| {
-        Ok(Evaluated::Reply {
-            unsigned: refusal(&doc, identity, sender, payload, now),
-            settle: None,
-        })
-    };
-    let answered = |payload: Value| {
-        Ok(Evaluated::Reply {
-            unsigned: response(&doc, identity, sender, payload, now),
-            settle: None,
-        })
-    };
-    let reject = |reason: RejectReason| refuse(reason.into());
-
-    // 3. Freshness — the window every VTI node applies, `issuedAt` required.
-    let policy = VTI_ACCEPTANCE_WINDOW
-        .freshness_policy()
-        .requiring_issued_at();
-    if let Err(reason) = doc.validate_freshness(now, &policy) {
-        return reject(reason);
-    }
-
-    // 4. Expiry, and `recipient` = this identity.
-    if let Err(reason) = doc.validate_basic(now, &identity.did) {
-        return reject(reason);
-    }
-
-    // 5. In-band parties against what the transport proved.
-    let transport = WitnessTransport {
-        sender,
-        recipient: &identity.did,
-    };
-    if let Err(mismatch) = transport.resolve_parties(&doc) {
-        return reject(RejectReason::IdentityMismatch(mismatch));
-    }
-
-    // 6. Routing, before any verification work.
-    let type_uri = doc.type_uri.to_string();
-    if !SERVED.contains(&type_uri.as_str()) {
-        return refuse(unserved(&type_uri));
-    }
-
-    // 7. What the task's own specification declares.
-    if let Some(spec) = vti_specs::schema_index::spec_policy_for(&type_uri)
-        && let Err(reason) = spec.enforce(&doc)
-    {
-        return reject(reason);
-    }
-
-    // 8. The proof, over the document as received, by the issuer.
-    if doc.proof.is_some() {
-        match verify_trust_task_proof_value(&received, resolver).await {
-            Ok(signer) if doc.issuer.as_deref() == Some(signer.as_str()) => {}
-            Ok(_) => {
-                return reject(RejectReason::ProofInvalid {
-                    reason: "the proof's verificationMethod does not belong to the document's \
-                             issuer (SPEC §4.7)"
-                        .to_string(),
-                });
+impl Routes<'_> {
+    async fn route(&self, doc: TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
+        let answered = |payload: Value| respond(&doc, self.now, payload);
+        match type_uri {
+            DISCOVERY_V0_4 => {
+                if let Err(e) = v0_4::Payload::validate_value(&doc.payload) {
+                    return reject_with(&doc, malformed(format!("payload: {e}")));
+                }
+                match serde_json::from_value::<v0_4::Payload>(doc.payload.clone()) {
+                    Ok(query) => answered(to_value(discovery::respond_v0_4(
+                        SERVED.iter().copied(),
+                        &query,
+                    ))),
+                    Err(e) => reject_with(&doc, malformed(format!("payload: {e}"))),
+                }
             }
-            Err(e) => {
-                return reject(RejectReason::ProofInvalid {
-                    reason: e.to_string(),
-                });
+            #[allow(deprecated)]
+            DISCOVERY_V0_3 => {
+                if let Err(e) = v0_3::Payload::validate_value(&doc.payload) {
+                    return reject_with(&doc, malformed(format!("payload: {e}")));
+                }
+                match serde_json::from_value::<v0_3::Payload>(doc.payload.clone()) {
+                    Ok(query) => answered(to_value(discovery::respond_v0_3(
+                        SERVED.iter().copied(),
+                        &query,
+                    ))),
+                    Err(e) => reject_with(&doc, malformed(format!("payload: {e}"))),
+                }
             }
+            WITNESS_SESSION_V0_2 | WITNESS_SESSION_SUBMIT_V0_2 => {
+                let witness = crate::witness::Witness {
+                    did: &self.identity.did,
+                    name: &self.identity.name,
+                    key: &self.identity.signing_key,
+                    state: &self.identity.witnessing,
+                };
+                let outcome = if type_uri == WITNESS_SESSION_V0_2 {
+                    crate::witness::open_session(
+                        &witness,
+                        &doc,
+                        self.document,
+                        self.sender,
+                        self.now,
+                    )
+                    .await
+                } else {
+                    crate::witness::submit(&witness, &doc, self.sender, self.resolver, self.now)
+                        .await
+                };
+                match outcome {
+                    Ok(payload) => answered(payload),
+                    Err(error) => {
+                        let mut refusal = doc.reject_with(new_id(), *error);
+                        refusal.issued_at = Some(self.now);
+                        error_response(refusal)
+                    }
+                }
+            }
+            // `SERVED` and these arms are one list, and [`Gate`] refused
+            // anything else; a URI in one and not the other is a bug this keeps
+            // loud rather than silently unanswered.
+            other => reject_with(&doc, unserved(other)),
         }
-    }
-
-    // Dispatch.
-    match type_uri.as_str() {
-        DISCOVERY_V0_4 => {
-            if let Err(e) = v0_4::Payload::validate_value(&doc.payload) {
-                return reject(malformed(format!("payload: {e}")));
-            }
-            match serde_json::from_value::<v0_4::Payload>(doc.payload.clone()) {
-                Ok(query) => answered(to_value(discovery::respond_v0_4(
-                    SERVED.iter().copied(),
-                    &query,
-                ))),
-                Err(e) => reject(malformed(format!("payload: {e}"))),
-            }
-        }
-        #[allow(deprecated)]
-        DISCOVERY_V0_3 => {
-            if let Err(e) = v0_3::Payload::validate_value(&doc.payload) {
-                return reject(malformed(format!("payload: {e}")));
-            }
-            match serde_json::from_value::<v0_3::Payload>(doc.payload.clone()) {
-                Ok(query) => answered(to_value(discovery::respond_v0_3(
-                    SERVED.iter().copied(),
-                    &query,
-                ))),
-                Err(e) => reject(malformed(format!("payload: {e}"))),
-            }
-        }
-        uri if CONSEQUENTIAL.contains(&uri) => {
-            consequential(identity, sender, &doc, document, &policy, resolver, now).await
-        }
-        // `SERVED` and these arms are one list; a URI in one and not the
-        // other is a bug this keeps loud rather than silently unanswered.
-        other => refuse(unserved(other)),
     }
 }
 
 /// The refusal for a type this identity does not serve.
-fn unserved(type_uri: &str) -> ErrorPayload {
+fn unserved(type_uri: &str) -> RejectReason {
     // Another version of a family this identity serves is a version mismatch,
     // not an unknown type — the caller can re-ask at a version listed in
     // discovery.
@@ -392,86 +464,11 @@ fn unserved(type_uri: &str) -> ErrorPayload {
         RejectReason::UnsupportedVersion {
             type_uri: type_uri.to_string(),
         }
-        .into()
     } else {
         RejectReason::UnsupportedType {
             type_uri: type_uri.to_string(),
         }
-        .into()
     }
-}
-
-/// Step 9 and the witness tasks: claim the document's `id`, run the task, and
-/// hand back the reply with the claim to settle once it is signed.
-async fn consequential(
-    identity: &IdentityContext,
-    sender: &str,
-    doc: &TrustTask<Value>,
-    received: &[u8],
-    policy: &trust_tasks_rs::FreshnessPolicy,
-    resolver: &TrustTaskVmResolver,
-    now: DateTime<Utc>,
-) -> Result<Evaluated, DropReason> {
-    let refuse = |payload: ErrorPayload| {
-        Ok(Evaluated::Reply {
-            unsigned: refusal(doc, identity, sender, payload, now),
-            settle: None,
-        })
-    };
-
-    let digest = match trust_tasks_rs::document_digest(doc) {
-        Ok(digest) => digest,
-        Err(e) => {
-            return refuse(
-                RejectReason::MalformedRequest {
-                    reason: format!("the document has no canonical form to key its record: {e}"),
-                }
-                .into(),
-            );
-        }
-    };
-    let guard = identity.witnessing.accepted_ids(&identity.did);
-    // The acceptance end plus the skew (VTI-OPS-029).
-    let retain_until = vti_common::trust_task::acceptance::retain_until(policy, doc, now);
-    match guard.claim(&doc.id, &digest, retain_until, now).await {
-        Ok(ReplayVerdict::Fresh) => {}
-        Ok(ReplayVerdict::Duplicate {
-            prior_response: Some(prior),
-            ..
-        }) => return Ok(Evaluated::Repeat(prior)),
-        Ok(ReplayVerdict::Duplicate { .. }) => return Err(DropReason::Duplicate),
-        Ok(ReplayVerdict::Conflict) => return refuse(RejectReason::IdConflict.into()),
-        // Fail closed: a witness that cannot tell whether this is a duplicate
-        // must not execute it. `unavailable` is retryable, which is true.
-        Err(_) | Ok(_) => {
-            return refuse(RejectReason::Unavailable { retry_after: None }.into());
-        }
-    }
-
-    let witness = crate::witness::Witness {
-        did: &identity.did,
-        name: &identity.name,
-        key: &identity.signing_key,
-        state: &identity.witnessing,
-    };
-    let outcome = if doc.type_uri.to_string() == WITNESS_SESSION_V0_2 {
-        crate::witness::open_session(&witness, doc, received, sender, now).await
-    } else {
-        crate::witness::submit(&witness, doc, sender, resolver, now).await
-    };
-    let (unsigned, succeeded) = match outcome {
-        Ok(payload) => (response(doc, identity, sender, payload, now), true),
-        Err(error) => (refusal(doc, identity, sender, *error, now), false),
-    };
-    Ok(Evaluated::Reply {
-        unsigned,
-        settle: Some(Settle {
-            guard,
-            id: doc.id.clone(),
-            digest,
-            succeeded,
-        }),
-    })
 }
 
 fn to_value<R: Serialize>(payload: R) -> Value {
@@ -482,47 +479,26 @@ fn malformed(reason: String) -> RejectReason {
     RejectReason::MalformedRequest { reason }
 }
 
-/// A `#response` from `identity` to `sender`.
-fn response(
-    doc: &TrustTask<Value>,
-    identity: &IdentityContext,
-    sender: &str,
-    payload: Value,
-    now: DateTime<Utc>,
-) -> Value {
+/// A `#response` to `doc`, issued at `now` ([`ReplySigner`] addresses it).
+fn respond(doc: &TrustTask<Value>, now: DateTime<Utc>, payload: Value) -> TrustTaskOutcome {
     let mut reply = doc.respond_with(new_id(), payload);
-    reply.issuer = Some(identity.did.clone());
-    reply.recipient = Some(sender.to_string());
     reply.issued_at = Some(now);
-    serde_json::to_value(reply).unwrap_or(Value::Null)
-}
-
-/// A `trust-task-error` from `identity` to `sender`.
-fn refusal(
-    doc: &TrustTask<Value>,
-    identity: &IdentityContext,
-    sender: &str,
-    payload: ErrorPayload,
-    now: DateTime<Utc>,
-) -> Value {
-    let mut reply = doc.reject_with_recipient(new_id(), payload, Some(sender.to_string()));
-    reply.issuer = Some(identity.did.clone());
-    reply.issued_at = Some(now);
-    serde_json::to_value(reply).unwrap_or(Value::Null)
+    match serde_json::to_vec(&reply) {
+        Ok(body) => TrustTaskOutcome {
+            status: axum::http::StatusCode::OK,
+            body,
+        },
+        Err(e) => reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: format!("the reply is unserialisable: {e}"),
+            },
+        ),
+    }
 }
 
 fn new_id() -> String {
     format!("urn:uuid:{}", uuid::Uuid::new_v4())
-}
-
-/// Sign `reply` with the identity's own key.
-async fn sign(identity: &IdentityContext, reply: Value) -> anyhow::Result<Value> {
-    let mut doc: TrustTask<Value> = serde_json::from_value(reply)?;
-    if doc.issuer.as_deref() != Some(identity.did.as_str()) {
-        anyhow::bail!("refusing to sign a reply whose issuer is not this identity");
-    }
-    sign_in_place_with(&mut doc, &identity.signing_key).await?;
-    Ok(serde_json::to_value(doc)?)
 }
 
 /// What the transport proved about one inbound frame: who sent it, and that

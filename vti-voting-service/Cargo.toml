@@ -32,6 +32,12 @@ vta-sdk = { path = "../vta-sdk", version = "0.88", features = [
 ] }
 vti-secrets = { path = "../vti-secrets", version = "0.37" }
 trust-tasks-rs = { workspace = true }
+# The receive pipeline every Trust Task service shares (#2576): size, freshness, recipient, the
+# task's own published policy, proof, sender binding, the duplicate-id record, signed answers.
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.10" }
+# The pinned `voting/*` versions: the routing table names each by its generated payload type,
+# and the pipeline reads each task's policy from the index (CLAUDE.md, "Pinning a task version").
+vti-specs = { path = "../vti-specs", version = "0.13" }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

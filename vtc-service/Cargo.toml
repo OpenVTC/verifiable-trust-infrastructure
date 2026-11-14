@@ -178,6 +178,8 @@ predicate-credential-system = { workspace = true, optional = true }
 vtc-audit = { path = "../vtc-audit", version = "0.1", features = ["openapi"] }
 vti-rooms = { path = "../vti-rooms", version = "0.35" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37" }
+# The `rooms/*` handlers, shared with room-host behind one `RoomHost` trait (#2575).
+vti-rooms-host = { path = "../vti-rooms-host", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.64", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
