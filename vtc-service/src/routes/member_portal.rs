@@ -490,9 +490,9 @@ pub async fn register_start(
         ),
         None => (Uuid::new_v4(), None),
     };
-    let (options, reg_state) = crate::webauthn::start_passkey_registration(
-        webauthn, user_uuid, &auth.did, &auth.did, exclude,
-    )?;
+    let name = vti_common::auth::passkey::AuthenticatorName::for_did(&auth.did);
+    let (options, reg_state) =
+        crate::webauthn::start_passkey_registration(webauthn, user_uuid, &name, exclude)?;
     let registration_id = Uuid::new_v4().to_string();
     store_registration_state(
         &state.member_passkey_ks,

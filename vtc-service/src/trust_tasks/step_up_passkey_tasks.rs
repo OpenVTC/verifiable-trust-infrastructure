@@ -443,9 +443,13 @@ mod tests {
             .clone()
             .expect("webauthn is configured");
         let user_uuid = Uuid::new_v4();
-        let (ccr, reg) =
-            crate::webauthn::start_passkey_registration(&webauthn, user_uuid, &did, &did, None)
-                .unwrap();
+        let (ccr, reg) = crate::webauthn::start_passkey_registration(
+            &webauthn,
+            user_uuid,
+            &vti_common::auth::passkey::AuthenticatorName::for_did(&did),
+            None,
+        )
+        .unwrap();
         let (cred, _) = fix.admin_key.register(&ccr, RP_ORIGIN);
         let passkey = crate::webauthn::finish_passkey_registration(&webauthn, &cred, &reg).unwrap();
         let hex_id = hex::encode(<_ as AsRef<[u8]>>::as_ref(passkey.cred_id()));
