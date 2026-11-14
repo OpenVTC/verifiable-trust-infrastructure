@@ -1072,7 +1072,7 @@ predicate-credential-system = "0.1"
 ark-serialize = { version = "0.6.0", default-features = false, features = ["std"] }
 # Stays on the rand 0.8 line with `rand` 0.8 in those crates (dependabot.yml
 # says why).
-rand_chacha = "0.3"
+rand_chacha = "0.10"
 # MCP SDK for the `*-mcp` bridges; each member names its transports.
 rmcp = "3"
 # Source parsing for the census tests that read a crate's own code.
