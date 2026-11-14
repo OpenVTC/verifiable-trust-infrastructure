@@ -21,10 +21,13 @@ use vti_rooms::wire::{
 };
 use vti_rooms::{Record, RecordStatus, Room};
 use vti_rooms_dtg::{DataIntegrityKeys, nomination};
+use vti_specs_rooms::rooms::epoch::{commits::v0_1 as commits_v1, mint::v0_1 as mint_v1};
+use vti_specs_rooms::rooms::owner::{claim::v0_1 as claim_v1, transfer::v0_1 as transfer_v1};
+use vti_specs_rooms::rooms::records::curate::v0_1 as curate_v1;
 use vti_trust_task_server::TrustTaskOutcome;
 use vti_trust_task_server::reject::{reject_with, success_response};
 
-use crate::render::{app_error_to_reject, refused, render};
+use crate::render::{app_error_to_reject, as_v0_1, payload_json, refused, render};
 use crate::{RegisterRefused, Registration, RoomAudit, RoomCtx, RoomTraffic, now};
 
 /// Default retention when a creator does not state one.
@@ -524,11 +527,15 @@ async fn room_head(ctx: &RoomCtx, room_id: &str) -> Option<vti_rooms::merkle::Tr
 /// confers is what makes the restriction enforceable by a host that knows nothing about the
 /// membership.
 pub(crate) async fn handle_mint_epoch(
-    doc: TrustTask<MintEpochBody>,
+    doc: TrustTask<mint_v1::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req: MintEpochBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let req = &req;
     let host = &ctx.host;
-    let req = &doc.payload;
 
     let room = match storage::get_room(host.rooms(), &req.room_id).await {
         Ok(r) => r,
@@ -693,11 +700,15 @@ pub(crate) async fn epoch_prune<P>(
 /// **names nobody**, which is the difference from a Welcome, and why a host is deliberately
 /// off that path and on this one.
 pub(crate) async fn handle_epoch_commits(
-    doc: TrustTask<CommitsBody>,
+    doc: TrustTask<commits_v1::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req: CommitsBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let req = &req;
     let host = &ctx.host;
-    let req = &doc.payload;
 
     let room = match storage::get_room(host.rooms(), &req.room_id).await {
         Ok(r) => r,
@@ -824,11 +835,15 @@ pub(crate) async fn epoch_chain<P>(
 /// it imagines it is preventing. What protects the incoming owner is that the outgoing one
 /// holds `admin` and knows the roster.
 pub(crate) async fn handle_transfer_owner(
-    doc: TrustTask<TransferOwnerBody>,
+    doc: TrustTask<transfer_v1::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req: TransferOwnerBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let req = &req;
     let host = &ctx.host;
-    let req = &doc.payload;
 
     let room = match storage::get_room(host.rooms(), &req.room_id).await {
         Ok(r) => r,
@@ -885,12 +900,16 @@ pub(crate) async fn handle_transfer_owner(
 /// minting an epoch — which is what they would have done anyway. And a claim does not renew
 /// the room ([`storage::set_owner`]).
 pub(crate) async fn handle_claim_owner(
-    doc: TrustTask<ClaimOwnerBody>,
+    doc: TrustTask<claim_v1::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req: ClaimOwnerBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let req = &req;
     let host = &ctx.host;
     let presenter = ctx.presenter.as_str();
-    let req = &doc.payload;
 
     let room = match storage::get_room(host.rooms(), &req.room_id).await {
         Ok(r) => r,
@@ -966,11 +985,15 @@ pub(crate) async fn handle_claim_owner(
 /// Gated on `Action::Curate`, which is deliberately not implied by `write`: deciding what a
 /// room's shared knowledge is worth is a different grant from the ability to add to it.
 pub(crate) async fn handle_curate_record(
-    doc: TrustTask<CurateRecordBody>,
+    doc: TrustTask<curate_v1::Payload>,
     ctx: RoomCtx,
 ) -> TrustTaskOutcome {
+    let req: CurateRecordBody = match payload_json(&doc).and_then(|p| as_v0_1(&doc, p)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let req = &req;
     let host = &ctx.host;
-    let req = &doc.payload;
     if req.status.is_none() && req.pinned.is_none() {
         return app_error_to_reject(
             &doc,

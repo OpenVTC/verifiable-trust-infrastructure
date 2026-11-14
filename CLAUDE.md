@@ -94,8 +94,10 @@ Layer 5 (longest internal chain 5):
   vti-oob-server         → vti-common, vti-specs-core, vti-trust-task-server
   vti-rooms-dtg          → vta-sdk, vti-common, vti-rooms
   vti-rooms-wasm         → vti-rooms
-  vti-voting-service     → vta-sdk, vti-common, vti-secrets, vti-voting
-  vti-witness            → vta-sdk, vti-common, vti-secrets, vti-specs
+  vti-voting-service     → vta-sdk, vti-common, vti-secrets, vti-specs,
+                           vti-trust-task-server, vti-voting
+  vti-witness            → vta-sdk, vti-common, vti-secrets, vti-specs,
+                           vti-trust-task-server
 
 Layer 6 (longest internal chain 6):
   vta-cli-common         → vta-sdk, vtc-client, vti-common, vti-rooms,
@@ -374,6 +376,14 @@ and stay in `trust_tasks_rs`.
   does). Use the generated type. A crate wanting a shorter path re-exports it, as
   `vta_sdk::protocols::vetting` does, and takes type URI constants from
   `<Payload as trust_tasks_rs::Payload>::TYPE_URI`, not a literal.
+  **One recorded exemption — `vti_rooms::wire` (#2581):** a request is still
+  received and dispatched as its generated type (`vti-rooms-host`), and nothing
+  there implements `Payload`; but the storage records, the host's reading of an
+  accepted request, and the response bodies stay hand-written because they are
+  also what a host stores. The obligation that pays for it: every serde type in
+  `wire.rs` is validated against the published schema in
+  `vti-rooms/tests/schema_conformance.rs`, and `tests/wire_census.rs` fails on
+  one that is not. No other crate gets this exemption by analogy.
 - **Look a Type URI up in `vti_specs::schema_index`**, never
   `trust_tasks_rs::schema_index` (which knows only the framework's own specs).
   It answers for exactly the pinned versions: `None` means "not pinned", and a
