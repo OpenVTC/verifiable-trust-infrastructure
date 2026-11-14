@@ -3,7 +3,7 @@
 # Before this file every job ran `rustup toolchain install stable` under
 # `-D warnings`, so a new stable release's lints could turn main red with no
 # code change, and CI built with a different compiler from the images it ships
-# (`Dockerfile` and `Dockerfile.nitro` build `FROM rust:1.95.0-bookworm`).
+# (`Dockerfile` and `Dockerfile.nitro` build `FROM rust:1.100.0-bookworm`).
 #
 # Kept equal to the workspace `rust-version` (Cargo.toml) and to the Rust image
 # in both Dockerfiles; `scripts/check-toolchain-pins.sh` fails when this is
@@ -12,6 +12,6 @@
 # rust:…` in the same PR. The MSRV job builds with `rust-version` regardless of
 # this file, and the fuzz harness builds with nightly.
 [toolchain]
-channel = "1.95.0"
+channel = "1.100.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
