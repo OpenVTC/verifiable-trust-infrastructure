@@ -9232,7 +9232,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-didcomm",
- "trust-tasks-https",
  "trust-tasks-rs",
  "trust-tasks-tsp",
  "uuid",
