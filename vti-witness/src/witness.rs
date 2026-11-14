@@ -83,7 +83,6 @@ use vti_specs::witness::session;
 
 use crate::config::{ANY_COMMUNITY, SessionLimits, WitnessConfig, WitnessIdentity};
 use crate::presentation::{self, Expected};
-use crate::replay::AcceptedIds;
 use crate::store::{AttestationRecord, SessionRecord, WitnessStore};
 
 /// A refusal: the error a task answers with. Boxed, because `ErrorPayload`
@@ -206,9 +205,11 @@ impl Witnessing {
         &self.store
     }
 
-    /// The duplicate-execution record for documents addressed to `identity_did`.
-    pub(crate) fn accepted_ids(&self, identity_did: &str) -> AcceptedIds {
-        AcceptedIds::new(self.store.accepted_ids().clone(), identity_did)
+    /// The duplicate-execution record (SPEC §7.2 item 11, VTI-OPS-025 … 029), shared by every
+    /// identity this service holds: a document `id` is its producer's, unique whoever it is
+    /// addressed to.
+    pub(crate) fn accepted_ids(&self) -> vti_trust_task_server::StoreAcceptedIds {
+        vti_trust_task_server::StoreAcceptedIds::new(self.store.accepted_ids().clone())
     }
 }
 

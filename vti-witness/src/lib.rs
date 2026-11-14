@@ -11,7 +11,9 @@
 //! session per identity, and the dispatcher. P2 adds the witnessing itself —
 //! `witness/session/0.2` and `witness/session/submit/0.2` ([`witness`]), the
 //! presentation checks ([`presentation`]), session and attestation storage
-//! ([`store`]) and the duplicate-execution record ([`replay`]).
+//! ([`store`]); the duplicate-execution record is the workspace's
+//! (`vti_trust_task_server::StoreAcceptedIds`), through the receive pipeline
+//! every Trust Task service shares (`vti_trust_task_server::Spine`).
 //!
 //! The library target exists for tests; the binary is the product.
 
@@ -21,7 +23,6 @@ pub mod dispatch;
 pub mod keys;
 pub mod messaging;
 pub mod presentation;
-pub mod replay;
 pub mod run;
 pub mod setup;
 pub mod store;

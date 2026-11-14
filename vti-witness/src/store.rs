@@ -293,7 +293,45 @@ impl WitnessStore {
                 removed += 1;
             }
         }
-        removed += crate::replay::sweep(&self.accepted, now).await?;
+        removed += vti_trust_task_server::accepted_store::sweep_expired(&self.accepted, now)
+            .await
+            .map_err(|e| anyhow::anyhow!("sweep the accepted-id record: {e}"))?;
+        removed += self.sweep_legacy_accepted(now).await?;
+        Ok(removed)
+    }
+
+    /// Drop the duplicate-execution rows the witness's own record wrote before
+    /// it moved to `vti_trust_task_server::StoreAcceptedIds` (#2576), once their
+    /// retention has passed. They were keyed `<identity DID>\0<id>`, so they
+    /// all begin `did:`, which no row of the shared record does; the shared
+    /// record never reads them, and without this they would never go.
+    ///
+    /// Remove this once every deployment has run a release with it for longer
+    /// than the thirty-day horizon (VTI-OPS-028).
+    async fn sweep_legacy_accepted(&self, now: DateTime<Utc>) -> anyhow::Result<usize> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Legacy {
+            retain_until: DateTime<Utc>,
+        }
+        let rows = self
+            .accepted
+            .prefix_iter_raw(b"did:".to_vec())
+            .await
+            .map_err(|e| anyhow::anyhow!("scan the legacy accepted-id rows: {e}"))?;
+        let mut removed = 0;
+        for (key, value) in rows {
+            let expired = serde_json::from_slice::<Legacy>(&value)
+                .map(|r| r.retain_until <= now)
+                .unwrap_or(true);
+            if expired {
+                self.accepted
+                    .remove(key)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("remove a legacy accepted-id row: {e}"))?;
+                removed += 1;
+            }
+        }
         Ok(removed)
     }
 }
