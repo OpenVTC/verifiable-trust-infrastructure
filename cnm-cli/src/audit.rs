@@ -31,6 +31,23 @@ pub async fn cmd_verify(
         vtc::super_admin_call_error("VTC audit verify", e, &vtc.client_did, bin_name())
     })?;
 
+    // JSON under --json or off a terminal (#2588). The exit decision is the
+    // human path's: a broken chain or an unsound checkpoint block still fails,
+    // so a script need not parse to notice.
+    if vta_cli_common::render::is_json_output() {
+        vta_cli_common::render::print_json(&body)?;
+        let cp_status = checkpoint_block(&body)["status"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        if body["verified"].as_bool() != Some(true) {
+            return Err("audit chain verification failed".into());
+        }
+        if !matches!(cp_status.as_str(), "consistent" | "noCheckpoints") {
+            return Err(format!("audit checkpoints {cp_status}").into());
+        }
+        return Ok(());
+    }
     let verified = body["verified"].as_bool().unwrap_or(false);
     let examined = body["entriesExamined"].as_u64().unwrap_or(0);
     let chain_verified = body["entriesVerified"].as_u64().unwrap_or(0);

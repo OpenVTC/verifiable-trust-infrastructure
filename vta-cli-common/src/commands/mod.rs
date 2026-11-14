@@ -30,3 +30,6 @@ pub mod vault;
 pub mod webs;
 pub mod webvh;
 pub mod webvh_edit;
+// #2588: every read handler answers in JSON.
+#[cfg(test)]
+mod json_census;

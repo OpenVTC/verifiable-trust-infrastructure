@@ -67,7 +67,7 @@ fn write_new(path: &Path, contents: &[u8]) -> CmdResult {
     Ok(())
 }
 
-/// Resolve `--valid-until <RFC 3339>` / `--valid-for <duration>` into an instant.
+/// Resolve `--valid-until <RFC 3339>` / `--expires <duration>` into an instant.
 ///
 /// At most one is given (clap enforces it); neither is `None`, and the caller
 /// decides whether that is allowed.
@@ -76,7 +76,7 @@ pub fn validity(
     valid_for: Option<&str>,
 ) -> Result<Option<DateTime<Utc>>, Box<dyn std::error::Error>> {
     match (valid_until, valid_for) {
-        (Some(_), Some(_)) => Err("give --valid-until or --valid-for, not both".into()),
+        (Some(_), Some(_)) => Err("give --valid-until or --expires, not both".into()),
         (Some(t), None) => {
             let at = DateTime::parse_from_rfc3339(t)
                 .map_err(|e| {
@@ -92,11 +92,11 @@ pub fn validity(
         }
         (None, Some(d)) => {
             let secs = crate::duration::parse_duration_secs(d)?;
-            let secs = i64::try_from(secs).map_err(|_| format!("--valid-for `{d}` is too long"))?;
+            let secs = i64::try_from(secs).map_err(|_| format!("--expires `{d}` is too long"))?;
             Ok(Some(
                 Utc::now()
                     + chrono::Duration::try_seconds(secs)
-                        .ok_or_else(|| format!("--valid-for `{d}` is too long"))?,
+                        .ok_or_else(|| format!("--expires `{d}` is too long"))?,
             ))
         }
         (None, None) => Ok(None),
@@ -487,7 +487,7 @@ pub async fn cmd_rooms_owner_issue_authority(
     // Required by the specification and never defaulted: a root is the grant
     // nothing else withdraws, so its expiry is a number the owner must choose.
     let valid_until = valid_until.ok_or(
-        "an authority credential needs an expiry: pass --valid-for <duration> (e.g. 90d) or \
+        "an authority credential needs an expiry: pass --expires <duration> (e.g. 90d) or \
          --valid-until <RFC 3339 time>. A chain root is withdrawn by nothing else.",
     )?;
     require_destination(&output)?;
@@ -1245,7 +1245,7 @@ fn profile_refusal(e: vta_sdk::error::VtaError, room_id: &str) -> Box<dyn std::e
         return format!(
             "{text}\n\nNaming a room takes `write` and `curate` or `admin` in it; clearing takes \
              `curate`. The room's owner grants them with `pnm rooms owner issue-authority --room \
-             {room_id} --subject <your persona DID> --action write,curate --valid-for 90d --store`."
+             {room_id} --subject <your persona DID> --action write,curate --expires 90d --store`."
         )
         .into();
     }

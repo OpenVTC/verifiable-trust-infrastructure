@@ -58,6 +58,7 @@ use vti_mcp_common::observability::{self, LogFormat, Recorder};
 #[derive(Parser)]
 #[command(
     name = "vta-mcp",
+    version,
     about = "MCP server exposing a VTA's agent capabilities as tools"
 )]
 struct Args {

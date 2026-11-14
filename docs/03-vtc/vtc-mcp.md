@@ -534,12 +534,20 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
 
 ## 9. Troubleshooting
 
+A failed call is a **tool result** with `isError: true`, not a JSON-RPC
+error, so the model reads it: a JSON body with a stable `error` kind
+(`refused` with the community's own `code` in `details`, `notServed`,
+`notPinned`, `invalidRequest`, `transport`, `notConnected`,
+`deniedByLocalPolicy`, `declinedByOperator`, …), the `message`, and what to do
+`next`. Parked and step-up outcomes stay successful results, as below.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | The host lists **no tools** | The server exited before speaking MCP: a bad `--confirm` value or an unopenable `--audit-log` | Read the host's MCP server log; both are fatal by design |
 | Every tool returns "not connected to its community" | Degraded mode (§6) | The message names what is missing or what failed; fix and restart |
 | `no usable transport to <did>: the community advertises TSP but no session could be opened` | The advertised mediator did not answer | Fix the mediator; `--transport rest` posts signed documents for a diagnosis |
 | `will not send <uri>: not a Trust Task version this client pins` | The URI is not in the pinned index | Take the URI from `vtc_list_operations`; a version the community serves but this build does not pin needs a newer build |
+| `notServed`: `this community does not serve <uri>` | The community's discovery answer (asked at connect, or by an unnarrowed `vtc_supported_tasks`) does not list it; nothing was sent | Use a version from `details.servedVersions` |
 | `invalid request payload: does not conform to …` | The payload fails the task's schema, locally, before anything is sent | Read the schema with `detail: "full"`; an unset optional member is absent, never `null` |
 | `permissionDenied` from the community | The entry does not hold the capability, or a member persona was asked an administrative task | `vtc_whoami`; ask the administrator who enrolled the entry |
 | A result says `parked` | Second-party consent (§2.3) | Not an error; follow the action, do not resend |

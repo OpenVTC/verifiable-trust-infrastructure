@@ -4743,6 +4743,14 @@ pub async fn cmd_rooms_offers_list(
     target: OfferTarget<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (offers, renewals) = list_offers(client, &target).await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&serde_json::json!({
+            "offers": offers,
+            "renewals": renewals,
+        }))?;
+        return Ok(());
+    }
     if offers.is_empty() && renewals.is_empty() {
         println!(
             "No offers from {} are addressed to {}.",

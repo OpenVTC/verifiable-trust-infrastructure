@@ -297,6 +297,15 @@ pub async fn cmd_explain(
                 .find(|r| r.task_type == task_type && r.contexts.is_empty())
         });
 
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&serde_json::json!({
+            "taskType": task_type,
+            "context": ctx,
+            "requires": matched.map(|r| r.requires),
+        }))?;
+        return Ok(());
+    }
     println!("{task_type}");
     println!("  context: {ctx}");
     match matched {

@@ -281,7 +281,7 @@ url = "http://localhost:8100"
 | `keys rename <key_id> <new_key_id>`                                        | Rename a key               |
 | `keys secrets [key_ids...] [--context ID]`                                 | Export secret key material |
 | `keys seeds`                                                               | List seed generations      |
-| `keys rotate-seed [--mnemonic PHRASE]`                                     | Rotate to a new seed       |
+| `keys rotate-seed [--mnemonic-file FILE] [--yes]`                           | Rotate to a new seed       |
 
 The `keys import` command accepts `--private-key <multibase>` or `--private-key-file <path>` and supports key types `ed25519`, `x25519`, and `p256`. The private key is wrapped with ECDH-ES+AES-256-GCM before transmission over REST.
 
@@ -319,8 +319,8 @@ has unrestricted access across all contexts.
 
 | Command                                                     | Description                                    |
 | ----------------------------------------------------------- | ---------------------------------------------- |
-| `backup export [--include-audit] [--output FILE] [--force]` | Export encrypted backup of all VTA state        |
-| `backup import <file> [--preview]`                          | Import backup (preview or apply + restart VTA) |
+| `backup export [--include-audit] [--output FILE] [--force] [--password-file FILE]` | Export encrypted backup of all VTA state (password: `--password-file`, `-` for stdin, or `PNM_BACKUP_PASSWORD`) |
+| `backup import <file> [--preview] [--password-file FILE] [--yes]` | Import backup (preview or apply + restart VTA) |
 
 Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password (minimum 15 characters). The `.vtabak` file contains the seed, keys, ACL, contexts, WebVH records, and config. It is created readable by its owner only (`0600` on Unix, an owner-only ACL on Windows), and an existing file is not overwritten unless you pass `--force`.
 

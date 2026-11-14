@@ -400,12 +400,21 @@ impl VtaClient {
     }
 
     pub async fn invalidate_key(&self, key_id: &str) -> Result<InvalidateKeyResponse, VtaError> {
-        self.rpc_tt(
-            trust_tasks::TASK_KEYS_REVOKE_0_1,
-            serde_json::json!({ "keyId": key_id }),
-            30,
-        )
-        .await
+        self.invalidate_key_with_reason(key_id, None).await
+    }
+
+    /// [`Self::invalidate_key`] with the `reason` member of `keys/revoke/0.1`.
+    pub async fn invalidate_key_with_reason(
+        &self,
+        key_id: &str,
+        reason: Option<&str>,
+    ) -> Result<InvalidateKeyResponse, VtaError> {
+        let mut body = serde_json::json!({ "keyId": key_id });
+        if let Some(r) = reason {
+            body["reason"] = serde_json::Value::String(r.to_string());
+        }
+        self.rpc_tt(trust_tasks::TASK_KEYS_REVOKE_0_1, body, 30)
+            .await
     }
 
     pub async fn rename_key(
@@ -541,6 +550,34 @@ mod exportability_tests {
             payload.get("toggle").is_none(),
             "the state is absolute — a toggle would make a retried request undo itself"
         );
+    }
+
+    /// #2583: the operator's reason reaches `keys/revoke/0.1`, and
+    /// `acl/revoke/0.3` for an entry deletion, so the audit row can carry it.
+    #[tokio::test]
+    async fn a_revocation_carries_its_reason() {
+        let sink = Arc::new(RecordingSink::new());
+        let client = crate::client::VtaClient::loopback(sink.clone());
+
+        let _ = client
+            .invalidate_key_with_reason("k1", Some("leaked in a log"))
+            .await;
+        let (uri, payload) = sink.recorded().pop().expect("one task was dispatched");
+        assert_eq!(uri, crate::trust_tasks::TASK_KEYS_REVOKE_0_1);
+        assert_eq!(payload["keyId"], "k1");
+        assert_eq!(payload["reason"], "leaked in a log");
+
+        let _ = client.invalidate_key("k2").await;
+        let (_, payload) = sink.recorded().pop().expect("dispatched");
+        assert!(payload.get("reason").is_none(), "{payload}");
+
+        let _ = client
+            .delete_acl_with_reason("did:key:z6Mk", Some("left the team"))
+            .await;
+        let (uri, payload) = sink.recorded().pop().expect("dispatched");
+        assert_eq!(uri, crate::trust_tasks::TASK_ACL_REVOKE_0_3);
+        assert_eq!(payload["subject"], "did:key:z6Mk");
+        assert_eq!(payload["reason"], "left the team");
     }
 
     /// The other direction reaches the same task. It is the one the VTA gates

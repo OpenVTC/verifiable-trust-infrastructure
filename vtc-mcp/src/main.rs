@@ -50,6 +50,7 @@ use server::{BridgeIdentity, VtcMcp};
 #[derive(Parser)]
 #[command(
     name = "vtc-mcp",
+    version,
     about = "MCP server exposing a Verifiable Trust Community as tools"
 )]
 struct Args {

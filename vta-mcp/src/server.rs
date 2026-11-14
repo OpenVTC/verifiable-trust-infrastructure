@@ -49,6 +49,7 @@ use vta_sdk::error::VtaError;
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 use vti_mcp_common::guard::{Decision, Guard, Risk, classify};
 use vti_mcp_common::observability::{CallRecord, Recorder, redact_call};
+use vti_mcp_common::tool_error::{CallFailure, ToolError};
 
 /// The Trust Task URI each convenience tool **actually sends**.
 ///
@@ -84,10 +85,152 @@ const RESOURCE_OPERATIONS: &str = "vta://operations";
 /// Resource URI for the in-memory record of recent calls.
 const RESOURCE_RECENT: &str = "vta://calls/recent";
 
-/// Map an SDK error onto an MCP tool error. The VTA's typed errors carry the
-/// operator-facing message; surface it verbatim to the agent.
-fn to_mcp(e: VtaError) -> McpError {
-    McpError::internal_error(e.to_string(), None)
+/// What a transport or unclassified failure tells the model to do.
+const NEXT_STATUS: &str = "call vta_status to see which identity this bridge runs as and how it \
+                           is connected";
+
+/// Map an SDK error onto a tool-execution error the model can read (#2594).
+///
+/// The VTA's typed errors carry the operator-facing message, surfaced
+/// verbatim; the kind is the [`VtaError`] variant, so a model can tell "your
+/// role does not permit this" from "no such entry" from "the bridge cannot
+/// reach its VTA", and `next` says what to do about each. A protocol error
+/// (`-32603 internal error`) for any of these would read as a bridge fault,
+/// and some hosts never show its message to the model at all.
+fn to_tool(e: VtaError) -> ToolError {
+    let message = e.to_string();
+    match e {
+        VtaError::Auth(_) => ToolError::new("unauthenticated", message).with_next(
+            "the VTA no longer accepts this bridge's session. Call vta_status; the operator \
+             has to re-authenticate the bridge identity and restart vta-mcp.",
+        ),
+        VtaError::Forbidden(_) => ToolError::new("forbidden", message).with_next(
+            "this bridge identity's role or contexts at the VTA do not permit the operation. \
+             Call vta_status to see the identity; only the VTA's administrator can widen its \
+             ACL entry. Do not retry.",
+        ),
+        VtaError::NotFound(_) => ToolError::new("notFound", message).with_next(
+            "check the identifier: list the collection first (list_keys, vault_list, or the \
+             family's list operation through vta_call).",
+        ),
+        VtaError::Validation(_) => ToolError::new("invalidRequest", message).with_next(
+            "the VTA refused the payload. Correct it against the operation's schema and try \
+             again; an unset optional member must be absent, not null.",
+        ),
+        VtaError::Conflict(_) => ToolError::new("conflict", message).with_next(
+            "the target already exists or changed underneath the call. Read its current state \
+             before trying again.",
+        ),
+        VtaError::Gone(_) => ToolError::new("gone", message)
+            .with_next("the resource existed and is permanently unavailable; do not retry."),
+        VtaError::UnsupportedTaskType {
+            type_uri,
+            served_versions,
+        } => not_served(&type_uri, served_versions, message),
+        VtaError::ConsentRequired {
+            payload_digest,
+            challenge,
+            approver_set,
+            min_approvals,
+            exclude_requester,
+        } => ToolError::new("consentRequired", message)
+            .with_next(format!(
+                "the VTA needs {min_approvals} approval(s) from `{approver_set}` before it runs \
+                 this. Ask the operator to approve code {payload_digest} on an approving \
+                 device, then send the identical call again. Never describe it as approved \
+                 until it has run."
+            ))
+            .with_details(json!({
+                "payloadDigest": payload_digest,
+                "challenge": challenge,
+                "approverSet": approver_set,
+                "minApprovals": min_approvals,
+                "excludeRequester": exclude_requester,
+            })),
+        VtaError::RateLimited {
+            retry_after, url, ..
+        } => ToolError::new("rateLimited", message)
+            .with_next("wait before trying again; do not loop.")
+            .with_details(json!({ "retryAfter": retry_after, "url": url })),
+        VtaError::Unavailable { retry_after } => ToolError::new("unavailable", message)
+            .with_next("the VTA is busy with this request or temporarily down; try again later.")
+            .with_details(json!({ "retryAfter": retry_after })),
+        VtaError::Rejected { code, details, .. } => ToolError::new("rejected", message)
+            .with_next(
+                "the VTA refused the operation with the code in details; read it before \
+                 deciding whether a corrected call could succeed.",
+            )
+            .with_details(json!({ "code": code, "details": details })),
+        VtaError::Network(_)
+        | VtaError::DidcommTransport(_)
+        | VtaError::TspTransport(_)
+        | VtaError::RepliesNotArriving { .. }
+        | VtaError::NoMatchingProtocol { .. } => {
+            ToolError::new("transport", message).with_next(NEXT_STATUS)
+        }
+        VtaError::Server { .. } => ToolError::new("serverError", message)
+            .with_next("the VTA failed internally; its operator's logs say why. Retry later."),
+        VtaError::Protocol(_) | VtaError::Serialization(_) => ToolError::new("protocol", message)
+            .with_next(
+                "the request or the VTA's answer did not have the expected shape. Check the \
+                 payload against the operation's schema; if it conforms, the VTA and this \
+                 bridge may be different versions.",
+            ),
+        _ => ToolError::new("failed", message).with_next(NEXT_STATUS),
+    }
+}
+
+/// The VTA does not serve `operation`: a tool error naming the versions of the
+/// same family it does serve, so the model can correct the call.
+fn not_served(operation: &str, served_versions: Vec<String>, message: String) -> ToolError {
+    ToolError::new("notServed", message)
+        .with_next(
+            "this VTA does not serve that operation at that version, and nothing was run. Call \
+             vta_supported_tasks (or vta_list_operations) and use an operation it serves.",
+        )
+        .with_details(json!({ "operation": operation, "servedVersions": served_versions }))
+}
+
+/// The family of a Trust Task Type URI — everything before its final
+/// `/<version>` — or `None` when it has no version segment.
+fn family_of(type_uri: &str) -> Option<&str> {
+    let (family, version) = type_uri.rsplit_once('/')?;
+    version
+        .split('.')
+        .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .then_some(family)
+}
+
+/// Check `operation` against what the VTA said it serves (#2594).
+///
+/// `None` when it is served — or when nothing can be said, so the call goes
+/// on to the VTA, which stays the authority. Otherwise the refusal to return
+/// instead of sending: an unserved task over DIDComm or TSP is a 30-second
+/// timeout with no explanation, and the discovery answer is derived from the
+/// VTA's dispatch table, so absence from it is a fact, not a guess.
+fn check_served(operation: &str, served: &[String]) -> Option<ToolError> {
+    if served.iter().any(|u| u == operation) {
+        return None;
+    }
+    let versions: Vec<String> = match family_of(operation) {
+        Some(family) => served
+            .iter()
+            .filter_map(|u| {
+                let (f, v) = u.rsplit_once('/')?;
+                (f == family).then(|| v.to_string())
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let message = if versions.is_empty() {
+        format!("this VTA does not serve {operation}")
+    } else {
+        format!(
+            "this VTA does not serve {operation} — it serves {}",
+            versions.join(", ")
+        )
+    };
+    Some(not_served(operation, versions, message))
 }
 
 /// Wrap a serializable result as an MCP tool result with pretty-printed JSON
@@ -278,6 +421,8 @@ pub struct VtaMcp {
     guard: Arc<Guard>,
     recorder: Arc<Recorder>,
     started: Arc<str>,
+    /// What the VTA said it serves, once asked — see [`VtaMcp::served`].
+    served: Arc<tokio::sync::RwLock<Option<Arc<Vec<String>>>>>,
 }
 
 /// One in-flight guarded call. Created by [`VtaMcp::begin`], consumed by
@@ -296,24 +441,35 @@ struct CallGuard {
 
 impl CallGuard {
     /// Record the outcome and hand back the result unchanged.
-    fn finish(self, result: Result<Value, McpError>) -> Result<CallToolResult, McpError> {
+    ///
+    /// An operation failure ([`ToolError`]) goes back as a tool result with
+    /// `isError: true`, which the model reads; only a [`CallFailure::Protocol`]
+    /// stays a JSON-RPC error.
+    fn finish<E: Into<CallFailure>>(
+        self,
+        result: Result<Value, E>,
+    ) -> Result<CallToolResult, McpError> {
         let duration_ms = self.started.elapsed().as_millis();
-        let (outcome, error) = match &result {
-            Ok(_) => ("ok", None),
-            Err(e) => ("error", Some(e.message.to_string())),
-        };
-        self.emit(outcome, error, duration_ms);
         match result {
-            Ok(value) => ok_json(value),
-            Err(e) => Err(e),
+            Ok(value) => {
+                self.emit("ok", None, duration_ms);
+                ok_json(value)
+            }
+            Err(e) => {
+                let failure = e.into();
+                self.emit("error", Some(failure.message()), duration_ms);
+                failure.into_result()
+            }
         }
     }
 
-    /// Record a call that never reached the VTA.
-    fn refuse(self, outcome: &'static str, message: String) -> Result<CallToolResult, McpError> {
+    /// Record a call that never reached the VTA. The refusal is a tool result
+    /// the model reads, not a protocol error: the local policy's own words,
+    /// and how to change it, have to reach the model and the operator.
+    fn refuse(self, outcome: &'static str, error: ToolError) -> Result<CallToolResult, McpError> {
         let duration_ms = self.started.elapsed().as_millis();
-        self.emit(outcome, Some(message.clone()), duration_ms);
-        Err(McpError::invalid_request(message, None))
+        self.emit(outcome, Some(error.message.clone()), duration_ms);
+        Ok(error.into_call_result())
     }
 
     fn emit(&self, outcome: &'static str, error: Option<String>, duration_ms: u128) {
@@ -378,6 +534,7 @@ impl VtaMcp {
             guard: Arc::new(guard),
             recorder,
             started: vti_mcp_common::observability::now_rfc3339().into(),
+            served: Arc::default(),
         }
     }
 
@@ -404,23 +561,58 @@ impl VtaMcp {
             guard: Arc::new(guard),
             recorder,
             started: vti_mcp_common::observability::now_rfc3339().into(),
+            served: Arc::default(),
         }
     }
 
     /// The VTA client behind the session — every tool that talks to the VTA
     /// routes through this, and it is the single place the degraded state is
     /// turned into an error a model can read.
-    fn client(&self) -> Result<&vta_sdk::client::VtaClient, McpError> {
+    fn client(&self) -> Result<&vta_sdk::client::VtaClient, ToolError> {
         match &self.agent {
             Some(agent) => Ok(agent.client()),
-            None => Err(McpError::internal_error(
+            None => Err(ToolError::new(
+                "notConnected",
                 format!(
                     "this vta-mcp bridge is not connected to its VTA: {}. Fix the connection and \
                      restart the MCP server; `vta_status` reports the configuration it tried.",
                     self.connect_error.as_deref().unwrap_or("unknown error")
                 ),
-                None,
+            )
+            .with_next(
+                "call vta_status to see the configuration it tried; the operator has to fix the \
+                 connection and restart vta-mcp.",
             )),
+        }
+    }
+
+    /// What the VTA serves, asked once and remembered (#2594): from an
+    /// unnarrowed `vta_supported_tasks`, or asked here on the first
+    /// `vta_call`. `None` when it cannot be learned (not connected, or the
+    /// VTA refused discovery) — the caller then lets the VTA answer.
+    ///
+    /// The lock is never held across the round trip (R1.3); two first calls
+    /// racing both ask, and the second answer replaces the first.
+    async fn served(&self) -> Option<Arc<Vec<String>>> {
+        if let Some(known) = self.served.read().await.clone() {
+            return Some(known);
+        }
+        // Asking is itself a Trust Task: never send it past a local policy
+        // that would not let the model send it.
+        if self.guard.decide(wire::DISCOVERY) != Decision::Allow {
+            return None;
+        }
+        let client = self.client().ok()?;
+        match client.supported_trust_tasks(&[]).await {
+            Ok(answer) => {
+                let uris = Arc::new(answer.supported_types);
+                *self.served.write().await = Some(uris.clone());
+                Some(uris)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not ask the VTA what it serves");
+                None
+            }
         }
     }
 
@@ -465,14 +657,25 @@ impl VtaMcp {
             Decision::Allow => Ok(guard),
             Decision::Deny(reason) => {
                 tracing::warn!(seq, tool, reason = %reason, "call denied by local policy");
-                Err(Box::new(guard.refuse("denied", reason)))
+                Err(Box::new(guard.refuse(
+                    "denied",
+                    ToolError::refused_locally("denied", reason, "vta_status"),
+                )))
             }
             Decision::Confirm(prompt) => match self.confirm(peer, &prompt).await {
                 Ok(true) => Ok(guard),
-                Ok(false) => Err(Box::new(
-                    guard.refuse("declined", format!("{prompt} — declined by the operator.")),
-                )),
-                Err(reason) => Err(Box::new(guard.refuse("denied", reason))),
+                Ok(false) => Err(Box::new(guard.refuse(
+                    "declined",
+                    ToolError::refused_locally(
+                        "declined",
+                        format!("{prompt} — declined by the operator."),
+                        "vta_status",
+                    ),
+                ))),
+                Err(reason) => Err(Box::new(guard.refuse(
+                    "denied",
+                    ToolError::refused_locally("denied", reason, "vta_status"),
+                ))),
             },
         }
     }
@@ -509,8 +712,8 @@ impl VtaMcp {
     #[tool(
         description = "Discover which Trust Tasks the connected VTA serves. Optionally narrow with \
                        slug-glob patterns such as 'acl/*' or 'vta/webvh/*'; omit for everything. \
-                       Ask this before assuming an operation exists — calling one the VTA does not \
-                       serve fails as a transport timeout rather than a clear error.",
+                       vta_call checks every operation against this answer and refuses one the \
+                       VTA does not serve, naming the versions of it the VTA does serve.",
         annotations(
             title = "Supported Trust Tasks",
             read_only_hint = true,
@@ -538,11 +741,15 @@ impl VtaMcp {
         };
         let patterns: Vec<&str> = p.patterns.iter().map(String::as_str).collect();
         let result = match self.client() {
-            Ok(client) => client
-                .supported_trust_tasks(&patterns)
-                .await
-                .map(|t| json!(t))
-                .map_err(to_mcp),
+            Ok(client) => match client.supported_trust_tasks(&patterns).await {
+                Ok(answer) => {
+                    if patterns.is_empty() || patterns == ["*"] {
+                        *self.served.write().await = Some(Arc::new(answer.supported_types.clone()));
+                    }
+                    Ok(json!(answer))
+                }
+                Err(e) => Err(to_tool(e)),
+            },
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -590,7 +797,7 @@ impl VtaMcp {
                 )
                 .await
                 .map(|k| json!(k))
-                .map_err(to_mcp),
+                .map_err(to_tool),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -632,7 +839,11 @@ impl VtaMcp {
             Some(other) => {
                 return call.refuse(
                     "error",
-                    format!("unknown algorithm '{other}' (expected EdDSA or ES256)"),
+                    ToolError::new(
+                        "invalidArguments",
+                        format!("unknown algorithm '{other}' (expected EdDSA or ES256)"),
+                    )
+                    .with_next("pass algorithm EdDSA or ES256, or omit it for EdDSA."),
                 );
             }
         };
@@ -648,7 +859,7 @@ impl VtaMcp {
                         "algorithm": resp.algorithm,
                     })
                 })
-                .map_err(to_mcp),
+                .map_err(to_tool),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -683,7 +894,7 @@ impl VtaMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => client.vault_list(filters).await.map_err(to_mcp),
+            Ok(client) => client.vault_list(filters).await.map_err(to_tool),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -717,7 +928,7 @@ impl VtaMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => client.vault_get(&p.id).await.map_err(to_mcp),
+            Ok(client) => client.vault_get(&p.id).await.map_err(to_tool),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -759,18 +970,18 @@ impl VtaMcp {
 
     /// The two-step release: ask the VTA for the sealed envelope, then open it
     /// locally with this client's own keys.
-    async fn release_secret(&self, p: &VaultReleaseParams) -> Result<Value, McpError> {
+    async fn release_secret(&self, p: &VaultReleaseParams) -> Result<Value, ToolError> {
         let client = self.client()?;
         let response = client
             .vault_release_entry(&p.id, p.target.clone())
             .await
-            .map_err(to_mcp)?;
+            .map_err(to_tool)?;
         match response
             .get("sealedSecret")
             .and_then(|s| s.get("jwe"))
             .and_then(|j| j.as_str())
         {
-            Some(jwe) => client.open_sealed_secret(jwe).await.map_err(to_mcp),
+            Some(jwe) => client.open_sealed_secret(jwe).await.map_err(to_tool),
             // No openable envelope (e.g. an unsupported variant) — hand back the
             // raw response so the caller can see what came back.
             None => Ok(response),
@@ -809,7 +1020,7 @@ impl VtaMcp {
             Ok(client) => client
                 .device_heartbeat(p.platform.as_deref())
                 .await
-                .map_err(to_mcp),
+                .map_err(to_tool),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -841,7 +1052,7 @@ impl VtaMcp {
             Ok(call) => call,
             Err(refused) => return *refused,
         };
-        call.finish(Ok(self.operations_catalog()))
+        call.finish(Ok::<_, ToolError>(self.operations_catalog()))
     }
 
     /// The catalog `vta_call` can reach, annotated with this bridge's own view
@@ -897,11 +1108,18 @@ impl VtaMcp {
             Ok(call) => call,
             Err(refused) => return *refused,
         };
+        // Not served → say so now, rather than send it and wait out the reply
+        // timeout. Unknown (discovery refused or unreachable) → the VTA answers.
+        if let Some(served) = self.served().await
+            && let Some(refusal) = check_served(&p.operation, &served)
+        {
+            return call.finish(Err(refusal));
+        }
         let result = match self.client() {
             Ok(client) => client
                 .dispatch_trust_task(&p.operation, payload, 30)
                 .await
-                .map_err(to_mcp),
+                .map_err(to_tool),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -935,7 +1153,7 @@ impl VtaMcp {
                 .resolve_did(&p.did)
                 .await
                 .map(|d| json!(d))
-                .map_err(to_mcp),
+                .map_err(to_tool),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -978,15 +1196,30 @@ impl VtaMcp {
         let Some(holder) = self.holder.clone() else {
             return call.refuse(
                 "error",
-                "issue_vp is unavailable: no holder identity configured (set VTA_MCP_HOLDER_DID + \
-                 VTA_MCP_HOLDER_KEY)"
-                    .to_string(),
+                ToolError::new(
+                    "unavailable",
+                    "issue_vp is unavailable: no holder identity configured (set \
+                     VTA_MCP_HOLDER_DID + VTA_MCP_HOLDER_KEY)",
+                )
+                .with_next(
+                    "only the operator can configure a holder identity, and the bridge has to be \
+                     restarted for it. Do not retry.",
+                ),
             );
         };
         let held: Vec<vta_sdk::vp::HeldCredential> =
             match serde_json::from_value(p.held_credentials) {
                 Ok(held) => held,
-                Err(e) => return call.refuse("error", format!("held_credentials: {e}")),
+                Err(e) => {
+                    return call.refuse(
+                        "error",
+                        ToolError::new("invalidArguments", format!("held_credentials: {e}"))
+                            .with_next(
+                                "held_credentials is a JSON array of { id, format, claims, vc, \
+                                 vct?, doctype?, supportsHolderBinding? }.",
+                            ),
+                    );
+                }
             };
         let result = vta_sdk::vp::issue_vp_token(
             &holder.did,
@@ -999,7 +1232,7 @@ impl VtaMcp {
         )
         .await
         .map(|token| json!(token))
-        .map_err(|e| McpError::internal_error(format!("issue_vp: {e}"), None));
+        .map_err(|e| ToolError::new("presentationFailed", format!("issue_vp: {e}")));
         call.finish(result)
     }
 
@@ -1026,7 +1259,7 @@ impl VtaMcp {
             Err(refused) => return *refused,
         };
         let limit = p.recent_calls.unwrap_or(10).min(100);
-        call.finish(Ok(self.status(limit)))
+        call.finish(Ok::<_, ToolError>(self.status(limit)))
     }
 
     /// The status document, shared by the tool and the `vta://status` resource.
@@ -1344,5 +1577,138 @@ mod tests {
             ops.iter()
                 .any(|o| o["policy"] == json!("deny") && o["risk"] == json!("destructive"))
         );
+    }
+
+    fn body(result: &CallToolResult) -> Value {
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        let text = result.content[0].as_text().expect("text content");
+        serde_json::from_str(&text.text).expect("a JSON body")
+    }
+
+    fn call_guard(tool: &'static str, operation: &str) -> CallGuard {
+        CallGuard {
+            seq: 1,
+            tool,
+            operation: Some(operation.to_string()),
+            risk: classify(operation),
+            decision: "allow",
+            args: json!({}),
+            started: Instant::now(),
+            recorder: Arc::new(Recorder::default()),
+        }
+    }
+
+    /// #2594: a refused operation is a tool result the model reads, keyed on
+    /// the SDK's variant — never `-32603 internal error`.
+    #[test]
+    fn vta_errors_become_tool_results_keyed_on_the_variant() {
+        let forbidden = to_tool(VtaError::Forbidden("role reader may not".into()));
+        assert_eq!(forbidden.kind, "forbidden");
+        assert!(forbidden.message.contains("role reader may not"));
+        assert!(forbidden.next.as_deref().unwrap().contains("vta_status"));
+
+        assert_eq!(to_tool(VtaError::NotFound("x".into())).kind, "notFound");
+        assert_eq!(
+            to_tool(VtaError::Validation("x".into())).kind,
+            "invalidRequest"
+        );
+        assert_eq!(to_tool(VtaError::Auth("x".into())).kind, "unauthenticated");
+        assert_eq!(
+            to_tool(VtaError::TspTransport("x".into())).kind,
+            "transport"
+        );
+
+        let unserved = to_tool(VtaError::UnsupportedTaskType {
+            type_uri: "https://trusttasks.org/spec/keys/list/0.9".into(),
+            served_versions: vec!["0.2".into()],
+        });
+        assert_eq!(unserved.kind, "notServed");
+        assert_eq!(
+            unserved.details.as_ref().unwrap()["servedVersions"],
+            json!(["0.2"])
+        );
+
+        let consent = to_tool(VtaError::ConsentRequired {
+            payload_digest: "1234".into(),
+            challenge: "c".into(),
+            approver_set: "admins".into(),
+            min_approvals: 2,
+            exclude_requester: true,
+        });
+        assert_eq!(consent.kind, "consentRequired");
+        assert_eq!(
+            consent.details.as_ref().unwrap()["payloadDigest"],
+            json!("1234")
+        );
+        assert!(consent.next.as_deref().unwrap().contains("1234"));
+
+        let result = to_tool(VtaError::Conflict("exists".into())).into_call_result();
+        assert_eq!(body(&result)["error"], json!("conflict"));
+    }
+
+    #[test]
+    fn an_operation_the_vta_does_not_serve_is_refused_with_what_it_does_serve() {
+        let served = vec![
+            "https://trusttasks.org/spec/keys/list/0.2".to_string(),
+            "https://trusttasks.org/spec/keys/list/0.3".to_string(),
+            "https://trusttasks.org/spec/acl/list/0.2".to_string(),
+        ];
+        assert!(check_served("https://trusttasks.org/spec/keys/list/0.2", &served).is_none());
+
+        let other_version =
+            check_served("https://trusttasks.org/spec/keys/list/0.9", &served).expect("not served");
+        assert_eq!(other_version.kind, "notServed");
+        assert_eq!(
+            other_version.details.as_ref().unwrap()["servedVersions"],
+            json!(["0.2", "0.3"])
+        );
+        assert!(other_version.message.contains("it serves 0.2, 0.3"));
+        assert!(
+            other_version
+                .next
+                .as_deref()
+                .unwrap()
+                .contains("vta_supported_tasks")
+        );
+
+        let unknown = check_served("https://trusttasks.org/spec/nope/1.0", &served).unwrap();
+        assert_eq!(
+            unknown.details.as_ref().unwrap()["servedVersions"],
+            json!([])
+        );
+
+        assert_eq!(
+            family_of("https://trusttasks.org/spec/keys/list/0.2"),
+            Some("https://trusttasks.org/spec/keys/list")
+        );
+        assert_eq!(family_of("https://trusttasks.org/spec/keys/list"), None);
+    }
+
+    /// A local refusal reaches the model as a result, in the guard's own words
+    /// and with the way to change the policy.
+    #[test]
+    fn a_local_refusal_is_a_tool_result_not_a_protocol_error() {
+        let result = call_guard("sign", wire::KEYS_SIGN)
+            .refuse(
+                "denied",
+                ToolError::refused_locally("denied", "read-only bridge", "vta_status"),
+            )
+            .expect("a tool result, not a JSON-RPC error");
+        let body = body(&result);
+        assert_eq!(body["error"], json!("deniedByLocalPolicy"));
+        assert_eq!(body["message"], json!("read-only bridge"));
+        assert!(body["next"].as_str().unwrap().contains("--allow"));
+    }
+
+    #[test]
+    fn a_degraded_bridge_answers_with_a_tool_result() {
+        let bridge = bridge();
+        let Err(e) = bridge.client() else {
+            panic!("a degraded bridge must not hand out a client");
+        };
+        let result = call_guard("list_keys", wire::KEYS_LIST)
+            .finish(Err::<Value, _>(e))
+            .expect("a tool result, not a JSON-RPC error");
+        assert_eq!(body(&result)["error"], json!("notConnected"));
     }
 }

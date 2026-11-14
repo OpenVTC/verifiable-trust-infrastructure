@@ -76,7 +76,16 @@ pub(crate) async fn run(
             id,
             context,
             reason,
-        } => ext::cmd_lifecycle(client, Lifecycle::Delete, &context, &id, reason.as_deref()).await,
+            yes,
+        } => {
+            if !vta_cli_common::confirm::confirm_or_cancel(
+                &format!("delete external account {context}/{id} for good"),
+                yes,
+            )? {
+                return Ok(());
+            }
+            ext::cmd_lifecycle(client, Lifecycle::Delete, &context, &id, reason.as_deref()).await
+        }
         C::Issue {
             account,
             context,

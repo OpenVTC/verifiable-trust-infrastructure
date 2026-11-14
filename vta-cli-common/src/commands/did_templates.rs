@@ -111,7 +111,10 @@ pub fn cmd_init(kind: String) -> Result<(), Box<dyn std::error::Error>> {
         "{YELLOW}Tip:{RESET} redirect to a file and edit the {DIM}name{RESET}, {DIM}description{RESET},"
     );
     eprintln!("     and any placeholder values before uploading. For example:");
-    eprintln!("       pnm did-templates init {kind} > my-{builtin_name}.json");
+    eprintln!(
+        "       {bin} did-templates init {kind} > my-{builtin_name}.json",
+        bin = crate::render::bin_name()
+    );
     Ok(())
 }
 
@@ -149,10 +152,11 @@ pub async fn cmd_list(
             Some(ctx) => println!("No DID templates stored in context '{ctx}'."),
             None => println!("No DID templates stored on the VTA."),
         }
-        println!("  {DIM}Scaffold one with{RESET} `pnm did-templates init <kind> > tpl.json`,");
+        let bin = crate::render::bin_name();
+        println!("  {DIM}Scaffold one with{RESET} `{bin} did-templates init <kind> > tpl.json`,");
         let create_hint = match context {
-            Some(ctx) => format!("pnm did-templates create --context {ctx} --file tpl.json"),
-            None => "pnm did-templates create --file tpl.json".into(),
+            Some(ctx) => format!("{bin} did-templates create --context {ctx} --file tpl.json"),
+            None => format!("{bin} did-templates create --file tpl.json"),
         };
         println!("  {DIM}then{RESET} `{create_hint}`.");
         return Ok(());

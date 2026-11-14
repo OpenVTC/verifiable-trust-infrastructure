@@ -34,6 +34,54 @@ pub fn bin_name() -> &'static str {
     BIN_NAME.get().copied().unwrap_or("vta")
 }
 
+// ── The session's own DID ───────────────────────────────────────────
+//
+// A refusal hint that says "inspect your ACL entry" can name the entry: the
+// CLI knows which DID it authenticated as. Registered once the client has
+// connected; hints fall back to `<your-did>` when it was never set (#2586).
+
+static SESSION_DID: OnceLock<String> = OnceLock::new();
+
+/// Register the DID this process authenticated as, for hints that name it.
+pub fn set_session_did(did: &str) {
+    let _ = SESSION_DID.set(did.to_string());
+}
+
+/// The registered session DID, if any.
+#[must_use]
+pub fn session_did() -> Option<&'static str> {
+    SESSION_DID.get().map(String::as_str)
+}
+
+/// The command that re-authenticates, for the binary `bin`.
+#[must_use]
+pub fn reauth_hint(bin: &str) -> String {
+    match bin {
+        "cnm" => "Re-run `cnm setup`, or import a fresh credential with                   `cnm auth login --credential-bundle <bundle.armored> --expect-digest <sha256>`"
+            .to_string(),
+        "pnm" => "Try `pnm setup` to re-authenticate".to_string(),
+        other => format!("Re-authenticate with `{other} setup`"),
+    }
+}
+
+/// The command that inspects the caller's ACL entry, naming `did` when known.
+#[must_use]
+pub fn acl_inspect_hint(bin: &str, did: Option<&str>) -> String {
+    format!("`{bin} acl get {}`", did.unwrap_or("<your-did>"))
+}
+
+/// Where to check the VTA's address after a network failure, per binary.
+/// `cnm` has no `vta` subcommand: its VTA comes from the community profile.
+#[must_use]
+pub fn network_hint(bin: &str) -> String {
+    match bin {
+        "cnm" => "Check the community's VTA with `cnm community list`, or point at it directly:                   `cnm --url <url> health`"
+            .to_string(),
+        "pnm" => "Check its URL with `pnm vta info`".to_string(),
+        other => format!("Check its URL with `{other} --help`"),
+    }
+}
+
 // ── Full-display toggle ─────────────────────────────────────────────
 //
 // CLI global `--full-display` flag. When enabled, list commands emit
@@ -258,15 +306,17 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
             VtaError::Auth(msg) => {
                 eprintln!("{RED}\u{2717}{RESET} Authentication failed: {msg}");
                 eprintln!(
-                    "  {DIM}Token may be expired. Try `pnm setup` to re-authenticate, or check \
-                     that the VTA's `/auth` endpoint is reachable.{RESET}"
+                    "  {DIM}Token may be expired. {}, or check that the VTA's `/auth` endpoint \
+                     is reachable.{RESET}",
+                    reauth_hint(bin_name())
                 );
             }
             VtaError::Forbidden(msg) => {
                 eprintln!("{RED}\u{2717}{RESET} Forbidden: {msg}");
                 eprintln!(
                     "  {DIM}Your role or context access doesn't permit this operation. \
-                     Inspect with `pnm acl get <your-did>`.{RESET}"
+                     Inspect with {}.{RESET}",
+                    acl_inspect_hint(bin_name(), session_did())
                 );
             }
             VtaError::NotFound(msg) => {
@@ -337,7 +387,10 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
             }
             VtaError::Network(e) => {
                 eprintln!("{RED}\u{2717}{RESET} Network error: {e}");
-                eprintln!("  {DIM}Is the VTA reachable? Check its URL with `pnm vta info`.{RESET}");
+                eprintln!(
+                    "  {DIM}Is the VTA reachable? {}.{RESET}",
+                    network_hint(bin_name())
+                );
             }
             VtaError::Server { status, body } => {
                 eprintln!("{RED}\u{2717}{RESET} Server error (HTTP {status}): {body}");
@@ -1025,5 +1078,67 @@ mod tests {
                 "rows are padded to terminal width; uncoloured that is trailing blanks"
             );
         }
+    }
+}
+
+/// #2586: a hint a `cnm` operator can reach must not tell them to run `pnm`.
+/// Every runtime string in the modules `cnm` shares names the binary through
+/// [`bin_name`]; the only literal `pnm` commands left sit in a `"pnm" =>` arm
+/// that answers for pnm alone. Comments and tests are not output.
+#[cfg(test)]
+mod bin_name_hints {
+    const CNM_REACHABLE: &[(&str, &str)] = &[
+        ("render.rs", include_str!("render.rs")),
+        ("sealed_consumer.rs", include_str!("sealed_consumer.rs")),
+        (
+            "commands/did_templates.rs",
+            include_str!("commands/did_templates.rs"),
+        ),
+        ("commands/keys.rs", include_str!("commands/keys.rs")),
+        ("commands/acl.rs", include_str!("commands/acl.rs")),
+        ("commands/contexts.rs", include_str!("commands/contexts.rs")),
+        (
+            "commands/credentials.rs",
+            include_str!("commands/credentials.rs"),
+        ),
+        ("commands/config.rs", include_str!("commands/config.rs")),
+    ];
+
+    #[test]
+    fn no_cnm_reachable_hint_names_pnm() {
+        let mut offenders = Vec::new();
+        for (name, src) in CNM_REACHABLE {
+            for (i, line) in src.lines().enumerate() {
+                if line.starts_with("#[cfg(test)]") {
+                    break;
+                }
+                let t = line.trim_start();
+                if t.starts_with("//") || t.starts_with("\"pnm\" =>") {
+                    continue;
+                }
+                if t.contains("`pnm ") || t.contains("\"pnm ") {
+                    offenders.push(format!("{name}:{}: {t}", i + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "literal pnm commands:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_hints_follow_the_binary() {
+        assert!(super::reauth_hint("cnm").contains("cnm auth login"));
+        assert!(super::network_hint("cnm").contains("cnm community list"));
+        assert_eq!(
+            super::acl_inspect_hint("cnm", Some("did:key:z6Mk")),
+            "`cnm acl get did:key:z6Mk`"
+        );
+        assert_eq!(
+            super::acl_inspect_hint("pnm", None),
+            "`pnm acl get <your-did>`"
+        );
     }
 }

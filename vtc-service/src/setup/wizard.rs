@@ -72,11 +72,31 @@ pub async fn run_setup_wizard(
     config_path: Option<PathBuf>,
     single_admin: bool,
 ) -> Result<(), AppError> {
+    require_terminal(std::io::IsTerminal::is_terminal(&std::io::stdin()))?;
     intro_banner();
     let plan = collect_interactive(config_path, single_admin).await?;
     let outcome = apply(plan).await?;
     print_setup_summary_interactive(&outcome)?;
     Ok(())
+}
+
+/// Refuse the interactive wizard without a terminal on stdin, naming the
+/// unattended path (#2593).
+///
+/// Without this, `vtc setup` in a Dockerfile, a systemd unit or CI dies at
+/// its first prompt with a terminal I/O error that says nothing about the
+/// two-phase `--setup-key-out` / `--from` flow that exists for exactly that.
+fn require_terminal(stdin_is_terminal: bool) -> Result<(), AppError> {
+    if stdin_is_terminal {
+        return Ok(());
+    }
+    Err(AppError::Config(
+        "`vtc setup` is interactive and stdin is not a terminal. For unattended setup run it \
+         in two phases: `vtc setup --setup-key-out <key-file>` (then authorise the printed DID \
+         at the VTA), and `vtc setup --from <setup.toml>`. See \
+         docs/03-vtc/non-interactive-setup.md."
+            .into(),
+    ))
 }
 
 /// Gather every operator decision interactively and assemble a
@@ -2355,6 +2375,20 @@ fn secrets_prompt_err(e: SecretsPromptError) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2593: without a terminal the wizard refuses before its first prompt,
+    /// naming both phases of the unattended setup.
+    #[test]
+    fn without_a_terminal_the_wizard_names_the_unattended_setup() {
+        assert!(require_terminal(true).is_ok());
+        let message = require_terminal(false).unwrap_err().to_string();
+        assert!(message.contains("vtc setup --setup-key-out"), "{message}");
+        assert!(message.contains("vtc setup --from"), "{message}");
+        assert!(
+            message.contains("docs/03-vtc/non-interactive-setup.md"),
+            "{message}"
+        );
+    }
 
     fn webs_inputs(method: IdentityMethod) -> WizardInputs {
         WizardInputs {

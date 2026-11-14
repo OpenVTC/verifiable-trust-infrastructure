@@ -13,11 +13,12 @@
 //! with the VTC's DID as the audience, as [`crate::vtc`] explains — rather than
 //! riding the profile's VTA session.
 
-use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use vta_cli_common::confirm::confirm_destructive;
 use vta_cli_common::render::{DIM, GREEN, RED, RESET, bin_name};
+use vta_cli_common::secret_input::backup_password;
 use vta_cli_common::secure_file;
 use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
@@ -27,6 +28,9 @@ use crate::vtc::{self, Connected, VtcTarget};
 fn backup_error(vtc: &Connected, err: vtc_client::VtcError) -> Box<dyn std::error::Error> {
     vtc::super_admin_call_error("VTC backup request", err, &vtc.client_did, bin_name()).into()
 }
+
+/// The environment variable a scheduled backup reads its password from.
+const PASSWORD_ENV: &str = "CNM_BACKUP_PASSWORD";
 
 fn str_field<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("(none)")
@@ -38,16 +42,13 @@ pub(crate) async fn cmd_export(
     include_audit: bool,
     output: Option<PathBuf>,
     force: bool,
+    password_file: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = &output {
         secure_file::check_export_path(path, force)?;
     }
-    let password = dialoguer::Password::new()
-        .with_prompt(format!(
-            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
-        ))
-        .with_confirmation("Confirm password", "Passwords do not match")
-        .interact()?;
+    // `--password-file`, then CNM_BACKUP_PASSWORD, then the terminal (#2585).
+    let password = backup_password(password_file, PASSWORD_ENV, true, MIN_BACKUP_PASSWORD_LEN)?;
     validate_backup_password(&password)?;
 
     let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
@@ -91,8 +92,11 @@ pub(crate) async fn cmd_import(
     target: &VtcTarget,
     file: PathBuf,
     preview_only: bool,
+    password_file: Option<&Path>,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let json_str = std::fs::read_to_string(&file)?;
+    let json_str = std::fs::read_to_string(&file)
+        .map_err(|e| format!("could not read {}: {e}", file.display()))?;
     let envelope: Value = serde_json::from_str(&json_str)
         .map_err(|e| format!("{} is not a valid backup file: {e}", file.display()))?;
 
@@ -110,16 +114,12 @@ pub(crate) async fn cmd_import(
 
     // The floor binds on the way in too, so check it here rather than let the
     // refusal arrive as a schema-conformance error naming a task URI.
-    let password = dialoguer::Password::new()
-        .with_prompt(format!(
-            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
-        ))
-        .interact()?;
+    let password = backup_password(password_file, PASSWORD_ENV, false, MIN_BACKUP_PASSWORD_LEN)?;
     validate_backup_password(&password)?;
 
     let vtc = vtc::connect_end_to_end(keyring_key, target).await?;
     // The session is closed on every path out, success or not.
-    let outcome = import_over(&vtc, &envelope, &password, preview_only).await;
+    let outcome = import_over(&vtc, &envelope, &password, preview_only, yes).await;
     vtc.client.shutdown().await;
     outcome
 }
@@ -130,6 +130,7 @@ async fn import_over(
     envelope: &Value,
     password: &str,
     preview_only: bool,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Preview first (confirm=false) — no mutation, just row counts.
     println!("Validating backup...");
@@ -147,11 +148,12 @@ async fn import_over(
 
     println!();
     println!("{RED}WARNING: This will REPLACE ALL community state in the VTC.{RESET}");
-    print!("Type 'yes' to confirm: ");
-    std::io::stdout().flush()?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    if input.trim() != "yes" {
+    // The same rule as every destructive command: `--yes`, or a terminal to
+    // ask on, or a refusal (#2583, #2585).
+    if !confirm_destructive(
+        "replace all community state in the VTC with this backup",
+        yes,
+    )? {
         println!("Import cancelled.");
         return Ok(());
     }

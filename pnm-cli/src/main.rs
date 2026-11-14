@@ -21,9 +21,8 @@ mod cli;
 mod commands;
 mod config;
 mod exit;
+mod rooms_profile;
 mod setup;
-
-use std::io::IsTerminal;
 
 use vta_sdk::client::VtaClient;
 
@@ -33,27 +32,10 @@ use crate::cli::{
     Cli, Commands, DidcommCommands, ServicesCommands, VtaCommands, install_force_exit_handler,
     is_online_template_cmd, print_banner, requires_auth, retired_mediator_redirect,
 };
-use clap::Parser;
 
-/// Exit code for a command that returned an error.
-///
-/// Every dispatch arm funnels here, so this is the single place that
-/// decides. The SDK's error is already typed, so the variant picks the
-/// code — a call site does not have to know one.
-///
-/// `Forbidden` stays `FAILURE` on purpose: the caller is who they say
-/// they are and the operation ran, it was refused. That is not the same
-/// signal as "your credential is no good", and a script retrying on
-/// `AUTH` must not retry on it.
-fn exit_code_for(err: &(dyn std::error::Error + 'static)) -> i32 {
-    use vta_sdk::error::VtaError;
-    match err.downcast_ref::<VtaError>() {
-        Some(VtaError::NotFound(_)) => exit::NOT_FOUND,
-        Some(VtaError::Validation(_)) => exit::CONFIG,
-        Some(VtaError::Auth(_)) => exit::AUTH,
-        _ => exit::FAILURE,
-    }
-}
+/// Exit code for a command that returned an error — shared with `cnm`
+/// ([`vta_cli_common::exit::exit_code_for`]).
+use vta_cli_common::exit::exit_code_for;
 
 /// This process's log output; see the `tracing_subscriber` setup in `main`.
 pub(crate) static LOGS: std::sync::LazyLock<affinidi_messaging_mediator_tui::LogCapture> =
@@ -95,7 +77,15 @@ async fn main() {
         std::process::exit(exit::CONFIG);
     }
 
-    let cli = Cli::parse();
+    // `rooms` commands take their room, host and signing key from the ones
+    // `pnm rooms use` / `owner register` / `offers accept` remembered (#2590).
+    let cli = rooms_profile::parse_cli();
+
+    // Completions need nothing else: no profile, no keyring, no banner.
+    if let Commands::Completions { shell } = &cli.command {
+        vta_cli_common::startup::print_completions::<Cli>(*shell, "pnm");
+        return;
+    }
 
     // DID-advertised VTA endpoints are public-only unless the operator opts in.
     vta_sdk::http::set_allow_private_endpoints(cli.allow_private_endpoints);
@@ -107,26 +97,10 @@ async fn main() {
     vta_cli_common::render::set_full_display(cli.full_display);
     vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
 
-    // Format follows the destination. A terminal gets the table; anything
-    // else — a pipe, a file, a CI log — gets JSON, because the only reason
-    // to redirect this output is to have something read it. `--json`
-    // forces JSON even on a terminal.
-    let stdout_is_tty = std::io::stdout().is_terminal();
-    if cli.json || !stdout_is_tty {
-        vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
-    }
-
-    // Colour is for a terminal only, and NO_COLOR (<https://no-color.org>)
-    // turns it off even on one. Gated on stdout because that is where the
-    // rendered tables go.
-    vta_cli_common::render::set_color(stdout_is_tty && std::env::var_os("NO_COLOR").is_none());
-
-    vta_cli_common::render::set_bin_name("pnm");
-
-    // The banner is for a person at a terminal. It goes to stderr, so it
-    // is gated on stderr — redirecting stdout alone (`pnm … > out.json`)
-    // still shows it, which is what an operator running that expects.
-    if std::io::stderr().is_terminal() {
+    // Format, colour, the binary name in hints and the banner gate — the
+    // same rules as `cnm` (`vta_cli_common::startup`, #2587).
+    vta_cli_common::startup::init_output("pnm", cli.json);
+    if vta_cli_common::startup::banner_wanted() {
         print_banner();
     }
 
@@ -154,11 +128,15 @@ async fn main() {
     vta_sdk::keyring_init::install_default_store_or_exit("pnm");
 
     // Load PNM config
+    //
+    // A profile that exists but does not parse stops here (#2582). Carrying on
+    // with an empty one would report every VTA as "not configured" and point
+    // at `pnm setup`, which would then overwrite the file.
     let mut pnm_config = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: could not load config: {e}");
-            config::PnmConfig::default()
+            eprintln!("Error: {e}");
+            std::process::exit(exit::CONFIG);
         }
     };
 
@@ -200,6 +178,29 @@ async fn main() {
     // `command` back to the post-auth dispatch below for the
     // authenticated path.
     let needs_auth = requires_auth(&command);
+    // `pnm rooms use` edits a local file: no VTA, no session.
+    if let Commands::Rooms {
+        command:
+            cli::RoomCommands::Use {
+                room,
+                host,
+                host_did,
+                signing_key,
+                forget,
+            },
+    } = command
+    {
+        let entry = rooms_profile::RoomEntry {
+            host,
+            host_did,
+            signing_key_id: signing_key,
+        };
+        if let Err(e) = rooms_profile::cmd_use(room, entry, forget) {
+            vta_cli_common::render::print_cli_error(e.as_ref());
+            std::process::exit(exit_code_for(e.as_ref()));
+        }
+        return;
+    }
     match command {
         Commands::Setup {
             command: setup_cmd,
@@ -304,7 +305,13 @@ async fn main() {
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                // A Forbidden hint names this DID's ACL entry (#2586).
+                if let Some(s) = auth::loaded_session(&keyring_key) {
+                    vta_cli_common::render::set_session_did(&s.client_did);
+                }
+                c
+            }
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());
                 std::process::exit(exit_code_for(e.as_ref()));
@@ -333,6 +340,7 @@ async fn main() {
     // ── Post-auth dispatch ────────────────────────────────────────
     let result = match command {
         Commands::Setup { .. } => unreachable!("Setup handled in pre-auth dispatch"),
+        Commands::Completions { .. } => unreachable!("Completions handled before start-up"),
         Commands::Bootstrap { command } => commands::bootstrap::run_authed(&client, command).await,
         Commands::DidTemplates { command } => {
             commands::did_templates::run_online(&client, command).await
@@ -468,6 +476,7 @@ mod tests {
     use crate::cli::{
         AclCommands, AuthCommands, ConfigCommands, ContextCommands, KeyCommands, SetupCommands,
     };
+    use clap::Parser;
 
     // ── requires_auth ──────────────────────────────────────────────
 
@@ -512,6 +521,54 @@ mod tests {
     #[test]
     fn remediation_commands_in_error_and_help_strings_parse() {
         let commands: &[&[&str]] = &[
+            // vta-cli-common/src/render.rs (Auth, Forbidden, Network hints; #2586)
+            &["pnm", "setup"],
+            &["pnm", "acl", "get", "did:key:z6Mk"],
+            &["pnm", "vta", "info"],
+            // vta-cli-common/src/config_file.rs is a shell `mv`, not pnm.
+            // vta-cli-common/src/confirm.rs: "run the same command again with
+            // --yes" — every destructive command takes it (#2583).
+            &["pnm", "acl", "delete", "did:key:z6Mk", "--yes"],
+            &["pnm", "keys", "revoke", "k1", "--yes"],
+            &["pnm", "keys", "rotate-seed", "--yes"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "delete",
+                "did:webvh:x:h",
+                "--yes",
+            ],
+            &["pnm", "did-mgmt", "servers", "delete", "host-1", "--yes"],
+            &["pnm", "did-templates", "delete", "t", "--yes"],
+            &["pnm", "webs", "delete", "did:webs:h:x", "--yes"],
+            &["pnm", "vault", "purge", "e1", "--yes"],
+            &["pnm", "cred-vault", "purge", "c1", "--yes"],
+            &["pnm", "device", "wipe", "d1", "--reason", "lost", "--yes"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "agent-names",
+                "remove",
+                "--did",
+                "did:webvh:x:h",
+                "--name",
+                "n",
+                "--yes",
+            ],
+            &["pnm", "external", "delete", "a1", "--context", "c", "--yes"],
+            // vta-cli-common/src/secret_input.rs (#2584, #2585)
+            &["pnm", "keys", "rotate-seed", "--mnemonic-file", "-"],
+            &["pnm", "backup", "export", "--password-file", "-"],
+            &[
+                "pnm",
+                "backup",
+                "import",
+                "f",
+                "--password-file",
+                "p",
+                "--yes",
+            ],
             // vta-sdk/src/client/webs.rs (`serverNotFound`, `domainNotServed`)
             &["pnm", "did-mgmt", "servers", "list"],
             &[

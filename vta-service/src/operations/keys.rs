@@ -794,6 +794,7 @@ pub async fn revoke_key(
     audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     key_id: &str,
+    reason: Option<&str>,
     channel: &str,
 ) -> Result<RevokeKeyResultBody, AppError> {
     let store_key = keys::store_key(key_id);
@@ -834,7 +835,9 @@ pub async fn revoke_key(
         resource = key_id,
         outcome = "success"
     );
-    audit::record_best_effort(
+    // The operator's `reason` (keys/revoke/0.1) goes into the audit row's
+    // detail, as an ACL revocation's does (#2583).
+    audit::record_with_detail_best_effort(
         audit,
         "key.revoke",
         &auth.did,
@@ -842,6 +845,7 @@ pub async fn revoke_key(
         "success",
         Some(channel),
         record.context_id.as_deref(),
+        reason,
     )
     .await;
 
@@ -5562,6 +5566,7 @@ mod tests {
             &h.audit,
             &h.super_admin_auth(),
             "k-gone",
+            None,
             "test",
         )
         .await

@@ -23,6 +23,7 @@ mod vtc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use config::{community_keyring_key, resolve_community};
+use vta_cli_common::exit;
 use vta_sdk::client::VtaClient;
 
 use vta_cli_common::commands::{
@@ -32,7 +33,10 @@ use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section
 
 #[derive(Parser)]
 #[command(
-    name = "cnm-cli",
+    name = "cnm",
+    version,
+    // `--version` only: `-V` is `--verbose` in both CLIs (#2587, #2592).
+    disable_version_flag = true,
     about = "CLI for VTC Verifiable Trust Agents (community-admin scope)",
     long_about = "Community Network Manager — community-admin-scoped CLI for the VTA.\n\
                   \n\
@@ -48,7 +52,13 @@ use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section
                     a community admin needs to provision application identities."
 )]
 struct Cli {
-    /// Base URL of the VTA service (overrides config).
+    /// Print version
+    #[arg(long, action = clap::ArgAction::Version)]
+    version: Option<bool>,
+
+    /// Base URL of the VTA service (overrides config). A top-level flag: put it
+    /// before the subcommand (`--url` is also a subcommand argument on
+    /// several commands, so it cannot be global).
     ///
     /// For the commands that talk to the community's VTC instead — `vetting`,
     /// `audit`, `backup`, `did-log` — this is the VTC's API base, including
@@ -69,8 +79,9 @@ struct Cli {
     #[arg(short = 'c', long, global = true)]
     community: Option<String>,
 
-    /// Enable verbose debug output (can also set RUST_LOG=debug)
-    #[arg(short, long, global = true)]
+    /// Enable verbose debug output (can also set RUST_LOG=debug). `-V` is
+    /// accepted too, as in `pnm` (where `-v` is `--vta`).
+    #[arg(short, long, short_alias = 'V', global = true)]
     verbose: bool,
 
     /// Show full identifiers (DIDs, key ids, template names, …) in
@@ -88,8 +99,8 @@ struct Cli {
     #[arg(long, global = true)]
     resolve_agent_names: bool,
 
-    /// Emit list output as JSON instead of a human-readable table.
-    /// Use this for automation: `cnm acl list --json | jq …`.
+    /// Emit output as JSON instead of a human-readable table. Automatic when
+    /// stdout is not a terminal: `cnm acl list | jq …`.
     #[arg(long, global = true)]
     json: bool,
 
@@ -349,6 +360,15 @@ enum Commands {
         #[command(subcommand)]
         command: DidTemplateCommands,
     },
+    /// Print a shell completion script (#2592).
+    ///
+    ///   cnm completions bash > ~/.local/share/bash-completion/completions/cnm
+    ///   cnm completions zsh  > "${fpath[1]}/_cnm"
+    ///   cnm completions fish > ~/.config/fish/completions/cnm.fish
+    Completions {
+        /// The shell to generate for.
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -422,6 +442,9 @@ enum DidTemplateCommands {
         /// TARGET SCOPE: operate on this context's stored template.
         #[arg(long)]
         context: Option<String>,
+        /// Delete without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Export a stored template to stdout as a portable JSON file.
@@ -485,6 +508,12 @@ enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, CNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
     },
     /// Import the community's state from an encrypted backup file.
     Import {
@@ -493,6 +522,16 @@ enum BackupCommands {
         /// Preview only — show row counts without applying.
         #[arg(long)]
         preview: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, CNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
+        /// Replace the VTA's data without asking (needed when there is no
+        /// terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -833,16 +872,22 @@ enum AclCommands {
         #[arg(long, requires = "context")]
         direction: Option<String>,
     },
-    /// Get an ACL entry by DID
+    /// Get an ACL entry by DID (`show`, as on `cnm access`)
+    #[command(visible_alias = "show")]
     Get {
         /// DID to look up
         did: String,
     },
-    /// Create an ACL entry
+    /// Create an ACL entry (`grant`, as on `cnm access`)
+    #[command(visible_alias = "grant")]
     Create {
-        /// DID to grant access to
-        #[arg(long)]
-        did: String,
+        /// DID to grant access to. Positional, as on `get`, `update` and
+        /// `delete` (#2591); `--did <DID>` is still accepted.
+        #[arg(required_unless_present = "did_flag")]
+        did: Option<String>,
+        /// The DID, as a flag (the older spelling).
+        #[arg(long = "did", value_name = "DID", conflicts_with = "did", hide = true)]
+        did_flag: Option<String>,
         /// Role: admin, initiator, application, or reader
         #[arg(long)]
         role: String,
@@ -889,11 +934,22 @@ enum AclCommands {
         /// increase — the subject may again use every key in its contexts).
         #[arg(long)]
         allowed_keys_unrestricted: bool,
+        /// Optional rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
     },
-    /// Delete an ACL entry
+    /// Delete an ACL entry (`revoke`, as on `cnm access`). Irreversible: asks
+    /// first on a terminal, and without one needs `--yes`.
+    #[command(visible_alias = "revoke")]
     Delete {
         /// DID of the entry to delete
         did: String,
+        /// Optional rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Delete without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -935,8 +991,14 @@ enum KeyCommands {
         /// BIP-32 derivation path (auto-derived from context if omitted)
         #[arg(long)]
         derivation_path: Option<String>,
-        /// BIP-39 mnemonic phrase
-        #[arg(long)]
+        /// Read a BIP-39 mnemonic phrase from this file, or `-` for stdin
+        /// (asked without echo on a terminal). Never on the command line,
+        /// where shell history and `ps` keep it (#2584).
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
         /// Human-readable label
         #[arg(long)]
@@ -965,10 +1027,17 @@ enum KeyCommands {
         #[arg(long)]
         secret: bool,
     },
-    /// Revoke (invalidate) a key
+    /// Revoke (invalidate) a key. Irreversible: asks first on a terminal,
+    /// and without one needs `--yes`.
     Revoke {
         /// Key ID
         key_id: String,
+        /// Optional rationale, recorded in the audit log.
+        #[arg(long)]
+        reason: Option<String>,
+        /// Revoke without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Rename a key
     Rename {
@@ -1003,20 +1072,30 @@ enum KeyCommands {
     },
     /// List seed generations
     Seeds,
-    /// Rotate to a new seed generation
+    /// Rotate to a new seed generation. Asks first on a terminal, and
+    /// without one needs `--yes`.
     RotateSeed {
-        /// BIP-39 mnemonic phrase for the new seed (random if omitted)
-        #[arg(long)]
+        /// Read the BIP-39 mnemonic for the new seed from this file, or `-`
+        /// for stdin (asked without echo on a terminal). Random if omitted.
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
+        /// Rotate without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
 fn print_banner() {
-    let green = "\x1b[32m";
-    let magenta = "\x1b[35m";
-    let yellow = "\x1b[33m";
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
+    use vta_cli_common::startup::banner_color;
+    let green = banner_color("\x1b[32m");
+    let magenta = banner_color("\x1b[35m");
+    let yellow = banner_color("\x1b[33m");
+    let dim = banner_color("\x1b[2m");
+    let reset = banner_color("\x1b[0m");
 
     eprintln!(
         r#"
@@ -1112,6 +1191,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Members { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
+            | Commands::Completions { .. }
     )
 }
 
@@ -1252,7 +1332,7 @@ fn install_force_exit_handler() {
             }
             if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
                 eprintln!("\nForcing exit.");
-                std::process::exit(130);
+                std::process::exit(exit::INTERRUPTED);
             }
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }
@@ -1270,6 +1350,12 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Completions need nothing else: no profile, no keyring, no banner.
+    if let Commands::Completions { shell } = &cli.command {
+        vta_cli_common::startup::print_completions::<Cli>(*shell, "cnm");
+        return;
+    }
+
     // DID-advertised VTA endpoints are public-only unless the operator opts in.
     vta_sdk::http::set_allow_private_endpoints(cli.allow_private_endpoints);
 
@@ -1277,10 +1363,10 @@ async fn main() {
     // commands from vta-cli-common pick it up.
     vta_cli_common::render::set_full_display(cli.full_display);
     vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
-    if cli.json {
-        vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
-    }
-    vta_cli_common::render::set_bin_name("cnm");
+    // Format, colour and the binary name in hints — the same rules as `pnm`
+    // (`vta_cli_common::startup`, #2587): JSON off a terminal, no colour off
+    // one or under NO_COLOR.
+    vta_cli_common::startup::init_output("cnm", cli.json);
 
     // Initialize tracing: --verbose sets cnm_cli=debug, or respect RUST_LOG
     let filter = if cli.verbose {
@@ -1301,14 +1387,21 @@ async fn main() {
     #[cfg(feature = "keyring")]
     vta_sdk::keyring_init::install_default_store_or_exit("cnm");
 
-    print_banner();
+    // The banner is for a person at a terminal; it goes to stderr, so it is
+    // gated on stderr (#2587).
+    if vta_cli_common::startup::banner_wanted() {
+        print_banner();
+    }
 
-    // Load CNM config (multi-community)
+    // Load CNM config (multi-community). A profile that exists but does not
+    // parse stops here (#2582): carrying on with an empty one would report
+    // every community as "not configured" and point at `cnm setup`, which
+    // would then overwrite the file.
     let cnm_config = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: could not load config: {e}");
-            config::CnmConfig::default()
+            eprintln!("Error: {e}");
+            std::process::exit(exit::CONFIG);
         }
     };
 
@@ -1346,7 +1439,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    std::process::exit(1);
+                    std::process::exit(exit::CONFIG);
                 }
             }
         } else if matches!(cli.command, Commands::Health) {
@@ -1373,10 +1466,8 @@ async fn main() {
                             eprintln!(
                                 "Either configure a community with `cnm setup`, or provide a URL:"
                             );
-                            // `--url` is a top-level flag (cli::Cli::url) so it must
-                            // appear BEFORE the subcommand or clap rejects the parse.
                             eprintln!("  cnm --url http://localhost:8100 health");
-                            std::process::exit(1);
+                            std::process::exit(exit::CONFIG);
                         }
                     };
                     (url, String::new())
@@ -1411,7 +1502,7 @@ async fn main() {
                             cnm auth login --credential-bundle <bundle.armored> --expect-digest <sha256>\n  \
                          2. Re-run setup: cnm setup"
             );
-            std::process::exit(1);
+            std::process::exit(exit::FAILURE);
         }
 
         // A community added for its VTC alone holds an identity with no VTA
@@ -1427,14 +1518,17 @@ async fn main() {
                  A community's VTA is recorded when the community is added or continued:\n  \
                  cnm community add <name> --vta-did <did>   (or `continue … --vta-did <did>`)"
             );
-            std::process::exit(1);
+            std::process::exit(exit::CONFIG);
         }
         match auth::connect(url_override.as_deref(), cli.transport.into(), &keyring_key).await {
-            Ok(c) => c,
-            Err(e) => {
-                vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+            Ok(c) => {
+                // A Forbidden hint names this DID's ACL entry (#2586).
+                if let Some(s) = auth::loaded_session(&keyring_key) {
+                    vta_cli_common::render::set_session_did(&s.client_did);
+                }
+                c
             }
+            Err(e) => exit::fail(e.as_ref()),
         }
     } else {
         VtaClient::new(&url)
@@ -1549,7 +1643,7 @@ async fn main() {
                         Ok(v) => Some(v),
                         Err(e) => {
                             eprintln!("Error: --admin-expires: {e}");
-                            std::process::exit(1);
+                            std::process::exit(exit::USAGE);
                         }
                     },
                     None => None,
@@ -1633,6 +1727,7 @@ async fn main() {
             AclCommands::Get { did } => acl::cmd_acl_get(&client, &did).await,
             AclCommands::Create {
                 did,
+                did_flag,
                 role,
                 label,
                 contexts,
@@ -1647,7 +1742,8 @@ async fn main() {
                     // cnm does not expose the per-entry step-up or approve flags.
                     acl::cmd_acl_create(
                         &client,
-                        did,
+                        // clap requires one of the two.
+                        did.or(did_flag).unwrap_or_default(),
                         role,
                         label,
                         contexts,
@@ -1675,6 +1771,7 @@ async fn main() {
                 contexts,
                 allowed_keys,
                 allowed_keys_unrestricted,
+                reason,
             } => {
                 // cnm exposes no approve-scope flags; pass `None` so the
                 // scope is left unchanged rather than silently cleared.
@@ -1695,10 +1792,13 @@ async fn main() {
                     None,
                     // Purposes are left unchanged.
                     None,
+                    reason.as_deref(),
                 )
                 .await
             }
-            AclCommands::Delete { did } => acl::cmd_acl_delete(&client, &did).await,
+            AclCommands::Delete { did, reason, yes } => {
+                acl::cmd_acl_delete(&client, &did, reason.as_deref(), yes).await
+            }
         },
         Commands::AuthCredential { command } => match command {
             AuthCredentialCommands::Create {
@@ -1729,9 +1829,33 @@ async fn main() {
                         include_audit,
                         output,
                         force,
-                    } => backup::cmd_export(&key, &target, include_audit, output, force).await,
-                    BackupCommands::Import { file, preview } => {
-                        backup::cmd_import(&key, &target, file, preview).await
+                        password_file,
+                    } => {
+                        backup::cmd_export(
+                            &key,
+                            &target,
+                            include_audit,
+                            output,
+                            force,
+                            password_file.as_deref(),
+                        )
+                        .await
+                    }
+                    BackupCommands::Import {
+                        file,
+                        preview,
+                        password_file,
+                        yes,
+                    } => {
+                        backup::cmd_import(
+                            &key,
+                            &target,
+                            file,
+                            preview,
+                            password_file.as_deref(),
+                            yes,
+                        )
+                        .await
                     }
                 },
                 Err(e) => Err(e),
@@ -1870,6 +1994,7 @@ async fn main() {
                 no_verify_digest,
             } => bootstrap_open(&bundle, expect_digest.as_deref(), no_verify_digest),
         },
+        Commands::Completions { .. } => unreachable!("Completions handled before start-up"),
         Commands::DidTemplates { command } => match command {
             DidTemplateCommands::Validate { file } => did_templates::cmd_validate(file),
             DidTemplateCommands::Init { kind } => did_templates::cmd_init(kind),
@@ -1891,8 +2016,15 @@ async fn main() {
                 file,
                 context,
             } => did_templates::cmd_update(&client, &name, context.as_deref(), file).await,
-            DidTemplateCommands::Delete { name, context } => {
-                did_templates::cmd_delete(&client, &name, context.as_deref()).await
+            DidTemplateCommands::Delete { name, context, yes } => {
+                match vta_cli_common::confirm::confirm_or_cancel(
+                    &format!("delete the stored template `{name}`"),
+                    yes,
+                ) {
+                    Ok(true) => did_templates::cmd_delete(&client, &name, context.as_deref()).await,
+                    Ok(false) => Ok(()),
+                    Err(e) => Err(e),
+                }
             }
             DidTemplateCommands::Export { name, context } => {
                 did_templates::cmd_export(&client, &name, context.as_deref()).await
@@ -1907,28 +2039,36 @@ async fn main() {
             KeyCommands::Create {
                 key_type,
                 derivation_path,
+                mnemonic_file,
                 mnemonic,
                 label,
                 context_id,
                 internal,
                 yes,
-            } => {
-                keys::cmd_key_create(
-                    &client,
-                    &key_type,
-                    derivation_path,
-                    mnemonic,
-                    label,
-                    context_id,
-                    internal,
-                    yes,
-                )
-                .await
-            }
+            } => match keys::read_mnemonic(mnemonic_file.as_deref(), mnemonic) {
+                Err(e) => Err(e),
+                Ok(mnemonic) => {
+                    keys::cmd_key_create(
+                        &client,
+                        &key_type,
+                        derivation_path,
+                        mnemonic.map(|m| m.to_string()),
+                        label,
+                        context_id,
+                        internal,
+                        yes,
+                    )
+                    .await
+                }
+            },
             KeyCommands::Get { key_id, secret } => {
                 keys::cmd_key_get(&client, &key_id, secret).await
             }
-            KeyCommands::Revoke { key_id } => keys::cmd_key_revoke(&client, &key_id).await,
+            KeyCommands::Revoke {
+                key_id,
+                reason,
+                yes,
+            } => keys::cmd_key_revoke(&client, &key_id, reason.as_deref(), yes).await,
             KeyCommands::Rename { key_id, new_key_id } => {
                 keys::cmd_key_rename(&client, &key_id, &new_key_id).await
             }
@@ -1942,15 +2082,23 @@ async fn main() {
                 keys::cmd_key_secrets(&client, key_ids, context).await
             }
             KeyCommands::Seeds => keys::cmd_seeds_list(&client).await,
-            KeyCommands::RotateSeed { mnemonic } => keys::cmd_seeds_rotate(&client, mnemonic).await,
+            KeyCommands::RotateSeed {
+                mnemonic_file,
+                mnemonic,
+                yes,
+            } => match keys::read_mnemonic(mnemonic_file.as_deref(), mnemonic) {
+                Ok(mnemonic) => keys::cmd_seeds_rotate(&client, mnemonic, yes).await,
+                Err(e) => Err(e),
+            },
         },
     };
 
     client.shutdown().await;
 
     if let Err(e) = result {
-        vta_cli_common::render::print_cli_error(e.as_ref());
-        std::process::exit(1);
+        // The same codes as `pnm` (#2587): 3 not found, 4 config/validation,
+        // 5 auth, 1 anything else.
+        exit::fail(e.as_ref());
     }
 }
 
@@ -2547,6 +2695,96 @@ fn print_community_local_only_notice(name: &str, client_did: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
+    /// Every command a shared hint tells a cnm operator to run parses here
+    /// (root CLAUDE.md, "Operator errors should suggest the fix"): the
+    /// per-binary Auth / Forbidden / Network hints (#2586), `--yes` on every
+    /// command `confirm` refuses without it (#2583), the secret-file flags
+    /// (#2584, #2585), the verb aliases shared with `cnm access` (#2591) and
+    /// the version / completion surface (#2592).
+    #[test]
+    fn remediation_commands_in_shared_hints_parse() {
+        use clap::Parser;
+        let commands: &[&[&str]] = &[
+            // vta-cli-common/src/render.rs
+            &["cnm", "setup"],
+            &[
+                "cnm",
+                "auth",
+                "login",
+                "--credential-bundle",
+                "b.armored",
+                "--expect-digest",
+                "00",
+            ],
+            &["cnm", "community", "list"],
+            &["cnm", "--url", "http://localhost:8100", "health"],
+            &["cnm", "acl", "get", "did:key:z6Mk"],
+            // vta-cli-common/src/commands/did_templates.rs
+            &["cnm", "did-templates", "init", "ai-agent"],
+            &["cnm", "did-templates", "create", "--file", "tpl.json"],
+            &[
+                "cnm",
+                "did-templates",
+                "create",
+                "--context",
+                "c",
+                "--file",
+                "tpl.json",
+            ],
+            // vta-cli-common/src/sealed_consumer.rs
+            &["cnm", "bootstrap", "open", "--bundle", "b.armored"],
+            // vta-cli-common/src/confirm.rs
+            &["cnm", "acl", "delete", "did:key:z6Mk", "--yes"],
+            &[
+                "cnm",
+                "acl",
+                "revoke",
+                "did:key:z6Mk",
+                "--reason",
+                "r",
+                "-y",
+            ],
+            &["cnm", "acl", "show", "did:key:z6Mk"],
+            &["cnm", "acl", "grant", "did:key:z6Mk", "--role", "reader"],
+            &[
+                "cnm",
+                "acl",
+                "create",
+                "--did",
+                "did:key:z6Mk",
+                "--role",
+                "reader",
+            ],
+            &["cnm", "keys", "revoke", "k1", "--yes"],
+            &[
+                "cnm",
+                "keys",
+                "rotate-seed",
+                "--yes",
+                "--mnemonic-file",
+                "-",
+            ],
+            &["cnm", "did-templates", "delete", "t", "--yes"],
+            &["cnm", "backup", "export", "--password-file", "-"],
+            &[
+                "cnm",
+                "backup",
+                "import",
+                "f",
+                "--password-file",
+                "p",
+                "--yes",
+            ],
+            &["cnm", "completions", "zsh"],
+            &["cnm", "-V", "community", "list"],
+        ];
+        for argv in commands {
+            if let Err(e) = super::Cli::try_parse_from(*argv) {
+                panic!("`{}` does not parse: {e}", argv.join(" "));
+            }
+        }
+    }
+
     /// The shared 429 renderer prints `cnm config update --rate-limit-… <N>`;
     /// cnm must accept exactly those flags.
     #[test]
@@ -2690,7 +2928,9 @@ mod tests {
         assert!(!requires_auth(&Commands::Backup {
             command: BackupCommands::Import {
                 file: "x.vtcbak".into(),
-                preview: true
+                preview: true,
+                password_file: None,
+                yes: false,
             }
         }));
     }
