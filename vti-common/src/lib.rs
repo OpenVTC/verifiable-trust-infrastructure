@@ -25,6 +25,9 @@ pub mod inbox;
 pub mod integrity;
 pub mod outbox_store;
 pub mod pagination;
+/// The bounded regorus engine the VTA and the VTC evaluate policy with (#2577).
+#[cfg(feature = "policy")]
+pub mod policy_engine;
 #[cfg(feature = "rate-limit")]
 pub mod rate_limit;
 #[cfg(feature = "tsp")]
