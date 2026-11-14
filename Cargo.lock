@@ -12034,10 +12034,8 @@ dependencies = [
 name = "vta-policy"
 version = "0.37.0"
 dependencies = [
- "hex",
  "serde",
  "serde_json",
- "sha2 0.11.1",
  "tempfile",
  "tokio",
  "tracing",
