@@ -1,7 +1,14 @@
 // The whole lucide set, in a module of its own so the builder loads it only when
 // someone searches or browses: the sixteen icons it offers first stay in the
 // main bundle. With it, the words lucide files each icon under (`lucide-static`,
-// pinned to the same release as `lucide-react`), so "insect" finds the bug.
+// pinned to the same release as `lucide-react`), so "insect" finds the bug. The two
+// must agree: a release adds and renames icons, and a tag file from another
+// release leaves icons without their words. Both are pinned exactly in
+// package.json, and Dependabot moves them as one group (`lucide`).
+//
+// No icon name is stored anywhere: the builder sends only the PNG it drew, so a
+// release that renames or drops an icon changes what can be chosen next, never a
+// badge already made.
 
 import { icons } from "lucide-react";
 import kebabTags from "lucide-static/tags.json";

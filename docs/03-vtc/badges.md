@@ -242,7 +242,7 @@ other badge holds, and an upload no badge takes up within 24 hours is erased.
 Someone without artwork can **build** a picture instead: *Build one from a colour and an
 icon* beside the upload, in the console's badge form and the portal's *Make a badge*. They
 choose a banner (with the badge's name on it) or a square, one of eight colours and an
-icon: sixteen are offered first, *Find an icon* searches lucide's whole set (about 1,500) by
+icon: sixteen are offered first, *Find an icon* searches lucide's whole set (about 2,000) by
 name or by meaning — the words lucide files each icon under, so "insect" finds the bug and
 "prize" the trophy — and *Browse all icons* opens every icon in a dialog to look through,
 with the same search. The set and its words load only when someone searches or browses. The browser draws it as a PNG and sends it as an ordinary upload, so the
