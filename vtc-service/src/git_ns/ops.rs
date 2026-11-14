@@ -1077,10 +1077,11 @@ async fn admin_record_history(
     ns_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let mut out = Vec::new();
-    for (_, v) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
-            continue;
-        };
+    // This namespace's git-namespace rows, through the audit index (#2599).
+    for env in
+        crate::audit_index::git_ns_operations(&state.audit_ks, &state.audit_index_ks, Some(ns_id))
+            .await?
+    {
         let AuditEvent::GitNsOperation(d) = env.event else {
             continue;
         };

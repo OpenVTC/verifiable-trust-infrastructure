@@ -15,8 +15,9 @@ use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, list_acl_entries};
 use crate::error::{AppError, TaskError};
-use crate::members::{Disposition, Member, get_member, list_members_filtered};
+use crate::members::{Disposition, Member, get_member};
 use crate::server::AppState;
+use vti_common::store::ScanOpts;
 
 /// Wire shape returned by both endpoints. Joins `members:<did>`
 /// + `acl:<did>` so a caller doesn't need a second request.
@@ -153,33 +154,111 @@ pub(crate) async fn list_members_inner(
         None => None,
     };
 
-    // Every ACL entry, read once: the join with the member rows and the role
-    // filter are both decided **before** paging, so the cursor walks only the
-    // members listed — a page is never empty while one lies further on — and
-    // `totalEstimate` is their exact count. Both used to be applied to each
-    // page after it was cut.
-    let acl: std::collections::HashMap<String, VtcAclEntry> = list_acl_entries(&state.acl_ks)
-        .await?
-        .into_iter()
-        .map(|e| (e.did.clone(), e))
-        .collect();
-    let listed = |member: &Member| match acl.get(&member.did) {
-        Some(entry) => query
-            .role
-            .as_ref()
-            .is_none_or(|filter| entry.role.to_string() == *filter),
-        None if member.removed_at.is_some() => {
-            // Expected: a Tombstone / Historical departure deletes the ACL
-            // row but retains the Member row (PII cleared, `removed_at` set)
-            // as a "who was a member" record. It legitimately has no ACL —
-            // left out of the active-member list without alarming.
+    // A member is listed when it has an ACL entry (a tombstoned / historical
+    // departure keeps its member row but not its entry) whose role matches the
+    // filter. The filter is applied **before** paging, so the cursor walks only
+    // the members listed and a page is never empty while one lies further on.
+    //
+    // Read by seek, a chunk of member rows at a time from the cursor, with the
+    // ACL row of each member read (one lookup) — never the whole member list
+    // and the whole ACL decoded on every page, which made walking every page
+    // quadratic in the community's size (#2601). The cursor is the one this
+    // listing always issued (the last member key returned), so a cursor issued
+    // before this resumes where it left off.
+    let mut opts = ScanOpts::new(crate::members::MEMBERS_PREFIX.to_vec(), MEMBER_SCAN_CHUNK);
+    if let Some(c) = &decoded_cursor {
+        opts = opts.after(c.last_key.clone());
+    }
+    let mut pager = state.members_ks.scan_pager(opts);
+    let mut page: Vec<(VtcAclEntry, Member)> = Vec::with_capacity(limit);
+    let mut last_key: Option<Vec<u8>> = None;
+    let mut more = false;
+    'walk: loop {
+        let rows = pager.next_page().await?;
+        if rows.is_empty() {
+            break;
+        }
+        let mut chunk: Vec<(Vec<u8>, Member, VtcAclEntry)> = Vec::new();
+        for (key, value) in rows {
+            let member: Member = match serde_json::from_slice(&value) {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::warn!(error = %err, "skipping unparseable member row");
+                    continue;
+                }
+            };
+            let Some(entry) = acl_row(state, &member).await? else {
+                continue;
+            };
+            if query
+                .role
+                .as_ref()
+                .is_some_and(|filter| entry.role.to_string() != *filter)
+            {
+                continue;
+            }
+            chunk.push((key, member, entry));
+        }
+        let mut entries: Vec<VtcAclEntry> = chunk.iter().map(|(_, _, e)| e.clone()).collect();
+        crate::acl::storage::resolve_entries(&state.acl_ks, &mut entries).await?;
+        for ((key, member, _), entry) in chunk.into_iter().zip(entries) {
+            if page.len() == limit {
+                more = true;
+                break 'walk;
+            }
+            page.push((entry, member));
+            last_key = Some(key);
+        }
+    }
+
+    // `totalEstimate`: the count of members listed, taken on the first page —
+    // where the console's count reads it (`limit: 1`) — and carried in the
+    // signed cursor's `snapshotId` to every page after it. Counting means
+    // reading every row's key (and, for a role filter, every entry's role), so
+    // a walk of the whole list costs one count, not one per page; a member
+    // admitted mid-walk is in the next walk's count, which is what an
+    // estimate is for.
+    let total = match &decoded_cursor {
+        Some(c) => c.snapshot_id,
+        None => count_listed(state, query.role.as_deref()).await?,
+    };
+    let total_estimate = Some(total);
+    let next_cursor = if more {
+        last_key.map(|k| Cursor::new(k, total).encode(&audit_key.key))
+    } else {
+        None
+    };
+    Ok(Paginated {
+        items: page
+            .into_iter()
+            .map(|(entry, member)| MemberResponse::from_pair(entry, member))
+            .collect(),
+        next_cursor,
+        total_estimate,
+    })
+}
+
+/// Member rows read per step while a page of `vtc/members/list` is filled.
+const MEMBER_SCAN_CHUNK: usize = 256;
+
+/// `member`'s ACL entry as stored (resolved later, for the page), or `None`
+/// when it has none — a departure that kept the member row, which is expected
+/// and quiet, or a live row with no entry, which is corruption and warned.
+async fn acl_row(state: &AppState, member: &Member) -> Result<Option<VtcAclEntry>, AppError> {
+    let raw = state
+        .acl_ks
+        .get_raw(format!("acl:{}", member.did).into_bytes())
+        .await?;
+    let Some(raw) = raw else {
+        if member.removed_at.is_some() {
+            // Expected: a Tombstone / Historical departure deletes the ACL row
+            // but retains the Member row (PII cleared, `removed_at` set) as a
+            // "who was a member" record, left out of the active-member list.
             tracing::debug!(
                 did = %member.did,
                 "skipping tombstoned/historical member (no ACL) in list response"
             );
-            false
-        }
-        None => {
+        } else {
             // A *live* member row with no ACL row is genuine out-of-band
             // corruption (e.g. an interrupted purge). Log + skip rather than
             // 500 — the page should still be returnable.
@@ -187,35 +266,56 @@ pub(crate) async fn list_members_inner(
                 did = %member.did,
                 "member row has no matching ACL entry; skipping in list response"
             );
-            false
         }
+        return Ok(None);
     };
-    let page = list_members_filtered(
-        &state.members_ks,
-        &audit_key,
-        decoded_cursor.as_ref(),
-        limit,
-        listed,
-    )
-    .await?;
-    let Paginated {
-        items: members,
-        next_cursor,
-        total_estimate,
-    } = page;
-    let items = members
+    match serde_json::from_slice::<VtcAclEntry>(&raw) {
+        Ok(e) => Ok(Some(e)),
+        Err(err) => {
+            tracing::warn!(did = %member.did, error = %err, "skipping unparseable acl entry");
+            Ok(None)
+        }
+    }
+}
+
+/// How many members `vtc/members/list` lists under `role`: member rows whose
+/// DID has an ACL entry (of that role). Keys only — no member row is decoded,
+/// and an ACL row only for its role when a role is asked about.
+async fn count_listed(state: &AppState, role: Option<&str>) -> Result<u64, AppError> {
+    let prefix = crate::members::MEMBERS_PREFIX;
+    let members: std::collections::HashSet<Vec<u8>> = state
+        .members_ks
+        .prefix_keys(prefix.to_vec())
+        .await?
         .into_iter()
-        .filter_map(|m| {
-            acl.get(&m.did)
-                .cloned()
-                .map(|entry| MemberResponse::from_pair(entry, m))
-        })
+        .map(|k| k[prefix.len()..].to_vec())
         .collect();
-    Ok(Paginated {
-        items,
-        next_cursor,
-        total_estimate,
-    })
+    let mut count = 0u64;
+    match role {
+        None => {
+            for k in state.acl_ks.prefix_keys(b"acl:".to_vec()).await? {
+                if members.contains(&k[b"acl:".len()..]) {
+                    count += 1;
+                }
+            }
+        }
+        Some(filter) => {
+            /// The one field a role count reads.
+            #[derive(Deserialize)]
+            struct RoleOnly {
+                role: VtcRole,
+            }
+            for (k, v) in state.acl_ks.prefix_iter_raw(b"acl:".to_vec()).await? {
+                if members.contains(&k[b"acl:".len()..])
+                    && serde_json::from_slice::<RoleOnly>(&v)
+                        .is_ok_and(|r| r.role.to_string() == filter)
+                {
+                    count += 1;
+                }
+            }
+        }
+    }
+    Ok(count)
 }
 
 // ---------------------------------------------------------------------------

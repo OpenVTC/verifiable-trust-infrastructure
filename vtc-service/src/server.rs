@@ -230,6 +230,9 @@ pub struct AppState {
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
     /// written by the periodic `CheckpointEmitter`.
     pub audit_checkpoint_ks: KeyspaceHandle,
+    /// Secondary index over the audit log (`crate::audit_index`): derived,
+    /// caught up from the log before every read, never backed up.
+    pub audit_index_ks: KeyspaceHandle,
     /// Durable delivery-layer outbox (D2 P1a). Backs
     /// [`vti_common::outbox_store::VtiOutboxStore`] for the messaging
     /// service's `Guaranteed` sends so delivery-critical work survives a
@@ -594,6 +597,7 @@ pub async fn run(
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
     let audit_checkpoint_ks = store.keyspace(keyspaces::AUDIT_CHECKPOINT)?;
+    let audit_index_ks = store.keyspace(keyspaces::AUDIT_INDEX)?;
     let consumed_invitations_ks = store.keyspace(keyspaces::CONSUMED_INVITATIONS)?;
     let invitations_ks = store.keyspace(keyspaces::INVITATIONS)?;
     let outbox_ks = store.keyspace(keyspaces::OUTBOX)?;
@@ -1154,6 +1158,7 @@ pub async fn run(
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
+        audit_index_ks,
         outbox_ks,
         tsp_relationships_ks,
         consumed_invitations_ks,
@@ -1200,6 +1205,22 @@ pub async fn run(
     // Any left in the old rights store move onto them now, before a git-ns
     // task is authorized from the entries (VTI-VTC-020).
     crate::git_ns::migrate::migrate_on_boot(&state).await?;
+    // The secondary indexes, backfilled for rows written before they existed
+    // (or by a version that did not keep them), before anything reads them:
+    // the ACL's authority holders (#2602) and the relationships' VRC digests
+    // (#2603).
+    let indexed = crate::acl::rebuild_authority_index(&state.acl_ks).await?;
+    tracing::debug!(indexed, "ACL authority index rebuilt");
+    let indexed =
+        crate::relationships::storage::rebuild_hash_index(&state.relationships_ks).await?;
+    tracing::debug!(indexed, "relationship digest index rebuilt");
+    // The audit index is caught up by every reader; doing it here moves the
+    // backfill of an existing log off the first request. Not fatal: a reader
+    // retries it.
+    match crate::audit_index::catch_up(&state.audit_ks, &state.audit_index_ks).await {
+        Ok(read) => tracing::debug!(read, "audit index caught up"),
+        Err(e) => warn!(error = %e, "audit index not caught up at boot; the first read will"),
+    }
     // Room rows in the earlier, ambiguous key layout move before a room is served (#2382).
     crate::rooms::migrate_room_keys(&state, "the boot migration").await?;
 

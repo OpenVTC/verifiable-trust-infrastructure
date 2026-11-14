@@ -171,6 +171,10 @@ pub const AUDIT_KEY: &str = "audit_key";
 /// detectable. Separate from [`AUDIT`] so a checkpoint is not just another row
 /// in the keyspace an adversary is assumed to control.
 pub const AUDIT_CHECKPOINT: &str = "audit_checkpoint";
+/// Secondary index over [`AUDIT`] (`crate::audit_index`): which rows are
+/// git-namespace operations, so their reads need not decode the whole log.
+/// Derived and caught up from the log before every read; never backed up.
+pub const AUDIT_INDEX: &str = "audit_index";
 /// Single-use ledger for redeemed Invitation Credentials (VICs): one
 /// row per consumed VIC `id`, written when a VIC-driven join is
 /// admitted. Read at verify time to set `Invitation.consumed`.
@@ -343,6 +347,7 @@ pub const ALL: &[&str] = &[
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
+    AUDIT_INDEX,
     CONSUMED_INVITATIONS,
     INVITATIONS,
     OUTBOX,
@@ -535,6 +540,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // would carry a response key and a nonce for an exchange no wallet can
     // finish, and evidence its applicant was told would be discarded.
     OID4VP_SESSIONS,
+    // The audit index is derived from the audit log and rebuilt from it
+    // (`crate::audit_index`); a restore clears it and the next read catches
+    // it up against the restored log.
+    AUDIT_INDEX,
     // In-flight backup transfers. A bundle is a five-minute conversation with
     // one operator about one set of staged bytes, which a restore elsewhere
     // does not have — and a backup that contained its own transfer state would
@@ -570,8 +579,8 @@ mod tests {
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
         // `AppState::elections` holds (`ELECTIONS`), plus the one
-        // `AppState::room_watches` holds (`ROOM_WATCHES`).
-        assert_eq!(ALL.len(), 61, "ALL must list every AppState keyspace");
+        // `AppState::room_watches` holds (`ROOM_WATCHES`). 49 with `audit_index_ks`.
+        assert_eq!(ALL.len(), 62, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or
