@@ -886,7 +886,7 @@
       },
       "ConfigSource": {
         "type": "string",
-        "description": "Where the **prior** value came from in the four-layer overlay.\nMirrors the variant on `vti_common::audit::ConfigSource` (M0.1.5).",
+        "description": "Where the **prior** value came from in the four-layer overlay.\nMirrors the variant on `vtc_audit::ConfigSource` (M0.1.5).",
         "enum": [
           "env",
           "db",
