@@ -113,8 +113,9 @@ describe("the badge picture builder", () => {
   });
 
   it("finds an icon by what it means, after those named for it", () => {
-    // Every icon has its tags, keyed as lucide-react names it.
-    expect(Object.keys(tags).length).toBe(Object.keys(icons).length);
+    // Every icon has its tags, keyed as lucide-react names it: lucide-react and
+    // lucide-static are one release, so the two catalogues name the same icons.
+    expect(Object.keys(tags).sort()).toEqual(Object.keys(icons).sort());
     expect(tags.Bug).toContain("insect");
     const insect = findIcons(SET, "insect").matches.map((i) => i.name);
     expect(insect).toContain("Bug");
