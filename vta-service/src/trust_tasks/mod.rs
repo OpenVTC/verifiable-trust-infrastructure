@@ -1570,7 +1570,11 @@ async fn dispatch_trust_task_inner(
                 Ok(d) => d,
                 Err(e) => return body_parse_error_response(&e.to_string()),
             };
-            (std::sync::Arc::new(received), doc, None)
+            (
+                std::sync::Arc::new(received),
+                doc,
+                None::<received::VerifiedSigner>,
+            )
         }
     };
 
