@@ -129,7 +129,6 @@ async fn verify_sd_jwt_issuer(
         &IssuerJwsVerifier { key },
         &hasher,
         &VerificationOptions::default(),
-        None,
     )
     .map_err(|e| AppError::Validation(format!("issuer signature verification failed: {e}")))?;
     if !result.is_verified() {
@@ -1692,11 +1691,11 @@ mod tests {
         let kp = affinidi_crypto::p256::generate(Some(&[0x71; 32])).unwrap();
         let key = ResolvedKey::new(
             affinidi_secrets_resolver::secrets::KeyType::P256,
-            kp.public_bytes,
+            kp.public_bytes.clone(),
         );
         (
             Es256Signer {
-                private: kp.private_bytes,
+                private: kp.private_bytes.clone(),
                 kid: kid.map(str::to_string),
             },
             key,

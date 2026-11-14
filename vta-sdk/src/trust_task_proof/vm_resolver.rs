@@ -629,8 +629,8 @@ mod tests {
         let p256 = affinidi_crypto::p256::generate(Some(&[0x61; 32])).unwrap();
         let k256 = affinidi_crypto::secp256k1::generate(Some(&[0x62; 32])).unwrap();
         for (kt, public) in [
-            (KeyType::P256, p256.public_bytes),
-            (KeyType::Secp256k1, k256.public_bytes),
+            (KeyType::P256, p256.public_bytes.clone()),
+            (KeyType::Secp256k1, k256.public_bytes.clone()),
         ] {
             let key = JwsKey::from_resolved(&ResolvedKey::new(kt, public)).unwrap();
             let did = key.did_key();

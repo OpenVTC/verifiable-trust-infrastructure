@@ -257,10 +257,10 @@ mod tests {
     fn issuer(seed: u8) -> Issuer {
         let kp = affinidi_crypto::p256::generate(Some(&[seed; 32])).unwrap();
         Issuer {
-            private: kp.private_bytes,
+            private: kp.private_bytes.clone(),
             keys: IssuerKeys(
                 format!("{ISSUER}#k1"),
-                ResolvedKey::new(KeyType::P256, kp.public_bytes),
+                ResolvedKey::new(KeyType::P256, kp.public_bytes.clone()),
             ),
         }
     }

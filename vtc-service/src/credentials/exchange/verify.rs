@@ -6,7 +6,9 @@ use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::error::SdJwtError;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::signer::JwtVerifier;
-use affinidi_sd_jwt::verifier::{VerificationOptions, verify as verify_sd_jwt};
+use affinidi_sd_jwt::verifier::{
+    KbFreshness, KeyBindingCheck, VerificationOptions, verify as verify_sd_jwt,
+};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
@@ -243,6 +245,13 @@ pub fn parse_sd_jwt_presentation(compact: &str) -> Result<ParsedSdJwtPresentatio
     })
 }
 
+/// How old a holder's kb-jwt `iat` may be when it reaches us (RFC 9901 §7.3
+/// step 5: the verifier checks the creation time is within an acceptable
+/// window). The kb-jwt is made for this presentation, bound to our nonce, so
+/// ten minutes covers a wallet's clock and a slow hand-off; 60 s of forward
+/// skew is the library's default.
+const KB_JWT_MAX_AGE_SECS: i64 = 600;
+
 /// Verify an SD-JWT-VC `vp_token` received on `credential-exchange/present`.
 ///
 /// Checks, in order: the token parses and carries a holder `kb-jwt`; the issuer
@@ -330,21 +339,23 @@ pub async fn verify_presentation_with_anchors(
     };
     let issuer_verifier = KeyJwtVerifier { key };
 
-    let holder_verifier = KeyJwtVerifier { key: holder_key };
-
-    let options = VerificationOptions {
-        verify_kb: true,
-        expected_audience: Some(expected_aud),
-        expected_nonce: Some(expected_nonce),
+    // The kb-jwt verifier is built from the `cnf.jwk` of the signature-verified
+    // issuer payload (affinidi-sd-jwt 0.2), never a key the caller picks — the
+    // same key `parse_sd_jwt_presentation` derived `holder_did` from, and
+    // `JwsKey::from_jwk` fixes the algorithm by it (#1988).
+    let holder_key_verifier = |jwk: &Value| -> Result<Box<dyn JwtVerifier>, SdJwtError> {
+        let key = JwsKey::from_jwk(jwk).map_err(|e| SdJwtError::KeyBinding(e.to_string()))?;
+        debug_assert_eq!(key.did_key(), holder_key.did_key());
+        Ok(Box::new(KeyJwtVerifier { key }))
     };
-    let result = verify_sd_jwt(
-        &sd,
-        &issuer_verifier,
-        &hasher,
-        &options,
-        Some(&holder_verifier),
-    )
-    .map_err(|e| AppError::Validation(format!("presentation verification failed: {e}")))?;
+    let options = VerificationOptions::with_key_binding(KeyBindingCheck::new(
+        expected_aud,
+        expected_nonce,
+        KbFreshness::new(now.timestamp(), KB_JWT_MAX_AGE_SECS),
+        &holder_key_verifier,
+    ));
+    let result = verify_sd_jwt(&sd, &issuer_verifier, &hasher, &options)
+        .map_err(|e| AppError::Validation(format!("presentation verification failed: {e}")))?;
     if !result.is_verified() {
         return Err(AppError::Validation(
             "holder key-binding (kb-jwt) did not verify".into(),

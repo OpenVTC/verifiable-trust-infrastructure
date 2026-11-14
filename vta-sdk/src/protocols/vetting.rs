@@ -437,12 +437,13 @@ fn against_own_schema<P: trust_tasks_rs::Payload + Serialize>(value: &P) -> Resu
     crate::schema_cache::check_payload::<P>(&json).map_err(schema_error)
 }
 
-/// Definitions compiled once (#2622), keyed by the embedded schema's address and
-/// length (a `&'static str`, so the pair names its content) and the definition.
+/// The schema text for each definition, built once (#2622) and kept for the
+/// life of the process, keyed by the embedded schema's address and length (a
+/// `&'static str`, so the pair names its content) and the definition. The set
+/// is fixed by the call sites, so the texts are leaked rather than evicted, and
+/// [`crate::schema_cache::SCHEMAS`] keeps each compiled once.
 type DefinitionKey = (usize, usize, String);
-type DefinitionCache = std::sync::RwLock<
-    std::collections::HashMap<DefinitionKey, crate::schema_cache::CompiledSchema>,
->;
+type DefinitionCache = std::sync::RwLock<std::collections::HashMap<DefinitionKey, &'static str>>;
 static DEFINITIONS: std::sync::LazyLock<DefinitionCache> =
     std::sync::LazyLock::new(Default::default);
 
@@ -460,9 +461,9 @@ pub(crate) fn against_definition<P: trust_tasks_rs::Payload>(
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .get(&key)
-        .cloned();
-    let compiled = match cached {
-        Some(compiled) => compiled,
+        .copied();
+    let schema: &'static str = match cached {
+        Some(schema) => schema,
         None => {
             let parsed: Value =
                 serde_json::from_str(embedded).map_err(|e| unavailable(&e.to_string()))?;
@@ -470,21 +471,18 @@ pub(crate) fn against_definition<P: trust_tasks_rs::Payload>(
                 .get("$defs")
                 .filter(|defs| defs.get(name).is_some())
                 .ok_or_else(|| unavailable(&format!("defines no `{name}`")))?;
-            let schema = serde_json::json!({
+            let text = serde_json::json!({
                 "$defs": defs,
                 "$ref": format!("#/$defs/{name}"),
-            });
-            let compiled =
-                crate::schema_cache::CompiledSchema::compile(&schema).map_err(schema_error)?;
-            DEFINITIONS
-                .write()
-                .unwrap_or_else(|p| p.into_inner())
-                .entry(key)
-                .or_insert(compiled)
-                .clone()
+            })
+            .to_string();
+            let mut map = DEFINITIONS.write().unwrap_or_else(|p| p.into_inner());
+            map.entry(key.clone())
+                .or_insert_with(|| Box::leak(text.into_boxed_str()));
+            map[&key]
         }
     };
-    compiled.check(json).map_err(schema_error)
+    crate::schema_cache::check(schema, json).map_err(schema_error)
 }
 
 fn against_own_definition<P: trust_tasks_rs::Payload>(
