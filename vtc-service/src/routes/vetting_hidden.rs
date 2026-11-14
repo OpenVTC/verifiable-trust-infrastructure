@@ -36,7 +36,6 @@ use crate::vetting::pcs_tasks::{
 };
 use trust_tasks_rs::TrustTask;
 use vtc_audit::{AuditEvent, HiddenVettingChangedData};
-use vti_common::auth::extractor::AuthClaims;
 
 /// What an operator asks for when they turn hidden vetting on for a criterion.
 ///
@@ -123,7 +122,7 @@ impl From<AppError> for Halted {
 /// the criterion as it is then (VTI-APV-017) — pinned to it, so another write voids the action.
 async fn settle(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     criterion_id: &str,
     summary: &str,
@@ -158,7 +157,7 @@ fn this_month() -> String {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish_hidden_vetting_core(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     criterion_id: String,
     live_periods: Option<Vec<String>>,
@@ -444,7 +443,7 @@ fn served_digest(criterion: AcceptsCriterion) -> Result<Option<String>, AppError
 /// Withdrawing a criterion that has none is a success that says so (`withdrawn: false`).
 pub(crate) async fn withdraw_hidden_vetting_core(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     criterion_id: String,
 ) -> Result<Value, Halted> {

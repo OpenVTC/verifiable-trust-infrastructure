@@ -28,7 +28,6 @@
 
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 use vti_specs::acl::{
     change_role::v0_2 as acl_change_role, grant::v0_2 as acl_grant, list::v0_3 as acl_list,
     revoke::v0_2 as acl_revoke, show::v0_2 as acl_show, update::v0_2 as acl_update,
@@ -636,7 +635,7 @@ pub(super) async fn handle_swap_key(
 /// `Critical` ([`crate::acl::admin_consent::after_reduction`]).
 pub(super) async fn settle_signed_gate(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     plan: &ops::GrantPlan,
 ) -> Result<
@@ -760,7 +759,7 @@ pub(super) async fn settle_signed_gate(
 /// The consent is spent here, so call it last before the write.
 pub(super) async fn settle_consent_gate(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     act: crate::acl::admin_consent::Act,
     subject: &str,
@@ -808,7 +807,7 @@ pub(super) async fn settle_consent_gate(
 /// two to send apart.
 pub(super) async fn settle_witness_list_gate(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     overrides: &std::collections::HashMap<String, Value>,
     how: &str,
@@ -864,7 +863,7 @@ enum Render {
 /// landed.
 async fn commit_settled(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     plan: ops::GrantPlan,
     reduced: Option<(

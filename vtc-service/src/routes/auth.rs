@@ -2035,7 +2035,7 @@ fn session_expiry(session: &Session) -> u64 {
 /// no ACL entry is visible only to an unrestricted admin.
 pub(crate) async fn list_sessions_for(
     state: &AppState,
-    actor: &AuthClaims,
+    actor_did: &str,
 ) -> Result<SessionListResponse, AppError> {
     let now = now_epoch();
     let mut visible = std::collections::HashMap::<String, bool>::new();
@@ -2051,7 +2051,7 @@ pub(crate) async fn list_sessions_for(
         let may = match visible.get(&session.did) {
             Some(may) => *may,
             None => {
-                let may = may_end_sessions_of(state, actor, &session.did).await?;
+                let may = may_end_sessions_of(state, actor_did, &session.did).await?;
                 visible.insert(session.did.clone(), may);
                 may
             }
@@ -2069,7 +2069,7 @@ pub(crate) async fn list_sessions_for(
         });
     }
     sessions.sort_by(|a, b| b.issued_at.cmp(&a.issued_at).then(a.id.cmp(&b.id)));
-    info!(caller = %actor.did, count = sessions.len(), "sessions listed");
+    info!(caller = %actor_did, count = sessions.len(), "sessions listed");
     Ok(SessionListResponse { sessions })
 }
 
@@ -2097,7 +2097,7 @@ pub(crate) enum RevokeTarget {
 /// a DID with no ACL row). Every refusal of this form is audited (item 7).
 pub(crate) async fn revoke_sessions_task(
     state: &AppState,
-    actor: &AuthClaims,
+    actor_did: &str,
     target: RevokeTarget,
     reason: Option<String>,
 ) -> Result<RevokeSessionResponse, AppError> {
@@ -2108,9 +2108,9 @@ pub(crate) async fn revoke_sessions_task(
             let Some(session) = get_session(sessions, &session_id).await? else {
                 return Ok(none());
             };
-            if !may_end_sessions_of(state, actor, &session.did).await? {
+            if !may_end_sessions_of(state, actor_did, &session.did).await? {
                 info!(
-                    caller = %actor.did,
+                    caller = %actor_did,
                     target_did = %session.did,
                     "session revocation outside the caller's authority, answered as absent"
                 );
@@ -2120,7 +2120,7 @@ pub(crate) async fn revoke_sessions_task(
             if let Some(writer) = state.audit_writer.as_ref() {
                 writer
                     .write(
-                        &actor.did,
+                        actor_did,
                         Some(&session.did),
                         AuditEvent::SessionRevoked(SessionRevokedData {
                             session_id: Some(session_id.clone()),
@@ -2130,13 +2130,13 @@ pub(crate) async fn revoke_sessions_task(
                     )
                     .await?;
             }
-            info!(caller = %actor.did, session_id = %session_id, "session revoked");
+            info!(caller = %actor_did, session_id = %session_id, "session revoked");
             Ok(RevokeSessionResponse { revoked_count: 1 })
         }
         RevokeTarget::Subject(subject) => {
-            if !may_end_sessions_of(state, actor, &subject).await? {
+            if !may_end_sessions_of(state, actor_did, &subject).await? {
                 info!(
-                    caller = %actor.did,
+                    caller = %actor_did,
                     target_did = %subject,
                     "session revocation by subject refused: outside the caller's authority"
                 );
@@ -2145,7 +2145,7 @@ pub(crate) async fn revoke_sessions_task(
                 if let Some(writer) = state.audit_writer.as_ref() {
                     writer
                         .write(
-                            &actor.did,
+                            actor_did,
                             Some(&subject),
                             AuditEvent::SessionRevocationRefused(SessionRevocationRefusedData {
                                 reason,
@@ -2163,7 +2163,7 @@ pub(crate) async fn revoke_sessions_task(
             {
                 writer
                     .write(
-                        &actor.did,
+                        actor_did,
                         Some(&subject),
                         AuditEvent::SessionRevoked(SessionRevokedData {
                             session_id: None,
@@ -2173,7 +2173,7 @@ pub(crate) async fn revoke_sessions_task(
                     )
                     .await?;
             }
-            info!(caller = %actor.did, target_did = %subject, revoked, "sessions revoked by DID");
+            info!(caller = %actor_did, target_did = %subject, revoked, "sessions revoked by DID");
             Ok(RevokeSessionResponse {
                 revoked_count: revoked,
             })
@@ -2189,13 +2189,13 @@ pub(crate) async fn revoke_sessions_task(
 /// out an administrator wider than itself.
 async fn may_end_sessions_of(
     state: &AppState,
-    actor: &AuthClaims,
+    actor_did: &str,
     subject: &str,
 ) -> Result<bool, AppError> {
-    if actor.did == subject {
+    if actor_did == subject {
         return Ok(true);
     }
-    let Some(actor_entry) = get_acl_entry(&state.acl_ks, &actor.did).await? else {
+    let Some(actor_entry) = get_acl_entry(&state.acl_ks, actor_did).await? else {
         return Ok(false);
     };
     if !actor_entry.can(crate::acl::Capability::SessionsRevoke, None) {

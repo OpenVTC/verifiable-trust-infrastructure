@@ -75,7 +75,10 @@ pub fn auth_role_for(entry: &VtcAclEntry) -> Result<Role, AppError> {
 /// (**VTI-VTC-010**). That makes every administrator's session claims read as
 /// unscoped to the shared `vti_common` helpers — which is why **no gate in this
 /// service may be a claims check**. Each operation asks the capability it needs
-/// of the signer's live entry ([`require_capability`]).
+/// of the signer's live entry ([`require_capability`]). A signed administrative
+/// document is authorized as a [`super::AdminActor`], not as claims: it carries
+/// the entry and answers `can`, and nothing role-shaped (#2580). This function
+/// remains for the console and portal session doors (`routes::auth`).
 pub async fn resolve_auth_role(
     acl_ks: &KeyspaceHandle,
     did: &str,

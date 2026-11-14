@@ -247,7 +247,7 @@ async fn as_capable_claims<P>(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
     cap: crate::acl::Capability,
-) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome>
+) -> Result<crate::acl::AdminActor, TrustTaskOutcome>
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
@@ -281,7 +281,7 @@ fn stated_requirements(c: &crate::schemas::AcceptsCriterion) -> Value {
 /// to it in the meantime voids the action.
 async fn settle_criteria_gate(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     id: &str,
     summary: &str,
@@ -302,7 +302,7 @@ async fn settle_criteria_gate(
 /// too, which `vtc/vetting/hidden/{publish,withdraw}` settle before they write.
 pub(crate) async fn settle_criterion_consent(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     act: crate::acl::admin_consent::Act,
     id: &str,

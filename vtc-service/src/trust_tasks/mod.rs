@@ -1983,9 +1983,9 @@ async fn resolve_holder(
 ///   row, never is. A console key therefore cannot authenticate at all, let
 ///   alone reach the enrolment door. `tests/admin_console_keys.rs::
 ///   a_console_key_gains_no_bearer_authority` pins that.
-/// - **It cannot spend a session's step-up, or make a gesture.** These claims
-///   carry `session_id: ""` (the `Default`), so
-///   `AuthClaims::require_fresh_step_up` finds no session and refuses. A verb
+/// - **It cannot spend a session's step-up, or make a gesture.** An
+///   [`crate::acl::AdminActor`] carries no session at all, so there is no
+///   session step-up to spend (#2580). A verb
 ///   on this door that confers administrative authority (`acl/grant`) asks
 ///   [`crate::acl::bound_step_up`] instead, for a gesture bound to that one
 ///   operation. A delegated key can *redeem* such a gesture — it acts as its
@@ -1995,7 +1995,7 @@ async fn admin_signer(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
-) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome> {
+) -> Result<crate::acl::AdminActor, TrustTaskOutcome> {
     let Some(signer) = ctx.verified_signer.clone() else {
         return Err(reject_with(doc, RejectReason::ProofRequired));
     };
@@ -2015,7 +2015,9 @@ async fn admin_signer(
     {
         // Resolve the delegating admin's row *before* stamping last-used, so
         // the stamp records an authorized use rather than an attempt.
-        let claims = resolve_admin_claims(state, doc, &delegation.admin_did).await?;
+        let actor = resolve_admin_actor(state, doc, &delegation.admin_did)
+            .await?
+            .through_console_key(signer.as_str());
         crate::acl::console_key::touch_last_used(&state.console_keys_ks, &delegation).await;
         tracing::info!(
             console_did = %signer,
@@ -2023,14 +2025,14 @@ async fn admin_signer(
             task = %doc.type_uri,
             "authorizing a signed document under a console-key delegation"
         );
-        return Ok(claims);
+        return Ok(actor);
     }
 
     // Not delegated, or delegated and revoked/expired. Falls through to the
     // ordinary resolve, so the refusal is the same `permissionDenied` an
     // unknown signer has always got — a distinct code here would tell a prober
     // which DIDs are, or once were, console keys.
-    resolve_admin_claims(state, doc, &signer).await
+    resolve_admin_actor(state, doc, &signer).await
 }
 
 /// [`admin_signer`], held to **the capability the operation needs**
@@ -2039,21 +2041,22 @@ async fn admin_signer(
 /// The capability is read from the acting administrator's live entry — the
 /// signer's own, or the delegating administrator's for a console key — at
 /// execution time, through the one authorization question,
-/// [`crate::acl::VtcAclEntry::can`]. Never from the claims: every
-/// administrator's claims look alike (`crate::acl::resolve_auth_role`).
-/// `resource` narrows the question to one resource (`None` = community-wide).
+/// [`crate::acl::VtcAclEntry::can`] ([`crate::acl::AdminActor::can`]). The
+/// entry [`admin_signer`] read is the one asked: it is not read a second time
+/// (#2580). `resource` narrows the question to one resource (`None` =
+/// community-wide).
 pub(crate) async fn capable_signer(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
     cap: crate::acl::Capability,
     resource: Option<&crate::acl::ResourceQualifier>,
-) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome> {
-    let claims = admin_signer(state, ctx, doc).await?;
-    crate::acl::require_capability(&state.acl_ks, &claims.did, cap, resource)
-        .await
+) -> Result<crate::acl::AdminActor, TrustTaskOutcome> {
+    let actor = admin_signer(state, ctx, doc).await?;
+    actor
+        .require(cap, resource)
         .map_err(|e| app_error_to_reject(doc, &e))?;
-    Ok(claims)
+    Ok(actor)
 }
 
 /// The administrative verbs a suspended subject may still send: reading the
@@ -2066,16 +2069,22 @@ const SUSPENDED_MAY_SEND: &[&str] = &[
     action_tasks::CANCEL_TYPE,
 ];
 
-/// Read `did`'s ACL row and shape it into the claims the admin verbs take.
+/// Read `did`'s ACL row and admit it as the [`crate::acl::AdminActor`] the
+/// admin verbs take.
 ///
 /// Split out of [`admin_signer`] because the delegated arm needs the identical
 /// resolution, and "identical" has to be structural rather than remembered.
-async fn resolve_admin_claims(
+///
+/// Not a synthetic `AuthClaims` any more (#2580): the VTC has no contexts, so
+/// such a value read as unscoped — a super-admin — to every shared
+/// `vti_common` helper. The actor carries the entry and answers `can`, and
+/// nothing role-shaped.
+async fn resolve_admin_actor(
     state: &AppState,
     doc: &TrustTask<Value>,
     did: &str,
-) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome> {
-    let (role, allowed_contexts) = crate::acl::resolve_auth_role(&state.acl_ks, did)
+) -> Result<crate::acl::AdminActor, TrustTaskOutcome> {
+    let actor = crate::acl::AdminActor::resolve(&state.acl_ks, did)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;
     // A subject whose reduction is cooling off is suspended
@@ -2090,12 +2099,7 @@ async fn resolve_admin_claims(
     {
         return Err(app_error_to_reject(doc, &s.refusal(did)));
     }
-    Ok(vti_common::auth::extractor::AuthClaims {
-        did: did.to_string(),
-        role,
-        allowed_contexts,
-        ..Default::default()
-    })
+    Ok(actor)
 }
 
 // Validate a payload against its published schema and hand back the generated

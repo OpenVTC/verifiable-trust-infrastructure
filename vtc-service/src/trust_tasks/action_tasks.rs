@@ -18,7 +18,6 @@
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::trust_task_next_step::v0_1 as next_step;
 use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 use vti_specs::task_consent::decision::v0_2 as decision;
 use vti_specs::vtc::admin::actions::{
     acknowledge::v0_3 as acknowledge, cancel::v0_3 as cancel, list::v0_3 as list,
@@ -70,7 +69,7 @@ async fn administrator(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
     not_administrator: &str,
-) -> Result<(AuthClaims, bool), TrustTaskOutcome> {
+) -> Result<(crate::acl::AdminActor, bool), TrustTaskOutcome> {
     // A member of the community is told what they are not, under the task's
     // own code, rather than the generic refusal a stranger gets.
     if let Some(signer) = ctx.verified_signer.as_deref()

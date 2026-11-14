@@ -360,7 +360,7 @@ pub(crate) async fn revoke_session_elevation(
 /// invite is touched.
 pub async fn admin_list(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor: &crate::acl::AdminActor,
     payload: &admin_list::Payload,
 ) -> Result<admin_list::Response, TaskError> {
     use admin_list::error_codes as codes;

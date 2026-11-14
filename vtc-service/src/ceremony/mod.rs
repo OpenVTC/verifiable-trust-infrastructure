@@ -83,7 +83,8 @@ pub use facts::{
 pub use invariant::{Invariant, InvariantViolation};
 pub use orchestrate::{
     LeaveOutcome, RoleChangeOutcome, RoleChangeRefusal, RoleChangeResult, StepUpSource,
-    purge_member, remove_inner, role_change_via_bound_step_up, role_change_via_pipeline,
+    purge_member, remove_inner, role_change_as, role_change_via_bound_step_up,
+    role_change_via_pipeline,
 };
 pub use verdict::{Allow, Deny, Refer, RequestMore, Verdict};
 pub use verify::{VerifiedFacts, VerifyError};

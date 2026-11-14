@@ -33,7 +33,6 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vtc_audit::{AuditEvent, RoomStorageChangedData};
-use vti_common::auth::extractor::AuthClaims;
 use vti_common::blob_store::{BlobKey, PROBE_PREFIX};
 use vti_rooms::blobs::{
     ConfigHoldings, Migration, MigrationRequest, MigrationStart, MigrationState,
@@ -142,7 +141,7 @@ pub(super) async fn rooms_admin(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
-) -> Result<AuthClaims, TrustTaskOutcome> {
+) -> Result<crate::acl::AdminActor, TrustTaskOutcome> {
     let actor = admin_signer(state, ctx, doc).await?;
     crate::acl::require_capability(&state.acl_ks, &actor.did, Capability::RoomsAdmin, None)
         .await

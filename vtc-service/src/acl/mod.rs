@@ -1,3 +1,4 @@
+pub mod actor;
 pub mod admin;
 pub mod admin_consent;
 pub mod appointment;
@@ -17,6 +18,7 @@ pub mod roles;
 pub mod single_admin;
 pub mod storage;
 
+pub use actor::{AdminActor, MemberSigner};
 pub use capability::{
     AdminAuthority, AdminRole, CapRef, Capability, CapabilityGrant, CapabilityScope,
     ResourceQualifier, RoleCeilings, VtcActScope,

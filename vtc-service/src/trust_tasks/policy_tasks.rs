@@ -28,7 +28,6 @@
 use serde_json::Value;
 use trust_tasks_rs::{Payload, TrustTask};
 use uuid::Uuid;
-use vti_common::auth::extractor::AuthClaims;
 use vti_specs::did_management::did::register::v0_1 as did_register;
 use vti_specs::policy::{
     activate::v0_1 as policy_activate, active::v0_1 as policy_active, get::v0_1 as policy_get,
@@ -90,7 +89,7 @@ async fn admin_with<P>(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
-) -> Result<(AuthClaims, P), TrustTaskOutcome>
+) -> Result<(crate::acl::AdminActor, P), TrustTaskOutcome>
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
@@ -286,7 +285,7 @@ async fn require_policy_admin(
 /// gesture stands in, at `Critical` ([`super::acl_tasks::settle_consent_gate`]).
 async fn gate_authority_policy(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     purpose: PolicyPurpose,
     verb: &str,

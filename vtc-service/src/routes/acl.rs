@@ -44,7 +44,7 @@ use crate::acl::{
     AdminAuthority, AdminRole, CapRef, Capability, CapabilityScope, VtcAclEntry, VtcActScope,
     VtcRole, delete_acl_entry, get_acl_entry, store_acl_entry,
 };
-use crate::auth::{AuthClaims, session::now_epoch};
+use crate::auth::session::now_epoch;
 use crate::error::{AppError, TaskError};
 use crate::members::get_member;
 use crate::server::AppState;
@@ -1401,7 +1401,7 @@ pub(crate) enum RoleSetOutcome {
 /// applies the move at once and audits it.
 pub(crate) async fn set_community_role(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     prior: &VtcAclEntry,
     to_role: &VtcRole,
     reason: Option<&str>,
@@ -1490,7 +1490,9 @@ pub(crate) async fn set_community_role(
                     AuditEvent::AdminPromoted(AdminPromotedData {
                         previous_role: result.previous_role.clone(),
                         authorising_credential_id: String::new(),
-                        authorising_session_id: actor.session_id.clone(),
+                        // A signed document is not a session (#2580): there was
+                        // never a session to name here.
+                        authorising_session_id: String::new(),
                     }),
                 )
                 .await?;

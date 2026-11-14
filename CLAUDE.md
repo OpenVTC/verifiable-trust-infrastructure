@@ -532,6 +532,11 @@ These are load-bearing — know they exist before adjusting nearby code.
   administrative role as a ceiling, explicit `act`, capabilities with resource
   qualifiers — `docs/05-design-notes/vtc-admin-roles.md`), and every VTC gate
   asks `VtcAclEntry::can(capability, resource)`, never a session's claims.
+  A signed administrative document resolves to `vtc_service::acl::AdminActor`
+  (`admin_signer` / `capable_signer`), which carries the live entry and
+  exposes `can()` and nothing role-shaped; never hand VTC code an
+  `AuthClaims` for an administrator — with no contexts it reads as a
+  super-admin to every `vti_common` helper (#2580).
 - **Key custody: choosing a derivation path is holding a key.** Every key is
   a pure function of the seed and a path, so a gate that checks the caller's
   context but lets the caller name the path (or the key id) gates nothing

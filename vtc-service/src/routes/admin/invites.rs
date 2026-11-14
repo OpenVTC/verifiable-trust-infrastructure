@@ -31,7 +31,6 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
 use vtc_audit::{AdminInviteData, AuditEvent};
-use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
@@ -195,7 +194,7 @@ pub(crate) const PASSKEY_INVITATION_SUBJECT: &str = "urn:openvtc:vtc:admin-invit
 /// invite costs anything.
 pub(crate) async fn check_invite(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     req: &CreateInviteRequest,
 ) -> Result<InvitePlan, TaskError> {
     if let Some(did) = req.did.as_deref()
@@ -294,7 +293,7 @@ pub(crate) async fn check_invite(
 /// granting invite costs.
 pub(crate) async fn commit_invite(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     req: CreateInviteRequest,
     plan: InvitePlan,
 ) -> Result<CreateInviteResponse, TaskError> {
