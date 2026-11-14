@@ -594,8 +594,14 @@ pub async fn candidates(
 /// What the candidate set is built from, as it stands now; `None` while a
 /// write to any of its keyspaces is in flight (nothing may be cached then).
 async fn candidate_inputs(state: &AppState) -> Option<CandidateInputs> {
+    // A build without `webvh` has no `did:webvh` records and so no candidates
+    // (see [`candidates`]); there is no keyspace to track.
+    #[cfg(feature = "webvh")]
+    let webvh = state.webvh_ks.cache_ticket()?;
+    #[cfg(not(feature = "webvh"))]
+    let webvh = 0;
     let tickets = [
-        state.webvh_ks.cache_ticket()?,
+        webvh,
         state.acl_ks.cache_ticket()?,
         state.contexts_ks.cache_ticket()?,
         state.collection_ks.cache_ticket()?,
