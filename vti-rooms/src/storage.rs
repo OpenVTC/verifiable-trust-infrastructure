@@ -1088,6 +1088,9 @@ pub enum CursorError {
     NotIssued(String),
     /// A cursor this host issued under the other [`RecordOrder`].
     OtherOrder(String),
+    /// A cursor this host issued under another `sinceVersion` or `beforeVersion`
+    /// (`rooms/records/list/0.8`).
+    OtherBounds(String),
 }
 
 impl std::fmt::Display for CursorError {
@@ -1102,6 +1105,12 @@ impl std::fmt::Display for CursorError {
                 f,
                 "cursor `{c}` was issued under the other `order`; continue a listing with \
                  the `order` it began with, or start again without a cursor"
+            ),
+            Self::OtherBounds(c) => write!(
+                f,
+                "cursor `{c}` was issued under another `sinceVersion` or `beforeVersion`; \
+                 continue a listing with the bounds it began with, or start again without a \
+                 cursor"
             ),
         }
     }
@@ -1133,6 +1142,78 @@ pub fn decode_cursor(cursor: &str, order: RecordOrder) -> Result<u64, CursorErro
         .map_err(|_| CursorError::NotIssued(cursor.to_string()))?;
     if issued_under != order {
         return Err(CursorError::OtherOrder(cursor.to_string()));
+    }
+    Ok(version)
+}
+
+/// A listing's version bounds (`rooms/records/list/0.8`): `since_version` from below and
+/// `before_version` from above, both exclusive, under either [`RecordOrder`].
+///
+/// A cursor issued for a bounded listing names its bounds, and is accepted only under the
+/// same ones ([`decode_bounded_cursor`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VersionBounds {
+    /// Only records whose current version is above this.
+    pub since_version: Option<u64>,
+    /// Only records whose current version is below this.
+    pub before_version: Option<u64>,
+}
+
+impl VersionBounds {
+    /// Whether no record can lie in the band: `beforeVersion <= sinceVersion + 1`
+    /// (`rooms/records/list/0.8`: an empty page, not an error).
+    pub fn is_empty(&self) -> bool {
+        match self.before_version {
+            Some(before) => before <= self.since_version.unwrap_or(0).saturating_add(1),
+            None => false,
+        }
+    }
+}
+
+/// A cursor for a bounded listing: [`encode_cursor`]'s position and order, then `s<since>`
+/// and `b<before>` for the bounds it was issued under, each only when present. A listing
+/// with neither bound issues exactly the cursor 0.7 does.
+fn encode_bounded_cursor(version: u64, order: RecordOrder, bounds: VersionBounds) -> String {
+    let mut c = encode_cursor(version, order);
+    if let Some(s) = bounds.since_version {
+        c.push_str(&format!("s{s}"));
+    }
+    if let Some(b) = bounds.before_version {
+        c.push_str(&format!("b{b}"));
+    }
+    c
+}
+
+/// The version a bounded listing's cursor continues from, if it is this host's and was
+/// issued under `order` **and** `bounds` (`rooms/records/list/0.8`: a cursor issued under
+/// another `order`, `sinceVersion` or `beforeVersion` is `invalidCursor`).
+pub fn decode_bounded_cursor(
+    cursor: &str,
+    order: RecordOrder,
+    bounds: VersionBounds,
+) -> Result<u64, CursorError> {
+    let not_issued = || CursorError::NotIssued(cursor.to_string());
+    // `<o><N>[s<S>][b<B>]`, each number digits only.
+    let digits = |s: &str| -> Result<u64, CursorError> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(not_issued());
+        }
+        s.parse::<u64>().map_err(|_| not_issued())
+    };
+    let (head, before) = match cursor.split_once('b') {
+        Some((head, b)) => (head, Some(digits(b)?)),
+        None => (cursor, None),
+    };
+    let (position, since) = match head.split_once('s') {
+        Some((p, s)) => (p, Some(digits(s)?)),
+        None => (head, None),
+    };
+    let version = decode_cursor(position, order).map_err(|e| match e {
+        CursorError::NotIssued(_) => not_issued(),
+        _ => CursorError::OtherOrder(cursor.to_string()),
+    })?;
+    if since != bounds.since_version || before != bounds.before_version {
+        return Err(CursorError::OtherBounds(cursor.to_string()));
     }
     Ok(version)
 }
@@ -1212,6 +1293,65 @@ pub async fn list_records_page_in(
     all.truncate(page);
     let cursor = more
         .then(|| all.last().map(|r| encode_cursor(r.version, order)))
+        .flatten();
+    Ok(Page {
+        records: all,
+        cursor,
+    })
+}
+
+/// One page of a room's records in `order` within `bounds`, with a cursor bound to the
+/// order and the bounds (`rooms/records/list/0.8`).
+///
+/// `bounds.before_version` is an exclusive upper bound on every page, beside
+/// `since_version` from below; when no version can lie between them the page is empty,
+/// not an error. Newest first, a page's upper bound is the lower of the cursor's position
+/// and `before_version`; oldest first, the walk stops at `before_version`. Both are seeks on
+/// the room's version index, so "load older" from a version reads only the rows it returns.
+pub async fn list_records_bounded(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    key_prefix: Option<&str>,
+    bounds: VersionBounds,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+    order: RecordOrder,
+) -> Result<Page, AppError> {
+    let position = cursor
+        .map(|c| decode_bounded_cursor(c, order, bounds))
+        .transpose()?;
+    if bounds.is_empty() {
+        return Ok(Page {
+            records: Vec::new(),
+            cursor: None,
+        });
+    }
+    let page = limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
+    let since = bounds.since_version;
+    let (above, below) = match order {
+        RecordOrder::OldestFirst => (
+            match position {
+                Some(after) => Some(after.max(since.unwrap_or(0))),
+                None => since,
+            },
+            bounds.before_version,
+        ),
+        RecordOrder::NewestFirst => (
+            since,
+            match (position, bounds.before_version) {
+                (Some(p), Some(b)) => Some(p.min(b)),
+                (p, b) => p.or(b),
+            },
+        ),
+    };
+    let mut all = index::page(records, room_id, key_prefix, above, below, order, page + 1).await?;
+    let more = all.len() > page;
+    all.truncate(page);
+    let cursor = more
+        .then(|| {
+            all.last()
+                .map(|r| encode_bounded_cursor(r.version, order, bounds))
+        })
         .flatten();
     Ok(Page {
         records: all,
@@ -2035,6 +2175,157 @@ mod tests {
         let mut up = versions(&up);
         up.reverse();
         assert_eq!(down, up);
+    }
+
+    async fn bounded(
+        rec: &KeyspaceHandle,
+        since: Option<u64>,
+        before: Option<u64>,
+        cursor: Option<&str>,
+        limit: usize,
+        order: RecordOrder,
+    ) -> Result<Page, AppError> {
+        list_records_bounded(
+            rec,
+            "r1",
+            None,
+            VersionBounds {
+                since_version: since,
+                before_version: before,
+            },
+            cursor,
+            Some(limit),
+            order,
+        )
+        .await
+    }
+
+    /// `rooms/records/list/0.8`: `beforeVersion` is an exclusive upper bound on every page,
+    /// so "load older" from the lowest version a reader holds pages down from just below it
+    /// — no cursor kept between the two — and to the room's first record.
+    #[tokio::test]
+    async fn before_version_loads_older_newest_first() {
+        let (_d, _rooms, rec) = room_of(9).await;
+        let head = bounded(&rec, None, None, None, 3, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&head), [9, 8, 7]);
+        // The app restarted and lost the cursor; it holds versions 7 – 9.
+        let older = bounded(&rec, None, Some(7), None, 3, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&older), [6, 5, 4]);
+        let c = older.cursor.clone().expect("three remain");
+        let rest = bounded(&rec, None, Some(7), Some(&c), 3, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&rest), [3, 2, 1]);
+        assert!(rest.cursor.is_none());
+    }
+
+    /// Under oldest first the bound applies too: the band (since, before), ascending.
+    #[tokio::test]
+    async fn before_version_bounds_an_oldest_first_listing() {
+        let (_d, _rooms, rec) = room_of(9).await;
+        let first = bounded(&rec, Some(2), Some(7), None, 2, RecordOrder::OldestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&first), [3, 4]);
+        let c = first.cursor.clone().expect("more below the bound");
+        let second = bounded(
+            &rec,
+            Some(2),
+            Some(7),
+            Some(&c),
+            2,
+            RecordOrder::OldestFirst,
+        )
+        .await
+        .unwrap();
+        assert_eq!(versions(&second), [5, 6]);
+        assert!(
+            second.cursor.is_none(),
+            "the bound is the end of this listing, though the room goes on"
+        );
+    }
+
+    /// `beforeVersion <= sinceVersion + 1` leaves no version in the band: an empty page,
+    /// not an error.
+    #[tokio::test]
+    async fn an_empty_band_is_an_empty_page() {
+        let (_d, _rooms, rec) = room_of(5).await;
+        for (since, before) in [(Some(3), 4), (Some(3), 3), (Some(4), 2), (None, 1)] {
+            for order in [RecordOrder::OldestFirst, RecordOrder::NewestFirst] {
+                let page = bounded(&rec, since, Some(before), None, 10, order)
+                    .await
+                    .unwrap();
+                assert!(page.records.is_empty(), "{since:?}..{before}");
+                assert!(page.cursor.is_none());
+            }
+        }
+        let one = bounded(&rec, Some(3), Some(5), None, 10, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&one), [4], "since + 2 leaves exactly one version");
+    }
+
+    /// A cursor belongs to the order, `sinceVersion` and `beforeVersion` it was issued
+    /// under; under any other it is refused (`invalidCursor`), never read as a position in
+    /// another band. A listing with neither bound issues 0.7's cursor.
+    #[tokio::test]
+    async fn a_bounded_cursor_is_refused_under_other_bounds() {
+        let (_d, _rooms, rec) = room_of(9).await;
+        let page = bounded(&rec, Some(1), Some(8), None, 2, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        let c = page.cursor.expect("more remain");
+        assert_eq!(c, "n6s1b8");
+        for (since, before) in [
+            (None, Some(8)),
+            (Some(1), None),
+            (Some(2), Some(8)),
+            (Some(1), Some(9)),
+        ] {
+            assert!(
+                matches!(
+                    decode_bounded_cursor(
+                        &c,
+                        RecordOrder::NewestFirst,
+                        VersionBounds {
+                            since_version: since,
+                            before_version: before
+                        }
+                    ),
+                    Err(CursorError::OtherBounds(_))
+                ),
+                "{since:?} {before:?}"
+            );
+        }
+        let same = VersionBounds {
+            since_version: Some(1),
+            before_version: Some(8),
+        };
+        assert!(matches!(
+            decode_bounded_cursor(&c, RecordOrder::OldestFirst, same),
+            Err(CursorError::OtherOrder(_))
+        ));
+        for bad in ["n6s1b", "n6sb8", "x6", "n6b8s1", "n+6"] {
+            assert!(
+                matches!(
+                    decode_bounded_cursor(bad, RecordOrder::NewestFirst, same),
+                    Err(CursorError::NotIssued(_)) | Err(CursorError::OtherBounds(_))
+                ),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            decode_bounded_cursor(&c, RecordOrder::NewestFirst, same).unwrap(),
+            6
+        );
+        let unbounded = bounded(&rec, None, None, None, 2, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(unbounded.cursor.as_deref(), Some("n8"), "0.7's shape");
     }
 
     /// The head's three values describe one set, and they are read from it.

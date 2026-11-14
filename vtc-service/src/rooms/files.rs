@@ -32,12 +32,14 @@ use vti_specs::rooms::records::get::v0_2 as get_v2;
 use vti_specs::rooms::records::get::v0_3 as get_v3;
 use vti_specs::rooms::records::get::v0_4 as get_v4;
 use vti_specs::rooms::records::list::v0_6 as list_v6;
+#[allow(deprecated)] // still served beside list/0.8 (trust-tasks-tf #1289)
 use vti_specs::rooms::records::list::v0_7 as list_v7;
+use vti_specs::rooms::records::list::v0_8 as list_v8;
 use vti_specs::rooms::usage::v0_1 as rooms_usage;
 use vti_specs::rooms::{
     epoch::chain::v0_2 as epoch_chain_v2, epoch::prune::v0_2 as epoch_prune_v2,
-    info::v0_3 as info_v3, info::v0_4 as info_v4, records::list::v0_5 as list_v5,
-    records::prune::v0_2 as records_prune,
+    info::v0_3 as info_v3, info::v0_4 as info_v4, info::v0_5 as info_v5,
+    records::list::v0_5 as list_v5, records::prune::v0_2 as records_prune,
 };
 
 use super::handlers::{RoomCtx, charged, now, presenter_and_verifier};
@@ -543,6 +545,7 @@ pub(crate) async fn handle_list_records_v6(
 
 /// `rooms/records/list/0.7`: 0.6, oldest or newest first, its cursor bound to the order it
 /// was issued under — refused as `invalidCursor` under the other (trust-tasks-tf #1088).
+#[allow(deprecated)] // still served beside list/0.8 (trust-tasks-tf #1289)
 pub(crate) async fn handle_list_records_v7(
     doc: TrustTask<list_v7::Payload>,
     ctx: RoomCtx,
@@ -560,6 +563,28 @@ pub(crate) async fn handle_list_records_v7(
         Err(o) => return o,
     };
     super::handlers::list_records(&doc, &ctx, req, super::handlers::ListAt::V7(order)).await
+}
+
+/// `rooms/records/list/0.8`: 0.7, and an exclusive `beforeVersion` under either order; its
+/// cursor bound to the order and both bounds — refused as `invalidCursor` under any other
+/// (trust-tasks-tf #1289).
+pub(crate) async fn handle_list_records_v8(
+    doc: TrustTask<list_v8::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (at, v0_1) = match vti_rooms::record_tasks::list_v8_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(&doc, r),
+    };
+    let req: ListRecordsBody = match as_v0_1(&doc, v0_1) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    super::handlers::list_records(&doc, &ctx, req, at).await
 }
 
 /// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the record's blobs.
@@ -645,7 +670,52 @@ pub(crate) async fn handle_create_v3(doc: TrustTask<Value>, ctx: RoomCtx) -> Tru
     super::handlers::create_room(&doc, &ctx, &req, retention, Some(delay)).await
 }
 
+/// The limits this community advertises in `rooms/info/0.5` (trust-tasks-tf #1289).
+///
+/// - **`maxRecordDocumentBytes`**: the size gate's limit for the newest `rooms/records/put`
+///   served ([`crate::trust_tasks::size::max_document_bytes`]). No served put version
+///   declares `maxDocumentBytes`, so it is the spine's default, 65,536 bytes — below the
+///   2,097,152 that put 0.6 declares, which is why it MUST be stated.
+/// - **`maxChunkSize`**: an upload chunk is admitted at its own size, charged to the room's
+///   transfer budget on every transport (#2515), so the transfer ceiling.
+pub(crate) fn host_limits() -> vti_rooms::signal_delay::HostLimits {
+    vti_rooms::signal_delay::HostLimits {
+        max_record_document_bytes: Some(crate::trust_tasks::size::max_document_bytes(
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+        ) as u64),
+        max_chunk_size: Some(vti_rooms::signal_delay::MAX_CHUNK_SIZE),
+    }
+}
+
+/// `rooms/info/0.5`. Needs `read`: 0.4's answer, and this community's own limits
+/// ([`host_limits`]).
+pub(crate) async fn handle_info_v5(
+    doc: TrustTask<info_v5::Payload>,
+    ctx: RoomCtx,
+) -> TrustTaskOutcome {
+    let payload = match payload_json(&doc) {
+        Ok(p) => p,
+        Err(o) => return o,
+    };
+    let (room, authorized) = match authorize(&doc, &ctx, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(
+        &doc,
+        vti_rooms::signal_delay::info_v5(
+            &ctx.state.room_files,
+            &room,
+            &authorized,
+            &payload,
+            host_limits(),
+        )
+        .await,
+    )
+}
+
 /// `rooms/info/0.4`. Needs `read`: 0.3's answer, and the room's signal delay.
+#[allow(deprecated)] // still served beside info/0.5 (trust-tasks-tf #1289)
 pub(crate) async fn handle_info_v4(
     doc: TrustTask<info_v4::Payload>,
     ctx: RoomCtx,
