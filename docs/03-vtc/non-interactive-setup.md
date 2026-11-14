@@ -102,8 +102,12 @@ name it ([`community-rooms.md`](community-rooms.md#troubleshooting-permission-er
 a VTC set up before that has no `vta_context` and may add it by hand.
 
 Phase 2 prints a terse, scrape-friendly block (`vtc_did=…`, `admin_did=…`,
-`install_url=…`, `claim_code=…`, `single_admin_mode=…`); it never prints the
-admin private key.
+`install_url=…`, `claim_code=…`, `single_admin_mode=…`, `admin_key_file=…`).
+It never prints the admin private key: setup writes it to
+`<data_dir>/keys/admin-key.json` (owner-only, `0600`; an existing file is never
+overwritten — a re-run writes `admin-key.<timestamp>.json` beside it) and
+`admin_key_file` names that file. Move it to wherever the client that acts as
+the admin DID keeps its keys, then delete this copy.
 
 ### A did:webs community
 

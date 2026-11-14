@@ -129,10 +129,12 @@ for the administrators to acknowledge. With no administrator when it ran, it
 is for every administrator there is now, so the first admin acknowledges it
 after signing in (see [below](#adding-a-second-admin-later)).
 
-**You also need the DID's private key.** Setup shows the admin DID's key only
-once, in the interactive wizard, behind a confirmation. `vtc setup --from`
-never prints it. For scripts and CI, mint a dedicated admin key on the VTC
-instead:
+**You also need the DID's private key.** Setup never prints it: both the
+wizard and `vtc setup --from` write it to `<data_dir>/keys/admin-key.json`
+(owner-only, `0600`) and print only that path (`admin_key_file=…` in the
+terse block). Move it to wherever the client that acts as this DID keeps its
+keys, then delete the copy. For scripts and CI, mint a dedicated admin key on
+the VTC instead:
 
 ```sh
 vtc --config /srv/vtc/config.toml create-did-key --admin --label "automation"
