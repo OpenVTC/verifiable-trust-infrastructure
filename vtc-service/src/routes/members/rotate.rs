@@ -87,7 +87,7 @@ use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use vti_common::audit::{AuditEvent, DidRotatedData, DidRotationReason};
+use vtc_audit::{AuditEvent, DidRotatedData, DidRotationReason};
 use vti_common::auth::session::{delete_session, list_sessions};
 use vti_common::error::AppError;
 

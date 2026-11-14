@@ -26,7 +26,7 @@ use crate::auth::session::{
 use crate::error::{AppError, TaskError};
 use crate::server::AppState;
 use tracing::{info, warn};
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, AuthSteppedUpData, SessionRevocationRefusedData, SessionRevokedData, SignedOutData,
 };
 use vti_common::store::KeyspaceHandle;

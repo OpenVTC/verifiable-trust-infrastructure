@@ -25,8 +25,8 @@
 //! full keyspace (audit, emergency-bootstrap cleanup) working
 //! without rewriting them.
 
+use vtc_audit::AuditKey;
 use vti_common::acl::Role;
-use vti_common::audit::AuditKey;
 use vti_common::auth::session::now_epoch;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
@@ -532,7 +532,7 @@ pub async fn list_acl_entries_paginated(
 mod tests {
     use super::*;
     use crate::acl::{AdminAuthority, VtcRole};
-    use vti_common::audit::AuditKeyStore;
+    use vtc_audit::AuditKeyStore;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 

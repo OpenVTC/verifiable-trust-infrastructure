@@ -1,0 +1,38 @@
+[package]
+name = "vtc-audit"
+description = "The Verifiable Trust Community's audit-event vocabulary, over the shared vti-common audit envelope, hash chain and writer"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+# Published, because `vtc-service` is — and a crate cannot go to crates.io
+# without its whole dependency closure there too. Not published for its own
+# sake: nothing outside this workspace is expected to depend on it directly.
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Derives `utoipa::ToSchema` on the event types a REST body names
+# (`DidRotationReason`). Only `vtc-service` turns it on.
+openapi = ["dep:utoipa"]
+
+[dependencies]
+# The envelope, the hash chain, the HMAC actor hashing, the key store and the
+# writer — generic over the event vocabulary this crate supplies.
+vti-common = { path = "../vti-common", version = "0.64" }
+chrono = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+# `tests/stored_chain.rs` recomputes a stored actor hash independently.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

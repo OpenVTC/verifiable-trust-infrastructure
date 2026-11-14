@@ -66,7 +66,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, StepUpPasskeyData};
+use vtc_audit::{AuditEvent, StepUpPasskeyData};
 use vti_common::auth::passkey::store::{
     PasskeyUser, get_passkey_user_by_cred, get_passkey_user_by_did, store_credential_mapping,
     store_passkey_user,

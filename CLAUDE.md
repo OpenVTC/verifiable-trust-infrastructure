@@ -79,6 +79,7 @@ Layer 4 (longest internal chain 4):
   didcomm-test           → vta-sdk, vti-common
   vta-audit              → vta-sdk, vti-common
   vta-keyspaces          → vti-common
+  vtc-audit              → vti-common
   vti-rooms              → vti-common, vti-specs-rooms
   vti-secrets            → vta-sdk, vti-common
   vti-trust-task-server  → vta-sdk, vti-common
@@ -108,8 +109,8 @@ Layer 6 (longest internal chain 6):
   vta-support            → vta-config, vta-keyspaces, vta-sdk, vti-common
   vta-sweepers           → vta-audit, vta-keyspaces, vta-vault, vti-common
   vtc-mcp                → vta-sdk, vtc-client, vti-mcp-common, vti-specs
-  vtc-service            → vta-sdk, vti-common, vti-oob-server, vti-rooms,
-                           vti-rooms-dtg, vti-secrets, vti-specs,
+  vtc-service            → vta-sdk, vtc-audit, vti-common, vti-oob-server,
+                           vti-rooms, vti-rooms-dtg, vti-secrets, vti-specs,
                            vti-trust-task-server, vti-vetting-pcs, vti-voting,
                            vti-vtn
 
@@ -164,6 +165,7 @@ Layer 9 (longest internal chain 9):
 | `vta-sweepers` | Background TTL sweepers for the core keyspaces (acl / consent / vault) |
 | `vta-service` | The VTA **spine** (library) + local/dev binary: `routes/`, `trust_tasks/` (dispatch spine), `messaging/*` (DIDComm + TSP bridge), `operations/` (orchestration), `setup/` (wizards), offline CLI surfaces. Re-exports every subsystem crate above (detail: `vta-service/CLAUDE.md`) |
 | `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation). `publish = false` |
+| `vtc-audit` | **The community's audit-event vocabulary** (`AuditEvent` and its data structs), over `vti_common::audit`'s generic envelope, hash chain, HMAC actor hashing and writer (`AuditEnvelope` / `AuditWriter` aliases). A leaf so any VTC subsystem can audit without `vtc-service`; the VTA's `VtaOperation` lives in `vta-audit` (#2568) |
 | `vtc-service` | Verifiable Trust Community service (community lifecycle, separate JWT audience) |
 | `vta-cli-common` | Shared CLI command implementations — both CLIs are thin wrappers |
 | `pnm-cli` | Personal Network Manager (single-VTA operator) |
@@ -620,7 +622,7 @@ Mechanics: [`RELEASING.md`](RELEASING.md).
   baseline resolves without a lockfile. Read what
   `scripts/semver-build-failure.py` attributes it to before blaming our crate
   (#1667).
-- **36 of 47 crates publish**; the eleven that do not set `publish = false`
+- **37 of 48 crates publish**; the eleven that do not set `publish = false`
   with a comment saying why. `vtc-service` publishes as a binary with pre-built web
   bundles — a new `include_dir!` / `include_str!` outside tests must sit inside
   its `include` list. `vta-service` publishes because `openvtc-core`

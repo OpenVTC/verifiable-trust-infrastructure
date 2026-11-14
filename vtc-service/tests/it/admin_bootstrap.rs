@@ -32,8 +32,8 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
+use vtc_audit::AuditEvent;
 use vtc_service::acl::{VtcRole, list_acl_entries};
-use vti_common::audit::AuditEvent;
 
 use vtc_service::acl::admin::get_admin_entry;
 use vtc_service::install::{
@@ -259,7 +259,7 @@ async fn full_install_to_bootstrap_succeeds() {
     let installed = raw
         .iter()
         .find_map(|(_k, v)| {
-            let env: vti_common::audit::AuditEnvelope = serde_json::from_slice(v).ok()?;
+            let env: vtc_audit::AuditEnvelope = serde_json::from_slice(v).ok()?;
             match env.event {
                 AuditEvent::CommunityInstalled(data) => Some(data),
                 _ => None,

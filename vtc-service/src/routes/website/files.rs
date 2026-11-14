@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use vti_common::audit::{AuditEvent, WebsiteFileDeletedData, WebsiteFileWrittenData};
+use vtc_audit::{AuditEvent, WebsiteFileDeletedData, WebsiteFileWrittenData};
 
 use crate::error::AppError;
 use crate::server::AppState;

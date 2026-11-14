@@ -7,7 +7,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
-use vti_common::audit::{AuditEnvelope, AuditEvent};
+use vtc_audit::{AuditEnvelope, AuditEvent};
 
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;

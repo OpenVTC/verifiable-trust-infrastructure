@@ -12365,6 +12365,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vtc-audit"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "hmac 0.13.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "utoipa",
+ "vti-common",
+]
+
+[[package]]
 name = "vtc-client"
 version = "0.43.0"
 dependencies = [
@@ -12506,6 +12520,7 @@ dependencies = [
  "vta-cli-common",
  "vta-sdk",
  "vta-service",
+ "vtc-audit",
  "vtc-client",
  "vtc-service",
  "vti-common",

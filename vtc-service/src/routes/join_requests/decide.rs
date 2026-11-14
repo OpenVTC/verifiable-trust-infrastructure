@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use vta_sdk::protocols::join_requests::ADMIN_REJECT_CODE;
-use vti_common::audit::{AuditEvent, JoinRequestData, JoinRequestRejectedData};
+use vtc_audit::{AuditEvent, JoinRequestData, JoinRequestRejectedData};
 use vti_common::error::AppError;
 
 use crate::acl::VtcRole;

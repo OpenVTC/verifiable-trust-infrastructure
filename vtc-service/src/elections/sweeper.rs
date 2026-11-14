@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, ElectionChangedData};
+use vtc_audit::{AuditEvent, ElectionChangedData};
 
 use super::ops::{self, Delivered};
 use super::store::{self, Standing};

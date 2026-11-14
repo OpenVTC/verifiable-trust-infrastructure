@@ -504,17 +504,15 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter_map(|(_, v)| {
-                serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok()
-            })
+            .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
             .filter_map(|env| match env.event {
-                vti_common::audit::AuditEvent::CapabilityModuleChanged(d) => Some(d),
+                vtc_audit::AuditEvent::CapabilityModuleChanged(d) => Some(d),
                 _ => None,
             })
             .collect()
     }
 
-    use vti_common::audit::CapabilityModuleChangedData;
+    use vtc_audit::CapabilityModuleChangedData;
 
     // ── list ─────────────────────────────────────────────────────────────
 

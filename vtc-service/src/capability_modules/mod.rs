@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, Notify, watch};
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, CapabilityModuleChangedData};
+use vtc_audit::{AuditEvent, CapabilityModuleChangedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 

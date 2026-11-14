@@ -160,6 +160,7 @@ COPY vta-external/ vta-external/
 COPY vta-webvh/ vta-webvh/
 COPY vta-service/ vta-service/
 COPY vta-enclave/ vta-enclave/
+COPY vtc-audit/ vtc-audit/
 COPY vtc-client/ vtc-client/
 COPY vtc-service/ vtc-service/
 COPY vtc-mcp/ vtc-mcp/

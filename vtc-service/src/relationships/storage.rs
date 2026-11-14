@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
-use vti_common::audit::AuditKey;
+use vtc_audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::{Batch, KeyspaceHandle};
@@ -548,7 +548,7 @@ pub async fn counterparties_in_force(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use vti_common::audit::AuditKeyStore;
+    use vtc_audit::AuditKeyStore;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 

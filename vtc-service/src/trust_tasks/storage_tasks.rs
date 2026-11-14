@@ -32,7 +32,7 @@ use std::collections::HashMap;
 
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, RoomStorageChangedData};
+use vtc_audit::{AuditEvent, RoomStorageChangedData};
 use vti_common::auth::extractor::AuthClaims;
 use vti_common::blob_store::{BlobKey, PROBE_PREFIX};
 use vti_rooms::blobs::{

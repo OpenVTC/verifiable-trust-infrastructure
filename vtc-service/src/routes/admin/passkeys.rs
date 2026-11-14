@@ -40,7 +40,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tracing::info;
 use uuid::Uuid;
-use vti_common::audit::{AdminPasskeyData, AuditEvent, AuditWriter};
+use vtc_audit::{AdminPasskeyData, AuditEvent, AuditWriter};
 use vti_common::auth::passkey::store::{
     get_passkey_user_by_did, get_pending, store_auth_state, store_credential_mapping,
     store_passkey_user, store_pending, store_registration_state, take_auth_state,

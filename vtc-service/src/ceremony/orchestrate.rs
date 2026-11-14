@@ -13,7 +13,7 @@ use affinidi_status_list::StatusPurpose;
 use serde_json::json;
 use tracing::{info, warn};
 
-use vti_common::audit::{AuditEvent, MemberRemovedData, StatusListFlippedData};
+use vtc_audit::{AuditEvent, MemberRemovedData, StatusListFlippedData};
 use vti_common::error::AppError;
 
 use super::execute::{self, EffectOutcome};

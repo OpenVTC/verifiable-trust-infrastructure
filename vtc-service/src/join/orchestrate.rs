@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use affinidi_vc::VerifiableCredential;
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, AuditWriter, CredentialIssuedData, JoinRequestData, JoinRequestRejectedData,
     JoinRequestSupplementedData, JoinRequestWithdrawnData, MemberAddedData,
 };

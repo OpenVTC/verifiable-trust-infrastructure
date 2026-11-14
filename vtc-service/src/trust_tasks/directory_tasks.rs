@@ -38,7 +38,7 @@ use base64::Engine as _;
 use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, DirectoryCardChangedData, DirectoryCardPublicationData, DirectoryExportedData,
     DirectoryFieldChangedData, DirectoryImageStoredData, DirectoryNoteAccessData,
 };
@@ -321,7 +321,7 @@ async fn as_card_member(
 }
 
 /// The audit writer, or a refusal: a directory write is never unaudited.
-fn writer(state: &AppState) -> Result<&vti_common::audit::AuditWriter, AppError> {
+fn writer(state: &AppState) -> Result<&vtc_audit::AuditWriter, AppError> {
     state
         .audit_writer
         .as_ref()

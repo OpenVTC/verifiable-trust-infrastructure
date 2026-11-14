@@ -34,7 +34,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 use uuid::Uuid;
 
-use vti_common::audit::{AuditEvent, PolicyActivatedData, PolicyUploadedData};
+use vtc_audit::{AuditEvent, PolicyActivatedData, PolicyUploadedData};
 use vti_common::error::AppError;
 
 use crate::error::TaskError;

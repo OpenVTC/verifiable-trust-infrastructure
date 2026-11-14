@@ -537,14 +537,13 @@ async fn audit(state: &AppState, group: &Group, report: &Report) {
         .map(|e| (e, "ruleAdmitted"))
         .chain(report.ended.iter().map(|e| (e, "ruleEnded")));
     for (entry_id, change) in rows {
-        let event = vti_common::audit::AuditEvent::GroupMembershipChanged(
-            vti_common::audit::GroupMembershipChangedData {
+        let event =
+            vtc_audit::AuditEvent::GroupMembershipChanged(vtc_audit::GroupMembershipChangedData {
                 group_id: group.group_id.clone(),
                 entry_id: entry_id.clone(),
                 change: change.into(),
                 reason: None,
-            },
-        );
+            });
         if let Err(e) = writer.write(&community, None, event).await {
             tracing::warn!(error = %e, "a dynamic group's membership change could not be audited");
         }

@@ -13,7 +13,7 @@
 //!
 //! Every mutating handler emits an audit event keyed to the calling
 //! admin's real DID (the document's signer). Sensitive
-//! values are run through `vti_common::audit::ConfigChange::redact_if`
+//! values are run through `vtc_audit::ConfigChange::redact_if`
 //! before the `ConfigChanged` event is persisted. Audit is
 //! fail-closed: a mutation that produces a change but cannot be
 //! recorded (no `AuditWriter` configured) returns 503 rather than
@@ -35,7 +35,7 @@ use crate::config_store::{
 use crate::server::AppState;
 #[allow(unused_imports)]
 use crate::supervisor::SupervisorKind;
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, AuditWriter, CommunityProfileUpdatedData, ConfigChange, ConfigChangedData,
     ConfigReloadedData, ConfigSource, RestartRequestedData,
 };
@@ -892,7 +892,7 @@ pub(crate) async fn import_inner(
                     // import preview — each FieldDiff is a before/after.
                     changes: profile_diff
                         .iter()
-                        .map(|d| vti_common::audit::FieldChange {
+                        .map(|d| vtc_audit::FieldChange {
                             field: d.key.clone(),
                             old: d.old_value.clone(),
                             new: d.new_value.clone(),

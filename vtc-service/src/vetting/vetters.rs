@@ -50,7 +50,7 @@ use vta_sdk::protocols::vetting::{
     CheckShape, DEFAULT_VETTER_GRANT_VALIDITY_SECONDS, GrantOrigin, VETTER_ROLE, VetterGrantRow,
     role_matches,
 };
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, AuditWriter, CredentialIssuedData, CustomEndorsementRevokedData,
     StatusListFlippedData, VetterGrantResentData, VetterGrantedData,
 };

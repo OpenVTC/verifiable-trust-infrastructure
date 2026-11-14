@@ -6,7 +6,7 @@
 //! URI (`https://example.com/v1/skills/rust`) don't collide
 //! with the prefix delimiter.
 
-use vti_common::audit::AuditKey;
+use vtc_audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::KeyspaceHandle;
@@ -97,7 +97,7 @@ pub async fn list_types(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use vti_common::audit::AuditKeyStore;
+    use vtc_audit::AuditKeyStore;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 

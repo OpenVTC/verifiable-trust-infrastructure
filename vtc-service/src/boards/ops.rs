@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use vti_common::audit::{AuditEvent, ElectionChangedData};
+use vtc_audit::{AuditEvent, ElectionChangedData};
 use vti_common::error::AppError;
 
 use super::{Board, BoardAudience, Idea, election_id_for};

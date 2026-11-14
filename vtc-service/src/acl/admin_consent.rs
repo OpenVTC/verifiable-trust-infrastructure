@@ -128,7 +128,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::warn;
-use vti_common::audit::AuditEvent;
+use vtc_audit::AuditEvent;
 use vti_common::error::AppError;
 use vti_common::task_consent::{self, effects::StatePin};
 use vti_specs::task_consent::decision::v0_2 as decision;
@@ -1463,25 +1463,23 @@ pub async fn record_unopposed_reduction(
         .write(
             requester,
             Some(&prior.did),
-            AuditEvent::AuthorityReducedUnopposed(
-                vti_common::audit::AuthorityReducedUnopposedData {
-                    task: task.to_string(),
-                    prior_role: prior
-                        .admin
-                        .admin_role
-                        .as_ref()
-                        .map(|r| r.to_string())
-                        .unwrap_or_else(|| prior.role.to_string()),
-                    // A VTC entry has no context scopes; what it held is its
-                    // capabilities, recorded in the same slot.
-                    prior_scopes: prior
-                        .admin
-                        .effective()
-                        .iter()
-                        .map(CapRef::display)
-                        .collect(),
-                },
-            ),
+            AuditEvent::AuthorityReducedUnopposed(vtc_audit::AuthorityReducedUnopposedData {
+                task: task.to_string(),
+                prior_role: prior
+                    .admin
+                    .admin_role
+                    .as_ref()
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| prior.role.to_string()),
+                // A VTC entry has no context scopes; what it held is its
+                // capabilities, recorded in the same slot.
+                prior_scopes: prior
+                    .admin
+                    .effective()
+                    .iter()
+                    .map(CapRef::display)
+                    .collect(),
+            }),
         )
         .await?;
     Ok(())

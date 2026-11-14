@@ -53,7 +53,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, CrossCommunitySessionMintedData};
+use vtc_audit::{AuditEvent, CrossCommunitySessionMintedData};
 
 use crate::auth::session::{Session, SessionState, now_epoch, store_session};
 use crate::credentials::exchange::verify_vp_token;

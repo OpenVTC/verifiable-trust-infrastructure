@@ -3,6 +3,7 @@
 //! that walks key history to confirm a candidate DID matches an
 //! envelope's hash.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,6 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::envelope::{AuditEnvelope, EVENT_VERSION, GENESIS_HASH, SCHEMA_VERSION};
-use super::event::AuditEvent;
 use super::key_store::AuditKeyStore;
 use crate::error::AppError;
 use crate::store::{KeyspaceHandle, RawKvPair, ScanOpts};
@@ -80,7 +80,7 @@ enum ChainHeadState {
 /// Computes the envelope key (`<rfc3339-timestamp>:<event_id>`) so a
 /// prefix-iter scan walks rows in time order. Visible to other
 /// modules for migration helpers.
-pub fn envelope_storage_key(env: &AuditEnvelope) -> Vec<u8> {
+pub fn envelope_storage_key<E>(env: &AuditEnvelope<E>) -> Vec<u8> {
     format!("{}:{}", env.timestamp.to_rfc3339(), env.event_id).into_bytes()
 }
 
@@ -94,8 +94,11 @@ pub fn envelope_storage_key(env: &AuditEnvelope) -> Vec<u8> {
 /// immediately-preceding envelope's `entry_hash`, forming the
 /// tamper-evidence chain verified by
 /// [`super::envelope::verify_chain`].
-#[derive(Clone)]
-pub struct AuditWriter {
+///
+/// Generic over the service's event vocabulary `E`, which is what the
+/// envelope's `event` member carries; the writer itself never looks inside
+/// it beyond serializing it.
+pub struct AuditWriter<E> {
     audit_ks: KeyspaceHandle,
     key_store: AuditKeyStore,
     /// How an envelope is keyed in the audit keyspace.
@@ -109,7 +112,7 @@ pub struct AuditWriter {
     ///
     /// [`envelope_storage_key`] is the default and the only one a fresh
     /// keyspace needs.
-    storage_key: Arc<dyn Fn(&AuditEnvelope) -> Vec<u8> + Send + Sync>,
+    storage_key: Arc<dyn Fn(&AuditEnvelope<E>) -> Vec<u8> + Send + Sync>,
     /// Restricts chain-head recovery to the rows written by this writer.
     /// Empty keeps the default whole-keyspace behavior used by VTC.
     key_prefix: Vec<u8>,
@@ -123,17 +126,40 @@ pub struct AuditWriter {
     /// read-head → stamp → insert → update-head sequence is atomic
     /// across concurrent writers.
     chain_head: Arc<Mutex<ChainHeadState>>,
+    /// The event vocabulary; `fn() -> E` so the writer is `Send + Sync`
+    /// whatever `E` is.
+    _event: PhantomData<fn() -> E>,
 }
 
-impl AuditWriter {
+// Manual, because a derive would demand `E: Clone` for a writer that never
+// clones an event.
+impl<E> Clone for AuditWriter<E> {
+    fn clone(&self) -> Self {
+        Self {
+            audit_ks: self.audit_ks.clone(),
+            key_store: self.key_store.clone(),
+            storage_key: self.storage_key.clone(),
+            key_prefix: self.key_prefix.clone(),
+            deep_scan_page: self.deep_scan_page,
+            chain_head: self.chain_head.clone(),
+            _event: PhantomData,
+        }
+    }
+}
+
+impl<E> AuditWriter<E>
+where
+    E: serde::Serialize + serde::de::DeserializeOwned + 'static,
+{
     pub fn new(audit_ks: KeyspaceHandle, key_store: AuditKeyStore) -> Self {
         Self {
             audit_ks,
             key_store,
-            storage_key: Arc::new(envelope_storage_key),
+            storage_key: Arc::new(envelope_storage_key::<E>),
             key_prefix: Vec::new(),
             deep_scan_page: DEEP_SCAN_PAGE,
             chain_head: Arc::new(Mutex::new(ChainHeadState::Unknown)),
+            _event: PhantomData,
         }
     }
 
@@ -146,7 +172,7 @@ impl AuditWriter {
     #[must_use]
     pub fn with_storage_key(
         mut self,
-        f: impl Fn(&AuditEnvelope) -> Vec<u8> + Send + Sync + 'static,
+        f: impl Fn(&AuditEnvelope<E>) -> Vec<u8> + Send + Sync + 'static,
     ) -> Self {
         self.storage_key = Arc::new(f);
         self
@@ -204,8 +230,8 @@ impl AuditWriter {
         &self,
         actor_did: &str,
         target_did: Option<&str>,
-        event: AuditEvent,
-    ) -> Result<AuditEnvelope, AppError> {
+        event: E,
+    ) -> Result<AuditEnvelope<E>, AppError> {
         let key = self.key_store.active().await?;
 
         let actor_did_hash = hmac_did(&key.key, actor_did);
@@ -322,7 +348,7 @@ impl AuditWriter {
             ))
             .await?;
 
-        if let Some(hash) = newest_envelope_hash(&pairs) {
+        if let Some(hash) = newest_envelope_hash::<E>(&pairs) {
             return Ok(hash);
         }
 
@@ -371,7 +397,7 @@ impl AuditWriter {
                 )
                 .await?;
 
-            if let Some(hash) = newest_envelope_hash(&page) {
+            if let Some(hash) = newest_envelope_hash::<E>(&page) {
                 return Ok(hash);
             }
 
@@ -392,7 +418,7 @@ impl AuditWriter {
     /// not match).
     pub async fn verify_actor(
         &self,
-        envelope: &AuditEnvelope,
+        envelope: &AuditEnvelope<E>,
         candidate_did: &str,
     ) -> Result<bool, AppError> {
         let key = match self.key_store.fetch(&envelope.audit_key_id).await? {
@@ -406,7 +432,7 @@ impl AuditWriter {
     /// Symmetric helper for the optional target DID.
     pub async fn verify_target(
         &self,
-        envelope: &AuditEnvelope,
+        envelope: &AuditEnvelope<E>,
         candidate_did: &str,
     ) -> Result<bool, AppError> {
         let expected = match envelope.target_did_hash {
@@ -426,10 +452,10 @@ impl AuditWriter {
 /// as an [`AuditEnvelope`], scanning in the slice's own (newest-first) order.
 /// A value either is an envelope or is not — the key format belongs to the
 /// caller, so deserialization is the test rather than the key.
-fn newest_envelope_hash(pairs: &[RawKvPair]) -> Option<[u8; 32]> {
+fn newest_envelope_hash<E: serde::de::DeserializeOwned>(pairs: &[RawKvPair]) -> Option<[u8; 32]> {
     pairs
         .iter()
-        .find_map(|(_, raw)| serde_json::from_slice::<AuditEnvelope>(raw).ok())
+        .find_map(|(_, raw)| serde_json::from_slice::<AuditEnvelope<E>>(raw).ok())
         .map(|env| env.entry_hash)
 }
 
@@ -481,6 +507,10 @@ fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::test_event::TestEvent;
+
+    type AuditWriter = super::AuditWriter<TestEvent>;
+    type AuditEnvelope = super::AuditEnvelope<TestEvent>;
     use crate::audit::key_store::RotationReason;
     use crate::audit::verify_chain;
     use crate::config::StoreConfig;
@@ -509,11 +539,8 @@ mod tests {
         }
     }
 
-    fn sample_event() -> AuditEvent {
-        AuditEvent::CommunityProfileUpdated(crate::audit::event::CommunityProfileUpdatedData {
-            fields_changed: vec!["name".into()],
-            ..Default::default()
-        })
+    fn sample_event() -> TestEvent {
+        TestEvent::profile("name")
     }
 
     /// The VTA's audit keyspace holds rows written before this log was
@@ -1054,11 +1081,7 @@ mod tests {
 
         let mut chain = read_chain(&f.writer.audit_ks).await;
         // Forge a different event on the middle row without restamping.
-        chain[1].event =
-            AuditEvent::CommunityProfileUpdated(crate::audit::event::CommunityProfileUpdatedData {
-                fields_changed: vec!["forged".into()],
-                ..Default::default()
-            });
+        chain[1].event = TestEvent::profile("forged");
         assert!(matches!(
             verify_chain(&chain),
             Err(ChainBreak::TamperedEntry { index: 1, .. })

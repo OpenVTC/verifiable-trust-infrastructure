@@ -45,7 +45,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
+use vtc_audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
 use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
     certify::v0_1 as certify, close::v0_1 as close, create::v0_5 as create, list::v0_5 as list,

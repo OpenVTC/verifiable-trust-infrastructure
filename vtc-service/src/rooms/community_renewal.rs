@@ -72,7 +72,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
+use vtc_audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
 use vti_specs::rooms::owner::{
     issue_authority::v0_2 as owner_authority, issue_membership::v0_1 as owner_membership,

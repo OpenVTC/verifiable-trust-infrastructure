@@ -25,6 +25,7 @@ members = [
   "vta-persona",
   "vta-service",
   "vta-enclave",
+  "vtc-audit",
   "vtc-client",
   # The community's MCP bridge: `publish = false`, like `vta-mcp`.
   "vtc-mcp",
@@ -90,6 +91,7 @@ default-members = [
   "vta-webvh",
   "vta-persona",
   "vta-enclave",
+  "vtc-audit",
   "vtc-client",
   "vtc-mcp",
   "vtc-service",

@@ -5,7 +5,7 @@
 //! the applicant DID is admitted to the community.
 
 use uuid::Uuid;
-use vti_common::audit::AuditKey;
+use vtc_audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::KeyspaceHandle;

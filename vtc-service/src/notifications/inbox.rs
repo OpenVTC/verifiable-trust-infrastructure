@@ -662,7 +662,7 @@ async fn audit_decision(
     added: usize,
     acknowledged: bool,
 ) {
-    use vti_common::audit::{AuditEvent, NotificationRelayDecidedData};
+    use vtc_audit::{AuditEvent, NotificationRelayDecidedData};
     let Some(writer) = state.audit_writer.as_ref() else {
         return;
     };

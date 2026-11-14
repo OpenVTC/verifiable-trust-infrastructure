@@ -26,7 +26,7 @@ use super::policy as room_policy;
 use crate::routing::trust_task_admission::{RoomTraffic, admit_room};
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{TrustTaskOutcome, app_error_to_reject, success_response};
-use vti_common::audit::{AuditEvent, RoomOperationData};
+use vtc_audit::{AuditEvent, RoomOperationData};
 use vti_rooms::audit::{self as rooms_audit, RoomOperation};
 use vti_rooms::authz::{self, Action};
 use vti_rooms::storage;
@@ -333,7 +333,7 @@ pub(super) async fn audit_room_detail(
         .write(
             entry.actor.as_str(),
             None,
-            AuditEvent::RoomRetention(vti_common::audit::RoomRetentionData {
+            AuditEvent::RoomRetention(vtc_audit::RoomRetentionData {
                 room_id: entry.room_id,
                 action: action.to_string(),
                 visibility: format!("{:?}", room.visibility).to_lowercase(),
@@ -363,7 +363,7 @@ pub(super) async fn audit_signal_delay(
         .write(
             entry.actor.as_str(),
             None,
-            AuditEvent::RoomSignalDelay(vti_common::audit::RoomSignalDelayData {
+            AuditEvent::RoomSignalDelay(vtc_audit::RoomSignalDelayData {
                 room_id: entry.room_id,
                 visibility: format!("{:?}", room.visibility).to_lowercase(),
                 previous: audit.previous.as_str().to_string(),

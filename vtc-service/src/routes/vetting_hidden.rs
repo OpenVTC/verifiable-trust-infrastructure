@@ -35,7 +35,7 @@ use crate::vetting::pcs_tasks::{
     HIDDEN_WITHDRAW_ERR_NO_SUCH_CRITERION,
 };
 use trust_tasks_rs::TrustTask;
-use vti_common::audit::{AuditEvent, HiddenVettingChangedData};
+use vtc_audit::{AuditEvent, HiddenVettingChangedData};
 use vti_common::auth::extractor::AuthClaims;
 
 /// What an operator asks for when they turn hidden vetting on for a criterion.

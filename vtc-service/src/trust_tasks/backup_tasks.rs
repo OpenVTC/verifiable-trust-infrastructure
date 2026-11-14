@@ -674,16 +674,14 @@ async fn rerecord_waiver(
         .write(
             &actor.did,
             shown["bundleId"].as_str(),
-            vti_common::audit::AuditEvent::SingleAdminMode(
-                vti_common::audit::SingleAdminModeData {
-                    event: "consentWaived".into(),
-                    requirement: Some(Act::RestoreBackup.requirement().into()),
-                    task: Some(type_uri.clone()),
-                    digest: Some(vti_common::task_consent::payload_digest(&type_uri, &shown)?),
-                    kind: Some(Act::RestoreBackup.kind(&type_uri).into()),
-                    ..Default::default()
-                },
-            ),
+            vtc_audit::AuditEvent::SingleAdminMode(vtc_audit::SingleAdminModeData {
+                event: "consentWaived".into(),
+                requirement: Some(Act::RestoreBackup.requirement().into()),
+                task: Some(type_uri.clone()),
+                digest: Some(vti_common::task_consent::payload_digest(&type_uri, &shown)?),
+                kind: Some(Act::RestoreBackup.kind(&type_uri).into()),
+                ..Default::default()
+            }),
         )
         .await?;
     Ok(())
@@ -1291,11 +1289,9 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter_map(|(_, v)| {
-                serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok()
-            })
+            .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
             .filter(|env| {
-                matches!(&env.event, vti_common::audit::AuditEvent::SingleAdminMode(d)
+                matches!(&env.event, vtc_audit::AuditEvent::SingleAdminMode(d)
                     if d.event == "consentWaived")
             })
             .count();

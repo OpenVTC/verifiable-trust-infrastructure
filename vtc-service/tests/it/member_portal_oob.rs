@@ -2447,7 +2447,7 @@ async fn the_portal_key_reads_the_members_repos_and_never_changes_them() {
     assert_eq!(code(&gone), "permissionDenied", "{}", gone.body);
 }
 
-async fn audit_events(f: &Fixture) -> Vec<vti_common::audit::AuditEvent> {
+async fn audit_events(f: &Fixture) -> Vec<vtc_audit::AuditEvent> {
     f.vtc
         .state
         .audit_ks
@@ -2455,7 +2455,7 @@ async fn audit_events(f: &Fixture) -> Vec<vti_common::audit::AuditEvent> {
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .map(|env| env.event)
         .collect()
 }
@@ -2466,7 +2466,7 @@ async fn audit_events(f: &Fixture) -> Vec<vti_common::audit::AuditEvent> {
 /// never for a document the key could not sign.
 #[tokio::test]
 async fn every_document_the_portal_key_signs_is_audited_with_its_grant() {
-    use vti_common::audit::AuditEvent;
+    use vtc_audit::AuditEvent;
     let f = fixture().await;
     let (b, member, _, done) = sign_in_delegating(&f, None).await;
     assert_eq!(done.status, StatusCode::OK, "{}", done.body);

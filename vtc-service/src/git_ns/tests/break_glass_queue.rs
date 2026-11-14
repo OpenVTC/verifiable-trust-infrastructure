@@ -141,8 +141,8 @@ async fn ratify_from_the_action_list_ratifies_it_as_git_ns_right_ratify_does() {
     assert_eq!(last.event, "ratified");
     assert_eq!(last.statement.as_deref(), Some("confirmed by phone"));
     assert_eq!(
-        vti_common::audit::AuditEvent::GitNsBreakGlass(last.clone()).severity(),
-        vti_common::audit::AuditSeverity::Critical
+        vtc_audit::AuditEvent::GitNsBreakGlass(last.clone()).severity(),
+        vtc_audit::AuditSeverity::Critical
     );
 
     let done = item(&f.vtc.state, &rec.id).await;

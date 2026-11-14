@@ -72,7 +72,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, PersonhoodAssertedData, PersonhoodRevokedData};
+use vtc_audit::{AuditEvent, PersonhoodAssertedData, PersonhoodRevokedData};
 use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;

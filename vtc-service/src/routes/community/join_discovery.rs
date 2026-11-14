@@ -10,7 +10,7 @@
 
 use axum::http::StatusCode;
 use tracing::info;
-use vti_common::audit::{AuditEvent, CommunityJoinDiscoveryUpdatedData};
+use vtc_audit::{AuditEvent, CommunityJoinDiscoveryUpdatedData};
 use vti_common::error::AppError;
 
 use crate::community::join_discovery::{JoinDiscovery, load_join_discovery, store_join_discovery};

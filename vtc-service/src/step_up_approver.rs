@@ -44,7 +44,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, StepUpApproverData};
+use vtc_audit::{AuditEvent, StepUpApproverData};
 use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;

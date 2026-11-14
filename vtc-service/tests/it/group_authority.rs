@@ -525,11 +525,11 @@ async fn vti_dir_104_withdrawing_a_groups_authority_is_a_reduction_of_every_memb
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter(|env| {
             matches!(
                 env.event,
-                vti_common::audit::AuditEvent::AuthorityReducedUnopposed(_)
+                vtc_audit::AuditEvent::AuthorityReducedUnopposed(_)
             )
         })
         .count();

@@ -6,7 +6,7 @@
 use axum::http::StatusCode;
 use chrono::Utc;
 use tracing::info;
-use vti_common::audit::{AuditEvent, CommunityThemeUpdatedData};
+use vtc_audit::{AuditEvent, CommunityThemeUpdatedData};
 use vti_common::error::AppError;
 
 use crate::community::theme::{

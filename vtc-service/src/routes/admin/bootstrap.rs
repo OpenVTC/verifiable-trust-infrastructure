@@ -27,7 +27,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, AuditWriter, CommunityInstalledData};
+use vtc_audit::{AuditEvent, AuditWriter, CommunityInstalledData};
 use vti_common::auth::passkey::store::get_passkey_user_by_did;
 use vti_common::error::AppError;
 
@@ -289,7 +289,7 @@ pub(crate) async fn bootstrap(
             .write(
                 "did:key:vtc-install",
                 Some(&entry.did),
-                AuditEvent::AclGranted(vti_common::audit::AclChangeData {
+                AuditEvent::AclGranted(vtc_audit::AclChangeData {
                     did: entry.did.clone(),
                     role: "community-admin".into(),
                     contexts: entry.capability_list(),

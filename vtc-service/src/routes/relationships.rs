@@ -53,7 +53,7 @@ use serde_json::{Value as JsonValue, json};
 use tracing::info;
 use trust_tasks_rs::TrustTask as TrustTaskDoc;
 use uuid::Uuid;
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, VrcLifecycleData, VrcPublishedData, VrcRevokedData, VrcSupersededData,
 };
 use vti_common::error::AppError;

@@ -44,7 +44,7 @@
 //! `docs/05-design-notes/vtc-action-list.md` §8.5.
 
 use tracing::warn;
-use vti_common::audit::{AuditEvent, SingleAdminModeData};
+use vtc_audit::{AuditEvent, SingleAdminModeData};
 use vti_common::error::AppError;
 
 use crate::server::AppState;

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEnvelope, AuditEvent};
+use vtc_audit::{AuditEnvelope, AuditEvent};
 use vti_common::capability_client::WriteOutcome;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;

@@ -31,7 +31,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
-use vti_common::audit::{AuditKeyStore, AuditWriter};
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::passkey::{PasskeyState, build_webauthn};
 use webauthn_rs::Webauthn;
 
@@ -1945,14 +1945,12 @@ pub async fn run(
             .write(
                 "daemon",
                 None,
-                vti_common::audit::AuditEvent::AdminUiServed(
-                    vti_common::audit::AdminUiServedData {
-                        index_sha256: (*info.index_sha256).clone(),
-                        file_count: info.file_count,
-                        mode: (*info.mode).clone(),
-                        daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                    },
-                ),
+                vtc_audit::AuditEvent::AdminUiServed(vtc_audit::AdminUiServedData {
+                    index_sha256: (*info.index_sha256).clone(),
+                    file_count: info.file_count,
+                    mode: (*info.mode).clone(),
+                    daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                }),
             )
             .await;
     }
@@ -3026,8 +3024,8 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                             .write(
                                 "did:key:vtc-emergency",
                                 None,
-                                vti_common::audit::AuditEvent::EmergencyBootstrapInvoked(
-                                    vti_common::audit::EmergencyBootstrapData {
+                                vtc_audit::AuditEvent::EmergencyBootstrapInvoked(
+                                    vtc_audit::EmergencyBootstrapData {
                                         operator_hostname: pending.operator_hostname.clone(),
                                         invoked_at: pending.invoked_at,
                                     },
@@ -3089,8 +3087,8 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                         .write(
                             "did:key:vtc-break-glass",
                             Some(&w.did),
-                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
-                                vti_common::audit::BreakGlassAclData {
+                            vtc_audit::AuditEvent::AclBreakGlassWritten(
+                                vtc_audit::BreakGlassAclData {
                                     command: w.command.clone(),
                                     action: w.action.clone(),
                                     did: w.did.clone(),

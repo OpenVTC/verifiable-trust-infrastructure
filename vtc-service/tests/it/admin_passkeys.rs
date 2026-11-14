@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use serde_json::{Value, json};
 use uuid::Uuid;
+use vtc_audit::{AuditEnvelope, AuditEvent};
 use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, store_acl_entry};
-use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::passkey::{
     build_webauthn,
     store::{PasskeyUser, store_credential_mapping, store_passkey_user},

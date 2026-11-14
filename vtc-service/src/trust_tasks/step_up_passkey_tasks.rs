@@ -368,7 +368,7 @@ mod tests {
     use axum::http::StatusCode;
     use serde_json::{Value, json};
     use uuid::Uuid;
-    use vti_common::audit::AuditEvent;
+    use vtc_audit::AuditEvent;
     use vti_common::auth::passkey::store::{
         PasskeyUser, get_all_passkeys, store_credential_mapping, store_passkey_user,
     };
@@ -684,7 +684,7 @@ mod tests {
             .unwrap();
         let mut out: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
         for (_, value) in rows {
-            if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&value)
+            if let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&value)
                 && let AuditEvent::StepUpPasskeyChanged(d) = env.event
             {
                 out.push((env.timestamp, d.stage));

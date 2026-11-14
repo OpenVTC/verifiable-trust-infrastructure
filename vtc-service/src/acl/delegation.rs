@@ -42,7 +42,7 @@
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
-use vti_common::audit::{AclChangeData, AuditEvent};
+use vtc_audit::{AclChangeData, AuditEvent};
 use vti_common::error::AppError;
 
 use super::{AdminAuthority, VtcAclEntry, get_acl_entry, list_acl_entries, store_acl_entry};

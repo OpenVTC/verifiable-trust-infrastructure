@@ -14,10 +14,10 @@
 
 use serde_json::Value;
 
+use vtc_audit::{AuditEnvelope, AuditEvent};
 use vtc_client::VtcClient;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::MockVtcTransport;
-use vti_common::audit::{AuditEnvelope, AuditEvent};
 
 const PASSWORD: &str = "a-long-enough-backup-password";
 

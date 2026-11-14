@@ -102,7 +102,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
-use vti_common::audit::{AuditEnvelope, AuditEvent};
+use vtc_audit::{AuditEnvelope, AuditEvent};
 use vti_common::error::AppError;
 
 use crate::registry::{RegistryError, TrustRegistryClient};

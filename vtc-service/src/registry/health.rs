@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, AuditWriter, RegistryStatusChangedData};
+use vtc_audit::{AuditEvent, AuditWriter, RegistryStatusChangedData};
 
 /// Wire-form reachability state. Mirrors what `GET
 /// /v1/community/profile` surfaces in `registryStatus`.

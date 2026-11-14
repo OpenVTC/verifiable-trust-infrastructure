@@ -21,7 +21,7 @@ use chrono::{Days, NaiveDate, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, TrustTask};
-use vti_common::audit::{AuditEvent, RoomLimitsChangedData};
+use vtc_audit::{AuditEvent, RoomLimitsChangedData};
 use vti_common::error::AppError;
 use vti_rooms::blobs::{
     Activity, EffectiveLimits, LimitSource, LimitTarget, OverrideError, ScopeLimits, Usage,

@@ -30,7 +30,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
-use vti_common::audit::{AdminInviteData, AuditEvent};
+use vtc_audit::{AdminInviteData, AuditEvent};
 use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
 
@@ -650,7 +650,7 @@ pub(crate) async fn withdraw_invite_grant(
             .write(
                 actor,
                 Some(&grant.did),
-                AuditEvent::AclRevoked(vti_common::audit::AclRevokedData {
+                AuditEvent::AclRevoked(vtc_audit::AclRevokedData {
                     did: grant.did.clone(),
                     prior_role: Some("community-admin".into()),
                 }),

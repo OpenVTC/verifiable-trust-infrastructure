@@ -9,7 +9,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use vti_common::audit::{AuditEvent, WebsiteGenerationRolledBackData};
+use vtc_audit::{AuditEvent, WebsiteGenerationRolledBackData};
 
 use crate::error::{AppError, TaskError};
 use crate::server::AppState;

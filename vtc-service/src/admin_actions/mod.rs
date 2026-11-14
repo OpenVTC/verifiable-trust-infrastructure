@@ -132,7 +132,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tracing::{debug, info, warn};
-use vti_common::audit::{AuditEvent, TaskConsentData};
+use vtc_audit::{AuditEvent, TaskConsentData};
 use vti_common::error::AppError;
 use vti_common::task_consent::{self, effects::Effect, effects::StatePin};
 
@@ -871,7 +871,7 @@ pub(crate) async fn spend_immediate(state: &AppState, imm: Immediate) -> Result<
             .write(
                 &imm.requester,
                 Some(imm.subject.as_str()),
-                AuditEvent::SingleAdminMode(vti_common::audit::SingleAdminModeData {
+                AuditEvent::SingleAdminMode(vtc_audit::SingleAdminModeData {
                     event: "reductionImmediate".into(),
                     requirement: Some(Act::ReduceUnrestricted.requirement().into()),
                     task: Some(imm.type_uri.clone()),
@@ -1072,7 +1072,7 @@ pub(crate) async fn spend_waiver(state: &AppState, waiver: Waiver) -> Result<(),
             .write(
                 &waiver.requester,
                 (!waiver.subject.is_empty()).then_some(waiver.subject.as_str()),
-                AuditEvent::SingleAdminMode(vti_common::audit::SingleAdminModeData {
+                AuditEvent::SingleAdminMode(vtc_audit::SingleAdminModeData {
                     event: "consentWaived".into(),
                     requirement: Some(waiver.act.requirement().into()),
                     task: Some(waiver.type_uri.clone()),
@@ -1273,7 +1273,7 @@ pub(crate) async fn record_effect(state: &AppState) {
             .write(
                 &exec.requester,
                 None,
-                AuditEvent::AdminActionEffect(vti_common::audit::AdminActionEffectData {
+                AuditEvent::AdminActionEffect(vtc_audit::AdminActionEffectData {
                     action_id: exec.action_id.clone(),
                     execution_id: exec.execution_id.clone(),
                     task: exec.type_uri.clone(),
@@ -1542,7 +1542,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
                 .write(
                     &rec.requester,
                     None,
-                    AuditEvent::AdminActionBurst(vti_common::audit::AdminActionBurstData {
+                    AuditEvent::AdminActionBurst(vtc_audit::AdminActionBurstData {
                         action_id: rec.id.clone(),
                         kind: rec.kind.clone(),
                         raised: recent as u32,
@@ -2198,7 +2198,7 @@ async fn effect_audited(
     .map(|t| format!("{}:", t.to_rfc3339()).into_bytes())
     .unwrap_or_default();
     for (_, value) in state.audit_ks.range_from_raw(from).await? {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&value) else {
+        let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&value) else {
             continue;
         };
         if let AuditEvent::AdminActionEffect(d) = &env.event

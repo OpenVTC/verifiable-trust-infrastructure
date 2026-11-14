@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use vti_common::audit::{AuditEvent, AuditSeverity, SingleAdminModeData};
+use vtc_audit::{AuditEvent, AuditSeverity, SingleAdminModeData};
 use vti_specs::git_ns::drift::resolve::v0_4 as resolve3;
 use vti_specs::git_ns::repo::{adopt::v0_3 as adopt, create::v0_4 as create};
 use vti_specs::git_ns::right::grant::v0_4 as grant3;
@@ -70,7 +70,7 @@ async fn audit_events(f: &Fixture) -> Vec<(chrono::DateTime<chrono::Utc>, AuditE
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .map(|env| (env.timestamp, env.event))
         .collect();
     out.sort_by_key(|(t, _)| *t);

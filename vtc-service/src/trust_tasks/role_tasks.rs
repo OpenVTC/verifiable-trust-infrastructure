@@ -17,7 +17,7 @@
 
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AdminRoleChangeData, AuditEvent};
+use vtc_audit::{AdminRoleChangeData, AuditEvent};
 use vti_specs::vtc::roles::{
     define::v0_1 as define, delete::v0_1 as delete, list::v0_1 as list, show::v0_1 as show,
 };

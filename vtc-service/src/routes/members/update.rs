@@ -37,7 +37,7 @@
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-use vti_common::audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
+use vtc_audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::session::now_epoch;

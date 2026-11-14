@@ -20,7 +20,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::audit::{AuditEvent, BoardChangedData};
+use vtc_audit::{AuditEvent, BoardChangedData};
 use vti_common::error::AppError;
 use vti_specs::vtc::boards::{
     create::v0_1 as board_create,

@@ -17,7 +17,7 @@ use affinidi_status_list::StatusPurpose;
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde_json::{Value, json};
-use vti_common::audit::AuditEvent;
+use vtc_audit::AuditEvent;
 use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
@@ -136,12 +136,12 @@ async fn audit_rows(fix: &Fixture) -> Vec<AuditEvent> {
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .map(|env| env.event)
         .collect()
 }
 
-async fn direct_admissions(fix: &Fixture) -> Vec<vti_common::audit::MemberAdmittedDirectlyData> {
+async fn direct_admissions(fix: &Fixture) -> Vec<vtc_audit::MemberAdmittedDirectlyData> {
     audit_rows(fix)
         .await
         .into_iter()

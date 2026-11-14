@@ -36,7 +36,7 @@ use std::net::IpAddr;
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use vti_common::audit::{AuditEvent, MemberWalletSignInData};
+use vtc_audit::{AuditEvent, MemberWalletSignInData};
 use vti_common::auth::session::{
     Session, SessionState, now_epoch, store_refresh_index, store_session,
 };

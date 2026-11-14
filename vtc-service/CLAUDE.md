@@ -10,7 +10,7 @@ Rust workspace for **Verifiable Trust Communities (VTC)**. A VTC manages a commu
 
 `vtc-service` sits inside the wider workspace at the repo root. Key sibling crates:
 
-- **vti-common** (`../vti-common/`) — Shared library: auth (JWT, passkey), ACL, store (local fjall + vsock), audit writer + HMAC key store, error types, config, pagination cursors.
+- **vti-common** (`../vti-common/`) — Shared library: auth (JWT, passkey), ACL, store (local fjall + vsock), audit envelope/chain/writer + HMAC key store (the VTC event vocabulary is `vtc-audit`), error types, config, pagination cursors.
 - **vta-sdk** (`../vta-sdk/`) — Shared SDK: types, VTA HTTP client, DIDComm protocol surfaces, `sealed_transfer`, provision-integration.
 - **vta-service** (`../vta-service/`) — VTA library + local/dev binary (key management, did:webvh, mediator).
 - **vtc-service** (this crate) — VTC binary service. Community management, policy, audit, public website, admin SPA.
@@ -30,7 +30,7 @@ Rust workspace for **Verifiable Trust Communities (VTC)**. A VTC manages a commu
 ```
 src/
 ├── acl/                ACL storage + role types (VtcRole)
-├── audit/              (re-exports from vti-common::audit)
+├── audit_*.rs          audit index/checkpoints; the vocabulary is `vtc-audit`
 ├── auth/               session, AuthClaims/AdminAuth/SuperAdminAuth extractors
 ├── ceremony/           Decision pipeline (facts → verify → decide → effect/audit);
 │                       `assemble` (one Facts builder for every purpose) +
