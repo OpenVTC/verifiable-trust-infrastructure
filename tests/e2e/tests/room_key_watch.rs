@@ -474,6 +474,12 @@ async fn a_signal_queued_before_the_address_connects_is_delivered_when_it_does()
         "nothing receives at the address yet"
     );
 
+    // The address has connected before — it is a restart that left it unconnected — so
+    // it holds an account at the mediator: a mediator refuses a forward to a DID with no
+    // account (affinidi-messaging-mediator 0.52), and the supervisor's first connection is
+    // what creates it.
+    w.mock.register_mediator_account(&address).await;
+
     let version = w.write("n1").await;
     eventually(
         Duration::from_secs(20),

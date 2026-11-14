@@ -1047,7 +1047,10 @@ When adding a flow, add it here and a line to the root index.
   watch's host, for the watch's room, while armed; the watch is forgotten **before** the
   pass-on is sent (one per arming). The pass-on carries `roomId`, `member`, `host`,
   `latestVersion` only, never the address, no doorbell, deadline = one attempt window (no
-  re-send of an accepted push). Removal: fired, cancelled, lapsed (≤ 30 days, ≤ host's
+  re-send of an accepted push). A fresh address is armed at the host only once its
+  connection is open (`connected_before_arming`, ≤ 15 s while the supervisor runs):
+  mediator 0.52 refuses a forward to a DID with no account, and the address's first
+  connection is what creates it. Removal: fired, cancelled, lapsed (≤ 30 days, ≤ host's
   `expiresAt`), caller lost standing, member's credentials gone (`room_key_watch::sweep`,
   every 30 s with the address supervisor). Own bounds 64/member, 64/caller, 256 total →
   `limitReached`; no mediator → `limitReached`. `act/0.12` relays `rooms/watch` without

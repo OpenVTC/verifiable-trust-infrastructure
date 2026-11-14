@@ -401,13 +401,14 @@ fn past_acceptance(doc: &Value, now: DateTime<Utc>) -> bool {
     acceptance_end(doc).is_some_and(|end| now >= end)
 }
 
-/// Whether the recipient refuses `doc` at `now`, skew tolerance included: past
-/// its latest acceptable instant (VTI-TRN-044). A copy collected past this
-/// point was refused, whatever the collection evidence says.
+/// Whether the recipient refuses `doc` at `now`, skew tolerance included: at
+/// or past the end of its acceptance window (VTI-TRN-044), which is half-open
+/// as `trust-tasks-rs` applies it. A copy collected from this point was
+/// refused, whatever the collection evidence says.
 fn refused_when_collected(doc: &Value, now: DateTime<Utc>) -> bool {
     acceptance_end(doc)
         .and_then(|end| end.checked_add_signed(VTI_ACCEPTANCE_WINDOW.clock_skew))
-        .is_some_and(|latest| now > latest)
+        .is_some_and(|edge| now >= edge)
 }
 
 /// State the push's deadline on an **unsigned** document as its `expiresAt`
@@ -1740,11 +1741,11 @@ mod tests {
             at_window - chrono::TimeDelta::seconds(1)
         ));
         assert!(past_acceptance(&doc, at_window));
-        assert!(!refused_when_collected(&doc, at_window + window.clock_skew));
-        assert!(refused_when_collected(
+        assert!(!refused_when_collected(
             &doc,
-            at_window + window.clock_skew + chrono::TimeDelta::seconds(1)
+            at_window + window.clock_skew - chrono::TimeDelta::seconds(1)
         ));
+        assert!(refused_when_collected(&doc, at_window + window.clock_skew));
     }
 
     /// **VTI-TRN-048 / VTI-OPS-028.** A document stating an expiry is
@@ -1759,11 +1760,11 @@ mod tests {
         doc["expiresAt"] = json!(day.to_rfc3339_opts(SecondsFormat::Secs, true));
         assert!(!past_acceptance(&doc, issued + chrono::TimeDelta::hours(1)));
         assert!(past_acceptance(&doc, day));
-        assert!(!refused_when_collected(&doc, day + window.clock_skew));
-        assert!(refused_when_collected(
+        assert!(!refused_when_collected(
             &doc,
-            day + window.clock_skew + chrono::TimeDelta::seconds(1)
+            day + window.clock_skew - chrono::TimeDelta::seconds(1)
         ));
+        assert!(refused_when_collected(&doc, day + window.clock_skew));
 
         let year = issued + chrono::TimeDelta::days(365);
         doc["expiresAt"] = json!(year.to_rfc3339_opts(SecondsFormat::Secs, true));

@@ -185,6 +185,9 @@ pub struct RoomKeyWatches {
     /// one (*Retention*), and a restart drops what is pending, which the client's next
     /// `rooms/keys/list` restores.
     moved_pending: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// Whether the address supervisor (`messaging::watch_addresses::run`) is running, so
+    /// an arming can wait for it to open a fresh address's connection.
+    supervised: std::sync::atomic::AtomicBool,
 }
 
 impl RoomKeyWatches {
@@ -195,7 +198,19 @@ impl RoomKeyWatches {
             kick: tokio::sync::Notify::new(),
             sessions: std::sync::Mutex::new(HashMap::new()),
             moved_pending: std::sync::Mutex::new(HashMap::new()),
+            supervised: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Record whether the address supervisor is running.
+    pub fn set_supervised(&self, running: bool) {
+        self.supervised
+            .store(running, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the address supervisor is running.
+    pub fn supervised(&self) -> bool {
+        self.supervised.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Hold the store's lock for a change made of several steps.

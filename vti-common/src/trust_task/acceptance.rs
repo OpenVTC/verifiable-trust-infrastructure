@@ -194,12 +194,16 @@ impl AcceptanceWindow {
 
     /// Whether a consumer applying this window refuses a document issued at
     /// `issued_at` when it receives it at `now`, skew tolerance included: the
-    /// point after which a producer **MUST NOT** send it.
+    /// point from which a producer **MUST NOT** send it.
+    ///
+    /// The window is half-open, as `trust-tasks-rs` (0.39) applies it: a
+    /// document is refused once `issuedAt + max_age + skew` is at or before
+    /// `now`, the instant its replay record may be dropped.
     pub fn refuses(&self, issued_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
         issued_at
             .checked_add_signed(self.max_age)
             .and_then(|t| t.checked_add_signed(self.clock_skew))
-            .is_some_and(|edge| now > edge)
+            .is_some_and(|edge| now >= edge)
     }
 }
 
@@ -376,9 +380,9 @@ mod tests {
     }
 
     /// The policy the consumers apply is the window, and the two predicates the
-    /// producer reads agree with it at the boundary: a document the policy
-    /// still accepts is one `refuses` says is accepted, and the first second
-    /// past it is refused by both.
+    /// producer reads agree with it at the boundary: the last second the policy
+    /// accepts is one `refuses` says is accepted, and the edge itself — the
+    /// window is half-open — is refused by both.
     #[test]
     fn vti_trn_045_the_producer_predicates_agree_with_the_consumer_policy() {
         let w = VTI_ACCEPTANCE_WINDOW;
@@ -387,8 +391,8 @@ mod tests {
         assert_eq!(policy.skew, w.clock_skew);
 
         let now = chrono::SubsecRound::trunc_subsecs(Utc::now(), 0);
-        let at_edge = now - w.max_age - w.clock_skew;
-        let past_edge = at_edge - TimeDelta::seconds(1);
+        let past_edge = now - w.max_age - w.clock_skew;
+        let at_edge = past_edge + TimeDelta::seconds(1);
         let doc = |issued: DateTime<Utc>| {
             let mut d = trust_tasks_rs::TrustTask::new(
                 "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
