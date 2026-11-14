@@ -44,7 +44,9 @@ pub struct AdminActor {
     /// console-key signature, never the console key's.
     pub did: String,
     entry: VtcAclEntry,
-    via_console_key: Option<String>,
+    /// The DID of the console key it signed through (#1684) — a public
+    /// `did:key`, not key material.
+    console_did: Option<String>,
 }
 
 impl AdminActor {
@@ -66,14 +68,14 @@ impl AdminActor {
         Ok(Self {
             did: did.to_string(),
             entry,
-            via_console_key: None,
+            console_did: None,
         })
     }
 
     /// The same actor, recorded as acting through console key `console_did`.
     #[must_use]
     pub fn through_console_key(mut self, console_did: impl Into<String>) -> Self {
-        self.via_console_key = Some(console_did.into());
+        self.console_did = Some(console_did.into());
         self
     }
 
@@ -84,7 +86,7 @@ impl AdminActor {
 
     /// The console key this actor signed through, if it did.
     pub fn via_console_key(&self) -> Option<&str> {
-        self.via_console_key.as_deref()
+        self.console_did.as_deref()
     }
 
     /// Whether the actor's entry, as read when it was authorized, holds `cap`
