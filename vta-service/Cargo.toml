@@ -477,6 +477,10 @@ vta-sdk = { path = "../vta-sdk", version = "0.88", features = [
   "provision-client",
   "test-loopback",
 ] }
+# `MockVta`, for the integration tests that drive a VTA over the wire. It moved
+# out of `test_support` into its own crate (#2570); path-only, so publishing
+# strips it.
+vta-test-support = { path = "../vta-test-support" }
 # Mock HTTP server for the did-hosting-daemon REST auth flow tests. Each
 # test spins up a real local server bound to a random port, validates
 # the JWS-signed request bodies the daemon would see, and serves

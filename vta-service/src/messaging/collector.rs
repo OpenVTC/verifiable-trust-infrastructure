@@ -360,6 +360,7 @@ async fn open_session(state: &AppState, cand: &Candidate) -> Result<Arc<PersonaS
         state: state.clone(),
         me,
         atm: Arc::clone(&atm),
+        #[cfg(feature = "tsp")]
         profile,
         service,
         #[cfg(feature = "tsp")]
@@ -399,6 +400,8 @@ struct SessionCtx {
     state: AppState,
     me: Arc<CollectedIdentity>,
     atm: Arc<ATM>,
+    /// The TSP relationship ops' handle; only TSP reads it.
+    #[cfg(feature = "tsp")]
     profile: Arc<ATMProfile>,
     service: Arc<MessagingService>,
     #[cfg(feature = "tsp")]

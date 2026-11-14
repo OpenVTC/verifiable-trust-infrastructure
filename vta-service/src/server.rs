@@ -169,7 +169,7 @@ impl Drop for RestartOnDrop {
 /// Marking it non-exhaustive closes the class permanently rather than relying
 /// on any of that holding. Construction inside this crate is unaffected —
 /// both sites (`build_state` below and `test_support`) are in-crate, and
-/// `MockVta` is the supported entry point for consumers.
+/// `vta_test_support::MockVta` is the supported entry point for consumers.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct AppState {

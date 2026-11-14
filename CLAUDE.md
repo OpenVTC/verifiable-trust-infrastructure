@@ -139,6 +139,7 @@ Layer 8 (longest internal chain 8):
 
 Layer 9 (longest internal chain 9):
   vta-enclave            → vta-service, vta-tee
+  vta-test-support       → vta-sdk, vta-service, vti-common, vti-specs
 ```
 <!-- crate-map:end -->
 
@@ -170,6 +171,7 @@ Layer 9 (longest internal chain 9):
 | `vta-service` | The VTA **spine** (library) + local/dev binary: `routes/`, `trust_tasks/` (dispatch spine), `messaging/*` (DIDComm + TSP bridge), `operations/` (orchestration), `setup/` (wizards), offline CLI surfaces. Re-exports every subsystem crate above (detail: `vta-service/CLAUDE.md`) |
 | `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation). `publish = false` |
 | `vtc-audit` | **The community's audit-event vocabulary** (`AuditEvent` and its data structs), over `vti_common::audit`'s generic envelope, hash chain, HMAC actor hashing and writer (`AuditEnvelope` / `AuditWriter` aliases). A leaf so any VTC subsystem can audit without `vtc-service`; the VTA's `VtaOperation` lives in `vta-audit` (#2568) |
+| `vta-test-support` | **A mock VTA for other crates' tests**: `MockVta` (a real VTA on a loopback port), the stub DID hosting service, and — feature `transport-harness` — DIDComm/TSP through an embedded mediator into the production inbound loop. Depends on `vta-service` and re-exports its `test_support` fixtures, which stay there because its own unit tests build on them (#2570). Published: `openvtc-core` dev-depends on it |
 | `vtc-service` | Verifiable Trust Community service (community lifecycle, separate JWT audience) |
 | `vta-cli-common` | Shared CLI command implementations — both CLIs are thin wrappers |
 | `pnm-cli` | Personal Network Manager (single-VTA operator) |
@@ -640,11 +642,11 @@ Mechanics: [`RELEASING.md`](RELEASING.md).
   baseline resolves without a lockfile. Read what
   `scripts/semver-build-failure.py` attributes it to before blaming our crate
   (#1667).
-- **38 of 49 crates publish**; the eleven that do not set `publish = false`
+- **39 of 50 crates publish**; the eleven that do not set `publish = false`
   with a comment saying why. `vtc-service` publishes as a binary with pre-built web
   bundles — a new `include_dir!` / `include_str!` outside tests must sit inside
   its `include` list. `vta-service` publishes because `openvtc-core`
-  dev-depends on it (`MockVta`); a re-export makes the re-exported crate's
+  dev-depends on `vta-test-support` (`MockVta`), which depends on it; a re-export makes the re-exported crate's
   version part of your API, so check dev-dependencies before unpublishing
   anything, and check a new published crate's whole closure is published.
 - Internal deps pin `major.minor`; crypto deps (`ed25519-dalek`, `hpke`,

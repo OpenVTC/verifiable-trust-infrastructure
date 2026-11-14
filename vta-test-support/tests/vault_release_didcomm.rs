@@ -13,7 +13,7 @@
 
 #![cfg(feature = "transport-harness")]
 
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 /// Seed a vault entry with its secret already in place.
 ///

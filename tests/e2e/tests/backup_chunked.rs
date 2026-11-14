@@ -25,7 +25,7 @@ use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::error::VtaError;
 use vta_sdk::protocols::backup_management::chunked::initiate_export_1_1;
 use vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_1;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 mod common;
 

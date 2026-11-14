@@ -30,7 +30,7 @@ use vta_sdk::sealed_transfer::{
     generate_ed25519_keypair, seal_payload,
 };
 use vta_service::acl::Role;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 use vti_common::auth::session::{Session, SessionState, list_sessions, now_epoch, store_session};
 
 mod common;

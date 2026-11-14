@@ -159,6 +159,7 @@ COPY vta-vault/ vta-vault/
 COPY vta-external/ vta-external/
 COPY vta-webvh/ vta-webvh/
 COPY vta-service/ vta-service/
+COPY vta-test-support/ vta-test-support/
 COPY vta-enclave/ vta-enclave/
 COPY vtc-audit/ vtc-audit/
 COPY vtc-client/ vtc-client/

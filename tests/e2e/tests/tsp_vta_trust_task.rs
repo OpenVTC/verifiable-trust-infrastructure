@@ -49,7 +49,7 @@ use trust_tasks_rs::TrustTask;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::session::TspSession;
 use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_4;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 mod common;
 

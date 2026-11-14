@@ -28,6 +28,8 @@ affinidi-messaging-test-mediator = { workspace = true }
 # `MockVta::start_with_transports` — a whole VTA on a real mediator socket,
 # which is what `tsp_vta_trust_task` drives a Trust Task through.
 vta-service = { path = "../../vta-service", features = ["test-support", "transport-harness", "didcomm", "tsp", "webvh", "rest"] }
+# `MockVta` (#2570 moved it out of `vta_service::test_support`).
+vta-test-support = { path = "../../vta-test-support", features = ["transport-harness"] }
 vta-sdk = { path = "../../vta-sdk", features = ["client", "didcomm", "session", "tsp", "sealed-transfer", "provision-integration", "provision-client"] }
 vti-common = { path = "../../vti-common" }
 # Community voting: the voting service and its core, and the `pnm elections trustee` code,
