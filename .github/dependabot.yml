@@ -205,6 +205,12 @@ updates:
       # Path dependencies on this workspace; they move with it, not here.
       - dependency-name: "vta-*"
       - dependency-name: "vti-*"
+      # The harness builds against the root Cargo.lock, so its webauthn-rs
+      # line must match the workspace's: 0.6 is held back there (see the root
+      # cargo entry above — it refuses Ed25519 passkeys). A /fuzz-only bump
+      # leaves the root lock unable to satisfy the fuzz manifest.
+      - dependency-name: "webauthn-rs*"
+        versions: [">= 0.6"]
 
   # ── npm: the VTC admin console ────────────────────────────────────────
   # `vtc-service/admin-ui` is built into the bundle the published
@@ -226,6 +232,12 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # TypeScript 7 is the native (Go) compiler and a new major; the build's
+      # openapi-typescript 7.x declares a TypeScript 5 peer, so `npm ci` fails
+      # ERESOLVE (#2719). Move it on purpose, with openapi-typescript.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   # ── The Rust toolchain ────────────────────────────────────────────────
   # `rust-toolchain.toml` pins the compiler CI builds with (#2658). This
