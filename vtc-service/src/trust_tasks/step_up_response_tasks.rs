@@ -3,7 +3,13 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, vti_specs::auth::step_up::approve_response::v0_7::Payload => handle_step_up_approve_response)
+}
 
 /// `auth/step-up/approve-response/0.7` — the answer to an operation-bound
 /// step-up ([`STEP_UP_APPROVE_RESPONSE_TYPE`]).

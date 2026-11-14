@@ -41,6 +41,7 @@
 //! bundle belongs to whoever opened it: another administrator's handle is
 //! `notFound`.
 
+use super::routing::{Routes, on};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
@@ -62,6 +63,24 @@ use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::error::TaskError;
 use crate::server::AppState;
 
+/// `backup/put-chunk/0.1`.
+#[cfg(test)]
+pub(crate) const PUT_CHUNK_TYPE: &str = <put_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `backup/get-chunk/0.1`.
+#[cfg(test)]
+pub(crate) const GET_CHUNK_TYPE: &str = <get_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `backup/finalize-import/0.1`.
+#[cfg(test)]
+pub(crate) const FINALIZE_IMPORT_TYPE: &str =
+    <finalize_import::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `backup/complete-export/0.1`.
+#[cfg(test)]
+pub(crate) const COMPLETE_EXPORT_TYPE: &str =
+    <complete_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// The largest chunk this node sends or accepts, in bytes. See the module docs:
 /// a `put-chunk` document must fit its type's limit once its
 /// chunk is base64url-encoded (×4/3) and wrapped in an envelope and a proof.
@@ -79,59 +98,38 @@ async fn staging_dir(state: &AppState) -> PathBuf {
 /// `backup/initiate-export/0.1`.
 pub(crate) const INITIATE_EXPORT_TYPE: &str =
     <initiate_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `backup/get-chunk/0.1`.
-pub(crate) const GET_CHUNK_TYPE: &str = <get_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `backup/complete-export/0.1`.
-pub(crate) const COMPLETE_EXPORT_TYPE: &str =
-    <complete_export::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `backup/initiate-import/0.1`.
 pub(crate) const INITIATE_IMPORT_TYPE: &str =
     <initiate_import::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `backup/put-chunk/0.1`.
-pub(crate) const PUT_CHUNK_TYPE: &str = <put_chunk::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `backup/finalize-import/0.1`.
-pub(crate) const FINALIZE_IMPORT_TYPE: &str =
-    <finalize_import::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `backup/abort/0.1`.
-pub(crate) const ABORT_TYPE: &str = <abort::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Every `backup/*` URI this node serves.
-pub(crate) const URIS: &[&str] = &[
-    INITIATE_EXPORT_TYPE,
-    GET_CHUNK_TYPE,
-    COMPLETE_EXPORT_TYPE,
-    INITIATE_IMPORT_TYPE,
-    PUT_CHUNK_TYPE,
-    FINALIZE_IMPORT_TYPE,
-    ABORT_TYPE,
-];
 
 /// Tasks whose response carries a transfer's transport token, which authorises
 /// its chunk reads or writes. The duplicate-execution record keeps no copy of
 /// these; a redelivery is answered `204`.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INITIATE_EXPORT_TYPE, INITIATE_IMPORT_TYPE];
 
-/// Route one `backup/*` document. `None` when `type_uri` is not one of
-/// [`URIS`].
-pub(super) async fn dispatch(
+/// Register every `backup/*` task this node serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, initiate_export::Payload => |state, ctx, doc| run(state, ctx, doc, Op::InitiateExport));
+    let routes =
+        on!(routes, get_chunk::Payload => |state, ctx, doc| run(state, ctx, doc, Op::GetChunk));
+    let routes = on!(routes, complete_export::Payload => |state, ctx, doc| run(state, ctx, doc, Op::CompleteExport));
+    let routes = on!(routes, initiate_import::Payload => |state, ctx, doc| run(state, ctx, doc, Op::InitiateImport));
+    let routes =
+        on!(routes, put_chunk::Payload => |state, ctx, doc| run(state, ctx, doc, Op::PutChunk));
+    let routes = on!(routes, finalize_import::Payload => |state, ctx, doc| run(state, ctx, doc, Op::FinalizeImport));
+    on!(routes, abort::Payload => |state, ctx, doc| run(state, ctx, doc, Op::Abort))
+}
+
+/// Run one `backup/*` document as `handler`.
+async fn run(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    let handler = match type_uri {
-        INITIATE_EXPORT_TYPE => Op::InitiateExport,
-        GET_CHUNK_TYPE => Op::GetChunk,
-        COMPLETE_EXPORT_TYPE => Op::CompleteExport,
-        INITIATE_IMPORT_TYPE => Op::InitiateImport,
-        PUT_CHUNK_TYPE => Op::PutChunk,
-        FINALIZE_IMPORT_TYPE => Op::FinalizeImport,
-        ABORT_TYPE => Op::Abort,
-        _ => return None,
-    };
+    handler: Op,
+) -> TrustTaskOutcome {
     let actor = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
-        Err(reject) => return Some(reject),
+        Err(reject) => return reject,
     };
     // Export is `vtc.backup.export`; import replaces the ACL and is
     // `vtc.backup.restore` (vtc-admin-roles.md §4). `abort` cancels a bundle
@@ -152,10 +150,10 @@ pub(super) async fn dispatch(
             Op::Abort => (can(BackupExport) || can(BackupRestore), BackupExport),
         };
         if !allowed {
-            return Some(app_error_to_reject(
+            return app_error_to_reject(
                 &doc,
                 &crate::acl::capability_refusal(&actor.did, needed, None),
-            ));
+            );
         }
     }
     // The verbs that carry the password, or open the bundle it unlocks, are
@@ -168,10 +166,10 @@ pub(super) async fn dispatch(
     if let Some(what) = channel_bound
         && let Err(reject) = super::refuse_hop_by_hop_backup(ctx, &doc, what)
     {
-        return Some(reject);
+        return reject;
     }
     let actor = chunked_caller(&actor);
-    Some(match handler {
+    match handler {
         Op::InitiateExport => handle_initiate_export(state, &actor, doc).await,
         Op::GetChunk => handle_get_chunk(state, &actor, doc).await,
         Op::CompleteExport => handle_complete_export(state, &actor, doc).await,
@@ -179,9 +177,10 @@ pub(super) async fn dispatch(
         Op::PutChunk => handle_put_chunk(state, &actor, doc).await,
         Op::FinalizeImport => handle_finalize_import(state, &actor, doc).await,
         Op::Abort => handle_abort(state, &actor, doc).await,
-    })
+    }
 }
 
+#[derive(Clone, Copy)]
 enum Op {
     InitiateExport,
     GetChunk,
@@ -198,7 +197,7 @@ type Actor = vti_common::auth::extractor::AuthClaims;
 ///
 /// That API is shared with the VTA, whose gate is a super-admin claim, and it
 /// asks `require_super_admin` of what it is handed. The VTC's gate is the
-/// capability [`dispatch`] has already checked on the actor's live entry
+/// capability [`run`] has already checked on the actor's live entry
 /// (`vtc.backup.export` / `vtc.backup.restore`), so the claim built here is
 /// the one that check answered: an administrator, community-wide — the value
 /// these handlers were always passed. It is built only here, after that check,

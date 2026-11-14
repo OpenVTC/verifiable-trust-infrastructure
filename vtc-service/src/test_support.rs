@@ -1178,7 +1178,7 @@ impl Drop for MockVtc {
 /// it covers a verb the moment it is dispatched — which is the property the
 /// DIDComm envelope parity test (`tests/didcomm_envelope_binding.rs`) holds.
 pub fn served_trust_task_uris() -> Vec<&'static str> {
-    crate::trust_tasks::DISPATCHED_URIS
+    crate::trust_tasks::dispatched_uris()
         .iter()
         .chain(vti_rooms::wire::ROOMS_DISPATCHED_URIS)
         .copied()

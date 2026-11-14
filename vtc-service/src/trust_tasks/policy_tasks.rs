@@ -25,6 +25,7 @@
 //! revisions, so an `ext` member `org.openvtc.purpose` narrows the listing to
 //! it — the same key a revision's own `ext` names its purpose by.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{Payload, TrustTask};
 use uuid::Uuid;
@@ -46,41 +47,40 @@ use crate::policy::PolicyPurpose;
 use crate::routes::policies::{admin as policy_admin, read as policy_read};
 use crate::server::AppState;
 
-pub(crate) const POLICY_LIST_TYPE: &str = <policy_list::Payload as Payload>::TYPE_URI;
-pub(crate) const POLICY_GET_TYPE: &str = <policy_get::Payload as Payload>::TYPE_URI;
-pub(crate) const POLICY_ACTIVE_TYPE: &str = <policy_active::Payload as Payload>::TYPE_URI;
-pub(crate) const POLICY_UPSERT_TYPE: &str = <policy_upsert::Payload as Payload>::TYPE_URI;
-pub(crate) const POLICY_ACTIVATE_TYPE: &str = <policy_activate::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const POLICY_TEST_TYPE: &str = <policy_test::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const POLICY_LIST_TYPE: &str = <policy_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const POLICY_GET_TYPE: &str = <policy_get::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const POLICY_ACTIVE_TYPE: &str = <policy_active::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const POLICY_ACTIVATE_TYPE: &str = <policy_activate::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const DID_REGISTER_TYPE: &str = <did_register::Payload as Payload>::TYPE_URI;
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    POLICY_LIST_TYPE,
-    POLICY_GET_TYPE,
-    POLICY_ACTIVE_TYPE,
-    POLICY_UPSERT_TYPE,
-    POLICY_ACTIVATE_TYPE,
-    POLICY_TEST_TYPE,
-    DID_REGISTER_TYPE,
-];
+pub(crate) const POLICY_UPSERT_TYPE: &str = <policy_upsert::Payload as Payload>::TYPE_URI;
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        POLICY_LIST_TYPE => handle_list(state, ctx, doc).await,
-        POLICY_GET_TYPE => handle_get(state, ctx, doc).await,
-        POLICY_ACTIVE_TYPE => handle_active(state, ctx, doc).await,
-        POLICY_UPSERT_TYPE => handle_upsert(state, ctx, doc).await,
-        POLICY_ACTIVATE_TYPE => handle_activate(state, ctx, doc).await,
-        POLICY_TEST_TYPE => handle_test(state, ctx, doc).await,
-        DID_REGISTER_TYPE => handle_did_register(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, policy_list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, policy_get::Payload => |state, ctx, doc| handle_get(state, ctx, doc));
+    let routes =
+        on!(routes, policy_active::Payload => |state, ctx, doc| handle_active(state, ctx, doc));
+    let routes =
+        on!(routes, policy_upsert::Payload => |state, ctx, doc| handle_upsert(state, ctx, doc));
+    let routes =
+        on!(routes, policy_activate::Payload => |state, ctx, doc| handle_activate(state, ctx, doc));
+    let routes =
+        on!(routes, policy_test::Payload => |state, ctx, doc| handle_test(state, ctx, doc));
+    on!(routes, did_register::Payload => |state, ctx, doc| handle_did_register(state, ctx, doc))
 }
 
 /// The signer as an administrator (the routes' `AdminAuth`), and its payload

@@ -30,8 +30,9 @@
 //! supplies the [`HttpContext`] the cookies ride on (as `auth/oob/redeem`
 //! does); every other transport is refused `permissionDenied`.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
-use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
+use trust_tasks_rs::{StandardCode, TrustTask, TrustTaskCode};
 use vti_specs::vtc::auth::admin_session::v0_2 as admin_session;
 
 use super::helpers::{
@@ -43,21 +44,9 @@ use crate::member_portal::oob::HttpContext;
 use crate::routes::auth::{admin_session_cookies, decode_admin_session_token};
 use crate::server::AppState;
 
-pub(crate) const ADMIN_SESSION_TYPE: &str = <admin_session::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[ADMIN_SESSION_TYPE];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    if type_uri != ADMIN_SESSION_TYPE {
-        return None;
-    }
-    Some(handle(state, ctx, doc).await)
+/// Register the task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, admin_session::Payload => handle)
 }
 
 async fn handle(state: &AppState, ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> TrustTaskOutcome {

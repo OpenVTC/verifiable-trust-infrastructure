@@ -43,8 +43,9 @@
 //! generated `#response`, the shape `trust-tasks-capability-client`'s
 //! `parse_capability_reply` reads.
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_specs::governance::capability::{
     disable::v0_1 as disable, enable::v0_1 as enable, list::v0_1 as list,
 };
@@ -60,32 +61,25 @@ use crate::capability_modules::{self as modules, ModuleError, ModuleState};
 use crate::error::TaskError;
 use crate::server::AppState;
 
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const ENABLE_TYPE: &str = <enable::Payload as Payload>::TYPE_URI;
-pub(crate) const DISABLE_TYPE: &str = <disable::Payload as Payload>::TYPE_URI;
-
-/// Every URI [`dispatch`] routes. `super::DISPATCHED_URIS` names each of these
-/// and `dispatcher_routes_every_dispatched_uri` holds the two in step.
-pub(crate) const URIS: &[&str] = &[LIST_TYPE, ENABLE_TYPE, DISABLE_TYPE];
-
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        ENABLE_TYPE => handle_enable(state, ctx, doc).await,
-        DISABLE_TYPE => handle_disable(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, enable::Payload => |state, ctx, doc| handle_enable(state, ctx, doc));
+    on!(routes, disable::Payload => |state, ctx, doc| handle_disable(state, ctx, doc))
 }
 
 // Answer with `body` held to the generated `#response` type and its schema
 // (an `internalError` when it is not: the mismatch is this service's fault).
 use vti_trust_task_server::typed::respond;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ENABLE_TYPE: &str = <enable::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DISABLE_TYPE: &str = <disable::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 fn refuse(doc: &TrustTask<Value>, e: ModuleError) -> TrustTaskOutcome {
     let declared =

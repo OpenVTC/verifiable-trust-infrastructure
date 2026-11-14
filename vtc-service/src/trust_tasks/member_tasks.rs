@@ -56,6 +56,7 @@
 //! is not honoured for the self verbs: a console key acts *as* its admin, and
 //! renewing or rotating someone's own membership is not an administrative act.
 
+use super::routing::{Routes, on};
 use chrono::Utc;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -84,75 +85,72 @@ use crate::acl::get_acl_entry;
 use crate::error::{AppError, TaskError};
 use crate::server::AppState;
 
-/// `vtc/members/renew/0.1`.
-pub(crate) const RENEW_TYPE: &str = <renew::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `vtc/members/rotate/0.1`.
+#[cfg(test)]
+pub(crate) const ROTATE_TYPE: &str = <rotate::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vtc/members/rotate-challenge/0.1`.
+#[cfg(test)]
 pub(crate) const ROTATE_CHALLENGE_TYPE: &str =
     <rotate_challenge::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/members/rotate/0.1`.
-pub(crate) const ROTATE_TYPE: &str = <rotate::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/members/personhood/revoke/0.1`.
-pub(crate) const PERSONHOOD_REVOKE_TYPE: &str =
-    <personhood_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/relationships/list/0.3`.
-pub(crate) const RELATIONSHIPS_LIST_TYPE: &str =
-    <rel_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/relationships/publish/0.2`.
-pub(crate) const RELATIONSHIPS_PUBLISH_TYPE: &str =
-    <rel_publish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/renew/0.1`.
+#[cfg(test)]
+pub(crate) const RENEW_TYPE: &str = <renew::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vtc/relationships/revoke/0.2`.
+#[cfg(test)]
 pub(crate) const RELATIONSHIPS_REVOKE_TYPE: &str =
     <rel_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/endorsements/issue/0.1`.
-pub(crate) const ENDORSEMENTS_ISSUE_TYPE: &str =
-    <end_issue::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// `vtc/endorsements/list/0.2`.
-pub(crate) const ENDORSEMENTS_LIST_TYPE: &str =
-    <end_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/relationships/publish/0.2`.
+#[cfg(test)]
+pub(crate) const RELATIONSHIPS_PUBLISH_TYPE: &str =
+    <rel_publish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/relationships/list/0.3`.
+#[cfg(test)]
+pub(crate) const RELATIONSHIPS_LIST_TYPE: &str =
+    <rel_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/members/personhood/revoke/0.1`.
+#[cfg(test)]
+pub(crate) const PERSONHOOD_REVOKE_TYPE: &str =
+    <personhood_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vtc/endorsements/show/0.1`.
+#[cfg(test)]
 pub(crate) const ENDORSEMENTS_SHOW_TYPE: &str =
     <end_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vtc/endorsements/revoke/0.1`.
+#[cfg(test)]
 pub(crate) const ENDORSEMENTS_REVOKE_TYPE: &str =
     <end_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Every URI [`dispatch`] routes. `super::DISPATCHED_URIS` names each of these
-/// and `dispatcher_routes_every_dispatched_uri` holds the two in step.
-pub(crate) const URIS: &[&str] = &[
-    RENEW_TYPE,
-    ROTATE_CHALLENGE_TYPE,
-    ROTATE_TYPE,
-    PERSONHOOD_REVOKE_TYPE,
-    RELATIONSHIPS_LIST_TYPE,
-    RELATIONSHIPS_PUBLISH_TYPE,
-    RELATIONSHIPS_REVOKE_TYPE,
-    ENDORSEMENTS_ISSUE_TYPE,
-    ENDORSEMENTS_LIST_TYPE,
-    ENDORSEMENTS_SHOW_TYPE,
-    ENDORSEMENTS_REVOKE_TYPE,
-];
+/// `vtc/endorsements/list/0.2`.
+#[cfg(test)]
+pub(crate) const ENDORSEMENTS_LIST_TYPE: &str =
+    <end_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        RENEW_TYPE => handle_renew(state, ctx, doc).await,
-        ROTATE_CHALLENGE_TYPE => handle_rotate_challenge(state, ctx, doc).await,
-        ROTATE_TYPE => handle_rotate(state, ctx, doc).await,
-        PERSONHOOD_REVOKE_TYPE => handle_personhood_revoke(state, ctx, doc).await,
-        RELATIONSHIPS_LIST_TYPE => handle_relationships_list(state, ctx, doc).await,
-        RELATIONSHIPS_PUBLISH_TYPE => handle_relationships_publish(state, ctx, doc).await,
-        RELATIONSHIPS_REVOKE_TYPE => handle_relationships_revoke(state, ctx, doc).await,
-        ENDORSEMENTS_ISSUE_TYPE => handle_endorsements_issue(state, ctx, doc).await,
-        ENDORSEMENTS_LIST_TYPE => handle_endorsements_list(state, ctx, doc).await,
-        ENDORSEMENTS_SHOW_TYPE => handle_endorsements_show(state, ctx, doc).await,
-        ENDORSEMENTS_REVOKE_TYPE => handle_endorsements_revoke(state, ctx, doc).await,
-        _ => return None,
-    })
+/// `vtc/endorsements/issue/0.1`.
+#[cfg(test)]
+pub(crate) const ENDORSEMENTS_ISSUE_TYPE: &str =
+    <end_issue::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, renew::Payload => |state, ctx, doc| handle_renew(state, ctx, doc));
+    let routes = on!(routes, rotate_challenge::Payload => |state, ctx, doc| handle_rotate_challenge(state, ctx, doc));
+    let routes = on!(routes, rotate::Payload => |state, ctx, doc| handle_rotate(state, ctx, doc));
+    let routes = on!(routes, personhood_revoke::Payload => |state, ctx, doc| handle_personhood_revoke(state, ctx, doc));
+    let routes = on!(routes, rel_list::Payload => |state, ctx, doc| handle_relationships_list(state, ctx, doc));
+    let routes = on!(routes, rel_publish::Payload => |state, ctx, doc| handle_relationships_publish(state, ctx, doc));
+    let routes = on!(routes, rel_revoke::Payload => |state, ctx, doc| handle_relationships_revoke(state, ctx, doc));
+    let routes = on!(routes, end_issue::Payload => |state, ctx, doc| handle_endorsements_issue(state, ctx, doc));
+    let routes = on!(routes, end_list::Payload => |state, ctx, doc| handle_endorsements_list(state, ctx, doc));
+    let routes = on!(routes, end_show::Payload => |state, ctx, doc| handle_endorsements_show(state, ctx, doc));
+    on!(routes, end_revoke::Payload => |state, ctx, doc| handle_endorsements_revoke(state, ctx, doc))
 }
 
 // ─── who is asking ───────────────────────────────────────────────────────
@@ -1011,11 +1009,24 @@ mod tests {
             ENDORSEMENTS_LIST_TYPE,
             ENDORSEMENTS_SHOW_TYPE,
         ];
-        for uri in URIS {
+        let family = [
+            RENEW_TYPE,
+            ROTATE_CHALLENGE_TYPE,
+            ROTATE_TYPE,
+            PERSONHOOD_REVOKE_TYPE,
+            RELATIONSHIPS_LIST_TYPE,
+            RELATIONSHIPS_PUBLISH_TYPE,
+            RELATIONSHIPS_REVOKE_TYPE,
+            ENDORSEMENTS_ISSUE_TYPE,
+            ENDORSEMENTS_LIST_TYPE,
+            ENDORSEMENTS_SHOW_TYPE,
+            ENDORSEMENTS_REVOKE_TYPE,
+        ];
+        for uri in family {
             let required = vti_specs::schema_index::spec_policy_for(uri)
                 .unwrap_or_else(|| panic!("{uri} has no published policy"))
                 .is_proof_required;
-            assert_eq!(required, !reads.contains(uri), "{uri}");
+            assert_eq!(required, !reads.contains(&uri), "{uri}");
         }
     }
 

@@ -34,6 +34,7 @@
 //! administrator's view of one community, bounded by what the community holds,
 //! so the cursor is the offset of the next item.
 
+use super::routing::{Routes, on};
 use serde::Serialize;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
@@ -74,33 +75,48 @@ use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::error::AppError;
 use crate::server::AppState;
 
-pub(crate) const BRANDING_SHOW_TYPE: &str = <branding_show::Payload as Payload>::TYPE_URI;
-pub(crate) const BRANDING_UPDATE_TYPE: &str = <branding_update::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const VETTER_GRANTS_LIST_TYPE: &str = <grants_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const THEME_SHOW_TYPE: &str = <theme_show::Payload as Payload>::TYPE_URI;
-pub(crate) const THEME_UPDATE_TYPE: &str = <theme_update::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const SCHEMAS_SHOW_TYPE: &str = <schemas_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const SCHEMAS_LIST_TYPE: &str = <schemas_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ROOMS_LIST_TYPE: &str = <rooms_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const REVOCATIONS_LIST_TYPE: &str = <revocations_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const REQUESTED_SHOW_TYPE: &str = <requested_show::Payload as Payload>::TYPE_URI;
-pub(crate) const REQUESTED_UPDATE_TYPE: &str = <requested_update::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const JOIN_VETTING_SHOW_TYPE: &str = <join_vetting_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const JOIN_DISCOVERY_SHOW_TYPE: &str =
     <join_discovery_show::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_DISCOVERY_UPDATE_TYPE: &str =
-    <join_discovery_update::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_REGISTER_TYPE: &str = <schemas_register::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_LIST_TYPE: &str = <schemas_list::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_SHOW_TYPE: &str = <schemas_show::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_DELETE_TYPE: &str = <schemas_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_REGISTER_TYPE: &str = <accepts_register::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_LIST_TYPE: &str = <accepts_list::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_SHOW_TYPE: &str = <accepts_show::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_DELETE_TYPE: &str = <accepts_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const VETTER_GRANTS_LIST_TYPE: &str = <grants_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const BRANDING_SHOW_TYPE: &str = <branding_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const AUTO_GRANT_SHOW_TYPE: &str = <auto_grant_show::Payload as Payload>::TYPE_URI;
-pub(crate) const AUTO_GRANT_UPDATE_TYPE: &str = <auto_grant_update::Payload as Payload>::TYPE_URI;
-pub(crate) const REVOCATIONS_LIST_TYPE: &str = <revocations_list::Payload as Payload>::TYPE_URI;
-pub(crate) const RELATIONSHIPS_SUSPEND_TYPE: &str = <rel_suspend::Payload as Payload>::TYPE_URI;
-pub(crate) const RELATIONSHIPS_RESTORE_TYPE: &str = <rel_restore::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_VETTING_SHOW_TYPE: &str = <join_vetting_show::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_QUERY_TYPE: &str = <join_query::Payload as Payload>::TYPE_URI;
-pub(crate) const ROOMS_LIST_TYPE: &str = <rooms_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ACCEPTS_SHOW_TYPE: &str = <accepts_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ACCEPTS_LIST_TYPE: &str = <accepts_list::Payload as Payload>::TYPE_URI;
+
+pub(crate) const ACCEPTS_REGISTER_TYPE: &str = <accepts_register::Payload as Payload>::TYPE_URI;
+pub(crate) const ACCEPTS_DELETE_TYPE: &str = <accepts_delete::Payload as Payload>::TYPE_URI;
 
 // ─── the codes these tasks declare, as the error-code census witnesses them ─
 
@@ -138,73 +154,34 @@ pub(crate) const JOIN_VETTING_ERR_NOT_FOUND: &str = join_vetting_show::error_cod
 pub(crate) const JOIN_QUERY_ERR_CRITERION_NOT_FOUND: &str =
     join_query::error_codes::CRITERION_NOT_FOUND.code;
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    BRANDING_SHOW_TYPE,
-    BRANDING_UPDATE_TYPE,
-    THEME_SHOW_TYPE,
-    THEME_UPDATE_TYPE,
-    REQUESTED_SHOW_TYPE,
-    REQUESTED_UPDATE_TYPE,
-    JOIN_DISCOVERY_SHOW_TYPE,
-    JOIN_DISCOVERY_UPDATE_TYPE,
-    SCHEMAS_REGISTER_TYPE,
-    SCHEMAS_LIST_TYPE,
-    SCHEMAS_SHOW_TYPE,
-    SCHEMAS_DELETE_TYPE,
-    ACCEPTS_REGISTER_TYPE,
-    ACCEPTS_LIST_TYPE,
-    ACCEPTS_SHOW_TYPE,
-    ACCEPTS_DELETE_TYPE,
-    VETTER_GRANTS_LIST_TYPE,
-    AUTO_GRANT_SHOW_TYPE,
-    AUTO_GRANT_UPDATE_TYPE,
-    REVOCATIONS_LIST_TYPE,
-    RELATIONSHIPS_SUSPEND_TYPE,
-    RELATIONSHIPS_RESTORE_TYPE,
-    JOIN_VETTING_SHOW_TYPE,
-    JOIN_QUERY_TYPE,
-    ROOMS_LIST_TYPE,
-];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        BRANDING_SHOW_TYPE => handle_branding_show(state, ctx, doc).await,
-        BRANDING_UPDATE_TYPE => handle_branding_update(state, ctx, doc).await,
-        THEME_SHOW_TYPE => handle_theme_show(state, doc).await,
-        THEME_UPDATE_TYPE => handle_theme_update(state, ctx, doc).await,
-        REQUESTED_SHOW_TYPE => handle_requested_show(state, ctx, doc).await,
-        REQUESTED_UPDATE_TYPE => handle_requested_update(state, ctx, doc).await,
-        JOIN_DISCOVERY_SHOW_TYPE => handle_join_discovery_show(state, ctx, doc).await,
-        JOIN_DISCOVERY_UPDATE_TYPE => handle_join_discovery_update(state, ctx, doc).await,
-        SCHEMAS_REGISTER_TYPE => handle_schemas_register(state, ctx, doc).await,
-        SCHEMAS_LIST_TYPE => handle_schemas_list(state, ctx, doc).await,
-        SCHEMAS_SHOW_TYPE => handle_schemas_show(state, ctx, doc).await,
-        SCHEMAS_DELETE_TYPE => handle_schemas_delete(state, ctx, doc).await,
-        ACCEPTS_REGISTER_TYPE => handle_accepts_register(state, ctx, doc).await,
-        ACCEPTS_LIST_TYPE => handle_accepts_list(state, ctx, doc).await,
-        ACCEPTS_SHOW_TYPE => handle_accepts_show(state, ctx, doc).await,
-        ACCEPTS_DELETE_TYPE => handle_accepts_delete(state, ctx, doc).await,
-        VETTER_GRANTS_LIST_TYPE => handle_vetter_grants_list(state, ctx, doc).await,
-        AUTO_GRANT_SHOW_TYPE => handle_auto_grant_show(state, ctx, doc).await,
-        AUTO_GRANT_UPDATE_TYPE => handle_auto_grant_update(state, ctx, doc).await,
-        REVOCATIONS_LIST_TYPE => handle_revocations_list(state, ctx, doc).await,
-        RELATIONSHIPS_SUSPEND_TYPE => {
-            handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Suspend).await
-        }
-        RELATIONSHIPS_RESTORE_TYPE => {
-            handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Restore).await
-        }
-        JOIN_VETTING_SHOW_TYPE => handle_join_vetting_show(state, ctx, doc).await,
-        JOIN_QUERY_TYPE => handle_join_query(state, ctx, doc).await,
-        ROOMS_LIST_TYPE => handle_rooms_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, branding_show::Payload => |state, ctx, doc| handle_branding_show(state, ctx, doc));
+    let routes = on!(routes, branding_update::Payload => |state, ctx, doc| handle_branding_update(state, ctx, doc));
+    let routes = on!(routes, theme_show::Payload => |state, _, doc| handle_theme_show(state, doc));
+    let routes = on!(routes, theme_update::Payload => |state, ctx, doc| handle_theme_update(state, ctx, doc));
+    let routes = on!(routes, requested_show::Payload => |state, ctx, doc| handle_requested_show(state, ctx, doc));
+    let routes = on!(routes, requested_update::Payload => |state, ctx, doc| handle_requested_update(state, ctx, doc));
+    let routes = on!(routes, join_discovery_show::Payload => |state, ctx, doc| handle_join_discovery_show(state, ctx, doc));
+    let routes = on!(routes, join_discovery_update::Payload => |state, ctx, doc| handle_join_discovery_update(state, ctx, doc));
+    let routes = on!(routes, schemas_register::Payload => |state, ctx, doc| handle_schemas_register(state, ctx, doc));
+    let routes = on!(routes, schemas_list::Payload => |state, ctx, doc| handle_schemas_list(state, ctx, doc));
+    let routes = on!(routes, schemas_show::Payload => |state, ctx, doc| handle_schemas_show(state, ctx, doc));
+    let routes = on!(routes, schemas_delete::Payload => |state, ctx, doc| handle_schemas_delete(state, ctx, doc));
+    let routes = on!(routes, accepts_register::Payload => |state, ctx, doc| handle_accepts_register(state, ctx, doc));
+    let routes = on!(routes, accepts_list::Payload => |state, ctx, doc| handle_accepts_list(state, ctx, doc));
+    let routes = on!(routes, accepts_show::Payload => |state, ctx, doc| handle_accepts_show(state, ctx, doc));
+    let routes = on!(routes, accepts_delete::Payload => |state, ctx, doc| handle_accepts_delete(state, ctx, doc));
+    let routes = on!(routes, grants_list::Payload => |state, ctx, doc| handle_vetter_grants_list(state, ctx, doc));
+    let routes = on!(routes, auto_grant_show::Payload => |state, ctx, doc| handle_auto_grant_show(state, ctx, doc));
+    let routes = on!(routes, auto_grant_update::Payload => |state, ctx, doc| handle_auto_grant_update(state, ctx, doc));
+    let routes = on!(routes, revocations_list::Payload => |state, ctx, doc| handle_revocations_list(state, ctx, doc));
+    let routes = on!(routes, rel_suspend::Payload => |state, ctx, doc| handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Suspend));
+    let routes = on!(routes, rel_restore::Payload => |state, ctx, doc| handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Restore));
+    let routes = on!(routes, join_vetting_show::Payload => |state, ctx, doc| handle_join_vetting_show(state, ctx, doc));
+    let routes =
+        on!(routes, join_query::Payload => |state, ctx, doc| handle_join_query(state, ctx, doc));
+    on!(routes, rooms_list::Payload => |state, ctx, doc| handle_rooms_list(state, ctx, doc))
 }
 
 // ─── authority, payloads and pages ───────────────────────────────────────

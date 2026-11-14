@@ -31,6 +31,7 @@
 //! may send are reachable by those members for the first time; each is the
 //! party its handler already admitted.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_specs::vtc::ceremonies::list::v0_1 as ceremonies_list;
@@ -59,77 +60,75 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::server::AppState;
 
-pub(crate) const PROFILE_SHOW_TYPE: &str = <profile_show::Payload as Payload>::TYPE_URI;
-pub(crate) const CEREMONIES_LIST_TYPE: &str = <ceremonies_list::Payload as Payload>::TYPE_URI;
-pub(crate) const DIRECTORY_QUERY_TYPE: &str = <directory_query::Payload as Payload>::TYPE_URI;
-pub(crate) const ENDORSEMENT_TYPES_LIST_TYPE: &str =
-    <endorsement_types_list::Payload as Payload>::TYPE_URI;
-pub(crate) const RECOGNITION_CHECK_TYPE: &str = <recognition_check::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_REMOVED_TYPE: &str = <members_removed::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_SHOW_TYPE: &str = <members_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_SOLICIT_VMC_TYPE: &str =
-    <members_solicit_vmc::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_REQUESTS_LIST_TYPE: &str = <join_requests_list::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_REQUESTS_SHOW_TYPE: &str = <join_requests_show::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const RELATIONSHIPS_GRAPH_TYPE: &str =
     <relationships_graph::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITATIONS_ISSUE_TYPE: &str = <invitation_issue::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const RECOGNITION_CHECK_TYPE: &str = <recognition_check::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const PROFILE_SHOW_TYPE: &str = <profile_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_SOLICIT_VMC_TYPE: &str =
+    <members_solicit_vmc::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_SHOW_TYPE: &str = <members_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_REMOVED_TYPE: &str = <members_removed::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const JOIN_REQUESTS_SHOW_TYPE: &str = <join_requests_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const JOIN_REQUESTS_LIST_TYPE: &str = <join_requests_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const INVITATIONS_LIST_TYPE: &str = <invitation_list::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITATIONS_REVOKE_TYPE: &str = <invitation_revoke::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ENDORSEMENT_TYPES_LIST_TYPE: &str =
+    <endorsement_types_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DIRECTORY_QUERY_TYPE: &str = <directory_query::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CEREMONIES_LIST_TYPE: &str = <ceremonies_list::Payload as Payload>::TYPE_URI;
+
+pub(crate) const INVITATIONS_ISSUE_TYPE: &str = <invitation_issue::Payload as Payload>::TYPE_URI;
 pub(crate) const INVITATIONS_DELIVER_TYPE: &str =
     <invitation_deliver::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    PROFILE_SHOW_TYPE,
-    CEREMONIES_LIST_TYPE,
-    DIRECTORY_QUERY_TYPE,
-    ENDORSEMENT_TYPES_LIST_TYPE,
-    RECOGNITION_CHECK_TYPE,
-    MEMBERS_LIST_TYPE,
-    MEMBERS_REMOVED_TYPE,
-    MEMBERS_SHOW_TYPE,
-    MEMBERS_SOLICIT_VMC_TYPE,
-    JOIN_REQUESTS_LIST_TYPE,
-    JOIN_REQUESTS_SHOW_TYPE,
-    RELATIONSHIPS_GRAPH_TYPE,
-    INVITATIONS_ISSUE_TYPE,
-    INVITATIONS_LIST_TYPE,
-    INVITATIONS_REVOKE_TYPE,
-    INVITATIONS_DELIVER_TYPE,
-];
 
 /// Tasks whose response carries a bearer secret: an issued invitation
 /// credential, and a delivery's offer code. The duplicate-execution record
 /// keeps no copy of these.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITATIONS_ISSUE_TYPE, INVITATIONS_DELIVER_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        PROFILE_SHOW_TYPE => handle_profile_show(state, ctx, doc).await,
-        CEREMONIES_LIST_TYPE => handle_ceremonies_list(state, ctx, doc).await,
-        DIRECTORY_QUERY_TYPE => handle_directory_query(state, ctx, doc).await,
-        ENDORSEMENT_TYPES_LIST_TYPE => handle_endorsement_types_list(state, ctx, doc).await,
-        RECOGNITION_CHECK_TYPE => handle_recognition_check(state, ctx, doc).await,
-        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
-        MEMBERS_REMOVED_TYPE => handle_members_removed(state, ctx, doc).await,
-        MEMBERS_SHOW_TYPE => handle_members_show(state, ctx, doc).await,
-        MEMBERS_SOLICIT_VMC_TYPE => handle_members_solicit_vmc(state, ctx, doc).await,
-        JOIN_REQUESTS_LIST_TYPE => handle_join_requests_list(state, ctx, doc).await,
-        JOIN_REQUESTS_SHOW_TYPE => handle_join_requests_show(state, ctx, doc).await,
-        RELATIONSHIPS_GRAPH_TYPE => handle_relationships_graph(state, ctx, doc).await,
-        INVITATIONS_ISSUE_TYPE => handle_invitations_issue(state, ctx, doc).await,
-        INVITATIONS_LIST_TYPE => handle_invitations_list(state, ctx, doc).await,
-        INVITATIONS_REVOKE_TYPE => handle_invitations_revoke(state, ctx, doc).await,
-        INVITATIONS_DELIVER_TYPE => handle_invitations_deliver(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, profile_show::Payload => |state, ctx, doc| handle_profile_show(state, ctx, doc));
+    let routes = on!(routes, ceremonies_list::Payload => |state, ctx, doc| handle_ceremonies_list(state, ctx, doc));
+    let routes = on!(routes, directory_query::Payload => |state, ctx, doc| handle_directory_query(state, ctx, doc));
+    let routes = on!(routes, endorsement_types_list::Payload => |state, ctx, doc| handle_endorsement_types_list(state, ctx, doc));
+    let routes = on!(routes, recognition_check::Payload => |state, ctx, doc| handle_recognition_check(state, ctx, doc));
+    let routes = on!(routes, members_list::Payload => |state, ctx, doc| handle_members_list(state, ctx, doc));
+    let routes = on!(routes, members_removed::Payload => |state, ctx, doc| handle_members_removed(state, ctx, doc));
+    let routes = on!(routes, members_show::Payload => |state, ctx, doc| handle_members_show(state, ctx, doc));
+    let routes = on!(routes, members_solicit_vmc::Payload => |state, ctx, doc| handle_members_solicit_vmc(state, ctx, doc));
+    let routes = on!(routes, join_requests_list::Payload => |state, ctx, doc| handle_join_requests_list(state, ctx, doc));
+    let routes = on!(routes, join_requests_show::Payload => |state, ctx, doc| handle_join_requests_show(state, ctx, doc));
+    let routes = on!(routes, relationships_graph::Payload => |state, ctx, doc| handle_relationships_graph(state, ctx, doc));
+    let routes = on!(routes, invitation_issue::Payload => |state, ctx, doc| handle_invitations_issue(state, ctx, doc));
+    let routes = on!(routes, invitation_list::Payload => |state, ctx, doc| handle_invitations_list(state, ctx, doc));
+    let routes = on!(routes, invitation_revoke::Payload => |state, ctx, doc| handle_invitations_revoke(state, ctx, doc));
+    on!(routes, invitation_deliver::Payload => |state, ctx, doc| handle_invitations_deliver(state, ctx, doc))
 }
 
 /// The signer as an administrator, and its payload validated against the

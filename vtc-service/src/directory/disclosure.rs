@@ -58,7 +58,7 @@ impl Served {
     /// disagree.
     pub fn this_build(settings: &super::model::Settings) -> Self {
         let serves = |slug: &str| {
-            crate::trust_tasks::directory_tasks::URIS
+            crate::trust_tasks::routing::served_uris()
                 .iter()
                 .any(|uri| uri.contains(&format!("/spec/{slug}/")))
         };
@@ -355,7 +355,7 @@ mod tests {
     fn this_build_states_what_it_serves() {
         let settings = super::super::model::Settings::default();
         let served = Served::this_build(&settings);
-        let uris = crate::trust_tasks::directory_tasks::URIS;
+        let uris = crate::trust_tasks::routing::served_uris();
         assert_eq!(
             served.admin_notes,
             uris.iter()

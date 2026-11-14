@@ -4,7 +4,23 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, vti_specs::vtc::vetting::vetters::pcs_root::v0_1::Payload => handle_pcs_root);
+    let routes = on!(routes, vti_specs::vtc::vetting::vetters::pcs_tokens::v0_1::Payload => handle_pcs_tokens);
+    let routes = on!(routes, vti_specs::vtc::vetting::vetters::event_mode::v0_1::Payload => handle_event_mode);
+    let routes =
+        on!(routes, vti_specs::vtc::vetting::pcs_challenge::v0_1::Payload => handle_pcs_challenge);
+    let routes = on!(routes, vti_specs::vtc::vetting::vetters::pcs_binding::show::v0_1::Payload => handle_pcs_binding_show);
+    let routes = on!(routes, vti_specs::vtc::vetting::vetters::pcs_binding::reset::v0_1::Payload => handle_pcs_binding_reset);
+    let routes = on!(routes, vti_specs::vtc::vetting::hidden::publish::v0_1::Payload => handle_hidden_publish);
+    let routes = on!(routes, vti_specs::vtc::vetting::hidden::withdraw::v0_1::Payload => handle_hidden_withdraw);
+    on!(routes, vti_specs::vtc::vetting::hidden::show::v0_1::Payload => handle_hidden_show)
+}
 
 /// `vtc/vetting/vetters/pcs-root/0.1` — a vetter enrols for a class label.
 ///

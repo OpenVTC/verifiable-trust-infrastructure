@@ -7,8 +7,9 @@
 //!
 //! The work is [`crate::oid4vp::status`]; this module maps the wire to it.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
-use trust_tasks_rs::{Payload, TrustTask};
+use trust_tasks_rs::TrustTask;
 use vti_specs::vtc::oid4vp::identities::list::v0_1 as list;
 
 use super::helpers::{TrustTaskOutcome, app_error_to_reject, success_response};
@@ -16,21 +17,9 @@ use super::{JoinAuthCtx, capable_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::server::AppState;
 
-pub(crate) const IDENTITIES_LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[IDENTITIES_LIST_TYPE];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        IDENTITIES_LIST_TYPE => handle_identities_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, list::Payload => |state, ctx, doc| handle_identities_list(state, ctx, doc))
 }
 
 async fn handle_identities_list(

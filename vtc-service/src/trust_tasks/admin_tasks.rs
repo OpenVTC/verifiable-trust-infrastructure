@@ -28,6 +28,7 @@
 //! step-up (the admin invite that writes an unrestricted entry), the gesture is
 //! instead bound to this one document ([`crate::acl::bound_step_up`]).
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_specs::audit::{list::v0_2 as audit_list, verify::v0_1 as audit_verify};
@@ -55,73 +56,57 @@ use crate::acl::Capability;
 use crate::error::AppError;
 use crate::server::AppState;
 
-pub(crate) const DIAGNOSTICS_TYPE: &str = <diagnostics::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const SYNC_JOBS_LIST_TYPE: &str = <sync_list::Payload as Payload>::TYPE_URI;
-pub(crate) const SYNC_JOBS_RETRY_TYPE: &str = <sync_retry::Payload as Payload>::TYPE_URI;
-pub(crate) const SYNC_JOBS_DISCARD_TYPE: &str = <sync_discard::Payload as Payload>::TYPE_URI;
-pub(crate) const RECORDS_LIST_TYPE: &str = <records_list::Payload as Payload>::TYPE_URI;
-pub(crate) const AUDIT_LIST_TYPE: &str = <audit_list::Payload as Payload>::TYPE_URI;
-pub(crate) const AUDIT_VERIFY_TYPE: &str = <audit_verify::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_SHOW_TYPE: &str = <config_show::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_PATCH_TYPE: &str = <config_patch::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_RELOAD_TYPE: &str = <config_reload::Payload as Payload>::TYPE_URI;
-pub(crate) const CONFIG_RESTART_TYPE: &str = <config_restart::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITES_LIST_TYPE: &str = <invite_list::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITES_CREATE_TYPE: &str = <invite_create::Payload as Payload>::TYPE_URI;
-pub(crate) const INVITES_REVOKE_TYPE: &str = <invite_revoke::Payload as Payload>::TYPE_URI;
-pub(crate) const SESSIONS_LIST_TYPE: &str = <sessions_list::Payload as Payload>::TYPE_URI;
-pub(crate) const REVOKE_SESSION_TYPE: &str = <revoke_session::Payload as Payload>::TYPE_URI;
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    DIAGNOSTICS_TYPE,
-    SYNC_JOBS_LIST_TYPE,
-    SYNC_JOBS_RETRY_TYPE,
-    SYNC_JOBS_DISCARD_TYPE,
-    RECORDS_LIST_TYPE,
-    AUDIT_LIST_TYPE,
-    AUDIT_VERIFY_TYPE,
-    CONFIG_SHOW_TYPE,
-    CONFIG_PATCH_TYPE,
-    CONFIG_RELOAD_TYPE,
-    CONFIG_RESTART_TYPE,
-    INVITES_LIST_TYPE,
-    INVITES_CREATE_TYPE,
-    INVITES_REVOKE_TYPE,
-    SESSIONS_LIST_TYPE,
-    REVOKE_SESSION_TYPE,
-];
+#[cfg(test)]
+pub(crate) const RECORDS_LIST_TYPE: &str = <records_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const INVITES_LIST_TYPE: &str = <invite_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DIAGNOSTICS_TYPE: &str = <diagnostics::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CONFIG_SHOW_TYPE: &str = <config_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CONFIG_PATCH_TYPE: &str = <config_patch::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const AUDIT_VERIFY_TYPE: &str = <audit_verify::Payload as Payload>::TYPE_URI;
+
+pub(crate) const INVITES_CREATE_TYPE: &str = <invite_create::Payload as Payload>::TYPE_URI;
 
 /// Tasks whose response carries a bearer secret: an admin invite's claim code
 /// and install URL. The duplicate-execution record keeps no copy of these, so
 /// the secret does not sit in `accepted_ids` for the acceptance window.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITES_CREATE_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        DIAGNOSTICS_TYPE => handle_diagnostics(state, ctx, doc).await,
-        SYNC_JOBS_LIST_TYPE => handle_sync_jobs_list(state, ctx, doc).await,
-        SYNC_JOBS_RETRY_TYPE => handle_sync_jobs_retry(state, ctx, doc).await,
-        SYNC_JOBS_DISCARD_TYPE => handle_sync_jobs_discard(state, ctx, doc).await,
-        RECORDS_LIST_TYPE => handle_records_list(state, ctx, doc).await,
-        AUDIT_LIST_TYPE => handle_audit_list(state, ctx, doc).await,
-        AUDIT_VERIFY_TYPE => handle_audit_verify(state, ctx, doc).await,
-        CONFIG_SHOW_TYPE => handle_config_show(state, ctx, doc).await,
-        CONFIG_PATCH_TYPE => handle_config_patch(state, ctx, doc).await,
-        CONFIG_RELOAD_TYPE => handle_config_reload(state, ctx, doc).await,
-        CONFIG_RESTART_TYPE => handle_config_restart(state, ctx, doc).await,
-        INVITES_LIST_TYPE => handle_invites_list(state, ctx, doc).await,
-        INVITES_CREATE_TYPE => handle_invites_create(state, ctx, doc).await,
-        INVITES_REVOKE_TYPE => handle_invites_revoke(state, ctx, doc).await,
-        SESSIONS_LIST_TYPE => handle_sessions_list(state, ctx, doc).await,
-        REVOKE_SESSION_TYPE => handle_revoke_session(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, diagnostics::Payload => |state, ctx, doc| handle_diagnostics(state, ctx, doc));
+    let routes =
+        on!(routes, sync_list::Payload => |state, ctx, doc| handle_sync_jobs_list(state, ctx, doc));
+    let routes = on!(routes, sync_retry::Payload => |state, ctx, doc| handle_sync_jobs_retry(state, ctx, doc));
+    let routes = on!(routes, sync_discard::Payload => |state, ctx, doc| handle_sync_jobs_discard(state, ctx, doc));
+    let routes = on!(routes, records_list::Payload => |state, ctx, doc| handle_records_list(state, ctx, doc));
+    let routes =
+        on!(routes, audit_list::Payload => |state, ctx, doc| handle_audit_list(state, ctx, doc));
+    let routes = on!(routes, audit_verify::Payload => |state, ctx, doc| handle_audit_verify(state, ctx, doc));
+    let routes =
+        on!(routes, config_show::Payload => |state, ctx, doc| handle_config_show(state, ctx, doc));
+    let routes = on!(routes, config_patch::Payload => |state, ctx, doc| handle_config_patch(state, ctx, doc));
+    let routes = on!(routes, config_reload::Payload => |state, ctx, doc| handle_config_reload(state, ctx, doc));
+    let routes = on!(routes, config_restart::Payload => |state, ctx, doc| handle_config_restart(state, ctx, doc));
+    let routes =
+        on!(routes, invite_list::Payload => |state, ctx, doc| handle_invites_list(state, ctx, doc));
+    let routes = on!(routes, invite_create::Payload => |state, ctx, doc| handle_invites_create(state, ctx, doc));
+    let routes = on!(routes, invite_revoke::Payload => |state, ctx, doc| handle_invites_revoke(state, ctx, doc));
+    let routes = on!(routes, sessions_list::Payload => |state, ctx, doc| handle_sessions_list(state, ctx, doc));
+    on!(routes, revoke_session::Payload => |state, ctx, doc| handle_revoke_session(state, ctx, doc))
 }
 
 /// The signer, holding `cap` (`vtc-admin-roles.md` §4 "Gates"), and its

@@ -4,7 +4,21 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::vetting::revoke_statement::v0_1::Payload => handle_revoke_statement);
+    let routes =
+        on!(routes, vti_specs::vtc::vetting::vetters::grant::v0_1::Payload => handle_vetter_grant);
+    let routes = on!(routes, vti_specs::vtc::vetting::vetters::profile::v0_1::Payload => handle_vetter_profile);
+    let routes =
+        on!(routes, vti_specs::vtc::vetting::vetters::list::v0_1::Payload => handle_vetter_list);
+    let routes =
+        on!(routes, vti_specs::vtc::vetting::vetters::show::v0_1::Payload => handle_vetter_show);
+    on!(routes, vti_specs::vtc::vetting::vetters::resend::v0_2::Payload => handle_vetter_resend)
+}
 
 // ─── vetting statement withdrawal ──────────────────────────────────────────
 

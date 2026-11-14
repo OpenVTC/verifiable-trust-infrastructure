@@ -26,8 +26,16 @@ use super::JoinAuthCtx;
 use super::helpers::{
     TrustTaskOutcome, acknowledge, app_error_to_reject, parse_payload, reject_with,
 };
+use super::routing::{Routes, on};
 use crate::credentials::delivery::{Thread, push_document};
 use crate::server::AppState;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, vti_specs::credential_exchange::request::v0_1::Payload => handle_request);
+    on!(routes, vti_specs::credential_exchange::present::v0_1::Payload => handle_present)
+}
 
 /// The thread a step belongs to: its `threadId`, or — for a step that opens a
 /// thread — its own `id`.

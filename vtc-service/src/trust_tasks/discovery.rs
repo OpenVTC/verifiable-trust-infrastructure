@@ -12,7 +12,7 @@
 //! advertised window cannot be wider than the enforced one.
 //!
 //! The listed Type URIs are read from the routing table itself — the
-//! `DISPATCHED_URIS` arms plus the rooms and `git-ns` dispatchers' own
+//! `dispatched_uris` plus the rooms and `git-ns` dispatchers' own
 //! registrations, the same set [`super::unsupported_type_or_version`] names
 //! served versions from — so the answer cannot list a task nobody routes.
 //!
@@ -29,7 +29,7 @@ use trust_tasks_rs::validate::ValidatedPayload;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use super::helpers::{TrustTaskOutcome, parse_payload, reject_with, success_response};
-use super::{DISPATCHED_URIS, JoinAuthCtx, caller_is_identified};
+use super::{JoinAuthCtx, caller_is_identified, dispatched_uris};
 
 /// `trust-task-discovery/0.4`.
 pub(crate) const DISCOVERY_V0_4_TYPE: &str = vti_common::trust_task::discovery::DISCOVERY_V0_4;
@@ -38,7 +38,7 @@ pub(crate) const DISCOVERY_V0_3_TYPE: &str = vti_common::trust_task::discovery::
 
 /// Every Type URI this dispatcher routes.
 pub(super) fn served_uris() -> Vec<&'static str> {
-    DISPATCHED_URIS
+    dispatched_uris()
         .iter()
         .copied()
         .chain(crate::rooms::handlers::served_uris())

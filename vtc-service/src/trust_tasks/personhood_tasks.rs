@@ -3,7 +3,14 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::members::personhood::challenge::v0_1::Payload => handle_personhood_challenge);
+    on!(routes, vti_specs::vtc::members::personhood::assert::v0_2::Payload => handle_personhood_assert)
+}
 
 // ─── personhood ──────────────────────────────────────────────────────────
 

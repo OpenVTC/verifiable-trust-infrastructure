@@ -4,7 +4,23 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::join_requests::submit::v0_3::Payload => handle_submit);
+    let routes =
+        on!(routes, vti_specs::vtc::join_requests::manifest::v0_4::Payload => handle_manifest);
+    let routes = on!(routes, vti_specs::vtc::join_requests::status::v0_1::Payload => handle_status);
+    let routes =
+        on!(routes, vti_specs::vtc::join_requests::withdraw::v0_1::Payload => handle_withdraw);
+    let routes =
+        on!(routes, vti_specs::vtc::join_requests::supplement::v0_1::Payload => handle_supplement);
+    let routes =
+        on!(routes, vti_specs::vtc::members::self_remove::v0_1::Payload => handle_self_remove);
+    on!(routes, vti_specs::vtc::join_requests::decide::v0_1::Payload => handle_join_decide)
+}
 
 // ─── submit / request ────────────────────────────────────────────────────
 

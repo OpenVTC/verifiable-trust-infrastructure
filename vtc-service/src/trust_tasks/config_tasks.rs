@@ -4,7 +4,19 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::community::profile::update::v0_1::Payload => handle_community_profile_update);
+    let routes = on!(routes, vti_specs::vtc::config::export::v0_1::Payload => handle_config_export);
+    let routes = on!(routes, vti_specs::vtc::config::did_hosting::list::v0_1::Payload => handle_did_hosting_list);
+    let routes = on!(routes, vti_specs::vtc::config::import::v0_1::Payload => handle_config_import);
+    let routes = on!(routes, vti_specs::vtc::endorsement_types::register::v0_1::Payload => handle_endorsement_type_register);
+    let routes = on!(routes, vti_specs::vtc::endorsement_types::delete::v0_1::Payload => handle_endorsement_type_delete);
+    on!(routes, vti_specs::vtc::backup::export::v0_1::Payload => handle_backup_export)
+}
 
 /// `vtc/community/profile/update/0.1` — edit the community's public profile.
 ///

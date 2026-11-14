@@ -52,7 +52,13 @@ pub mod codes {
     pub const ROLE_SET_DENIED_BY_POLICY: &str = c::DENIED_BY_POLICY.code;
 }
 
+use super::routing::{Routes, on};
 use role_set::error_codes as declared;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, role_set::Payload => handle_role_set)
+}
 
 fn coded(
     doc: &TrustTask<Value>,

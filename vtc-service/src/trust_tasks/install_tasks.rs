@@ -35,6 +35,7 @@
 //! transport. `routes::admin::bootstrap::bootstrap` needed no such
 //! adaptation; it already took nothing but the setup-session token.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_specs::vtc::admin::bootstrap::v0_1 as bootstrap;
@@ -50,42 +51,34 @@ use crate::routes::admin::bootstrap::BootstrapRequest;
 use crate::routes::install::{ClaimFinishRequest, ClaimStartRequest};
 use crate::server::AppState;
 
+#[cfg(test)]
+pub(crate) const CLAIM_START_V0_3_TYPE: &str = <claim_start_v0_3::Payload as Payload>::TYPE_URI;
+
 /// `vtc/install/claim/passkey/start/0.1`.
+#[cfg(test)]
 pub(crate) const CLAIM_START_TYPE: &str = <claim_start::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const BOOTSTRAP_TYPE: &str = <bootstrap::Payload as Payload>::TYPE_URI;
+
 /// `vtc/install/claim/passkey/finish/0.1`.
 pub(crate) const CLAIM_FINISH_TYPE: &str = <claim_finish::Payload as Payload>::TYPE_URI;
-pub(crate) const BOOTSTRAP_TYPE: &str = <bootstrap::Payload as Payload>::TYPE_URI;
-pub(crate) const CLAIM_START_V0_3_TYPE: &str = <claim_start_v0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const CLAIM_FINISH_V0_3_TYPE: &str = <claim_finish_v0_3::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    CLAIM_START_TYPE,
-    CLAIM_FINISH_TYPE,
-    CLAIM_START_V0_3_TYPE,
-    CLAIM_FINISH_V0_3_TYPE,
-    BOOTSTRAP_TYPE,
-];
 
 /// Tasks whose response carries the setup session token. The
 /// duplicate-execution record keeps no copy of these; a redelivery is answered
 /// `204`.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[CLAIM_FINISH_TYPE, CLAIM_FINISH_V0_3_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CLAIM_START_TYPE => handle_claim_start(state, doc).await,
-        CLAIM_FINISH_TYPE => handle_claim_finish(state, doc).await,
-        CLAIM_START_V0_3_TYPE => handle_claim_start_v0_3(state, doc).await,
-        CLAIM_FINISH_V0_3_TYPE => handle_claim_finish_v0_3(state, ctx, doc).await,
-        BOOTSTRAP_TYPE => handle_bootstrap(state, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, claim_start::Payload => |state, _, doc| handle_claim_start(state, doc));
+    let routes =
+        on!(routes, claim_finish::Payload => |state, _, doc| handle_claim_finish(state, doc));
+    let routes = on!(routes, claim_start_v0_3::Payload => |state, _, doc| handle_claim_start_v0_3(state, doc));
+    let routes = on!(routes, claim_finish_v0_3::Payload => |state, ctx, doc| handle_claim_finish_v0_3(state, ctx, doc));
+    on!(routes, bootstrap::Payload => |state, _, doc| handle_bootstrap(state, doc))
 }
 
 /// An approver task refusal as its trust-task-error document.

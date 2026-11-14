@@ -32,6 +32,7 @@
 //! ([`Writer::Delegated`]). It may upload a picture for the member's card and
 //! read pictures as the member.
 
+use super::routing::{Routes, on};
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
@@ -77,48 +78,7 @@ use crate::directory::write_policy::{self, WriteFacts};
 use crate::policy::model::PolicyPurpose;
 use crate::server::AppState;
 
-pub(crate) const FIELDS_LIST_TYPE: &str = <fields_list::Payload as Payload>::TYPE_URI;
-pub(crate) const FIELDS_DEFINE_TYPE: &str = <fields_define::Payload as Payload>::TYPE_URI;
 pub(crate) const FIELDS_UPDATE_TYPE: &str = <fields_update::Payload as Payload>::TYPE_URI;
-pub(crate) const FIELDS_RETIRE_TYPE: &str = <fields_retire::Payload as Payload>::TYPE_URI;
-pub(crate) const CARD_SHOW_TYPE: &str = <card_show::Payload as Payload>::TYPE_URI;
-pub(crate) const CARD_UPDATE_TYPE: &str = <card_update::Payload as Payload>::TYPE_URI;
-pub(crate) const CARD_ASSERT_TYPE: &str = <card_assert::Payload as Payload>::TYPE_URI;
-pub(crate) const CARD_PRESENT_TYPE: &str = <card_present::Payload as Payload>::TYPE_URI;
-pub(crate) const ENTRIES_LIST_TYPE: &str = <entries_list::Payload as Payload>::TYPE_URI;
-pub(crate) const ENTRIES_SHOW_TYPE: &str = <entries_show::Payload as Payload>::TYPE_URI;
-pub(crate) const DISCLOSURE_TYPE: &str = <disclosure::Payload as Payload>::TYPE_URI;
-pub(crate) const IMAGES_UPLOAD_TYPE: &str = <images_upload::Payload as Payload>::TYPE_URI;
-pub(crate) const IMAGES_GET_TYPE: &str = <images_get::Payload as Payload>::TYPE_URI;
-pub(crate) const CARD_PUBLISH_TYPE: &str = <card_publish::Payload as Payload>::TYPE_URI;
-pub(crate) const CARD_PUBLIC_TYPE: &str = <card_public::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_APPEND_TYPE: &str = <notes_append::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_LIST_TYPE: &str = <notes_list::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_EXPORT_TYPE: &str = <notes_export::Payload as Payload>::TYPE_URI;
-pub(crate) const EXPORT_TYPE: &str = <directory_export::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    FIELDS_LIST_TYPE,
-    FIELDS_DEFINE_TYPE,
-    FIELDS_UPDATE_TYPE,
-    FIELDS_RETIRE_TYPE,
-    CARD_SHOW_TYPE,
-    CARD_UPDATE_TYPE,
-    CARD_ASSERT_TYPE,
-    ENTRIES_LIST_TYPE,
-    ENTRIES_SHOW_TYPE,
-    DISCLOSURE_TYPE,
-    IMAGES_UPLOAD_TYPE,
-    IMAGES_GET_TYPE,
-    CARD_PUBLISH_TYPE,
-    CARD_PUBLIC_TYPE,
-    CARD_PRESENT_TYPE,
-    NOTES_APPEND_TYPE,
-    NOTES_LIST_TYPE,
-    NOTES_EXPORT_TYPE,
-    EXPORT_TYPE,
-];
 
 // ─── the codes these tasks declare, as the error-code census witnesses them ─
 
@@ -189,34 +149,35 @@ codes! {
     EXPORT_ERR_CURSOR_INVALID = directory_export::CURSOR_INVALID;
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        FIELDS_LIST_TYPE => handle_fields_list(state, ctx, doc).await,
-        FIELDS_DEFINE_TYPE => handle_fields_define(state, ctx, doc).await,
-        FIELDS_UPDATE_TYPE => handle_fields_update(state, ctx, doc).await,
-        FIELDS_RETIRE_TYPE => handle_fields_retire(state, ctx, doc).await,
-        CARD_SHOW_TYPE => handle_card_show(state, ctx, doc).await,
-        CARD_UPDATE_TYPE => handle_card_update(state, ctx, doc).await,
-        CARD_ASSERT_TYPE => handle_card_assert(state, ctx, doc).await,
-        ENTRIES_LIST_TYPE => handle_entries_list(state, ctx, doc).await,
-        ENTRIES_SHOW_TYPE => handle_entries_show(state, ctx, doc).await,
-        DISCLOSURE_TYPE => handle_disclosure(state, ctx, doc).await,
-        IMAGES_UPLOAD_TYPE => handle_images_upload(state, ctx, doc).await,
-        IMAGES_GET_TYPE => handle_images_get(state, ctx, doc).await,
-        CARD_PRESENT_TYPE => handle_card_present(state, ctx, doc).await,
-        CARD_PUBLISH_TYPE => handle_card_publish(state, ctx, doc).await,
-        CARD_PUBLIC_TYPE => handle_card_public(state, ctx, doc).await,
-        NOTES_APPEND_TYPE => handle_notes_append(state, ctx, doc).await,
-        NOTES_LIST_TYPE => handle_notes_list(state, ctx, doc).await,
-        NOTES_EXPORT_TYPE => handle_notes_export(state, ctx, doc).await,
-        EXPORT_TYPE => handle_export(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, fields_list::Payload => |state, ctx, doc| handle_fields_list(state, ctx, doc));
+    let routes = on!(routes, fields_define::Payload => |state, ctx, doc| handle_fields_define(state, ctx, doc));
+    let routes = on!(routes, fields_update::Payload => |state, ctx, doc| handle_fields_update(state, ctx, doc));
+    let routes = on!(routes, fields_retire::Payload => |state, ctx, doc| handle_fields_retire(state, ctx, doc));
+    let routes =
+        on!(routes, card_show::Payload => |state, ctx, doc| handle_card_show(state, ctx, doc));
+    let routes =
+        on!(routes, card_update::Payload => |state, ctx, doc| handle_card_update(state, ctx, doc));
+    let routes =
+        on!(routes, card_assert::Payload => |state, ctx, doc| handle_card_assert(state, ctx, doc));
+    let routes = on!(routes, entries_list::Payload => |state, ctx, doc| handle_entries_list(state, ctx, doc));
+    let routes = on!(routes, entries_show::Payload => |state, ctx, doc| handle_entries_show(state, ctx, doc));
+    let routes =
+        on!(routes, disclosure::Payload => |state, ctx, doc| handle_disclosure(state, ctx, doc));
+    let routes = on!(routes, images_upload::Payload => |state, ctx, doc| handle_images_upload(state, ctx, doc));
+    let routes =
+        on!(routes, images_get::Payload => |state, ctx, doc| handle_images_get(state, ctx, doc));
+    let routes = on!(routes, card_present::Payload => |state, ctx, doc| handle_card_present(state, ctx, doc));
+    let routes = on!(routes, card_publish::Payload => |state, ctx, doc| handle_card_publish(state, ctx, doc));
+    let routes =
+        on!(routes, card_public::Payload => |state, ctx, doc| handle_card_public(state, ctx, doc));
+    let routes = on!(routes, notes_append::Payload => |state, ctx, doc| handle_notes_append(state, ctx, doc));
+    let routes =
+        on!(routes, notes_list::Payload => |state, ctx, doc| handle_notes_list(state, ctx, doc));
+    let routes = on!(routes, notes_export::Payload => |state, ctx, doc| handle_notes_export(state, ctx, doc));
+    on!(routes, directory_export::Payload => |state, ctx, doc| handle_export(state, ctx, doc))
 }
 
 // ─── shared ───────────────────────────────────────────────────────────────
@@ -1888,6 +1849,27 @@ async fn handle_card_public(
 // ─── administrators' notes and the export ─────────────────────────────────
 
 use crate::directory::notes::{self, AppendError, NewNote};
+
+#[cfg(test)]
+pub(crate) const IMAGES_GET_TYPE: &str = <images_get::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const FIELDS_LIST_TYPE: &str = <fields_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ENTRIES_SHOW_TYPE: &str = <entries_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ENTRIES_LIST_TYPE: &str = <entries_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DISCLOSURE_TYPE: &str = <disclosure::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CARD_SHOW_TYPE: &str = <card_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const CARD_PUBLIC_TYPE: &str = <card_public::Payload as Payload>::TYPE_URI;
 
 /// Whether the directory knows `entry_id`: a card, or the notes kept about a
 /// member who left.

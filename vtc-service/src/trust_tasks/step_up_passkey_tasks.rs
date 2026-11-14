@@ -18,6 +18,7 @@
 //! | `revoke/start`, `revoke/finish` | the member revoking their own step-up passkey, a community administrator revoking one for a member, or an administrator revoking their own session passkey (which `start` refuses below their last) | a user-verified assertion from the producer's own passkeys — the subject's remaining step-up passkeys for a self-revoke, the administrator's session passkeys otherwise — plus, for an administrator, their ACL row |
 //! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_specs::auth::passkey::admin_list::v0_1 as admin_list;
@@ -34,26 +35,24 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::server::AppState;
 
+#[cfg(test)]
+pub(crate) const REVOKE_START_TYPE: &str =
+    <revoke_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const REVOKE_FINISH_TYPE: &str =
+    <revoke_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const REDEEM_FINISH_TYPE: &str =
+    <redeem_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ADMIN_LIST_TYPE: &str = <admin_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 pub(crate) const INVITE_TYPE: &str = <invite::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 pub(crate) const REDEEM_START_TYPE: &str =
     <redeem_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REDEEM_FINISH_TYPE: &str =
-    <redeem_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REVOKE_START_TYPE: &str =
-    <revoke_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REVOKE_FINISH_TYPE: &str =
-    <revoke_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const ADMIN_LIST_TYPE: &str = <admin_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    INVITE_TYPE,
-    REDEEM_START_TYPE,
-    REDEEM_FINISH_TYPE,
-    REVOKE_START_TYPE,
-    REVOKE_FINISH_TYPE,
-    ADMIN_LIST_TYPE,
-];
 
 /// Tasks whose response carries a bearer secret — the invite's token and
 /// claim code, a redemption's `enrollmentId`. The duplicate-execution record
@@ -62,21 +61,14 @@ pub(crate) const URIS: &[&str] = &[
 /// acceptance window.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITE_TYPE, REDEEM_START_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        INVITE_TYPE => handle_invite(state, ctx, doc).await,
-        REDEEM_START_TYPE => handle_redeem_start(state, ctx, doc).await,
-        REDEEM_FINISH_TYPE => handle_redeem_finish(state, ctx, doc).await,
-        REVOKE_START_TYPE => handle_revoke_start(state, ctx, doc).await,
-        REVOKE_FINISH_TYPE => handle_revoke_finish(state, ctx, doc).await,
-        ADMIN_LIST_TYPE => handle_admin_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, invite::Payload => |state, ctx, doc| handle_invite(state, ctx, doc));
+    let routes = on!(routes, redeem_start::Payload => |state, ctx, doc| handle_redeem_start(state, ctx, doc));
+    let routes = on!(routes, redeem_finish::Payload => |state, ctx, doc| handle_redeem_finish(state, ctx, doc));
+    let routes = on!(routes, revoke_start::Payload => |state, ctx, doc| handle_revoke_start(state, ctx, doc));
+    let routes = on!(routes, revoke_finish::Payload => |state, ctx, doc| handle_revoke_finish(state, ctx, doc));
+    on!(routes, admin_list::Payload => |state, ctx, doc| handle_admin_list(state, ctx, doc))
 }
 
 /// `auth/passkey/enroll/invite/0.3`. Letting a member bind a second factor is

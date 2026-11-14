@@ -30,7 +30,7 @@
 //! - the REST tower layers (`tt` / `ttl` in `routes/mod.rs`), which cannot be
 //!   enumerated from a built `Router`, so they are read as source text — the
 //!   same blunt-but-confined technique `tests/trust_task_manifest.rs` uses;
-//! - [`super::DISPATCHED_URIS`], the document dispatcher's own list, which is
+//! - [`super::dispatched_uris`], the document dispatcher's own list, which is
 //!   what REST-as-document, DIDComm and TSP all route through.
 //!
 //! That union, filtered to what `schema_index::schema_for` resolves, is the
@@ -125,7 +125,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
 use trust_tasks_rs::validate::ValidatedPayload;
 
-use super::DISPATCHED_URIS;
+use super::dispatched_uris;
 
 /// The one place the sweep's family scope is written down. See the module
 /// docs' "Scope" section for why it is `vtc/` and not `spec/`.
@@ -141,7 +141,7 @@ const VTC_PREFIX: &str = "https://trusttasks.org/spec/vtc/";
 /// It is blunt, but the wiring is confined to `src/routes/` and a false
 /// positive here is a compile-visible string, not a silent pass.
 fn bound_uris() -> BTreeSet<String> {
-    let mut found: BTreeSet<String> = DISPATCHED_URIS
+    let mut found: BTreeSet<String> = dispatched_uris()
         .iter()
         .filter(|u| u.starts_with(VTC_PREFIX))
         .map(|u| (*u).to_owned())

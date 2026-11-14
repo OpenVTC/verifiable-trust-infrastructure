@@ -4,7 +4,18 @@
 //! Moved out of `trust_tasks/mod.rs` (#2579); the spine glue and the router
 //! stay there.
 
+use super::routing::{Routes, on};
 use super::*;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::vtc::members::vmc::v0_1::Payload => handle_member_vmc);
+    let routes = on!(routes, vti_specs::vtc::members::credentials::v0_1::Payload => handle_member_credentials);
+    let routes =
+        on!(routes, vti_specs::vtc::members::update::v0_1::Payload => handle_member_update);
+    let routes = on!(routes, vti_specs::vtc::members::admin_remove::v0_1::Payload => handle_member_admin_remove);
+    on!(routes, vti_specs::vtc::members::purge::v0_1::Payload => handle_member_purge)
+}
 
 /// `vtc/members/credentials/0.1` — the membership pair's bodies for one member.
 ///

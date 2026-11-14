@@ -37,12 +37,25 @@ use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
     success_response, task_error_to_reject,
 };
+use super::routing::{Routes, on};
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::capability::CeilingError;
 use crate::acl::granting::GrantRefusal;
 use crate::error::{AppError, TaskError};
 use crate::routes::acl::{self as ops, EntryParseError, WriteError};
 use crate::server::AppState;
+
+/// Register every task this family serves (#2579).
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3)
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::acl::grant::v0_2::Payload => handle_grant);
+    let routes = on!(routes, vti_specs::acl::change_role::v0_2::Payload => handle_change_role);
+    let routes = on!(routes, vti_specs::acl::show::v0_2::Payload => handle_show);
+    let routes = on!(routes, vti_specs::acl::list::v0_3::Payload => handle_list);
+    let routes = on!(routes, vti_specs::acl::update::v0_2::Payload => handle_update);
+    let routes = on!(routes, vti_specs::acl::revoke::v0_2::Payload => handle_revoke);
+    on!(routes, vti_specs::acl::swap_key::v0_1::Payload => handle_swap_key)
+}
 
 // ─── reading ─────────────────────────────────────────────────────────────
 
