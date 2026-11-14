@@ -789,20 +789,8 @@ pub fn provisionable_mediator_vars() -> BTreeMap<String, Value> {
 // site.
 // ---------------------------------------------------------------------------
 
-/// Pin jsonwebtoken's default `CryptoProvider` to `aws_lc` once per
-/// process. The workspace compiles `jsonwebtoken` with only the
-/// `aws_lc_rs` backend (the `rust_crypto` bundle pulls in `rsa`,
-/// exposed to RUSTSEC-2023-0071). When `cargo test --workspace`
-/// unifies features and a sibling crate brings in a second provider,
-/// `jsonwebtoken`'s auto-select panics; installing one explicitly
-/// here avoids that. Idempotent — safe to call from every test file.
-pub fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
+/// The fixtures both services share live in `vti_common::test_support` (#2572).
+pub use vti_common::test_support::{build_offline_atm, init_jwt_provider};
 
 /// In-memory seed store for tests that need a stable seed without touching
 /// the filesystem-backed `PlaintextSeedStore`. The bytes are the seed; the
@@ -1190,28 +1178,6 @@ async fn build_transport_state(
         ka_vm_id: vm_id("#key-2"),
         atm: Some(atm),
     }
-}
-
-/// Build a fully-offline [`ATM`](affinidi_tdk::messaging::ATM) suitable for
-/// unit tests that need `atm.unpack` without a live mediator. No secrets and
-/// no network mode are configured, so it can unpack a **plaintext** DIDComm
-/// envelope (which needs no keys) but not decrypt a JWE. That's exactly what
-/// the plaintext-forgery regression needs: prove the handler rejects an
-/// unauthenticated envelope after unpack.
-pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
-    use affinidi_tdk::common::TDKSharedState;
-    use affinidi_tdk::common::config::TDKConfig;
-    use affinidi_tdk::messaging::config::ATMConfig;
-
-    let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
-        .await
-        .expect("TDK shared state");
-    affinidi_tdk::messaging::ATM::new(
-        ATMConfig::builder().build().expect("ATM config"),
-        Arc::new(tdk),
-    )
-    .await
-    .expect("offline ATM")
 }
 
 /// Spin up an in-memory router suitable for `tower::ServiceExt::oneshot`

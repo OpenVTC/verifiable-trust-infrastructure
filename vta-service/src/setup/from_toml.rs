@@ -529,37 +529,13 @@ impl std::fmt::Debug for SecretsBackendInput {
     }
 }
 
-fn default_keyring_service() -> String {
-    "vta".into()
-}
-
-pub(crate) fn default_vault_kv_mount() -> String {
-    "secret".into()
-}
-
-pub(crate) fn default_vault_secret_key() -> String {
-    "seed".into()
-}
-
-pub(crate) fn default_vault_auth_method() -> String {
-    "kubernetes".into()
-}
-
-pub(crate) fn default_vault_k8s_mount() -> String {
-    "kubernetes".into()
-}
-
-pub(crate) fn default_vault_k8s_jwt_path() -> String {
-    "/var/run/secrets/kubernetes.io/serviceaccount/token".into()
-}
-
-pub(crate) fn default_k8s_secret_key() -> String {
-    "seed".into()
-}
-
-pub(crate) fn default_vault_approle_mount() -> String {
-    "approle".into()
-}
+// The secrets defaults are `vti_secrets`'s own, so the wizard's input and the
+// `SecretsConfig` it writes cannot disagree (#2572).
+pub(crate) use vti_secrets::config::{
+    default_k8s_secret_key, default_keyring_service, default_vault_approle_mount,
+    default_vault_auth_method, default_vault_k8s_jwt_path, default_vault_k8s_mount,
+    default_vault_kv_mount, default_vault_secret_key,
+};
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

@@ -32,6 +32,8 @@ pub mod policy_engine;
 pub mod rate_limit;
 #[cfg(feature = "tsp")]
 pub mod relationship_store;
+/// Process plumbing every service shares (`shutdown_signal`).
+pub mod runtime;
 pub mod scid_floors;
 pub mod secure_file;
 pub mod seed_store;
@@ -45,6 +47,8 @@ pub mod slip10;
 pub mod store;
 pub mod task_consent;
 pub mod telemetry;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 pub mod trust_task;
 /// Push a signed Trust Task over TSP > DIDComm > REST, durably, with
 /// escalation — shared by the VTA and the VTC.

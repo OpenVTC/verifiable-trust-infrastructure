@@ -5,7 +5,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 
 use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use crate::auth::credentials::generate_did_key;
+
 use crate::config::AppConfig;
 
 pub struct CreateDidKeyArgs {
@@ -18,7 +18,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
     let config = AppConfig::load(args.config_path)?;
     let store = crate::store::offline::open_offline(&config.store)?;
 
-    let (did, private_key_multibase) = generate_did_key();
+    let (did, private_key_multibase, _) = vta_sdk::did_key::generate_did_key()?;
 
     // Optionally create ACL entry
     if args.admin {
