@@ -10,8 +10,6 @@ use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver, secrets::Secret};
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use hkdf::Hkdf;
 use sha2::Sha256;
 
@@ -31,7 +29,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
-use vti_common::audit::{AuditKeyStore, AuditWriter};
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::passkey::{PasskeyState, build_webauthn};
 use webauthn_rs::Webauthn;
 
@@ -230,6 +228,9 @@ pub struct AppState {
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
     /// written by the periodic `CheckpointEmitter`.
     pub audit_checkpoint_ks: KeyspaceHandle,
+    /// Secondary index over the audit log (`crate::audit_index`): derived,
+    /// caught up from the log before every read, never backed up.
+    pub audit_index_ks: KeyspaceHandle,
     /// Durable delivery-layer outbox (D2 P1a). Backs
     /// [`vti_common::outbox_store::VtiOutboxStore`] for the messaging
     /// service's `Guaranteed` sends so delivery-critical work survives a
@@ -594,6 +595,7 @@ pub async fn run(
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
     let audit_checkpoint_ks = store.keyspace(keyspaces::AUDIT_CHECKPOINT)?;
+    let audit_index_ks = store.keyspace(keyspaces::AUDIT_INDEX)?;
     let consumed_invitations_ks = store.keyspace(keyspaces::CONSUMED_INVITATIONS)?;
     let invitations_ks = store.keyspace(keyspaces::INVITATIONS)?;
     let outbox_ks = store.keyspace(keyspaces::OUTBOX)?;
@@ -1154,6 +1156,7 @@ pub async fn run(
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
+        audit_index_ks,
         outbox_ks,
         tsp_relationships_ks,
         consumed_invitations_ks,
@@ -1200,6 +1203,22 @@ pub async fn run(
     // Any left in the old rights store move onto them now, before a git-ns
     // task is authorized from the entries (VTI-VTC-020).
     crate::git_ns::migrate::migrate_on_boot(&state).await?;
+    // The secondary indexes, backfilled for rows written before they existed
+    // (or by a version that did not keep them), before anything reads them:
+    // the ACL's authority holders (#2602) and the relationships' VRC digests
+    // (#2603).
+    let indexed = crate::acl::rebuild_authority_index(&state.acl_ks).await?;
+    tracing::debug!(indexed, "ACL authority index rebuilt");
+    let indexed =
+        crate::relationships::storage::rebuild_hash_index(&state.relationships_ks).await?;
+    tracing::debug!(indexed, "relationship digest index rebuilt");
+    // The audit index is caught up by every reader; doing it here moves the
+    // backfill of an existing log off the first request. Not fatal: a reader
+    // retries it.
+    match crate::audit_index::catch_up(&state.audit_ks, &state.audit_index_ks).await {
+        Ok(read) => tracing::debug!(read, "audit index caught up"),
+        Err(e) => warn!(error = %e, "audit index not caught up at boot; the first read will"),
+    }
     // Room rows in the earlier, ambiguous key layout move before a room is served (#2382).
     crate::rooms::migrate_room_keys(&state, "the boot migration").await?;
 
@@ -1924,14 +1943,12 @@ pub async fn run(
             .write(
                 "daemon",
                 None,
-                vti_common::audit::AuditEvent::AdminUiServed(
-                    vti_common::audit::AdminUiServedData {
-                        index_sha256: (*info.index_sha256).clone(),
-                        file_count: info.file_count,
-                        mode: (*info.mode).clone(),
-                        daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                    },
-                ),
+                vtc_audit::AuditEvent::AdminUiServed(vtc_audit::AdminUiServedData {
+                    index_sha256: (*info.index_sha256).clone(),
+                    file_count: info.file_count,
+                    mode: (*info.mode).clone(),
+                    daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                }),
             )
             .await;
     }
@@ -2699,7 +2716,7 @@ async fn init_auth(
 
     // 3. JWT signing key from config (random key, not derived from VTC keys)
     let jwt_keys = match &config.auth.jwt_signing_key {
-        Some(b64) => match decode_jwt_key(b64) {
+        Some(b64) => match JwtKeys::from_base64_seed(b64, "VTC") {
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
@@ -2829,18 +2846,6 @@ pub(crate) fn derive_storage_key(root: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.
-fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
-    let bytes = BASE64
-        .decode(b64)
-        .map_err(|e| AppError::Config(format!("invalid jwt_signing_key base64: {e}")))?;
-    let key_bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTC")?;
-    debug!("JWT signing key decoded successfully");
-    Ok(keys)
-}
-
 /// Construct the public-website state from operator config (Phase 5
 /// M5.4). Returns `None` when:
 ///
@@ -2887,29 +2892,7 @@ async fn build_website_state(
     })
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("received SIGINT"),
-        () = terminate => info!("received SIGTERM"),
-    }
-}
+use vti_common::runtime::shutdown_signal;
 
 /// How a wait for a background task's published handle ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3005,8 +2988,8 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                             .write(
                                 "did:key:vtc-emergency",
                                 None,
-                                vti_common::audit::AuditEvent::EmergencyBootstrapInvoked(
-                                    vti_common::audit::EmergencyBootstrapData {
+                                vtc_audit::AuditEvent::EmergencyBootstrapInvoked(
+                                    vtc_audit::EmergencyBootstrapData {
                                         operator_hostname: pending.operator_hostname.clone(),
                                         invoked_at: pending.invoked_at,
                                     },
@@ -3068,8 +3051,8 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                         .write(
                             "did:key:vtc-break-glass",
                             Some(&w.did),
-                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
-                                vti_common::audit::BreakGlassAclData {
+                            vtc_audit::AuditEvent::AclBreakGlassWritten(
+                                vtc_audit::BreakGlassAclData {
                                     command: w.command.clone(),
                                     action: w.action.clone(),
                                     did: w.did.clone(),

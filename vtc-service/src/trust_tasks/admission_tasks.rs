@@ -21,6 +21,7 @@
 //! over 2048 characters, and a `role` over 128, are `malformedRequest` — the
 //! document is malformed before any role is considered.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vti_specs::vtc::members::admit::v0_1 as admit;
@@ -39,9 +40,6 @@ pub(crate) const ADMIT_TYPE: &str = <admit::Payload as trust_tasks_rs::Payload>:
 /// `vtc/members/make-membership/0.1` — make an existing ACL entry with no
 /// member record a membership.
 pub(crate) const MAKE_MEMBERSHIP_TYPE: &str = <make::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[ADMIT_TYPE, MAKE_MEMBERSHIP_TYPE];
 
 /// `fn $name`: the generated response of `$m` (`admit` or `make`, whose
 /// `AdmittedMembership` types are distinct) for a completed admission.
@@ -88,16 +86,11 @@ fn credential_object(
     }
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    if !URIS.contains(&type_uri) {
-        return None;
-    }
-    Some(handle(state, ctx, doc, type_uri).await)
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, admit::Payload => |state, ctx, doc| handle(state, ctx, doc, ADMIT_TYPE));
+    on!(routes, make::Payload => |state, ctx, doc| handle(state, ctx, doc, MAKE_MEMBERSHIP_TYPE))
 }
 
 /// The request a payload asks for, and its reason. The payload is read

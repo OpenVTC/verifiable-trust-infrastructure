@@ -168,28 +168,10 @@ struct Fixture {
     bridge_party: Party,
 }
 
+/// [`crate::test_support::seed_acl`], and the member record a git right
+/// needs beside the entry.
 async fn seed_acl(state: &AppState, did: &str, role: VtcRole) {
-    store_acl_entry(
-        &state.acl_ks,
-        &VtcAclEntry {
-            did: did.into(),
-            admin: role.implied_authority(),
-            delegated_by: None,
-            role,
-            label: None,
-            created_at: 0,
-            created_by: "test".into(),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-            resource_grants: Vec::new(),
-            group_grants: Vec::new(),
-            label_set_by_subject: false,
-            suspension: None,
-        },
-    )
-    .await
-    .unwrap();
+    crate::test_support::seed_acl(&state.acl_ks, did, role).await;
     crate::members::store_member(&state.members_ks, &crate::members::Member::fresh(did))
         .await
         .unwrap();
@@ -521,10 +503,10 @@ async fn bind_completed_records_supersedes_in_the_audit_history_and_restores_not
         .await
         .unwrap()
     {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+        let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v) else {
             continue;
         };
-        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event
+        if let vtc_audit::AuditEvent::GitNsOperation(d) = env.event
             && d.action == "gitNs.namespace.superseded"
         {
             rows.push(d);
@@ -566,10 +548,10 @@ async fn bind_completed_without_supersedes_records_none() {
         .await
         .unwrap()
     {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+        let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v) else {
             continue;
         };
-        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event {
+        if let vtc_audit::AuditEvent::GitNsOperation(d) = env.event {
             assert_ne!(d.action, "gitNs.namespace.superseded");
         }
     }
@@ -1757,8 +1739,8 @@ async fn unlinking_drops_the_account_from_the_projection_and_only_that() {
         .await
         .unwrap()
     {
-        let env: vti_common::audit::AuditEnvelope = serde_json::from_slice(&v).unwrap();
-        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event
+        let env: vtc_audit::AuditEnvelope = serde_json::from_slice(&v).unwrap();
+        if let vtc_audit::AuditEvent::GitNsOperation(d) = env.event
             && d.action == "gitNs.account.unlinked"
         {
             assert_eq!(d.detail.as_deref(), Some("github.com"));
@@ -5757,8 +5739,8 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
         .await
         .unwrap()
     {
-        let env: vti_common::audit::AuditEnvelope = serde_json::from_slice(&v).unwrap();
-        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event
+        let env: vtc_audit::AuditEnvelope = serde_json::from_slice(&v).unwrap();
+        if let vtc_audit::AuditEvent::GitNsOperation(d) = env.event
             && d.action == "gitNs.namespace.reseated"
         {
             detail = d.detail;
@@ -5829,7 +5811,7 @@ async fn break_glass(f: &Fixture, who: &Party, right: &str, resource: &str) -> T
     send_ver(&f.vtc.state, who, "right/break-glass", "0.2", p).await
 }
 
-async fn bg_audit_rows(f: &Fixture) -> Vec<vti_common::audit::GitNsBreakGlassData> {
+async fn bg_audit_rows(f: &Fixture) -> Vec<vtc_audit::GitNsBreakGlassData> {
     let mut out = Vec::new();
     for (_, v) in f
         .vtc
@@ -5839,8 +5821,8 @@ async fn bg_audit_rows(f: &Fixture) -> Vec<vti_common::audit::GitNsBreakGlassDat
         .await
         .unwrap()
     {
-        if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v)
-            && let vti_common::audit::AuditEvent::GitNsBreakGlass(d) = env.event
+        if let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v)
+            && let vtc_audit::AuditEvent::GitNsBreakGlass(d) = env.event
         {
             out.push(d);
         }
@@ -6047,8 +6029,8 @@ async fn break_glass_needs_the_bound_step_up_and_then_records_a_flagged_right() 
     assert_eq!(r.entitlement.as_deref(), Some("grantAuthority"));
     assert_eq!(r.undeliverable, vec![f.admin.did.clone()]);
     assert_eq!(
-        vti_common::audit::AuditEvent::GitNsBreakGlass(r.clone()).severity(),
-        vti_common::audit::AuditSeverity::Critical
+        vtc_audit::AuditEvent::GitNsBreakGlass(r.clone()).severity(),
+        vtc_audit::AuditSeverity::Critical
     );
 
     // The mark is spent: the same document again finds a record, not a gesture.

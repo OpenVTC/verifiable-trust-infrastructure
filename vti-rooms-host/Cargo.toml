@@ -1,0 +1,39 @@
+[package]
+name = "vti-rooms-host"
+description = "The rooms/* Trust Task handlers a data-room host serves, shared by every host behind one RoomHost trait"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Published: `vtc-service` is, and a published crate's whole dependency closure
+# must be.
+publish.workspace = true
+readme = "README.md"
+
+[dependencies]
+# Storage, authorization, the shared task bodies (`blob_tasks`, `record_tasks`,
+# `signal_delay`, `watch`, `revocation_tasks`) and the wire types.
+vti-rooms = { path = "../vti-rooms", version = "0.35" }
+# The one chain verifier, and nomination checks for `rooms/owner/claim`.
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37" }
+# `AppError`, `KeyspaceHandle` and the verification-method resolver.
+vti-common = { path = "../vti-common", version = "0.64" }
+# The outcome every handler returns and the refusal helpers, so a host's spine
+# renders these answers exactly as it renders its own.
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.10" }
+# The generated payload types the dispatcher is keyed on.
+vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.8" }
+trust-tasks-rs = { workspace = true }
+
+async-trait = { workspace = true }
+# `TrustTaskOutcome` carries an `axum::http::StatusCode`.
+axum = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

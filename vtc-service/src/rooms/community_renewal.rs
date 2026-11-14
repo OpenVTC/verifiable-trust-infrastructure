@@ -72,7 +72,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
+use vtc_audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
 use vti_specs::rooms::owner::{
     issue_authority::v0_2 as owner_authority, issue_membership::v0_1 as owner_membership,
@@ -619,7 +619,7 @@ async fn held(
         .ask(VAULT_QUERY, query, SIGN_TIMEOUT)
         .await
         .map_err(|e| match e {
-            HolderError::Refused { code, message } if code.contains("ermission") || code.contains("orbidden") => format!(
+            HolderError::Refused { code, message } if code == trust_tasks_rs::StandardCode::PermissionDenied.as_str() => format!(
                 "vault/credentials/query: the community's VTA refused ({code} {message}). A room \
                  created before this release has no record of where the VTA keeps the \
                  community's credentials for it, and finding them takes `vault-read` on this \

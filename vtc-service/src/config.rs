@@ -1741,29 +1741,13 @@ fn default_k8s_secret_key() -> String {
     "secret".to_string()
 }
 
-fn default_vault_kv_mount() -> String {
-    "secret".to_string()
-}
-
-fn default_vault_secret_key() -> String {
-    "seed".to_string()
-}
-
-fn default_vault_auth_method() -> String {
-    "kubernetes".to_string()
-}
-
-fn default_vault_k8s_mount() -> String {
-    "kubernetes".to_string()
-}
-
-fn default_vault_k8s_jwt_path() -> String {
-    "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
-}
-
-fn default_vault_approle_mount() -> String {
-    "approle".to_string()
-}
+// The rest are `vti_secrets`'s own defaults (#2572); only the two above
+// differ from the VTA's, and on purpose: a VTC's keyring entry and its
+// Kubernetes data key are not a VTA seed's.
+use vti_secrets::config::{
+    default_vault_approle_mount, default_vault_auth_method, default_vault_k8s_jwt_path,
+    default_vault_k8s_mount, default_vault_kv_mount, default_vault_secret_key,
+};
 
 // Manual Debug — `secret` is the hex-encoded VTC key material; leaking
 // it via a stray `{:?}` (e.g. a future `debug!(?config)`) would

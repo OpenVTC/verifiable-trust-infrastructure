@@ -14,7 +14,7 @@
 //!   + extensions metadata.
 //!
 //! Both records are written atomically by
-//! [`crate::routes::admin::bootstrap`] under a single AppState
+//! [`crate::install::ops::bootstrap`] under a single AppState
 //! reference. Phase-1 will unify these into a single VTC ACL shape
 //! when the shared crate gains generic-over-Role support.
 

@@ -1249,17 +1249,8 @@ impl SessionStore {
 /// `acl/swap-key` presentation) without re-deriving it from the multibase.
 fn generate_did_key()
 -> Result<(String, String, ed25519_dalek::SigningKey), Box<dyn std::error::Error>> {
-    let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed)
-        .map_err(|e| format!("CSPRNG failed while minting rotated did:key: {e}"))?;
-    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let pubkey = signing.verifying_key().to_bytes();
-    let did = format!(
-        "did:key:{}",
-        crate::did_key::ed25519_multibase_pubkey(&pubkey)
-    );
-    let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, seed);
-    Ok((did, private_key_multibase, signing))
+    crate::did_key::generate_did_key()
+        .map_err(|e| format!("minting the rotated did:key: {e}").into())
 }
 
 /// Which mediator transport, if any, a pending rotation should run over.

@@ -255,15 +255,20 @@ pub async fn pull_once(state: &HostState, mirror: &MirroredRoom) -> anyhow::Resu
             .map(str::to_string);
         let version = record.version;
 
-        match storage::store_mirrored_record(
-            state.rooms(),
-            state.records(),
-            &mirror.room_id,
-            record,
-            now(),
-        )
-        .await
-        {
+        // Under the room's record lock, as every record write is: a read pairs a record, its
+        // index rows and the room's head from one moment (`vti_rooms::storage`).
+        let stored = {
+            let _lock = state.files.records_lock(&mirror.room_id).await;
+            storage::store_mirrored_record(
+                state.rooms(),
+                state.records(),
+                &mirror.room_id,
+                record,
+                now(),
+            )
+            .await
+        };
+        match stored {
             Ok(_) => {
                 outcome.copied += 1;
                 outcome.watermark = version;

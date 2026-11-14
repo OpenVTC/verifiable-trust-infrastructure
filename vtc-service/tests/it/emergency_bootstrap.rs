@@ -32,8 +32,8 @@ use tokio::sync::RwLock;
 use tower::ServiceExt;
 use vta_sdk::provision_client::EphemeralSetupKey;
 
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, list_acl_entries, store_acl_entry};
-use vti_common::audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::passkey::build_webauthn;
 use vti_common::auth::session::{
@@ -227,6 +227,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
     let audit_checkpoint_ks = store.keyspace("audit_checkpoint").unwrap();
+    let audit_index_ks = store.keyspace("audit_index").unwrap();
     let outbox_ks = store.keyspace("outbox").unwrap();
     let tsp_relationships_ks = store.keyspace("tsp_relationships").unwrap();
     let invitations_ks = store.keyspace("invitations").unwrap();
@@ -416,6 +417,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks,
+        audit_index_ks,
         outbox_ks,
         tsp_relationships_ks,
         config: Arc::new(RwLock::new(config.clone())),

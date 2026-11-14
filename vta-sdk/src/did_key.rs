@@ -164,6 +164,8 @@ pub enum DidKeyError {
     X25519Conversion(String),
     #[cfg(feature = "didcomm")]
     SecretConstruction(String),
+    /// The OS CSPRNG could not supply a seed.
+    Csprng(String),
 }
 
 impl std::fmt::Display for DidKeyError {
@@ -176,11 +178,31 @@ impl std::fmt::Display for DidKeyError {
             Self::X25519Conversion(e) => write!(f, "X25519 conversion failed: {e}"),
             #[cfg(feature = "didcomm")]
             Self::SecretConstruction(e) => write!(f, "failed to construct secret from bundle: {e}"),
+            Self::Csprng(e) => write!(f, "the OS CSPRNG failed: {e}"),
         }
     }
 }
 
 impl std::error::Error for DidKeyError {}
+
+/// A fresh Ed25519 `did:key` from an OS-CSPRNG seed: `(did, private_key_multibase,
+/// signing_key)`, the private key being the raw 32-byte seed base58btc-encoded
+/// (the shape [`decode_private_key_multibase`] reads).
+///
+/// The one minting of a throwaway `did:key` identity, shared by the SDK's
+/// temp-key rotation and the services' offline `create-did-key` (#2572).
+#[cfg(any(feature = "sealed-transfer", feature = "session"))]
+pub fn generate_did_key() -> Result<(String, String, ed25519_dalek::SigningKey), DidKeyError> {
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|e| DidKeyError::Csprng(e.to_string()))?;
+    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let did = format!(
+        "did:key:{}",
+        ed25519_multibase_pubkey(&signing.verifying_key().to_bytes())
+    );
+    let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, seed);
+    Ok((did, private_key_multibase, signing))
+}
 
 /// Convert a [`GetKeySecretResponse`](crate::client::GetKeySecretResponse) into
 /// an `affinidi_tdk` [`Secret`](affinidi_tdk::secrets_resolver::secrets::Secret).
@@ -202,6 +224,28 @@ pub fn secret_from_key_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(feature = "sealed-transfer", feature = "session"))]
+    #[test]
+    fn a_generated_did_key_is_the_did_of_its_own_seed() {
+        let (did, private_key_multibase, signing) = generate_did_key().unwrap();
+        assert!(did.starts_with("did:key:z6Mk"), "{did}");
+        let seed = decode_private_key_multibase(&private_key_multibase).unwrap();
+        assert_eq!(seed, signing.to_bytes());
+        let again = ed25519_dalek::SigningKey::from_bytes(&seed);
+        assert_eq!(
+            did,
+            format!(
+                "did:key:{}",
+                ed25519_multibase_pubkey(&again.verifying_key().to_bytes())
+            )
+        );
+        assert_ne!(
+            did,
+            generate_did_key().unwrap().0,
+            "each call mints a new key"
+        );
+    }
 
     #[test]
     fn test_ed25519_multibase_pubkey_format() {

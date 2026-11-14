@@ -77,21 +77,25 @@ pub fn config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 /// Load config from `~/.config/pnm/config.toml`. Returns default if missing.
 /// Automatically migrates legacy single-VTA config to multi-VTA format.
+///
+/// A file that exists but does not parse is an error
+/// ([`vta_cli_common::config_file::ConfigFileError`], exit 4), never an empty
+/// profile: an empty one would send the operator to `pnm setup`, which then
+/// overwrites every other VTA in the file (#2582).
 pub fn load_config() -> Result<PnmConfig, Box<dyn std::error::Error>> {
     let path = config_path()?;
-    if !path.exists() {
-        return Ok(PnmConfig::default());
-    }
-    let contents = std::fs::read_to_string(&path)?;
-    let mut config: PnmConfig = toml::from_str(&contents)
-        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+    let mut config: PnmConfig = vta_cli_common::config_file::load_toml(&path)?;
 
     // Migrate legacy single-URL config. The URL itself is no longer
     // persisted (PNM resolves the REST endpoint at runtime from the VTA's
     // DID document); we just create the slug placeholder so the operator
     // can `pnm setup continue` to bind a VTA DID.
     if config.vtas.is_empty() && config.url.take().is_some() {
-        eprintln!("\x1b[33mMigrating legacy config to multi-VTA format...\x1b[0m");
+        eprintln!(
+            "{YELLOW}Migrating legacy config to multi-VTA format...{RESET}",
+            YELLOW = vta_cli_common::render::YELLOW,
+            RESET = vta_cli_common::render::RESET
+        );
         config.vtas.insert(
             "default".to_string(),
             VtaConfig {
@@ -103,20 +107,22 @@ pub fn load_config() -> Result<PnmConfig, Box<dyn std::error::Error>> {
         );
         config.default_vta = Some("default".to_string());
         save_config(&config)?;
-        eprintln!("  Migrated to VTA slug: \x1b[36mdefault\x1b[0m");
+        eprintln!(
+            "  Migrated to VTA slug: {CYAN}default{RESET}",
+            CYAN = vta_cli_common::render::CYAN,
+            RESET = vta_cli_common::render::RESET
+        );
         eprintln!("  Run `pnm setup continue default` to bind a VTA DID.");
     }
 
     Ok(config)
 }
 
-/// Save config to `~/.config/pnm/config.toml`.
+/// Save config to `~/.config/pnm/config.toml`, atomically (temporary file,
+/// fsync, rename), so an interrupted save leaves the previous profile intact
+/// (#2582).
 pub fn save_config(config: &PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
-    let path = config_path()?;
-    let contents =
-        toml::to_string_pretty(config).map_err(|e| format!("failed to serialize config: {e}"))?;
-    std::fs::write(&path, contents)?;
-    Ok(())
+    vta_cli_common::config_file::save_toml_atomic(&config_path()?, config)
 }
 
 /// Resolve the active VTA from CLI override, env var, or config default.

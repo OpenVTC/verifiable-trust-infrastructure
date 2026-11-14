@@ -208,13 +208,13 @@ async fn deciding_on_the_join_requests_page_closes_the_item() {
     let req = referred(&vtc.state).await;
     let rec = join_item(&vtc.state, &req).await;
 
-    crate::routes::join_requests::decide::decide_inner(
+    crate::join::ops::decide::decide_inner(
         &vtc.state,
         &a.did,
         "rest",
         req.id,
-        crate::routes::join_requests::decide::DecideBody {
-            decision: crate::routes::join_requests::decide::Decision::Rejected,
+        crate::join::ops::decide::DecideBody {
+            decision: crate::join::ops::decide::Decision::Rejected,
             reason: None,
         },
     )
@@ -494,7 +494,8 @@ fn request_with(id: u128, status: JoinStatus) -> JoinRequest {
 /// walks only them, and `totalEstimate` counts them.
 #[tokio::test]
 async fn join_requests_filter_before_paging_and_count_the_matches() {
-    use crate::routes::join_requests::read::{ListJoinRequestsQuery, list_join_requests_inner};
+    use crate::join::ops::read::list_join_requests_inner;
+    use vti_specs::vtc::join_requests::list::v0_2 as list;
     let vtc = vtc().await;
     // Ten decided requests sort before the two pending ones.
     for i in 1..=10 {
@@ -513,10 +514,9 @@ async fn join_requests_filter_before_paging_and_count_the_matches() {
         .await
         .unwrap();
     }
-    let page = |cursor: Option<String>| ListJoinRequestsQuery {
-        status: None,
-        cursor,
-        limit: Some(1),
+    let page = |cursor: Option<String>| -> list::Payload {
+        serde_json::from_value(serde_json::json!({ "cursor": cursor, "limit": 1 }))
+            .expect("a join-requests/list payload")
     };
     let first = list_join_requests_inner(&vtc.state, page(None))
         .await
@@ -541,11 +541,10 @@ async fn join_requests_filter_before_paging_and_count_the_matches() {
 
     let approved = list_join_requests_inner(
         &vtc.state,
-        ListJoinRequestsQuery {
-            status: Some(JoinStatus::Approved),
-            cursor: None,
-            limit: Some(200),
-        },
+        serde_json::from_value::<list::Payload>(
+            serde_json::json!({ "status": "approved", "limit": 200 }),
+        )
+        .expect("a join-requests/list payload"),
     )
     .await
     .unwrap();
@@ -555,7 +554,8 @@ async fn join_requests_filter_before_paging_and_count_the_matches() {
 
 #[tokio::test]
 async fn members_filter_before_paging_and_count_the_matches() {
-    use crate::routes::members::read::{ListMembersQuery, list_members_inner};
+    use crate::members::ops::read::list_members_inner;
+    use vti_specs::vtc::members::list::v0_2 as list;
     let vtc = vtc().await;
     let mut members = Vec::new();
     for _ in 0..3 {
@@ -571,11 +571,8 @@ async fn members_filter_before_paging_and_count_the_matches() {
 
     let all = list_members_inner(
         &vtc.state,
-        ListMembersQuery {
-            role: None,
-            cursor: None,
-            limit: Some(200),
-        },
+        serde_json::from_value::<list::Payload>(serde_json::json!({ "limit": 200 }))
+            .expect("a members/list payload"),
     )
     .await
     .unwrap();
@@ -587,11 +584,10 @@ async fn members_filter_before_paging_and_count_the_matches() {
     loop {
         let page = list_members_inner(
             &vtc.state,
-            ListMembersQuery {
-                role: Some("member".into()),
-                cursor: cursor.clone(),
-                limit: Some(1),
-            },
+            serde_json::from_value::<list::Payload>(
+                serde_json::json!({ "role": "member", "cursor": cursor.clone(), "limit": 1 }),
+            )
+            .expect("a members/list payload"),
         )
         .await
         .unwrap();

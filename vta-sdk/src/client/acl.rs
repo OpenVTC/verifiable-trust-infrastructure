@@ -148,6 +148,18 @@ impl VtaClient {
         did: &str,
         req: UpdateAclRequest,
     ) -> Result<AclEntryResponse, VtaError> {
+        self.update_acl_with_reason(did, req, None).await
+    }
+
+    /// [`Self::update_acl`], recording `reason` with the change: the
+    /// `reason` member of `acl/update/0.3` and, for a narrowing, of
+    /// `acl/revoke/0.3`, which the VTA keeps in the audit trail.
+    pub async fn update_acl_with_reason(
+        &self,
+        did: &str,
+        req: UpdateAclRequest,
+        reason: Option<&str>,
+    ) -> Result<AclEntryResponse, VtaError> {
         use acl_management::v0_2::{
             ApproveCapabilityScope, AuthorityScope, KeyScope, Revocation, StepUpReplacement,
             revoke_payload,
@@ -250,6 +262,13 @@ impl VtaClient {
         }
 
         let changes_beyond_narrowing = body.len() > 1;
+        if let Some(r) = reason {
+            put(
+                &mut body,
+                "reason",
+                serde_json::Value::String(r.to_string()),
+            );
+        }
         let mut result: Option<AclEntryResponse> = None;
         if changes_beyond_narrowing || narrow_to.is_none() {
             let wrapped: AclEntryEnvelope = self
@@ -265,7 +284,7 @@ impl VtaClient {
             let revoked: AclShowResponse = self
                 .rpc_tt(
                     crate::trust_tasks::TASK_ACL_REVOKE_0_3,
-                    revoke_payload(did, &Revocation::Act { act }, None),
+                    revoke_payload(did, &Revocation::Act { act }, reason),
                     30,
                 )
                 .await?;
@@ -309,12 +328,22 @@ impl VtaClient {
 
     /// Remove an entry (`acl/revoke/0.3` `{kind: entry}`).
     pub async fn delete_acl(&self, did: &str) -> Result<(), VtaError> {
+        self.delete_acl_with_reason(did, None).await
+    }
+
+    /// [`Self::delete_acl`] with the `reason` member `acl/revoke/0.3` carries
+    /// into the audit trail.
+    pub async fn delete_acl_with_reason(
+        &self,
+        did: &str,
+        reason: Option<&str>,
+    ) -> Result<(), VtaError> {
         self.rpc_tt_void(
             crate::trust_tasks::TASK_ACL_REVOKE_0_3,
             acl_management::v0_2::revoke_payload(
                 did,
                 &acl_management::v0_2::Revocation::Entry,
-                None,
+                reason,
             ),
             30,
         )

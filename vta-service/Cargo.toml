@@ -81,7 +81,13 @@ bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023", "vta-vault/bbs"]
 # local `vta` binary enables this; the enclave binary does not (its
 # dependency is `default-features = false`), so the footgun is physically
 # absent from enclave builds.
-cli-synthesis = ["vti-common/cli-synthesis"]
+#
+# Also the gate on `vta-cli-common`: only the `vta` binary's offline CLI
+# modules (`acl_cli`, `bootstrap_cli`, …) use it, and the binary already
+# requires this feature. Nothing reachable from `lib.rs` does, so a library
+# consumer (`vta-enclave`) does not compile a TUI, a QR encoder and a VTC
+# client (#2566).
+cli-synthesis = ["vti-common/cli-synthesis", "dep:vta-cli-common", "dep:dialoguer"]
 # OS keyring backend for the VTA seed. Enables vta-sdk's keyring feature
 # so the binary can register a platform store once via
 # `vta_sdk::keyring_init::install_default_store()` at startup.
@@ -213,9 +219,14 @@ dtg-credentials = { workspace = true }
 
 # The room MLS layer (custody, sealing) and the credential verifier whose
 # `VerificationKeys` an invitation check resolves through.
-# The member half only. A VTA holds room keys, seals and opens records; it is
-# never a room's host, so it has no use for `storage`, `authz` or `audit` and
-# does not compile them. `default-features = false` is what says so.
+# The member half is all the VTA uses: it holds room keys, seals and opens
+# records, and is never a room's host, so it has no use for `storage`, `authz`
+# or `audit`. `default-features = false` records that intent but does not keep
+# them out of the build: `vti-rooms-dtg` below verifies chains through
+# `vti_rooms::authz`, so it takes `vti-rooms` with its `host` default, and
+# feature unification turns `host` on here too. That adds nothing new to the
+# graph — `host` adds only `vti-common`, `tokio`, `uuid` and `tracing`, all
+# direct dependencies of this crate already (#2566).
 vti-rooms = { path = "../vti-rooms", version = "0.35", default-features = false, features = [
   "mls",
 ] }
@@ -254,14 +265,13 @@ trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
 vti-specs = { path = "../vti-specs", version = "0.13" }
-trust-tasks-https = { workspace = true }
 trust-tasks-didcomm = { workspace = true }
 trust-tasks-tsp = { workspace = true }
 # Shared CLI helpers for the consumer side of sealed-transfer (request
 # generation, bundle opening). Used by `vta bootstrap request` /
 # `vta bootstrap open` so cold-start clients can run the offline flow
-# without depending on `pnm`.
-vta-cli-common = { path = "../vta-cli-common", version = "0.61" }
+# without depending on `pnm`. Binary-only, so behind `cli-synthesis` (#2566).
+vta-cli-common = { path = "../vta-cli-common", version = "0.61", optional = true }
 affinidi-crypto = { workspace = true }
 # Low-level `Secret` type for loading the VTA's signing key at
 # provision time. Already transitively present via affinidi-tdk; made
@@ -330,7 +340,6 @@ vsock = { workspace = true, optional = true }
 # `/openapi.json`; `utoipa` provides the `#[utoipa::path]` + `ToSchema` derives.
 utoipa = { workspace = true }
 utoipa-axum = { workspace = true }
-jsonwebtoken = { workspace = true }
 toml = { workspace = true }
 tower-http = { workspace = true, features = ["trace", "limit", "cors", "timeout"] }
 tokio = { workspace = true }
@@ -355,7 +364,9 @@ affinidi-keri = { workspace = true, optional = true }
 affinidi-keri-core = { workspace = true, optional = true }
 affinidi-keri-crypto = { workspace = true, optional = true }
 rand = { workspace = true }
-dialoguer = { workspace = true }
+# Prompts for the `vta` binary's setup wizard and offline CLI only, so behind
+# `cli-synthesis` with `vta-cli-common` (#2566).
+dialoguer = { workspace = true, optional = true }
 # Locate `~/.config/vta/` for the `vta bootstrap request` / `vta bootstrap
 # open` consumer-side seed cache. Default seed dir only — operators can
 # override with `--seed-dir`.
@@ -464,6 +475,10 @@ vta-sdk = { path = "../vta-sdk", version = "0.88", features = [
   "provision-client",
   "test-loopback",
 ] }
+# `MockVta`, for the integration tests that drive a VTA over the wire. It moved
+# out of `test_support` into its own crate (#2570); path-only, so publishing
+# strips it.
+vta-test-support = { path = "../vta-test-support" }
 # Mock HTTP server for the did-hosting-daemon REST auth flow tests. Each
 # test spins up a real local server bound to a random port, validates
 # the JWS-signed request bodies the daemon would see, and serves

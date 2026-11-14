@@ -183,7 +183,7 @@ async fn put_record(fix: &Fixture, rec: &ActionRecord) {
 }
 
 /// Every audit row of `variant`.
-async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vti_common::audit::AuditEnvelope> {
+async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vtc_audit::AuditEnvelope> {
     fix.vtc
         .state
         .audit_ks
@@ -191,7 +191,7 @@ async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vti_common::audit::Audi
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter(|env| env.event.variant_name() == variant)
         .collect()
 }
@@ -201,7 +201,7 @@ async fn consent_stages(fix: &Fixture, stage: &str) -> usize {
         .await
         .iter()
         .filter(|env| match &env.event {
-            vti_common::audit::AuditEvent::TaskConsentRecorded(d) => d.stage == stage,
+            vtc_audit::AuditEvent::TaskConsentRecorded(d) => d.stage == stage,
             _ => false,
         })
         .count()
@@ -1039,10 +1039,7 @@ async fn a_burst_of_actions_is_audited_critical_and_flagged() {
     }
     let rows = audit_rows(&fix, "AdminActionBurst").await;
     assert_eq!(rows.len(), 1, "the fourth crosses the line");
-    assert_eq!(
-        rows[0].event.severity(),
-        vti_common::audit::AuditSeverity::Critical
-    );
+    assert_eq!(rows[0].event.severity(), vtc_audit::AuditSeverity::Critical);
     let card = action(&fix, &b, &last).await;
     assert_eq!(card["ext"]["org.openvtc"]["burst"], true, "{card}");
     assert_eq!(card["requesterOpenActions"], 4);
@@ -1590,7 +1587,7 @@ async fn vti_cmp_090_adding_a_witness_parks_and_completes() {
         .await
         .into_iter()
         .filter_map(|e| match e.event {
-            vti_common::audit::AuditEvent::ConfigChanged(d) => {
+            vtc_audit::AuditEvent::ConfigChanged(d) => {
                 assert_eq!(e.actor_did_plain.as_deref(), Some(a.did.as_str()));
                 d.changes.into_iter().find(|c| c.key == WITNESSES_KEY)
             }

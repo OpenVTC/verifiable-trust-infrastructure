@@ -313,7 +313,7 @@ pnm webs rotate did:webs:…
 pnm webs delete did:webs:…
 ```
 
-Every write takes `--expect-version <sn>:<said>` (the `versionId` from `get`),
+Every write takes `--expected-version <sn>:<said>` (the `versionId` from `get`; `--expect-version` is still accepted),
 and is refused as `versionConflict` when the DID has moved on. A refusal the
 operator can fix prints what to do.
 

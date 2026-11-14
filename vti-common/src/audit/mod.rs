@@ -7,13 +7,11 @@
 //!
 //! ## Module layout
 //!
-//! - [`event`] — the tagged [`AuditEvent`] enum and its per-variant
-//!   data structs. Ships the Phase-0 vocabulary
-//!   (`CommunityInstalled`, `EmergencyBootstrapInvoked`,
-//!   `AdminPasskey{Registered,Revoked}`, `Config{Changed,Reloaded}`,
-//!   `RestartRequested`, `CommunityProfileUpdated`,
-//!   `AuditKeyRotated`). Phase-1+ variants land alongside their
-//!   owning features.
+//! - **No event vocabulary.** The envelope and the writer are generic over
+//!   the event payload; each service owns its own: `vtc-audit`'s
+//!   `AuditEvent` for a community, `vta-audit`'s `VtaAuditEvent` for an
+//!   agent (#2568). A community feature adding an event therefore edits
+//!   and republishes `vtc-audit`, not this layer-0 crate.
 //! - [`envelope`] — the [`AuditEnvelope`] wire shape (event id,
 //!   version, timestamps, HMAC-hashed + plaintext identifier pairs).
 //! - [`key_store`] — the [`AuditKeyStore`] managing per-community
@@ -26,7 +24,6 @@
 
 pub mod checkpoint;
 pub mod envelope;
-pub mod event;
 pub mod key_store;
 pub mod writer;
 
@@ -38,41 +35,8 @@ pub use envelope::{
     AuditEnvelope, ChainBreak, ChainVerifier, EVENT_VERSION, GENESIS_HASH, SCHEMA_VERSION,
     verify_chain,
 };
-pub use event::{
-    AclChangeData, AclKeyRotatedData, AclMigratedData, AclRevokedData, AdminActionBurstData,
-    AdminActionEffectData, AdminConsoleKeyData, AdminInviteData, AdminPasskeyData,
-    AdminPromotedData, AdminRoleChangeData, AdminUiServedData, AuditEvent, AuditKeyRotatedData,
-    AuditSeverity, AuthSteppedUpData, AuthorityReducedUnopposedData, BackupData, BadgeChangedData,
-    BoardChangedData, BreakGlassAclData, CapabilityModuleChangedData, CommunityBrandingUpdatedData,
-    CommunityDidLogInstalledData, CommunityInstalledData, CommunityJoinDiscoveryUpdatedData,
-    CommunityProfileUpdatedData, CommunityRequestedAttributesUpdatedData, CommunityRoleSetData,
-    CommunityRoomChangedData, CommunityThemeUpdatedData, ConfigChange, ConfigChangedData,
-    ConfigReloadedData, ConfigSource, CredentialIssuedData, CrossCommunitySessionMintedData,
-    CustomEndorsementIssuedData, CustomEndorsementRevokedData, DidRotatedData, DidRotationReason,
-    DirectoryCardChangedData, DirectoryCardPublicationData, DirectoryExportedData,
-    DirectoryFieldChangedData, DirectoryImageStoredData, DirectoryNoteAccessData,
-    ElectionChangedData, ElectionTicketIssuedData, EmergencyBootstrapData,
-    EndorsementTypeDeletedData, EndorsementTypeRegisteredData, FieldChange, GitNsBreakGlassData,
-    GitNsOperationData, GroupChangedData, GroupGrantsChangedData, GroupMembershipChangedData,
-    HiddenVetterBindingResetData, HiddenVetterEnrolledData, HiddenVetterReboundData,
-    HiddenVetterReissuedData, HiddenVetterResetCancelledData, HiddenVetterTokensIssuedData,
-    HiddenVettingChangedData, InvitationDeliveredData, InvitationIssuedData, InvitationRevokedData,
-    JoinRequestData, JoinRequestRejectedData, JoinRequestSupplementedData,
-    JoinRequestWithdrawnData, MemberAddedData, MemberAdmittedDirectlyData,
-    MemberCredentialsReadData, MemberPasskeyData, MemberPortalKeyUsedData, MemberRemovedData,
-    MemberUpdatedData, MemberWalletSignInData, MembershipReciprocatedData, MembershipRenewedData,
-    NetworkMembershipChangedData, NotificationRelayDecidedData, OperationStepUpApprovedData,
-    OperationStepUpData, PersonhoodAssertedData, PersonhoodRevokedData, PolicyActivatedData,
-    PolicyUploadedData, REDACTED_MARKER, RegistryRecordPolicyOverrideData,
-    RegistryStatusChangedData, RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData,
-    RoomLimitsChangedData, RoomOperationData, RoomRetentionData, RoomSignalDelayData,
-    RoomStorageChangedData, SchemaChangeData, SessionRevocationRefusedData, SessionRevokedData,
-    SignedOutData, SingleAdminModeData, StatusListFlippedData, StepUpApproverData, StepUpEvidence,
-    StepUpPasskeyData, TaskConsentData, VetterAutoGrantConfiguredData, VetterAutoGrantSweptData,
-    VetterGrantResentData, VetterGrantedData, VetterProfileDeletedData, VetterProfileUpdatedData,
-    VettingStatementRevokedData, VpcAnnotationData, VrcLifecycleData, VrcPublishedData,
-    VrcRevokedData, VrcSupersededData, WebsiteBundleDeployedData, WebsiteFileDeletedData,
-    WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
-};
 pub use key_store::{AuditKey, AuditKeyStore, KeyId, RotationReason};
 pub use writer::{AuditWriter, commit_reference};
+
+#[cfg(test)]
+pub(crate) mod test_event;

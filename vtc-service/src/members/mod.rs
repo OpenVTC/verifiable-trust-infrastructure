@@ -28,6 +28,8 @@
 
 pub mod inbound_vmc;
 pub mod match_code;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod pseudonym;
 pub mod storage;
 
@@ -36,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 pub use storage::{
-    DEFAULT_DEPARTURE_PREFERENCE, MEMBER_EXTENSIONS_MAX_BYTES, delete_member, get_member,
-    list_members, list_members_filtered, list_members_paginated, store_member,
+    DEFAULT_DEPARTURE_PREFERENCE, MEMBER_EXTENSIONS_MAX_BYTES, MEMBERS_PREFIX, delete_member,
+    get_member, list_members, list_members_filtered, list_members_paginated, store_member,
 };
 
 /// Pull the top-level `id` off a credential in its wire (JSON) form.

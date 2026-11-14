@@ -41,9 +41,15 @@ use super::helpers::{
     app_error_to_reject, error_response, extended_code, reject_with, reject_with_code,
     success_response,
 };
+use super::routing::{Routes, on};
 use super::{JoinAuthCtx, TrustTaskOutcome, parse_spec_payload};
 use crate::admin_events::{self, Refusal, Topic};
 use crate::server::AppState;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, subscribe::Payload => handle_subscribe)
+}
 
 pub(crate) const SUBSCRIBE_TYPE: &str = <subscribe::Payload as Payload>::TYPE_URI;
 /// Responses the duplicate-execution record keeps no body for: answering a

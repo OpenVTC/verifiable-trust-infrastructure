@@ -20,7 +20,9 @@ use vti_specs::rooms::blobs::upload::{
 };
 #[allow(deprecated)] // asked of a host that predates info/0.4
 use vti_specs::rooms::info::v0_3 as room_info_v3;
-use vti_specs::rooms::info::v0_4 as room_info;
+#[allow(deprecated)] // asked of a host that predates info/0.5
+use vti_specs::rooms::info::v0_4 as room_info_v4;
+use vti_specs::rooms::info::v0_5 as room_info;
 use vti_specs::rooms::records::get::v0_2 as get_v2;
 use vti_specs::rooms::records::prune::v0_2 as records_prune;
 use vti_specs::rooms::records::put::v0_3 as put_v3;
@@ -332,14 +334,18 @@ impl VtcClient {
         response(uri, v)
     }
 
-    /// `rooms/info/0.4`: the room's visibility, epoch, limits and usage, its record
+    /// `rooms/info/0.5`: the room's visibility, epoch, limits and usage, its record
     /// retention in force (absent when it states none), its latest record prune
-    /// (`prunedAt`) and its signal delay.
+    /// (`prunedAt`), its signal delay, and the host's own limits — `maxRecordDocumentBytes`
+    /// (the largest record document it accepts, when it keeps a limit of its own) and
+    /// `maxChunkSize` (the largest proxied chunk it admits at its own size).
     ///
-    /// A host that answers `unsupportedType` predates 0.4 and is asked again as `0.3`; its
-    /// answer is read with `signalDelay: randomised`, which is true of every such host — the
-    /// randomised wait was all it ever had.
-    #[allow(deprecated)] // info/0.3 is still asked of hosts that predate 0.4
+    /// A host that answers `unsupportedType` predates 0.5 and is asked again as `0.4`,
+    /// whose answer 0.5 extends — read without either limit, which is what a host stating
+    /// none means. One that predates 0.4 too is asked as `0.3`, read with
+    /// `signalDelay: randomised`, which is true of every such host — the randomised wait was
+    /// all it ever had.
+    #[allow(deprecated)] // info/0.3 and 0.4 are still asked of hosts that predate 0.5
     pub async fn room_info(
         &self,
         session: &RoomSession,
@@ -356,6 +362,15 @@ impl VtcClient {
             .room_task(uri, p, signer_did, private_key_multibase)
             .await
         {
+            Err(e) if super::is_unsupported_type(&e) => {}
+            other => return response(uri, other?),
+        }
+        let p = payload::<room_info_v4::Payload>(request.clone())?;
+        let uri = room_info_v4::Payload::TYPE_URI;
+        match self
+            .room_task(uri, p, signer_did, private_key_multibase)
+            .await
+        {
             Err(e) if super::is_unsupported_type(&e) => {
                 let p = payload::<room_info_v3::Payload>(request)?;
                 let uri = room_info_v3::Payload::TYPE_URI;
@@ -367,7 +382,12 @@ impl VtcClient {
                 v["signalDelay"] = serde_json::json!("randomised");
                 response(uri, v)
             }
-            other => response(uri, other?),
+            other => {
+                let v = other?;
+                // Read as 0.4 first, so what the host sent is checked against its own schema.
+                response::<room_info_v4::Response>(uri, v.clone())?;
+                response(uri, v)
+            }
         }
     }
 

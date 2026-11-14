@@ -9,7 +9,7 @@
 //! (item 8); `acl/change-role/0.2` moves the administrative role on its own.
 //!
 //! The handler makes the specification's checks 1–7 in its order, each with
-//! its declared code; [`crate::routes::acl::set_community_role`] runs the
+//! its declared code; [`crate::acl::ops::set_community_role`] runs the
 //! role-change ceremony for the rest (items 8–18): the bound on the requester
 //! (`delegationExceedsGranter`), the last role assigner, the community's
 //! role-change policy, a passkey gesture bound to this one document
@@ -27,11 +27,11 @@ use super::helpers::{
     reject_with_code_because, success_response,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
+use crate::acl::ops::{self as ops, RoleSetOutcome};
 use crate::acl::{Capability, VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::session::now_epoch;
 use crate::ceremony::RoleChangeRefusal;
 use crate::error::AppError;
-use crate::routes::acl::{self as ops, RoleSetOutcome};
 use crate::server::AppState;
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
 
@@ -52,7 +52,13 @@ pub mod codes {
     pub const ROLE_SET_DENIED_BY_POLICY: &str = c::DENIED_BY_POLICY.code;
 }
 
+use super::routing::{Routes, on};
 use role_set::error_codes as declared;
+
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, role_set::Payload => handle_role_set)
+}
 
 fn coded(
     doc: &TrustTask<Value>,

@@ -17,3 +17,13 @@ that crate's one table, never in a copy here. This crate keeps what is the
 VTA's alone: the tools, their annotations (asserted against the shared
 classifier by `tool_annotations_agree_with_the_risk_classifier`), the connect
 ladder, and the VTA dispatch-table census.
+
+## Failures the model reads
+
+Every failure of an operation — a `VtaError`, a guard refusal, an unserved URI —
+is a `vti_mcp_common::tool_error::ToolError` returned as a tool result with
+`isError: true` (#2594), its kind from the `VtaError` variant (`to_tool`).
+`vta_call` checks its URI against the VTA's discovery answer (asked once,
+remembered, never past a local policy that denies discovery) and answers
+`notServed` instead of waiting out the reply timeout; when discovery cannot be
+asked, the VTA answers. Never map a `VtaError` to `ErrorData`.

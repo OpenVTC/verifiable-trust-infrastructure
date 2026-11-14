@@ -177,6 +177,7 @@ pub(super) async fn handle_revoke(
         &state.audit_sink,
         auth,
         &req.key_id,
+        req.reason.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
     .await

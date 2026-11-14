@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, HiddenVetterBindingResetData, HiddenVetterEnrolledData, HiddenVetterReboundData,
     HiddenVetterReissuedData, HiddenVetterResetCancelledData, HiddenVetterTokensIssuedData,
 };
@@ -679,7 +679,7 @@ pub async fn enrol(
 
 /// The audit writer, or a refusal. Minting without one would leave a community unable to say
 /// what it signed, which is the question an incident review asks first.
-fn audit(state: &AppState) -> Result<&vti_common::audit::AuditWriter, AppError> {
+fn audit(state: &AppState) -> Result<&vtc_audit::AuditWriter, AppError> {
     state
         .audit_writer
         .as_ref()

@@ -218,7 +218,7 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
     // The Refuse-mode arm is exercised by a Fixture variant
     // that takes a PersonhoodFailMode parameter — deferred
     // to PR-2 alongside the assert/revoke endpoints.
-    use vti_common::audit::AuditEvent;
+    use vtc_audit::AuditEvent;
 
     let fix = build_fixture().await;
 
@@ -275,7 +275,7 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
     let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
     let mut saw_revoked = false;
     for (_k, v) in pairs {
-        let env: vti_common::audit::AuditEnvelope = serde_json::from_slice(&v).unwrap();
+        let env: vtc_audit::AuditEnvelope = serde_json::from_slice(&v).unwrap();
         if let AuditEvent::PersonhoodRevoked(data) = env.event
             && data.reason == "renewal-policy"
         {

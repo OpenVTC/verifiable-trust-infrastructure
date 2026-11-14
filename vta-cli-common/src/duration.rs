@@ -43,6 +43,37 @@ pub fn parse_duration_secs(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     Ok(n.saturating_mul(mult))
 }
 
+/// A clap `value_parser` for a flag measured in seconds (#2589): `N[s|m|h|d|w]`,
+/// or a bare integer, which stays seconds — so every existing `--ttl 900`
+/// still means what it did, and `--ttl 15m` now works too. `0` is accepted
+/// (some flags give it a meaning, e.g. an immediate drain).
+///
+/// ```
+/// # use vta_cli_common::duration::secs_arg;
+/// assert_eq!(secs_arg("900"), Ok(900));
+/// assert_eq!(secs_arg("15m"), Ok(900));
+/// assert_eq!(secs_arg("0"), Ok(0));
+/// assert!(secs_arg("15x").is_err());
+/// ```
+pub fn secs_arg(s: &str) -> Result<u64, String> {
+    if s.trim() == "0" {
+        return Ok(0);
+    }
+    parse_duration_secs(s).map_err(|e| e.to_string())
+}
+
+/// [`secs_arg`] for a `u32` flag.
+pub fn secs_arg_u32(s: &str) -> Result<u32, String> {
+    let n = secs_arg(s)?;
+    u32::try_from(n).map_err(|_| format!("{s} is too long ({n} seconds)"))
+}
+
+/// [`secs_arg`] for an `i64` flag.
+pub fn secs_arg_i64(s: &str) -> Result<i64, String> {
+    let n = secs_arg(s)?;
+    i64::try_from(n).map_err(|_| format!("{s} is too long ({n} seconds)"))
+}
+
 /// Parse a duration and return the absolute unix-epoch expiry time
 /// (`now + duration`).
 pub fn duration_to_expires_at(s: &str) -> Result<u64, Box<dyn std::error::Error>> {

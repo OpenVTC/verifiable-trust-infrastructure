@@ -344,8 +344,7 @@ enum RevokeTarget {
 /// forms or none, or `all: false`, which 0.2 keeps schema-valid only because
 /// 0.1 admitted it and which targets nothing.
 fn revoke_target(payload: &Value, caller: &str) -> Result<(RevokeTarget, Option<String>), String> {
-    use trust_tasks_rs::validate::ValidatedPayload as _;
-    revoke_session_spec::Payload::validate_value(payload)
+    vta_sdk::schema_cache::check_payload::<revoke_session_spec::Payload>(payload)
         .map_err(|e| format!("revoke-session payload: {e}"))?;
     let obj = payload
         .as_object()

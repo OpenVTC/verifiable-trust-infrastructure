@@ -70,7 +70,7 @@ use vta_sdk::protocols::vetting::{
     CheckShape, DEFAULT_VETTER_LIST_LIMIT, VetterProfileSummary, has_event_filter,
 };
 use vta_sdk::protocols::vetting::{VETTER_ROLE, role_matches};
-use vti_common::audit::{AuditEvent, VetterProfileDeletedData, VetterProfileUpdatedData};
+use vtc_audit::{AuditEvent, VetterProfileDeletedData, VetterProfileUpdatedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 

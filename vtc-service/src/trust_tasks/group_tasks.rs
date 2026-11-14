@@ -21,10 +21,11 @@
 //! A dynamic group's members are computed from its rule (`groups::dynamic`):
 //! `members/{add,remove}` refuse it, `leave` opts out and `join` undoes that.
 
+use super::routing::{Routes, on};
 use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
+use vtc_audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
 use vti_common::error::AppError;
 use vti_common::pagination::Cursor;
 use vti_specs::vtc::groups::{
@@ -60,44 +61,26 @@ use crate::groups::{self, Audience, Group, JoinPolicy, JoinRequest, Membership, 
 use crate::rooms::community::HolderError;
 use crate::server::AppState;
 
-pub(crate) const CREATE_TYPE: &str = <group_create::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_TYPE: &str = <group_update::Payload as Payload>::TYPE_URI;
-pub(crate) const DELETE_TYPE: &str = <group_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <group_list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const SHOW_TYPE: &str = <group_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_ADD_TYPE: &str = <members_add::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_REMOVE_TYPE: &str = <members_remove::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_TYPE: &str = <group_join::Payload as Payload>::TYPE_URI;
-pub(crate) const LEAVE_TYPE: &str = <group_leave::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const REQUESTS_LIST_TYPE: &str = <requests_list::Payload as Payload>::TYPE_URI;
-pub(crate) const REQUESTS_DECIDE_TYPE: &str = <requests_decide::Payload as Payload>::TYPE_URI;
-pub(crate) const MANAGERS_ADD_TYPE: &str = <managers_add::Payload as Payload>::TYPE_URI;
-pub(crate) const MANAGERS_REMOVE_TYPE: &str = <managers_remove::Payload as Payload>::TYPE_URI;
-pub(crate) const BINDINGS_ADD_TYPE: &str = <bindings_add::Payload as Payload>::TYPE_URI;
-pub(crate) const BINDINGS_REMOVE_TYPE: &str = <bindings_remove::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <group_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const BINDINGS_LIST_TYPE: &str = <bindings_list::Payload as Payload>::TYPE_URI;
 
-/// Every type this module serves.
-pub(crate) const URIS: &[&str] = &[
-    CREATE_TYPE,
-    UPDATE_TYPE,
-    DELETE_TYPE,
-    LIST_TYPE,
-    SHOW_TYPE,
-    MEMBERS_ADD_TYPE,
-    MEMBERS_REMOVE_TYPE,
-    MEMBERS_LIST_TYPE,
-    JOIN_TYPE,
-    LEAVE_TYPE,
-    REQUESTS_LIST_TYPE,
-    REQUESTS_DECIDE_TYPE,
-    MANAGERS_ADD_TYPE,
-    MANAGERS_REMOVE_TYPE,
-    BINDINGS_ADD_TYPE,
-    BINDINGS_REMOVE_TYPE,
-    BINDINGS_LIST_TYPE,
-];
+pub(crate) const DELETE_TYPE: &str = <group_delete::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_ADD_TYPE: &str = <members_add::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_REMOVE_TYPE: &str = <members_remove::Payload as Payload>::TYPE_URI;
+pub(crate) const BINDINGS_ADD_TYPE: &str = <bindings_add::Payload as Payload>::TYPE_URI;
+pub(crate) const BINDINGS_REMOVE_TYPE: &str = <bindings_remove::Payload as Payload>::TYPE_URI;
 
 macro_rules! codes {
     ($($name:ident = $module:ident :: $code:ident;)*) => {
@@ -166,32 +149,30 @@ codes! {
     BINDINGS_LIST_ERR_NOT_FOUND = bindings_list::NOT_FOUND;
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        DELETE_TYPE => handle_delete(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
-        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
-        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
-        JOIN_TYPE => handle_join(state, ctx, doc).await,
-        LEAVE_TYPE => handle_leave(state, ctx, doc).await,
-        REQUESTS_LIST_TYPE => handle_requests_list(state, ctx, doc).await,
-        REQUESTS_DECIDE_TYPE => handle_requests_decide(state, ctx, doc).await,
-        MANAGERS_ADD_TYPE => handle_managers_add(state, ctx, doc).await,
-        MANAGERS_REMOVE_TYPE => handle_managers_remove(state, ctx, doc).await,
-        BINDINGS_ADD_TYPE => handle_bindings_add(state, ctx, doc).await,
-        BINDINGS_REMOVE_TYPE => handle_bindings_remove(state, ctx, doc).await,
-        BINDINGS_LIST_TYPE => handle_bindings_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, group_create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, group_update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes =
+        on!(routes, group_delete::Payload => |state, ctx, doc| handle_delete(state, ctx, doc));
+    let routes = on!(routes, group_list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, group_show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes =
+        on!(routes, members_add::Payload => |state, ctx, doc| handle_members_add(state, ctx, doc));
+    let routes = on!(routes, members_remove::Payload => |state, ctx, doc| handle_members_remove(state, ctx, doc));
+    let routes = on!(routes, members_list::Payload => |state, ctx, doc| handle_members_list(state, ctx, doc));
+    let routes = on!(routes, group_join::Payload => |state, ctx, doc| handle_join(state, ctx, doc));
+    let routes =
+        on!(routes, group_leave::Payload => |state, ctx, doc| handle_leave(state, ctx, doc));
+    let routes = on!(routes, requests_list::Payload => |state, ctx, doc| handle_requests_list(state, ctx, doc));
+    let routes = on!(routes, requests_decide::Payload => |state, ctx, doc| handle_requests_decide(state, ctx, doc));
+    let routes = on!(routes, managers_add::Payload => |state, ctx, doc| handle_managers_add(state, ctx, doc));
+    let routes = on!(routes, managers_remove::Payload => |state, ctx, doc| handle_managers_remove(state, ctx, doc));
+    let routes = on!(routes, bindings_add::Payload => |state, ctx, doc| handle_bindings_add(state, ctx, doc));
+    let routes = on!(routes, bindings_remove::Payload => |state, ctx, doc| handle_bindings_remove(state, ctx, doc));
+    on!(routes, bindings_list::Payload => |state, ctx, doc| handle_bindings_list(state, ctx, doc))
 }
 
 // ─── shared ───────────────────────────────────────────────────────────────

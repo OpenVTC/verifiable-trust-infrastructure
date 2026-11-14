@@ -1,12 +1,18 @@
 //! Dispatch for `pnm backup …`.
 //!
-//! Both export and import prompt interactively for the encryption
-//! password (Argon2id KDF, ≥15 chars). `--preview` on import skips the
+//! Both export and import take the encryption password (Argon2id KDF, ≥15
+//! chars) from `--password-file <path|->`, then `PNM_BACKUP_PASSWORD`, then a
+//! no-echo prompt — so a scheduled export runs without a terminal (#2585). `--preview` on import skips the
 //! destructive write so an operator can inspect a backup before
 //! committing.
 
+use vta_cli_common::confirm::confirm_destructive;
 use vta_cli_common::render::{DIM, GREEN, RED, RESET};
+use vta_cli_common::secret_input::backup_password;
 use vta_cli_common::secure_file;
+
+/// The environment variable a scheduled backup reads its password from.
+const PASSWORD_ENV: &str = "PNM_BACKUP_PASSWORD";
 use vta_sdk::client::{SurfaceTransport, TransferProgress, VtaClient};
 use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
@@ -21,17 +27,37 @@ pub(crate) async fn run(
             include_audit,
             output,
             force,
+            password_file,
         } => {
             if let Some(path) = &output {
                 secure_file::check_export_path(path, force)?;
             }
-            cmd_backup_export_descriptor(client, include_audit, output, force).await
+            cmd_backup_export_descriptor(
+                client,
+                include_audit,
+                output,
+                force,
+                password_file.as_deref(),
+            )
+            .await
         }
         BackupCommands::Import {
             file,
             preview,
             replace_identity,
-        } => cmd_backup_import_descriptor(client, file, preview, replace_identity).await,
+            password_file,
+            yes,
+        } => {
+            cmd_backup_import_descriptor(
+                client,
+                file,
+                preview,
+                replace_identity,
+                password_file.as_deref(),
+                yes,
+            )
+            .await
+        }
     }
 }
 
@@ -46,13 +72,9 @@ async fn cmd_backup_export_descriptor(
     include_audit: bool,
     output: Option<std::path::PathBuf>,
     force: bool,
+    password_file: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let password = dialoguer::Password::new()
-        .with_prompt(format!(
-            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
-        ))
-        .with_confirmation("Confirm password", "Passwords do not match")
-        .interact()?;
+    let password = backup_password(password_file, PASSWORD_ENV, true, MIN_BACKUP_PASSWORD_LEN)?;
     validate_backup_password(&password)?;
 
     let surface = client.trust_task_transport();
@@ -148,13 +170,17 @@ async fn cmd_backup_import_descriptor(
     file: std::path::PathBuf,
     preview_only: bool,
     replace_identity: bool,
+    password_file: Option<&std::path::Path>,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bytes = std::fs::read(&file)?;
+    let bytes =
+        std::fs::read(&file).map_err(|e| format!("could not read {}: {e}", file.display()))?;
 
     // Surface the envelope's metadata to the operator before
     // prompting for password.
     let envelope: vta_sdk::protocols::backup_management::types::BackupEnvelope =
-        serde_json::from_slice(&bytes)?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("{} is not a valid backup file: {e}", file.display()))?;
 
     println!("Backup file: {}", file.display());
     println!(
@@ -167,11 +193,7 @@ async fn cmd_backup_import_descriptor(
 
     // The floor binds on the way in too, so check it here rather than let the
     // refusal arrive as a schema-conformance error naming a task URI.
-    let password = dialoguer::Password::new()
-        .with_prompt(format!(
-            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
-        ))
-        .interact()?;
+    let password = backup_password(password_file, PASSWORD_ENV, false, MIN_BACKUP_PASSWORD_LEN)?;
     validate_backup_password(&password)?;
 
     // Preview run: confirm=false. This uploads the bytes; the commit below
@@ -206,11 +228,16 @@ async fn cmd_backup_import_descriptor(
 
     println!();
     println!("{RED}WARNING: This will REPLACE ALL DATA in the VTA.{RESET}");
-    print!("Type 'yes' to confirm: ");
-    std::io::Write::flush(&mut std::io::stdout())?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    if input.trim() != "yes" {
+    // The same rule as every destructive command: `--yes`, or a terminal to
+    // ask on, or a refusal (#2583, #2585).
+    let go = match confirm_destructive("replace all data in the VTA with this backup", yes) {
+        Ok(go) => go,
+        Err(e) => {
+            let _ = client.backup_abort_bundle(&preview.bundle_id).await;
+            return Err(e);
+        }
+    };
+    if !go {
         println!("Import cancelled.");
         let _ = client.backup_abort_bundle(&preview.bundle_id).await;
         return Ok(());

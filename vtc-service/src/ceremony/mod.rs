@@ -65,6 +65,8 @@ pub mod evaluate;
 pub mod execute;
 pub mod facts;
 pub mod invariant;
+/// The ceremony registry the console renders (`vtc/ceremonies/list`).
+pub(crate) mod listing;
 pub mod orchestrate;
 pub mod removal_notice;
 pub mod step_up_passkey_notice;
@@ -83,7 +85,8 @@ pub use facts::{
 pub use invariant::{Invariant, InvariantViolation};
 pub use orchestrate::{
     LeaveOutcome, RoleChangeOutcome, RoleChangeRefusal, RoleChangeResult, StepUpSource,
-    purge_member, remove_inner, role_change_via_bound_step_up, role_change_via_pipeline,
+    purge_member, remove_inner, role_change_as, role_change_via_bound_step_up,
+    role_change_via_pipeline,
 };
 pub use verdict::{Allow, Deny, Refer, RequestMore, Verdict};
 pub use verify::{VerifiedFacts, VerifyError};

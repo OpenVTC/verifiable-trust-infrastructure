@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use tracing::info;
 
 pub mod counter;
+pub mod expiry_index;
 pub mod flusher;
 
 #[cfg(feature = "encryption")]

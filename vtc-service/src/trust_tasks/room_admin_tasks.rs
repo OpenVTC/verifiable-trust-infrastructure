@@ -15,13 +15,14 @@
 //! *Authorization*): an allowance is reversible, nothing is lost by it, and the room's
 //! owner can see their own limits. It is audited with its reason.
 
+use super::routing::{Routes, on};
 use std::collections::BTreeMap;
 
 use chrono::{Days, NaiveDate, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::{Payload, TrustTask};
-use vti_common::audit::{AuditEvent, RoomLimitsChangedData};
+use trust_tasks_rs::TrustTask;
+use vtc_audit::{AuditEvent, RoomLimitsChangedData};
 use vti_common::error::AppError;
 use vti_rooms::blobs::{
     Activity, EffectiveLimits, LimitSource, LimitTarget, OverrideError, ScopeLimits, Usage,
@@ -36,12 +37,11 @@ use super::storage_tasks::{malformed, refuse, respond, rooms_admin};
 use super::{JoinAuthCtx, parse_spec_payload};
 use crate::server::AppState;
 
-pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
-pub(crate) const USAGE_TYPE: &str = <usage::Payload as Payload>::TYPE_URI;
-pub(crate) const LIMITS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const USAGE_TYPE: &str = <usage::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Every URI this module routes.
-pub(crate) const URIS: &[&str] = &[GET_TYPE, USAGE_TYPE, LIMITS_SET_TYPE];
+#[cfg(test)]
+pub(crate) const GET_TYPE: &str = <get::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `largestBlobs` holds at most this many (`vtc/rooms/get`).
 const LARGEST_BLOBS: usize = 10;
@@ -55,18 +55,11 @@ const MAX_RANGE_DAYS: u64 = 400;
 /// A usage cursor: this prefix, a digest of the query it pages, and an offset.
 const CURSOR_PREFIX: &str = "vtc-rooms-usage:";
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        GET_TYPE => handle_get(state, ctx, doc).await,
-        USAGE_TYPE => handle_usage(state, ctx, doc).await,
-        LIMITS_SET_TYPE => handle_limits_set(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, get::Payload => |state, ctx, doc| handle_get(state, ctx, doc));
+    let routes = on!(routes, usage::Payload => |state, ctx, doc| handle_usage(state, ctx, doc));
+    on!(routes, set::Payload => |state, ctx, doc| handle_limits_set(state, ctx, doc))
 }
 
 fn source_str(s: LimitSource) -> &'static str {

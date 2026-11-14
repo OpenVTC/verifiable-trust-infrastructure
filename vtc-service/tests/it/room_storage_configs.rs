@@ -200,7 +200,7 @@ async fn actions_of_kind(fix: &Fixture, kind: &str) -> Vec<ActionRecord> {
         .collect()
 }
 
-async fn audit_rows(fix: &Fixture) -> Vec<vti_common::audit::AuditEnvelope> {
+async fn audit_rows(fix: &Fixture) -> Vec<vtc_audit::AuditEnvelope> {
     fix.vtc
         .state
         .audit_ks
@@ -208,7 +208,7 @@ async fn audit_rows(fix: &Fixture) -> Vec<vti_common::audit::AuditEnvelope> {
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter(|env| env.event.variant_name() == "RoomStorageChanged")
         .collect()
 }
@@ -751,7 +751,7 @@ async fn assign_directly(fix: &Fixture, room_id: &str, config_id: &str) {
         .unwrap();
 }
 
-fn migration_events(rows: &[vti_common::audit::AuditEnvelope]) -> Vec<Value> {
+fn migration_events(rows: &[vtc_audit::AuditEnvelope]) -> Vec<Value> {
     rows.iter()
         .map(|r| serde_json::to_value(&r.event).unwrap()["data"].clone())
         .filter(|d| {

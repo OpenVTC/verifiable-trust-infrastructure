@@ -1,0 +1,34 @@
+{
+  "auditKeys": [
+    {
+      "key": "e692f9f4b13035e4f7ff5e660a179f99aec7111f1c213c5490b796ffa10f121e",
+      "keyId": "25b3ee54-fd82-48bd-a1c1-b09746e13863"
+    }
+  ],
+  "rows": [
+    {
+      "key": "2026-11-14T00:55:06.922398+00:00:09103c3f-016f-4a6e-93b1-d1d67ea9fa49",
+      "value": "{\"event_id\":\"09103c3f-016f-4a6e-93b1-d1d67ea9fa49\",\"event_version\":1,\"schema_version\":2,\"timestamp\":\"2026-11-14T00:55:06.922398Z\",\"audit_key_id\":\"25b3ee54-fd82-48bd-a1c1-b09746e13863\",\"actor_did_hash\":\"bqw68N21j0f7PDNKxsWCi84i1sr4DkYnId_xVD_ZLIg\",\"actor_did_plain\":\"did:key:z6MkAdmin\",\"target_did_hash\":null,\"target_did_plain\":null,\"prev_hash\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"entry_hash\":\"xyEL8Xqmlk3KEA7EPgPcxiOwskiaFlbnY-VQQHrGHJw\",\"event\":{\"type\":\"CommunityInstalled\",\"data\":{\"communityDid\":\"did:webvh:example.com:abc\",\"installTokenJti\":\"jti-1\"}}}"
+    },
+    {
+      "key": "2026-11-14T00:55:06.923013+00:00:2f8227ba-7f6d-4725-9193-1a17eb739b66",
+      "value": "{\"event_id\":\"2f8227ba-7f6d-4725-9193-1a17eb739b66\",\"event_version\":1,\"schema_version\":2,\"timestamp\":\"2026-11-14T00:55:06.923013Z\",\"audit_key_id\":\"25b3ee54-fd82-48bd-a1c1-b09746e13863\",\"actor_did_hash\":\"bqw68N21j0f7PDNKxsWCi84i1sr4DkYnId_xVD_ZLIg\",\"actor_did_plain\":\"did:key:z6MkAdmin\",\"target_did_hash\":null,\"target_did_plain\":null,\"prev_hash\":\"xyEL8Xqmlk3KEA7EPgPcxiOwskiaFlbnY-VQQHrGHJw\",\"entry_hash\":\"PlV9GAIddYIadSaZUCHCfcz7i95H2pun_BjKBcJVBMo\",\"event\":{\"type\":\"CommunityProfileUpdated\",\"data\":{\"fieldsChanged\":[\"name\"],\"changes\":[{\"field\":\"name\",\"old\":\"Old\",\"new\":\"New\"}]}}}"
+    },
+    {
+      "key": "2026-11-14T00:55:06.923251+00:00:ee80fd14-6e7c-43e0-a868-e64482199870",
+      "value": "{\"event_id\":\"ee80fd14-6e7c-43e0-a868-e64482199870\",\"event_version\":1,\"schema_version\":2,\"timestamp\":\"2026-11-14T00:55:06.923251Z\",\"audit_key_id\":\"25b3ee54-fd82-48bd-a1c1-b09746e13863\",\"actor_did_hash\":\"bqw68N21j0f7PDNKxsWCi84i1sr4DkYnId_xVD_ZLIg\",\"actor_did_plain\":\"did:key:z6MkAdmin\",\"target_did_hash\":null,\"target_did_plain\":null,\"prev_hash\":\"PlV9GAIddYIadSaZUCHCfcz7i95H2pun_BjKBcJVBMo\",\"entry_hash\":\"klClFYdnTlc1iKyGzZlx8tQnRmUM3ns66klSapQTxyM\",\"event\":{\"type\":\"ConfigChanged\",\"data\":{\"changes\":[{\"key\":\"a.b\",\"oldValue\":null,\"newValue\":{\"a\":[true,null],\"z\":1},\"sourceBefore\":\"default\"}],\"requiresRestart\":true}}}"
+    },
+    {
+      "key": "2026-11-14T00:55:06.923496+00:00:a18a58bb-93b8-4f02-8c7d-259f3e74255b",
+      "value": "{\"event_id\":\"a18a58bb-93b8-4f02-8c7d-259f3e74255b\",\"event_version\":1,\"schema_version\":2,\"timestamp\":\"2026-11-14T00:55:06.923496Z\",\"audit_key_id\":\"25b3ee54-fd82-48bd-a1c1-b09746e13863\",\"actor_did_hash\":\"Wc2AHsvVmONYv8s9g9sNUFRfX454_eK7JGvmXHyPXis\",\"actor_did_plain\":\"did:key:z6MkMember\",\"target_did_hash\":\"UFvKVIIM8BG8y0NAZJkTaZthZYHlubUVL0_QxGh2RF8\",\"target_did_plain\":\"did:key:z6MkTarget\",\"prev_hash\":\"klClFYdnTlc1iKyGzZlx8tQnRmUM3ns66klSapQTxyM\",\"entry_hash\":\"nZD3ulXw96NyZFMXlA56_iq4lS-IMwa-swo7rYoU-_Q\",\"event\":{\"type\":\"RoomOperation\",\"data\":{\"roomId\":\"room-1\",\"action\":\"room.records.get\",\"recordKey\":\"rk\",\"visibility\":\"community\"}}}"
+    },
+    {
+      "key": "2026-11-14T00:55:06.923619+00:00:8d0d6e4e-d094-4b89-9ce8-e618bf425bc8",
+      "value": "{\"event_id\":\"8d0d6e4e-d094-4b89-9ce8-e618bf425bc8\",\"event_version\":1,\"schema_version\":2,\"timestamp\":\"2026-11-14T00:55:06.923619Z\",\"audit_key_id\":\"25b3ee54-fd82-48bd-a1c1-b09746e13863\",\"actor_did_hash\":\"bqw68N21j0f7PDNKxsWCi84i1sr4DkYnId_xVD_ZLIg\",\"actor_did_plain\":\"did:key:z6MkAdmin\",\"target_did_hash\":\"UFvKVIIM8BG8y0NAZJkTaZthZYHlubUVL0_QxGh2RF8\",\"target_did_plain\":\"did:key:z6MkTarget\",\"prev_hash\":\"nZD3ulXw96NyZFMXlA56_iq4lS-IMwa-swo7rYoU-_Q\",\"entry_hash\":\"AFOx1U0zwsVxiJ3KnmEcYxG0-v2urPpquh85pbG8SgA\",\"event\":{\"type\":\"GitNsOperation\",\"data\":{\"action\":\"gitNs.right.granted\",\"namespace\":\"ns_1\",\"right\":\"git.repo.own\"}}}"
+    },
+    {
+      "key": "2026-11-14T00:55:06.923780+00:00:ed74d34c-1939-4043-a3d8-8abda694b75b",
+      "value": "{\"event_id\":\"ed74d34c-1939-4043-a3d8-8abda694b75b\",\"event_version\":1,\"schema_version\":2,\"timestamp\":\"2026-11-14T00:55:06.923780Z\",\"audit_key_id\":\"25b3ee54-fd82-48bd-a1c1-b09746e13863\",\"actor_did_hash\":\"bqw68N21j0f7PDNKxsWCi84i1sr4DkYnId_xVD_ZLIg\",\"actor_did_plain\":\"did:key:z6MkAdmin\",\"target_did_hash\":null,\"target_did_plain\":null,\"prev_hash\":\"AFOx1U0zwsVxiJ3KnmEcYxG0-v2urPpquh85pbG8SgA\",\"entry_hash\":\"qZQfH5cs3YbGchjWSLq9E8o3BHOuTigBRojuWICFk7M\",\"event\":{\"type\":\"SingleAdminMode\",\"data\":{\"event\":\"\"}}}"
+    }
+  ]
+}

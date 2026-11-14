@@ -14,13 +14,14 @@
 //! | `vtc/notifications/list/0.1`, `show/0.1` | `vtc.notifications.read` |
 //! | `vtc/notifications/relay/0.1` | `vtc.notifications.relay` for the selection — unqualified for `allMembers` and `role`, or at `group:<groupId>` for that group; `allMembers` also takes the requester's step-up bound to the document (VTI-NTF-074) |
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::notifications::{ChainError, verify_delivery};
 use vti_specs::notifications as wire;
 
 use trust_tasks_rs::validate::ValidatedPayload;
-use trust_tasks_rs::{Payload, StandardCode, TrustTaskCode};
+use trust_tasks_rs::{StandardCode, TrustTaskCode};
 use vti_specs::vtc::notifications::{list::v0_1 as list, relay::v0_1 as relay, show::v0_1 as show};
 
 use super::helpers::{
@@ -32,13 +33,6 @@ use crate::acl::{Capability, ResourceQualifier};
 use crate::error::TaskError;
 use crate::notifications::inbox::{self, ListError, ListFilter, RelayError, Selection};
 use crate::server::AppState;
-
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
-pub(crate) const RELAY_TYPE: &str = <relay::Payload as Payload>::TYPE_URI;
-
-/// Every URI [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[LIST_TYPE, SHOW_TYPE, RELAY_TYPE];
 
 /// The extended codes these tasks declare (the error-code census checks they agree with the
 /// generated constants).
@@ -136,19 +130,13 @@ pub(super) async fn handle_relay(
 
 // ─── the administrators' view (VTI-NTF-070 – 074) ───────────────────────────
 
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        RELAY_TYPE => handle_admin_relay(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, wire::notify::v0_1::Payload => handle_notify);
+    let routes = on!(routes, wire::relay::v0_1::Payload => handle_relay);
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    on!(routes, relay::Payload => |state, ctx, doc| handle_admin_relay(state, ctx, doc))
 }
 
 /// Answer with `body` held to the generated `#response` type and its schema.

@@ -44,6 +44,7 @@
 //! The ballot box itself — every rule of every task — is [`vti_voting::service::BallotBox`].
 //! This crate is its host: identity, transport, signing and durability.
 
+pub mod boxes;
 pub mod config;
 pub mod dispatch;
 pub mod http;

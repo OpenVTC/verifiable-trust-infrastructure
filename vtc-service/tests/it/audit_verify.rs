@@ -1,7 +1,7 @@
 //! Integration coverage for `audit/verify/0.1` — the audit hash-chain
 //! verification surface (#537 tier 3), a signed Trust Task.
 //!
-//! The chain itself is unit-tested in `vti_common::audit::envelope`;
+//! The chain itself is unit-tested in `vtc_audit::envelope`;
 //! what matters here is that the endpoint walks the *store* in the
 //! right order, reports honest counters, and actually catches a
 //! tampered row rather than rubber-stamping whatever it reads.
@@ -244,7 +244,7 @@ async fn non_super_admin_is_refused() {
 // suffix or truncate to a valid prefix and the chain still verifies. Only a
 // signature made with a key that is not in the store contradicts that.
 
-use vti_common::audit::{AuditCheckpoint, CheckpointClaim};
+use vtc_audit::{AuditCheckpoint, CheckpointClaim};
 
 /// A fixture whose `credential_signer` is present, so checkpoints can be
 /// signed and verified. (`build()` above has no signer — checkpoint status

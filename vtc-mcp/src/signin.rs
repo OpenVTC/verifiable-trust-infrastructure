@@ -37,11 +37,32 @@ use serde_json::{Value, json};
 use vtc_client::signin::{SignInAudience, SignInPoll, task};
 
 use crate::server::VtcMcp;
+use vti_mcp_common::tool_error::ToolError;
 
 /// How this bridge names itself to the approver: the wallet shows the
 /// starter's user agent beside the request.
 pub(crate) fn starter() -> String {
     format!("vtc-mcp/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// A sign-in step the community (or the client) refused, as a tool result
+/// the model reads (#2594), with the refusal's own code when it has one.
+fn sign_in_failed(e: vtc_client::VtcError) -> ToolError {
+    let message = e.to_string();
+    match e {
+        vtc_client::VtcError::SignIn { code, details, .. } => {
+            ToolError::new("signInRefused", message)
+                .with_next(
+                    "the sign-in did not go ahead. Read the code; start again with vtc_sign_in \
+                     if the person still wants to sign in.",
+                )
+                .with_details(json!({ "code": code, "details": details }))
+        }
+        _ => ToolError::new("signInFailed", message).with_next(
+            "call vtc_status to see how the bridge is connected, then start again with \
+             vtc_sign_in.",
+        ),
+    }
 }
 
 /// The longest one `finish` call waits before answering with where the
@@ -140,12 +161,12 @@ fn next_after_sign_in(audience: SignInAudience) -> &'static str {
 
 impl VtcMcp {
     /// Open a request. The body of `vtc_sign_in`, without the MCP plumbing.
-    pub(crate) async fn start_sign_in(&self, audience: SignInAudience) -> Result<Value, McpError> {
+    pub(crate) async fn start_sign_in(&self, audience: SignInAudience) -> Result<Value, ToolError> {
         let client = self.client()?;
         let request = self
             .health
             .observe(client.sign_in_request(audience, &starter()).await)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            .map_err(sign_in_failed)?;
         let pending = PendingSignIn {
             request_id: request.request_id.clone(),
             audience,
@@ -174,7 +195,7 @@ impl VtcMcp {
         &self,
         request_id: Option<&str>,
         wait: Duration,
-    ) -> Result<Value, McpError> {
+    ) -> Result<Value, ToolError> {
         let client = self.client()?;
         let pending = {
             let state = self.sign_in.read().await;
@@ -189,10 +210,11 @@ impl VtcMcp {
                 },
                 (None, Some(p)) => p.clone(),
                 (None, None) => {
-                    return Err(McpError::invalid_request(
-                        "no sign-in request is open; call vtc_sign_in first".to_string(),
-                        None,
-                    ));
+                    return Err(ToolError::new(
+                        "noSignInOpen",
+                        "no sign-in request is open; call vtc_sign_in first",
+                    )
+                    .with_next("call vtc_sign_in first."));
                 }
             }
         };
@@ -202,7 +224,7 @@ impl VtcMcp {
             let poll = self
                 .health
                 .observe(client.sign_in_redeem(&pending.request_id, &starter()).await)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                .map_err(sign_in_failed)?;
             match poll {
                 SignInPoll::Pending {
                     state,
@@ -288,17 +310,17 @@ impl VtcMcp {
     }
 
     /// Cancel an open request. The body of `vtc_sign_in_cancel`.
-    pub(crate) async fn cancel_sign_in(&self, request_id: Option<&str>) -> Result<Value, McpError> {
+    pub(crate) async fn cancel_sign_in(
+        &self,
+        request_id: Option<&str>,
+    ) -> Result<Value, ToolError> {
         let client = self.client()?;
         let id = match request_id {
             Some(id) => id.to_string(),
             None => match &self.sign_in.read().await.pending {
                 Some(p) => p.request_id.clone(),
                 None => {
-                    return Err(McpError::invalid_request(
-                        "no sign-in request is open".to_string(),
-                        None,
-                    ));
+                    return Err(ToolError::new("noSignInOpen", "no sign-in request is open"));
                 }
             },
         };
@@ -547,23 +569,22 @@ impl VtcMcp {
 
     /// Enrol this bridge's key with the identity's authorization, or say how
     /// to get one. The body of `vtc_enrol_signing_key`.
-    pub(crate) async fn enrol_signing_key(&self, p: EnrolParams) -> Result<Value, McpError> {
+    pub(crate) async fn enrol_signing_key(&self, p: EnrolParams) -> Result<Value, ToolError> {
         let own_did = self.identity.agent_did.clone().ok_or_else(|| {
-            McpError::internal_error(
+            ToolError::new(
+                "noOwnKey",
                 "this bridge has no key of its own to enrol; start it with --agent-did and \
-                 --agent-key (a key from --mint-did-key)"
-                    .to_string(),
-                None,
+                 --agent-key (a key from --mint-did-key)",
             )
         })?;
         if !own_did.starts_with("did:key:") {
-            return Err(McpError::invalid_request(
+            return Err(ToolError::new(
+                "noOwnKey",
                 format!(
                     "this bridge speaks as {own_did}, a persona, not a key of its own: a \
                      signing-key delegation is for a did:key (start the bridge with \
                      --mint-did-key's key instead)"
                 ),
-                None,
             ));
         }
         let authorization = match (p.authorization, p.authorization_file) {
@@ -572,10 +593,14 @@ impl VtcMcp {
                 // The command this tool suggests writes under `~/`, and an
                 // assistant passes that path back as written.
                 let path = expand_home(&path);
-                let text = std::fs::read_to_string(&path)
-                    .map_err(|e| McpError::invalid_params(format!("reading {path}: {e}"), None))?;
+                let text = std::fs::read_to_string(&path).map_err(|e| {
+                    ToolError::new("invalidArguments", format!("reading {path}: {e}"))
+                })?;
                 serde_json::from_str(&text).map_err(|e| {
-                    McpError::invalid_params(format!("{path} is not a JSON document: {e}"), None)
+                    ToolError::new(
+                        "invalidArguments",
+                        format!("{path} is not a JSON document: {e}"),
+                    )
                 })?
             }
             (None, None) => {
@@ -602,22 +627,22 @@ impl VtcMcp {
             }
         };
         if authorization["type"] != AUTHORIZE {
-            return Err(McpError::invalid_params(
+            return Err(ToolError::new(
+                "invalidArguments",
                 format!(
                     "that is not an auth/signing-key/authorize/0.1 document (type {})",
                     authorization["type"]
                 ),
-                None,
             ));
         }
         let terms = authorization["payload"].clone();
         if terms["signingKeyDid"].as_str() != Some(own_did.as_str()) {
-            return Err(McpError::invalid_params(
+            return Err(ToolError::new(
+                "invalidArguments",
                 format!(
                     "that authorization is for {}, not this bridge's key {own_did}",
                     terms["signingKeyDid"]
                 ),
-                None,
             ));
         }
         let identity_did = terms["identityDid"]

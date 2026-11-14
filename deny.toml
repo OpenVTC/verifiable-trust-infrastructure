@@ -307,7 +307,9 @@ skip = [
   # trust-tasks-rs 0.37 is on jsonschema 0.46 (the workspace is on 0.60), and
   # trust-tasks-build / typify on schemars 0.8 and regress 0.11. Fixed upstream
   # in trust-tasks-rs (a jsonschema bump is in progress there), not here.
-  { crate = "jsonschema:<0.60", reason = "via trust-tasks-rs" },
+  # `vta_sdk::schema_cache` names the same 0.46 (`jsonschema-trust-tasks`) so
+  # its cached check is the check trust-tasks-rs makes; it goes with the bump.
+  { crate = "jsonschema:<0.60", reason = "via trust-tasks-rs, and vta-sdk's schema_cache matching it" },
   { crate = "jsonschema-regex:<0.60", reason = "via jsonschema" },
   { crate = "referencing:<0.60", reason = "via jsonschema" },
   { crate = "fancy-regex:<0.19", reason = "via jsonschema" },

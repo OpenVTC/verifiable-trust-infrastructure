@@ -60,6 +60,7 @@
 //! unverified claim. `principal` absent, or equal to the signer, is the
 //! ordinary case: self-authentication, as every `0.2` document was.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_common::auth::{AudienceBinding, AuthenticateInput, ChallengeInput, RefreshInput};
@@ -74,12 +75,11 @@ use super::helpers::{
 use super::{JoinAuthCtx, parse_spec_payload};
 use crate::server::AppState;
 
+#[cfg(test)]
 pub(crate) const CHALLENGE_TYPE: &str = <challenge::Payload as Payload>::TYPE_URI;
+
 pub(crate) const AUTHENTICATE_V0_3_TYPE: &str = <authenticate_v0_3::Payload as Payload>::TYPE_URI;
 pub(crate) const REFRESH_V0_2_TYPE: &str = <refresh::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[CHALLENGE_TYPE, AUTHENTICATE_V0_3_TYPE, REFRESH_V0_2_TYPE];
 
 /// Tasks whose response carries a session's access and refresh tokens. The
 /// duplicate-execution record keeps no copy of these: a redelivery is answered
@@ -94,18 +94,11 @@ pub(crate) const AUTHENTICATE_ERR_SESSION_KEY_UNSUPPORTED: &str =
 pub(crate) const AUTHENTICATE_V0_3_ERR_DELEGATION_NOT_RECOGNIZED: &str =
     authenticate_v0_3::error_codes::DELEGATION_NOT_RECOGNIZED.code;
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CHALLENGE_TYPE => handle_challenge(state, doc).await,
-        AUTHENTICATE_V0_3_TYPE => handle_authenticate_v0_3(state, ctx, doc).await,
-        REFRESH_V0_2_TYPE => handle_refresh_v0_2(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, challenge::Payload => |state, _, doc| handle_challenge(state, doc));
+    let routes = on!(routes, authenticate_v0_3::Payload => |state, ctx, doc| handle_authenticate_v0_3(state, ctx, doc));
+    on!(routes, refresh::Payload => |state, ctx, doc| handle_refresh_v0_2(state, ctx, doc))
 }
 
 /// The Ed25519 multikey (`z6Mk…`) inside a `sessionKey` `did:key`, or `None`

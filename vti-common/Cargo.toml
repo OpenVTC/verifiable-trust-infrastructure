@@ -74,8 +74,16 @@ blob-gcs = ["dep:object_store", "object_store/gcp"]
 # the store holds no credential, and asks a `Presigner` (a community's VTA
 # external account) for one request per operation.
 blob-presigned = ["reqwest/stream", "dep:quick-xml"]
+# The bounded regorus (Rego) engine both services evaluate policy with
+# (`policy_engine`): compile, the input-size cap and the CPU-time budget, in
+# one place (#2577). Off by default — only `vta-policy` and `vtc-service` turn
+# it on, and nothing else should pay for an interpreter.
+policy = ["dep:regorus"]
 
 [dependencies]
+# Rego interpreter behind `policy_engine` (feature `policy`). Workspace defaults
+# include `arc`, so a compiled `Engine` is `Send + Sync` and cheap to clone.
+regorus = { workspace = true, optional = true }
 # vta-sdk for the canonical auth wire shapes
 # (`protocols::auth::ChallengeResponse`, `AuthenticateResponse`,
 # `TokenBundle`). These are SIOPv2 / RFC 6749-shaped public types
@@ -116,7 +124,7 @@ jsonwebtoken = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util", "signal", "macros"] }
 # `CancellationToken` in `sender_order`.
 tokio-util = { workspace = true }
 tracing = { workspace = true }

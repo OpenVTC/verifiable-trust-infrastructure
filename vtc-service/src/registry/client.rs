@@ -68,6 +68,15 @@ pub enum RegistryError {
     /// ~18 hours only delays the operator seeing it.
     #[error("registry incompatible: {0}")]
     Incompatible(String),
+    /// A record enumeration was still paginating after the page limit, so
+    /// the client refused to answer from a partial list.
+    ///
+    /// Retriable, like [`Self::Transient`] (whose wording it keeps), but its
+    /// own variant so a caller can tell it apart without reading the message
+    /// (#2578): unlike a flaky registry it never resolves by itself, and the
+    /// git-ns projection says so where an operator will see it.
+    #[error("transient registry failure: {0}")]
+    PaginationExhausted(String),
 }
 
 impl RegistryError {
@@ -75,7 +84,10 @@ impl RegistryError {
     /// syncer to distinguish "back off + retry" from "give up
     /// immediately".
     pub fn is_retriable(&self) -> bool {
-        matches!(self, Self::Transient(_) | Self::Unreachable(_))
+        matches!(
+            self,
+            Self::Transient(_) | Self::Unreachable(_) | Self::PaginationExhausted(_)
+        )
     }
 
     /// `true` when the registry answered but cannot serve the task we sent.
@@ -98,7 +110,9 @@ impl From<RegistryError> for vti_common::error::AppError {
     fn from(e: RegistryError) -> Self {
         use axum::http::StatusCode;
         match e {
-            RegistryError::Transient(msg) | RegistryError::Unreachable(msg) => {
+            RegistryError::Transient(msg)
+            | RegistryError::Unreachable(msg)
+            | RegistryError::PaginationExhausted(msg) => {
                 vti_common::error::AppError::ServiceError {
                     status: StatusCode::SERVICE_UNAVAILABLE,
                     message: format!("trust registry unavailable: {msg}"),

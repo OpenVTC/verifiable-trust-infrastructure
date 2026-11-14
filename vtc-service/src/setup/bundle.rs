@@ -1225,7 +1225,7 @@ mod key_role_tests {
             hex::encode(out)
         };
         assert_eq!(
-            hkdf(vti_common::audit::key_store::VTC_AUDIT_KEY_INFO),
+            hkdf(vtc_audit::key_store::VTC_AUDIT_KEY_INFO),
             "224c148c2fd6dbf2980e3a68ec275bfbad16d612647ce4f5863725fc9c78c3b7"
         );
         assert_eq!(

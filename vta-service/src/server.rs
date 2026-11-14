@@ -10,9 +10,6 @@ use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
 use vti_common::slip10::ExtendedSigningKey;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
-
 use crate::auth::AuthState;
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::cleanup_expired_sessions;
@@ -169,7 +166,7 @@ impl Drop for RestartOnDrop {
 /// Marking it non-exhaustive closes the class permanently rather than relying
 /// on any of that holding. Construction inside this crate is unaffected —
 /// both sites (`build_state` below and `test_support`) are in-crate, and
-/// `MockVta` is the supported entry point for consumers.
+/// `vta_test_support::MockVta` is the supported entry point for consumers.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct AppState {
@@ -332,6 +329,9 @@ pub struct AppState {
     /// row, priority-ordered. A migration-safe baseline is boot-installed if
     /// empty. Durable operator security config.
     pub policy_ks: KeyspaceHandle,
+    /// The compiled active policy set, kept until `policy_ks` is written again
+    /// (#2623) — the PDP no longer parses and compiles every module per task.
+    pub policy_cache: Arc<crate::policy::PolicyCache>,
     /// Task-execution consent: pending approvals + granted consents the PDP's
     /// `requireConsent` disposition uses. Distinct from `consent_ks` (messaging).
     pub task_consent_ks: KeyspaceHandle,
@@ -830,6 +830,7 @@ pub async fn build_app_state(
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
         memory_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks,
+        policy_cache: Arc::new(crate::policy::PolicyCache::new()),
         task_consent_ks,
         #[cfg(feature = "webvh")]
         drains_ks,
@@ -3210,7 +3211,7 @@ async fn init_auth(
 
     // 3. JWT signing key from config (random key, not BIP-32 derived)
     let jwt_keys = match &config.auth.jwt_signing_key {
-        Some(b64) => match decode_jwt_key(b64) {
+        Some(b64) => match JwtKeys::from_base64_seed(b64, "VTA") {
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
@@ -3563,18 +3564,6 @@ fn require_active(record: &KeyRecord) -> Result<(), AppError> {
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.
-fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
-    let bytes = BASE64
-        .decode(b64)
-        .map_err(|e| AppError::Config(format!("invalid jwt_signing_key base64: {e}")))?;
-    let key_bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTA")?;
-    debug!("JWT signing key decoded successfully");
-    Ok(keys)
-}
-
 /// Mediator-connect supervisor: readiness gate, connect, and reconnect.
 ///
 /// Owns the whole mediator lifecycle that used to run inline once during
@@ -4050,29 +4039,7 @@ async fn flush_mediator_outbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> 
 // `DIDCommService`. Messaging connectivity is now read live (non-latched, R6.2)
 // off `MessagingService::status()` via `DIDCommBridge::messaging_status_str`.
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("received SIGINT"),
-        () = terminate => info!("received SIGTERM"),
-    }
-}
+use vti_common::runtime::shutdown_signal;
 
 /// `VTA_REST_VSOCK_PORT` fails closed: it never falls back to TCP.
 #[cfg(all(test, feature = "rest"))]

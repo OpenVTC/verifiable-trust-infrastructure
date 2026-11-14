@@ -48,7 +48,7 @@ fn storage_key(key: &str) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// Where the **prior** value came from in the four-layer overlay.
-/// Mirrors the variant on `vti_common::audit::ConfigSource` (M0.1.5).
+/// Mirrors the variant on `vtc_audit::ConfigSource` (M0.1.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigSource {
@@ -943,7 +943,7 @@ pub fn validate_value(def: &ConfigKeyDef, value: &Value) -> Result<(), AppError>
             }
         }
         // The community's own DID is refused by the caller, which knows it
-        // (`routes::admin::config::check_against_community`).
+        // (`community::ops::config::check_against_community`).
         ConfigKeyKind::TrustedWitnessList => {
             crate::credentials::trusted_witnesses::parse_list(value, None)
                 .map(|_| ())

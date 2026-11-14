@@ -85,7 +85,7 @@ that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 ## What gets published
 
-**36 of 47 crates publish.** This is the authoritative count: the eleven
+**39 of 50 crates publish.** This is the authoritative count: the eleven
 workspace members that stay internal set `publish = false` in their own
 `Cargo.toml`, each with a comment saying why, and are listed here —
 `scripts/check-docs.py` fails CI when this list, or any "N of M" count in
@@ -109,7 +109,8 @@ The fuzz crate (`vti-fuzz`, under `fuzz/`) is not a workspace member and is
 | `vtc-client` | enm |
 | `pnm-cli`, `cnm-cli` | operator binaries, `cargo install` |
 | `vtc-service` | the VTC binary (`vtc`), `cargo install vtc-service` — see below |
-| `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
+| `vta-test-support` | **openvtc-core**, as a dev-dependency — `MockVta` (until #2570, `vta_service::test_support::MockVta`) |
+| `vta-service` | `vta-test-support`'s closure, and `openvtc-core` through it |
 | `vti-vtn` | `vtc-service`, and the VTN service and `nnm` in OpenVTC/verifiable-trust-network |
 | `vti-trust-task-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
 | `vti-oob-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
@@ -167,7 +168,8 @@ limit; most of it is the two bundles.
 #938 unpublished it, and its eleven-plus-one closure, on the finding that
 nothing external depended on them. The audit read normal dependencies;
 `openvtc-core` depends on `vta-service` as a **dev-dependency**, for
-`test_support::MockVta` — an in-process VTA its end-to-end tests run against.
+`test_support::MockVta` — an in-process VTA its end-to-end tests run against
+(since #2570, `vta_test_support::MockVta`, which depends on `vta-service`).
 That harness boots the real service, so no client crate can substitute for it.
 
 Unpublishing did not just freeze the crate, it broke it. `vti-common`

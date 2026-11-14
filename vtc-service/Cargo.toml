@@ -174,8 +174,12 @@ path = "tests/it/main.rs"
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.21", optional = true }
 vti-voting = { path = "../vti-voting", version = "0.17", optional = true }
 predicate-credential-system = { workspace = true, optional = true }
+# The community's audit-event vocabulary, over vti-common's envelope and writer.
+vtc-audit = { path = "../vtc-audit", version = "0.1", features = ["openapi"] }
 vti-rooms = { path = "../vti-rooms", version = "0.35" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37" }
+# The `rooms/*` handlers, shared with room-host behind one `RoomHost` trait (#2575).
+vti-rooms-host = { path = "../vti-rooms-host", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.64", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
@@ -195,6 +199,9 @@ vti-common = { path = "../vti-common", version = "0.64", features = [
   # Room files in Google Cloud Storage (`rooms::storage_auth::gcs`), through
   # `object_store` with a room-scoped token per room.
   "blob-gcs",
+  # The bounded regorus engine `crate::policy` evaluates with (#2577).
+  # Spec §3-J + §7: regorus runs in-process; no external OPA sidecar.
+  "policy",
 ] }
 # Ambient and sealed storage authentication (`rooms::storage_auth`,
 # `vtc/storage/configs/create/0.2` "Room-scoped credentials"). An `s3` config on
@@ -398,9 +405,6 @@ multibase = { workspace = true }
 # presentation header + pseudonym tag in the verifier). Optional, pulled in by
 # the `bbs` feature; also a dev-dependency for non-bbs test parsing.
 ciborium = { workspace = true, optional = true }
-# Rego policy interpreter (Phase 2 M2.1). Hosted in `crate::policy`.
-# Spec §3-J + §7: regorus runs in-process; no external OPA sidecar.
-regorus = { workspace = true }
 url = { workspace = true, optional = true }
 # Argon2id for hashing admin-invite claim secrets (the out-of-band
 # code the invitee types alongside the install URL).
@@ -460,8 +464,9 @@ vti-voting-service = { path = "../vti-voting-service" }
 # A member's own VTA and `pnm elections` itself, for `tests/it/election_tasks.rs`'s
 # end-to-end vote: `MockVta` holds the member's key and runs the voter engine
 # (`vta/pcs/voter/*`, `vta/pcs/vote`), and `vta-cli-common`'s `cmd_ticket` / `cmd_vote` carry
-# its documents to this community over HTTP and the cast to the ballot box. Dev-only, path-only.
-vta-service = { path = "../vta-service", features = ["test-support", "rest"] }
+# its documents to this community over HTTP and the cast to the ballot box. Dev-only, path-only;
+# `vta-test-support` brings `vta-service` with it (#2570).
+vta-test-support = { path = "../vta-test-support" }
 vta-cli-common = { path = "../vta-cli-common" }
 # A key-role did:webs document for the VTC's own keys-by-role tests
 # (`setup::bundle` key_role_tests): the VTA mints a did:webs VTC this way, and

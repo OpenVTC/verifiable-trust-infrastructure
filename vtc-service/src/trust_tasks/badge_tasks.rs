@@ -12,13 +12,14 @@
 //! through `member_signer` only and never do. Every write is audited by reference
 //! (`BadgeChanged`), never a note or a picture (VTI-BDG-091).
 
+use super::routing::{Routes, on};
 use std::collections::BTreeSet;
 
 use base64::Engine as _;
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::BadgeChangedData;
+use vtc_audit::BadgeChangedData;
 use vti_common::error::AppError;
 use vti_specs::vtc::badges::{
     awards::{
@@ -63,75 +64,12 @@ use crate::groups::{self, Group, Membership, Standing};
 use crate::rooms::community::HolderError;
 use crate::server::AppState;
 
-pub(crate) const SETTINGS_SHOW_TYPE: &str = <settings_show::Payload as Payload>::TYPE_URI;
-pub(crate) const SETTINGS_UPDATE_TYPE: &str = <settings_update::Payload as Payload>::TYPE_URI;
-pub(crate) const CREATE_TYPE: &str = <badge_create::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_TYPE: &str = <badge_update::Payload as Payload>::TYPE_URI;
-pub(crate) const RETIRE_TYPE: &str = <badge_retire::Payload as Payload>::TYPE_URI;
-pub(crate) const PROMOTE_TYPE: &str = <badge_promote::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <badge_list::Payload as Payload>::TYPE_URI;
-pub(crate) const SHOW_TYPE: &str = <badge_show::Payload as Payload>::TYPE_URI;
-pub(crate) const IMAGES_UPLOAD_TYPE: &str = <images_upload::Payload as Payload>::TYPE_URI;
-pub(crate) const IMAGES_GET_TYPE: &str = <images_get::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_OFFER_TYPE: &str = <awards_offer::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_WITHDRAW_TYPE: &str = <awards_withdraw::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_REVOKE_TYPE: &str = <awards_revoke::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_LIST_TYPE: &str = <awards_list::Payload as Payload>::TYPE_URI;
 pub(crate) const CLAIMS_CREATE_TYPE: &str = <claims_create::Payload as Payload>::TYPE_URI;
 
 /// Tasks whose response carries a claim code, answered once: the community
 /// keeps only its digest, and the duplicate-execution record keeps no copy
 /// either. A redelivery is answered `204`.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[CLAIMS_CREATE_TYPE];
-pub(crate) const CLAIMS_LIST_TYPE: &str = <claims_list::Payload as Payload>::TYPE_URI;
-pub(crate) const CLAIMS_WITHDRAW_TYPE: &str = <claims_withdraw::Payload as Payload>::TYPE_URI;
-pub(crate) const CLAIMS_REDEEM_TYPE: &str = <claims_redeem::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_SHARE_TYPE: &str = <awards_share::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_UNSHARE_TYPE: &str = <awards_unshare::Payload as Payload>::TYPE_URI;
-pub(crate) const HOLDERS_LIST_TYPE: &str = <holders_list::Payload as Payload>::TYPE_URI;
-pub(crate) const WALL_SHOW_TYPE: &str = <wall_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_LIST_TYPE: &str = <mine_list::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_ACCEPT_TYPE: &str = <mine_accept::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_DECLINE_TYPE: &str = <mine_decline::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_HIDE_TYPE: &str = <mine_hide::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_SHOW_TYPE: &str = <mine_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_ARRANGE_TYPE: &str = <mine_arrange::Payload as Payload>::TYPE_URI;
-pub(crate) const KUDOS_GIVE_TYPE: &str = <kudos_give::Payload as Payload>::TYPE_URI;
-pub(crate) const KUDOS_LIST_TYPE: &str = <kudos_list::Payload as Payload>::TYPE_URI;
-
-/// Every type this module serves.
-pub(crate) const URIS: &[&str] = &[
-    SETTINGS_SHOW_TYPE,
-    SETTINGS_UPDATE_TYPE,
-    CREATE_TYPE,
-    UPDATE_TYPE,
-    RETIRE_TYPE,
-    PROMOTE_TYPE,
-    LIST_TYPE,
-    SHOW_TYPE,
-    IMAGES_UPLOAD_TYPE,
-    IMAGES_GET_TYPE,
-    AWARDS_OFFER_TYPE,
-    AWARDS_WITHDRAW_TYPE,
-    AWARDS_REVOKE_TYPE,
-    AWARDS_LIST_TYPE,
-    AWARDS_SHARE_TYPE,
-    AWARDS_UNSHARE_TYPE,
-    CLAIMS_CREATE_TYPE,
-    CLAIMS_LIST_TYPE,
-    CLAIMS_WITHDRAW_TYPE,
-    CLAIMS_REDEEM_TYPE,
-    HOLDERS_LIST_TYPE,
-    WALL_SHOW_TYPE,
-    MINE_LIST_TYPE,
-    MINE_ACCEPT_TYPE,
-    MINE_DECLINE_TYPE,
-    MINE_HIDE_TYPE,
-    MINE_SHOW_TYPE,
-    MINE_ARRANGE_TYPE,
-    KUDOS_GIVE_TYPE,
-    KUDOS_LIST_TYPE,
-];
 
 macro_rules! codes {
     ($($name:ident = $module:ident :: $code:ident;)*) => {
@@ -234,45 +172,58 @@ codes! {
     KUDOS_LIST_ERR_CURSOR_INVALID = kudos_list::CURSOR_INVALID;
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        SETTINGS_SHOW_TYPE => handle_settings_show(state, ctx, doc).await,
-        SETTINGS_UPDATE_TYPE => handle_settings_update(state, ctx, doc).await,
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        RETIRE_TYPE => handle_retire(state, ctx, doc).await,
-        PROMOTE_TYPE => handle_promote(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        IMAGES_UPLOAD_TYPE => handle_images_upload(state, ctx, doc).await,
-        IMAGES_GET_TYPE => handle_images_get(state, ctx, doc).await,
-        AWARDS_OFFER_TYPE => handle_offer(state, ctx, doc).await,
-        AWARDS_WITHDRAW_TYPE => handle_withdraw(state, ctx, doc).await,
-        AWARDS_REVOKE_TYPE => handle_revoke(state, ctx, doc).await,
-        AWARDS_LIST_TYPE => handle_awards_list(state, ctx, doc).await,
-        AWARDS_SHARE_TYPE => handle_share(state, ctx, doc).await,
-        CLAIMS_CREATE_TYPE => handle_claims_create(state, ctx, doc).await,
-        CLAIMS_LIST_TYPE => handle_claims_list(state, ctx, doc).await,
-        CLAIMS_WITHDRAW_TYPE => handle_claims_withdraw(state, ctx, doc).await,
-        CLAIMS_REDEEM_TYPE => handle_claims_redeem(state, ctx, doc).await,
-        AWARDS_UNSHARE_TYPE => handle_unshare(state, ctx, doc).await,
-        HOLDERS_LIST_TYPE => handle_holders_list(state, ctx, doc).await,
-        WALL_SHOW_TYPE => handle_wall_show(state, ctx, doc).await,
-        MINE_LIST_TYPE => handle_mine_list(state, ctx, doc).await,
-        MINE_ACCEPT_TYPE => handle_accept(state, ctx, doc).await,
-        MINE_DECLINE_TYPE => handle_decline(state, ctx, doc).await,
-        MINE_HIDE_TYPE => handle_hide(state, ctx, doc, true).await,
-        MINE_SHOW_TYPE => handle_hide(state, ctx, doc, false).await,
-        MINE_ARRANGE_TYPE => handle_arrange(state, ctx, doc).await,
-        KUDOS_GIVE_TYPE => handle_kudos_give(state, ctx, doc).await,
-        KUDOS_LIST_TYPE => handle_kudos_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, settings_show::Payload => |state, ctx, doc| handle_settings_show(state, ctx, doc));
+    let routes = on!(routes, settings_update::Payload => |state, ctx, doc| handle_settings_update(state, ctx, doc));
+    let routes =
+        on!(routes, badge_create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, badge_update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes =
+        on!(routes, badge_retire::Payload => |state, ctx, doc| handle_retire(state, ctx, doc));
+    let routes =
+        on!(routes, badge_promote::Payload => |state, ctx, doc| handle_promote(state, ctx, doc));
+    let routes = on!(routes, badge_list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, badge_show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes = on!(routes, images_upload::Payload => |state, ctx, doc| handle_images_upload(state, ctx, doc));
+    let routes =
+        on!(routes, images_get::Payload => |state, ctx, doc| handle_images_get(state, ctx, doc));
+    let routes =
+        on!(routes, awards_offer::Payload => |state, ctx, doc| handle_offer(state, ctx, doc));
+    let routes =
+        on!(routes, awards_withdraw::Payload => |state, ctx, doc| handle_withdraw(state, ctx, doc));
+    let routes =
+        on!(routes, awards_revoke::Payload => |state, ctx, doc| handle_revoke(state, ctx, doc));
+    let routes =
+        on!(routes, awards_list::Payload => |state, ctx, doc| handle_awards_list(state, ctx, doc));
+    let routes =
+        on!(routes, awards_share::Payload => |state, ctx, doc| handle_share(state, ctx, doc));
+    let routes = on!(routes, claims_create::Payload => |state, ctx, doc| handle_claims_create(state, ctx, doc));
+    let routes =
+        on!(routes, claims_list::Payload => |state, ctx, doc| handle_claims_list(state, ctx, doc));
+    let routes = on!(routes, claims_withdraw::Payload => |state, ctx, doc| handle_claims_withdraw(state, ctx, doc));
+    let routes = on!(routes, claims_redeem::Payload => |state, ctx, doc| handle_claims_redeem(state, ctx, doc));
+    let routes =
+        on!(routes, awards_unshare::Payload => |state, ctx, doc| handle_unshare(state, ctx, doc));
+    let routes = on!(routes, holders_list::Payload => |state, ctx, doc| handle_holders_list(state, ctx, doc));
+    let routes =
+        on!(routes, wall_show::Payload => |state, ctx, doc| handle_wall_show(state, ctx, doc));
+    let routes =
+        on!(routes, mine_list::Payload => |state, ctx, doc| handle_mine_list(state, ctx, doc));
+    let routes =
+        on!(routes, mine_accept::Payload => |state, ctx, doc| handle_accept(state, ctx, doc));
+    let routes =
+        on!(routes, mine_decline::Payload => |state, ctx, doc| handle_decline(state, ctx, doc));
+    let routes =
+        on!(routes, mine_hide::Payload => |state, ctx, doc| handle_hide(state, ctx, doc, true));
+    let routes =
+        on!(routes, mine_show::Payload => |state, ctx, doc| handle_hide(state, ctx, doc, false));
+    let routes =
+        on!(routes, mine_arrange::Payload => |state, ctx, doc| handle_arrange(state, ctx, doc));
+    let routes =
+        on!(routes, kudos_give::Payload => |state, ctx, doc| handle_kudos_give(state, ctx, doc));
+    on!(routes, kudos_list::Payload => |state, ctx, doc| handle_kudos_list(state, ctx, doc))
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────

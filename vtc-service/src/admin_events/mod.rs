@@ -711,6 +711,77 @@ struct Observation {
     wakes: HashMap<Topic, DateTime<Utc>>,
 }
 
+/// A caller-independent fingerprint and the next clock-driven wake it found.
+type SharedPrint = ([u8; 32], Option<DateTime<Utc>>);
+
+/// One computation of a caller-independent fingerprint, shared by every
+/// stream that observes it at the same bus position.
+struct PrintSlot {
+    /// Which service the fingerprint is of — the address of its `room_files`,
+    /// so two states in one process (tests) never share one.
+    owner: usize,
+    /// The bus position it was computed at.
+    position: u64,
+    cell: Arc<tokio::sync::OnceCell<SharedPrint>>,
+}
+
+/// The `rooms` fingerprint, shared ([`shared_print`]).
+static ROOMS_PRINT: LazyLock<Mutex<Option<PrintSlot>>> = LazyLock::new(|| Mutex::new(None));
+/// The `communityRooms` fingerprint, shared ([`shared_print`]).
+static COMMUNITY_ROOMS_PRINT: LazyLock<Mutex<Option<PrintSlot>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// A caller-independent fingerprint (`rooms`, `communityRooms`), computed once
+/// per bus position and shared by every open stream (#2598).
+///
+/// Neither depends on the recipient, and each scans every room, file holding
+/// and storage config, so computing it once per stream made upload activity
+/// cost (open consoles) × (files) every second. Every write either topic's
+/// reads show moves the bus position ([`notify`]), so a fingerprint computed
+/// at the current position is the one any stream would compute now — until
+/// the clock moves a room's lifecycle, which is why a slot whose wake has
+/// passed is recomputed. The position is read before computing, so a change
+/// landing meanwhile moves it and the next observer recomputes.
+///
+/// No lock is held across the computation (R1.3): the slot's mutex is held
+/// only to pick the cell, and the cell runs `compute` once for every stream
+/// that asks while it is running. A failed computation is not kept.
+async fn shared_print(
+    slot: &Mutex<Option<PrintSlot>>,
+    state: &AppState,
+    compute: impl std::future::Future<Output = Result<SharedPrint, AppError>>,
+) -> Result<SharedPrint, AppError> {
+    let owner = Arc::as_ptr(&state.room_files) as usize;
+    let position = position();
+    let now = Utc::now();
+    let cell = {
+        let mut held = slot.lock().unwrap_or_else(|p| p.into_inner());
+        let current = held
+            .as_ref()
+            .filter(|s| {
+                s.owner == owner
+                    && s.position == position
+                    && s.cell
+                        .get()
+                        .is_none_or(|(_, wake)| wake.is_none_or(|w| now < w))
+            })
+            .map(|s| s.cell.clone());
+        match current {
+            Some(cell) => cell,
+            None => {
+                let cell = Arc::new(tokio::sync::OnceCell::new());
+                *held = Some(PrintSlot {
+                    owner,
+                    position,
+                    cell: cell.clone(),
+                });
+                cell
+            }
+        }
+    };
+    cell.get_or_try_init(|| compute).await.copied()
+}
+
 /// Observe the fingerprinted topics among `topics` for `standing`.
 async fn observe(
     state: &AppState,
@@ -720,7 +791,12 @@ async fn observe(
     let mut out = HashMap::new();
     let mut wakes = HashMap::new();
     if topics.contains(&Topic::CommunityRooms) {
-        let (digest, wake) = community_rooms_fingerprint(state).await?;
+        let (digest, wake) = shared_print(
+            &COMMUNITY_ROOMS_PRINT,
+            state,
+            community_rooms_fingerprint(state),
+        )
+        .await?;
         out.insert(Topic::CommunityRooms, Observed { count: 0, digest });
         if let Some(w) = wake {
             wakes.insert(Topic::CommunityRooms, w);
@@ -731,7 +807,7 @@ async fn observe(
         out.insert(Topic::Groups, Observed { count: 0, digest });
     }
     if topics.contains(&Topic::Rooms) {
-        let (digest, wake) = rooms_fingerprint(state).await?;
+        let (digest, wake) = shared_print(&ROOMS_PRINT, state, rooms_fingerprint(state)).await?;
         out.insert(Topic::Rooms, Observed { count: 0, digest });
         if let Some(w) = wake {
             wakes.insert(Topic::Rooms, w);
@@ -786,13 +862,10 @@ async fn observe(
         // The count is the read's own: `vtc/join-requests/list`'s default
         // (pending) filter, its exact `totalEstimate`, from a one-row page —
         // the same `limit: 1` read the console's badge and tile make.
-        let pending = crate::routes::join_requests::read::list_join_requests_inner(
+        let pending = crate::join::ops::read::list_join_requests_inner(
             state,
-            crate::routes::join_requests::read::ListJoinRequestsQuery {
-                status: Some(crate::join::JoinStatus::Pending),
-                cursor: None,
-                limit: Some(1),
-            },
+            serde_json::from_value(serde_json::json!({ "status": "pending", "limit": 1 }))
+                .map_err(|e| AppError::Internal(format!("join-requests/list payload: {e}")))?,
         )
         .await?
         .total_estimate
@@ -918,10 +991,11 @@ async fn groups_fingerprint(state: &AppState, principal: &str) -> Result<[u8; 32
     groups.retain(|g| managed.as_ref().is_none_or(|m| m.contains(&g.group_id)));
     groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
     let requests = crate::groups::all_requests(ks).await?;
-    // Every group's appointed managers, from one pass over the ACL.
+    // Every group's appointed managers, from the entries holding authority
+    // (a manager holds a resource grant), never a pass over the whole ACL.
     let now = Utc::now();
     let mut managers: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for e in crate::acl::list_acl_entries(&state.acl_ks).await? {
+    for e in crate::acl::list_authority_entries(&state.acl_ks).await? {
         for g in &e.resource_grants {
             if let (crate::acl::Capability::GroupsManage, crate::acl::ResourceQualifier::Group(id)) =
                 (&g.capability, &g.resource)

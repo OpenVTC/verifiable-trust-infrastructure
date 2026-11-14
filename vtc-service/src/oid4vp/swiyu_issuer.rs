@@ -59,7 +59,7 @@ pub async fn trusted(
         }
     };
     let resolver = crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone());
-    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
+    let fetcher = crate::join::ops::present::credential_status_fetcher(state);
     match check(
         &jwt,
         issuer,
@@ -162,12 +162,8 @@ pub async fn check(
     let status = payload
         .get("status")
         .ok_or("it names no status list, so whether it was withdrawn cannot be known")?;
-    match crate::routes::join_requests::present::resolve_presented_status(
-        Some(status),
-        Some(anchor),
-        fetcher,
-    )
-    .await
+    match crate::join::ops::present::resolve_presented_status(Some(status), Some(anchor), fetcher)
+        .await
     {
         CredentialStatus::Valid => Ok(()),
         other => Err(format!("its status is {other:?}")),

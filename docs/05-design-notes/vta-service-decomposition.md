@@ -147,9 +147,18 @@ build-time or testability win first:
 - **The offline CLI surface (~3k)** — `bootstrap_cli`, `services_cli`,
   `webvh_cli`, `vault_cli`, `acl_cli` form a distinct entry point (direct fjall
   access, no auth ceremony, not for TEE deployments). A `vta-offline-cli` crate
-  would make that boundary explicit rather than conventional.
+  would make that boundary explicit rather than conventional. Its dependency
+  win is already had without the crate: `vta-cli-common` (and with it
+  `vtc-client`, `ratatui`, `qrcode`, `dialoguer`) is optional behind
+  `cli-synthesis`, the feature the `vta` binary requires, so the library and
+  `vta-enclave` no longer compile it (#2566).
 - **`test_support.rs` (1,427)** — a dev-only crate would keep test fixtures out
-  of the release build graph.
+  of the release build graph. *Done in part (#2570), by which time it was 4.5k
+  lines:* `MockVta`, the stub DID hosting service and the transport harness
+  (~2.2k lines with their tests) moved to `vta-test-support`, which depends on
+  `vta-service`. The rest stays: `vta-service`'s own unit tests build on it,
+  and a unit test cannot take a fixture from a crate that depends on the crate
+  under test without a second, incompatible copy of every type.
 
 ### What is probably worth more than another extraction
 

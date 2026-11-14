@@ -29,7 +29,10 @@ use vti_common::store::KeyspaceHandle;
 #[cfg(feature = "host")]
 use vti_specs_rooms::rooms::create::v0_3 as create_v3;
 #[cfg(feature = "host")]
+#[allow(deprecated)] // still served beside info/0.5 (trust-tasks-tf #1289)
 use vti_specs_rooms::rooms::info::v0_4 as info_v4;
+#[cfg(feature = "host")]
+use vti_specs_rooms::rooms::info::v0_5 as info_v5;
 #[cfg(feature = "host")]
 use vti_specs_rooms::rooms::signal_delay::set::v0_1 as set_spec;
 
@@ -48,7 +51,7 @@ use crate::storage;
 
 pub use crate::wire::{
     ROOMS_CREATE_V3_TYPE as CREATE_V3_TYPE, ROOMS_INFO_V4_TYPE as INFO_V4_TYPE,
-    ROOMS_SIGNAL_DELAY_SET_TYPE as SET_TYPE,
+    ROOMS_INFO_V5_TYPE as INFO_V5_TYPE, ROOMS_SIGNAL_DELAY_SET_TYPE as SET_TYPE,
 };
 
 /// A room's signal delay (`rooms/_shared/0.2` `SignalDelay`).
@@ -181,7 +184,7 @@ pub async fn set(
     }
     // Under the record-write lock: the room record is rewritten whole, and a write landing
     // between the read and the write must not be lost.
-    let _lock = files.records_lock().await;
+    let _lock = files.records_lock(&room.room_id).await;
     let previous = storage::set_signal_delay(rooms, &room.room_id, wanted, now)
         .await
         .map_err(Refusal::App)?;
@@ -265,6 +268,7 @@ pub fn create_v3_response(
 /// `rooms/info/0.4`: 0.3's answer, and the signal delay the host applies to the room's
 /// signals — always present, `randomised` for a room that never set one (item 8).
 #[cfg(feature = "host")]
+#[allow(deprecated)] // still served beside info/0.5 (trust-tasks-tf #1289)
 pub async fn info_v4(
     files: &BlobHost,
     room: &Room,
@@ -272,6 +276,59 @@ pub async fn info_v4(
     payload: &Value,
 ) -> TaskResult {
     parse::<info_v4::Payload>(payload)?;
+    let body = info_v4_body(files, room, authorized).await?;
+    checked::<info_v4::Response>(body)
+}
+
+/// The limits a host keeps of its own that `rooms/info/0.5` advertises, so a client refuses
+/// a record or cuts a file to fit **before** it sends (trust-tasks-tf #1289).
+///
+/// Each host states its own; nothing here is a default. `None` means the host keeps no limit
+/// of its own and the specification's bound governs.
+#[cfg(feature = "host")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostLimits {
+    /// The largest `rooms/records/put` document the host accepts, measured as
+    /// `maxDocumentBytes` measures it. A host whose own per-record limit is below the
+    /// declared bound MUST state it.
+    pub max_record_document_bytes: Option<u64>,
+    /// The largest proxied chunk the host admits at its own size, 16,384 – 262,144.
+    pub max_chunk_size: Option<u32>,
+}
+
+/// The largest chunk the transfer ceiling admits (`ChunkSize`'s maximum): 262,144 bytes,
+/// whose chunk document `rooms/blobs/upload/chunk/0.2` bounds at 360,448. A host that admits
+/// every chunk at its own size admits this.
+pub const MAX_CHUNK_SIZE: u32 = 262_144;
+
+/// `rooms/info/0.5`: 0.4's answer, and the host's own limits ([`HostLimits`]) —
+/// `maxRecordDocumentBytes` and `maxChunkSize`, each present when the host states it.
+#[cfg(feature = "host")]
+pub async fn info_v5(
+    files: &BlobHost,
+    room: &Room,
+    authorized: &AuthorizedAction,
+    payload: &Value,
+    limits: HostLimits,
+) -> TaskResult {
+    parse::<info_v5::Payload>(payload)?;
+    let mut body = info_v4_body(files, room, authorized).await?;
+    if let Some(max) = limits.max_record_document_bytes {
+        body["maxRecordDocumentBytes"] = json!(max);
+    }
+    if let Some(max) = limits.max_chunk_size {
+        body["maxChunkSize"] = json!(max);
+    }
+    checked::<info_v5::Response>(body)
+}
+
+/// 0.4's body before its schema check, which 0.5 extends.
+#[cfg(feature = "host")]
+async fn info_v4_body(
+    files: &BlobHost,
+    room: &Room,
+    authorized: &AuthorizedAction,
+) -> Result<Value, Refusal> {
     let mut body = crate::blob_tasks::info_body(files, room, authorized).await?;
     if let Some(r) = room
         .record_retention
@@ -284,7 +341,7 @@ pub async fn info_v4(
         body["lastPrune"] = mark.to_wire();
     }
     body["signalDelay"] = json!(room.signal_delay.as_str());
-    checked::<info_v4::Response>(body)
+    Ok(body)
 }
 
 #[cfg(test)]

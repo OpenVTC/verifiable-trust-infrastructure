@@ -86,6 +86,8 @@ impl WebsHostSource for RegisteredWebsHosts {
 }
 
 /// Where the integration's `did:webs` goes, from the transport-metadata vars.
+/// Read only by the `webs` mint; a build without it refuses the method first.
+#[cfg_attr(not(feature = "webs"), allow(dead_code))]
 pub(super) struct WebsTarget {
     pub server_id: Option<String>,
     pub domain: Option<String>,

@@ -258,9 +258,9 @@ pub async fn verify_foreign_role(
     // failure mode — fails when the operator hasn't added the
     // peer community to their recognition graph.
     let recognised = registry.recognise(&issuer).await.map_err(|e| match e {
-        RegistryError::Unreachable(msg) | RegistryError::Transient(msg) => {
-            RecognitionError::RegistryUnreachable(msg)
-        }
+        RegistryError::Unreachable(msg)
+        | RegistryError::Transient(msg)
+        | RegistryError::PaginationExhausted(msg) => RecognitionError::RegistryUnreachable(msg),
         // An incompatible registry is the same class as a rejection for this
         // caller: 502, an upstream fault, never the 403 that would tell an
         // operator they forgot to add the peer community.

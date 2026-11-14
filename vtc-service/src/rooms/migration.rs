@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::sync::Notify;
-use vti_common::audit::RoomStorageChangedData;
+use vtc_audit::RoomStorageChangedData;
 use vti_rooms::blobs::{Migration, MigrationState, MigrationStep, PauseCause};
 
 use crate::rooms::storage_configs::state_of;

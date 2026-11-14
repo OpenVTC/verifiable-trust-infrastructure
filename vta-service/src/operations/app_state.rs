@@ -75,7 +75,7 @@ use vti_common::pagination::{Cursor, CursorKey, MAX_LIMIT, paginate};
 
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-use vti_common::store::Batch;
+use vti_common::store::{Batch, ScanOpts};
 
 // ---------------------------------------------------------------------------
 // Limits
@@ -118,6 +118,9 @@ pub const PUT_MANY_REQUEST_BUDGET_BYTES: u64 = 768 * 1024;
 /// tooling). Matches the vault's grace window, which the specification calls a
 /// starting point to revisit on evidence.
 pub const DEFAULT_TOMBSTONE_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+/// Rows one page of a sweep or a list reads from the store (#2626, #2627).
+const SWEEP_PAGE: usize = 256;
 
 /// Namespace grammar, matching the published schema's `pattern`.
 fn namespace_is_valid(ns: &str) -> bool {
@@ -1543,22 +1546,33 @@ pub async fn sweep_expired_tombstones(
     // Collect (contextId, namespace) -> tombstones, reading the address from
     // the record rather than parsing the storage key: a context id may contain
     // `/` and a key may contain `:`, so splitting the key is ambiguous.
+    //
+    // A bounded page at a time, never one read of every record and value: over
+    // vsock that is one response frame, and a store past 16 MiB would fail the
+    // sweep on every tick (#2626). Only tombstones are kept in memory.
     let mut by_namespace: HashMap<(String, String), Vec<(u64, Option<String>)>> = HashMap::new();
-    for (_sk, bytes) in ks.prefix_iter_raw("app:").await? {
-        let rec: StoredRecord = match serde_json::from_slice(&bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(error = %e, "app-state sweeper: skipping unreadable row");
+    let mut pages = ks.scan_pager(vti_common::store::ScanOpts::new("app:", SWEEP_PAGE));
+    loop {
+        let page = pages.next_page().await?;
+        if page.is_empty() {
+            break;
+        }
+        for (_sk, bytes) in page {
+            let rec: StoredRecord = match serde_json::from_slice(&bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(error = %e, "app-state sweeper: skipping unreadable row");
+                    continue;
+                }
+            };
+            if !rec.deleted {
                 continue;
             }
-        };
-        if !rec.deleted {
-            continue;
+            by_namespace
+                .entry((rec.context_id.clone(), rec.namespace.clone()))
+                .or_default()
+                .push((rec.version, rec.deleted_at.clone()));
         }
-        by_namespace
-            .entry((rec.context_id.clone(), rec.namespace.clone()))
-            .or_default()
-            .push((rec.version, rec.deleted_at.clone()));
     }
 
     let mut total = 0usize;
@@ -1739,28 +1753,45 @@ pub async fn list(
                     high_watermark: high_watermark.unwrap_or(0),
                 });
             }
-            // The index is ordered by zero-padded version, so a range scan from
-            // `since + 1` is the feed. Resolve each index entry to its record.
+            // The index is ordered by zero-padded version, so the feed is a
+            // range read that seeks past `since` (and past the cursor), a page
+            // at a time, stopping once one more than the page is in hand — the
+            // page's cost, not the namespace's (#2627). Each index entry is
+            // resolved to its record only as it is taken.
+            let mut after = index_key(context_id, ns, since).into_bytes();
+            if let Some(c) = &decoded
+                && c.last_key > after
+            {
+                after.clone_from(&c.last_key);
+            }
+            let mut pages =
+                ks.scan_pager(ScanOpts::new(index_prefix(context_id, ns), SWEEP_PAGE).after(after));
             let mut out = Vec::new();
-            for (ik, key_bytes) in ks.prefix_iter_raw(index_prefix(context_id, ns)).await? {
-                let Some(version) = version_from_index_key(&ik) else {
-                    continue;
-                };
-                if version <= since {
-                    continue;
+            'feed: loop {
+                let page = pages.next_page().await?;
+                if page.is_empty() {
+                    break;
                 }
-                let Ok(key) = std::str::from_utf8(&key_bytes) else {
-                    continue;
-                };
-                if let Some(p) = prefix
-                    && !key.starts_with(p)
-                {
-                    continue;
+                for (ik, key_bytes) in page {
+                    if version_from_index_key(&ik).is_none_or(|version| version <= since) {
+                        continue;
+                    }
+                    let Ok(key) = std::str::from_utf8(&key_bytes) else {
+                        continue;
+                    };
+                    if let Some(p) = prefix
+                        && !key.starts_with(p)
+                    {
+                        continue;
+                    }
+                    let Some(rec) = read_record(ks, context_id, ns, key).await? else {
+                        continue;
+                    };
+                    out.push((ik, serde_json::to_vec(&rec).map_err(encode_err)?));
+                    if out.len() > limit {
+                        break 'feed;
+                    }
                 }
-                let Some(rec) = read_record(ks, context_id, ns, key).await? else {
-                    continue;
-                };
-                out.push((ik, serde_json::to_vec(&rec).map_err(encode_err)?));
             }
             out
         }
@@ -1771,18 +1802,36 @@ pub async fn list(
                 None => context_prefix(context_id),
             };
             let want_deleted = include_deleted.unwrap_or(false);
+            // Records sort by key, which is the cursor's order, so a page is a
+            // range read from the cursor that stops once one more than the
+            // page is in hand (#2627) — never every record and value in the
+            // namespace, which over vsock is one frame that stops fitting.
+            let mut opts = ScanOpts::new(scan_prefix, SWEEP_PAGE);
+            if let Some(c) = &decoded {
+                opts = opts.after(c.last_key.clone());
+            }
+            let mut pages = ks.scan_pager(opts);
             let mut out = Vec::new();
-            for (sk, bytes) in ks.prefix_iter_raw(scan_prefix).await? {
-                let rec: StoredRecord = serde_json::from_slice(&bytes).map_err(decode_err)?;
-                if rec.deleted && !want_deleted {
-                    continue;
+            'snapshot: loop {
+                let page = pages.next_page().await?;
+                if page.is_empty() {
+                    break;
                 }
-                if let Some(p) = prefix
-                    && !rec.key.starts_with(p)
-                {
-                    continue;
+                for (sk, bytes) in page {
+                    let rec: StoredRecord = serde_json::from_slice(&bytes).map_err(decode_err)?;
+                    if rec.deleted && !want_deleted {
+                        continue;
+                    }
+                    if let Some(p) = prefix
+                        && !rec.key.starts_with(p)
+                    {
+                        continue;
+                    }
+                    out.push((sk, bytes));
+                    if out.len() > limit {
+                        break 'snapshot;
+                    }
                 }
-                out.push((sk, bytes));
             }
             out
         }

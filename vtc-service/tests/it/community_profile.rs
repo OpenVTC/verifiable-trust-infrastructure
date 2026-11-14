@@ -259,7 +259,7 @@ async fn an_update_naming_the_community_did_is_refused() {
 
 #[tokio::test]
 async fn an_update_is_audited_under_the_signer() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent};
+    use vtc_audit::{AuditEnvelope, AuditEvent};
 
     let fix = build_with_audit().await;
     seed_profile(&fix).await;

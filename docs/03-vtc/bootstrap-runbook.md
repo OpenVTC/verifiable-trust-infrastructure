@@ -28,7 +28,7 @@ runbook gives the order and the reason for each step. It starts where
 The admin DID is recorded in the install token, not in the ACL. The ACL entry
 is written by `POST /v1/admin/bootstrap`, the last step of the install claim.
 That is the only place the first admin's entry is written
-(`vtc-service/src/routes/admin/bootstrap.rs`).
+(`vtc-service/src/install/ops/bootstrap.rs`).
 
 ## Part 1 — the first admin
 
@@ -129,10 +129,12 @@ for the administrators to acknowledge. With no administrator when it ran, it
 is for every administrator there is now, so the first admin acknowledges it
 after signing in (see [below](#adding-a-second-admin-later)).
 
-**You also need the DID's private key.** Setup shows the admin DID's key only
-once, in the interactive wizard, behind a confirmation. `vtc setup --from`
-never prints it. For scripts and CI, mint a dedicated admin key on the VTC
-instead:
+**You also need the DID's private key.** Setup never prints it: both the
+wizard and `vtc setup --from` write it to `<data_dir>/keys/admin-key.json`
+(owner-only, `0600`) and print only that path (`admin_key_file=…` in the
+terse block). Move it to wherever the client that acts as this DID keeps its
+keys, then delete the copy. For scripts and CI, mint a dedicated admin key on
+the VTC instead:
 
 ```sh
 vtc --config /srv/vtc/config.toml create-did-key --admin --label "automation"
@@ -435,7 +437,7 @@ the write; it closes the item once everyone it is for has acknowledged
   says who may run the service, and membership is the credential pair the
   community issues. An invitation to a DID that already has an ACL entry is
   refused with `409 "… is already a current member — no invitation needed"`
-  (`routes/invitations.rs`). A join by that DID fails too, because admission
+  (`join/invitations.rs`). A join by that DID fails too, because admission
   would write a second ACL row for it. So the first vetter is a **different
   identity** from the admin, held by the person who will vet.
 - **A vetting criterion counts only vetters' statements.** A statement

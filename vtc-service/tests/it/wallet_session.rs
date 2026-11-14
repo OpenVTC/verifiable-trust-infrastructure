@@ -115,7 +115,7 @@ async fn fixture_built_with(
     let stored = vtc_service::schemas::accepts::store_accepts(&vtc.state.schemas_ks, &criterion)
         .await
         .expect("store the criterion");
-    let digest = vtc_service::routes::join_requests::manifest::manifest_criterion(stored)
+    let digest = vtc_service::join::ops::manifest::manifest_criterion(stored)
         .expect("served criterion")
         .digest;
     Fixture { vtc, digest }
@@ -837,7 +837,7 @@ async fn the_start_task_answers_with_the_codes_its_spec_declares() {
     )
     .await
     .unwrap();
-    let plain = vtc_service::routes::join_requests::manifest::manifest_criterion(stored)
+    let plain = vtc_service::join::ops::manifest::manifest_criterion(stored)
         .unwrap()
         .digest;
     let (_, body) = start_session(&f, &APPLICANT_SEED, json!({ "criterion": plain })).await;

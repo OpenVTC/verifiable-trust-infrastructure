@@ -34,13 +34,13 @@ use trust_tasks_rs::TrustTask;
 use vta_cli_common::commands::elections_trustee::{TrusteeTarget, cmd_step};
 use vta_sdk::client::{CreateContextRequest, CreateKeyRequest};
 use vta_sdk::keys::KeyType as VtaKeyType;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 use vti_voting::{
     election::{Election, ElectionId},
     rand::{SeedableRng, rngs::StdRng},
     registrar::Registrar,
     rules::{digest_multibase, manifest_digest},
-    service::{BallotBox, Caller},
+    service::Caller,
     trustees::Threshold,
     voter::{Voter, encrypted_form},
     wire,
@@ -132,8 +132,18 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         }]),
     )
     .unwrap();
+    // The ballot box's duplicate-id record (VTI-OPS-025 … 029), in a store of its own as the
+    // service opens one under its data directory.
+    let store_dir = tempfile::tempdir().unwrap();
+    let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+        data_dir: store_dir.path().to_path_buf(),
+    })
+    .unwrap();
+    let accepted_ids = store
+        .keyspace(vti_voting_service::dispatch::ACCEPTED_IDS_KEYSPACE)
+        .unwrap();
     let box_state = Arc::new(AppState::new(
-        BallotBox::new(&box_did),
+        vti_voting_service::boxes::Boxes::new(&box_did),
         Identity {
             did: box_did.clone(),
             key: vta_sdk::trust_task_sign::HolderKey::new(
@@ -144,6 +154,7 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         },
         vti_common::auth::TrustTaskVmResolver::did_key_only(),
         vti_voting_service::config::CommunitiesConfig::any(),
+        accepted_ids,
     ));
     let server = tokio::spawn(axum::serve(listener, router(box_state.clone())).into_future());
 
@@ -186,7 +197,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     let sel = json!({ "community": community.did, "electionId": ELECTION });
     let status_now = |at| {
         box_state
-            .ballot_box
+            .ballot_boxes
+            .for_task(&community.did, ELECTION)
             .lock()
             .unwrap()
             .trustees_status(Caller::Did(&community.did), &sel, at)
@@ -221,7 +233,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     }
     // Every step is on the board as its trustee's own signed request.
     let steps = box_state
-        .ballot_box
+        .ballot_boxes
+        .for_task(&community.did, ELECTION)
         .lock()
         .unwrap()
         .board_read(
@@ -293,7 +306,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
     // The community reads the closed board, computes the targets itself and authorizes them
     // (CONVENTIONS §9.7).
     let entries: Vec<Value> = box_state
-        .ballot_box
+        .ballot_boxes
+        .for_task(&community.did, ELECTION)
         .lock()
         .unwrap()
         .board_read(
@@ -351,7 +365,8 @@ async fn trustees_run_a_sealed_election_on_a_private_board_from_pnm() {
         .unwrap_or_else(|e| panic!("decrypt, {did}: {e}"));
     }
     let result = box_state
-        .ballot_box
+        .ballot_boxes
+        .for_task(&community.did, ELECTION)
         .lock()
         .unwrap()
         .result(Caller::Did(&community.did), &sel, Utc::now())

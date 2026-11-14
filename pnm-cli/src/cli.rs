@@ -40,11 +40,21 @@ impl From<TransportOpt> for vta_sdk::session::TransportChoice {
 
 #[derive(Parser)]
 #[command(
-    name = "pnm-cli",
+    name = "pnm",
+    version,
+    // `-V` has meant `--verbose` here since before `--version` existed, so
+    // the version answers to the long flag only (#2592).
+    disable_version_flag = true,
     about = "CLI for managing a personal Verifiable Trust Agent"
 )]
 pub(crate) struct Cli {
-    /// Base URL of the VTA service (overrides config)
+    /// Print version
+    #[arg(long, action = clap::ArgAction::Version)]
+    pub(crate) version: Option<bool>,
+
+    /// Base URL of the VTA service (overrides config). A top-level flag: put it
+    /// before the subcommand (`--url` is also a subcommand argument on
+    /// several commands, so it cannot be global).
     #[arg(long, env = "VTA_URL")]
     pub(crate) url: Option<String>,
 
@@ -72,8 +82,8 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) resolve_agent_names: bool,
 
-    /// Emit list output as JSON instead of a human-readable table.
-    /// Use this for automation: `pnm acl list --json | jq …`.
+    /// Emit output as JSON instead of a human-readable table. Automatic when
+    /// stdout is not a terminal: `pnm acl get <did> | jq .role`.
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
@@ -421,6 +431,15 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: MessagingCommands,
     },
+    /// Print a shell completion script (#2592).
+    ///
+    ///   pnm completions bash > ~/.local/share/bash-completion/completions/pnm
+    ///   pnm completions zsh  > "${fpath[1]}/_pnm"
+    ///   pnm completions fish > ~/.config/fish/completions/pnm.fish
+    Completions {
+        /// The shell to generate for.
+        shell: clap_complete::Shell,
+    },
 }
 
 /// The community a member votes in, and who they are there.
@@ -766,6 +785,30 @@ pub(crate) enum GrantRole {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum RoomCommands {
+    /// Remember a room's host, host DID and signing key, and make it the room
+    /// every `pnm rooms …` command means when it names none (#2590).
+    ///
+    /// Stored values become defaults: a flag on the command line still wins,
+    /// and `--help` shows the default in force. `owner register`, `offers
+    /// accept` and `keys welcome` remember what they learn on their own. With
+    /// no room, lists what is remembered (`*` marks the default).
+    Use {
+        /// The room's DID.
+        room: Option<String>,
+        /// Base URL of the host storing the room.
+        #[arg(long, requires = "room")]
+        host: Option<String>,
+        /// The host's DID.
+        #[arg(long, requires = "room")]
+        host_did: Option<String>,
+        /// The room's signing key id (for an owner's verbs).
+        #[arg(long = "signing-key", requires = "room")]
+        signing_key: Option<String>,
+        /// Forget the room instead.
+        #[arg(long, requires = "room", conflicts_with_all = ["host", "host_did", "signing_key"])]
+        forget: bool,
+    },
+
     /// List the room's records. Metadata only — never bodies.
     List {
         /// The room's DID.
@@ -793,7 +836,7 @@ pub(crate) enum RoomCommands {
         #[arg(long)]
         limit: Option<usize>,
         /// Open the conversation at its head: your VTA lists the room newest first
-        /// (`rooms/keys/browse/0.5`, the host's `rooms/records/list/0.7`) and stops after
+        /// (`rooms/keys/browse/0.6`, the host's `rooms/records/list/0.8`) and stops after
         /// `--pages` pages. Needs `--host-did`.
         #[arg(long)]
         newest: bool,
@@ -804,6 +847,11 @@ pub(crate) enum RoomCommands {
         /// the page before it.
         #[arg(long, requires = "newest")]
         cursor: Option<String>,
+        /// With `--newest`: only records below this version — "load older" from the lowest
+        /// version already shown, with no cursor to keep (`rooms/keys/browse/0.6`, the
+        /// host's `rooms/records/list/0.8`).
+        #[arg(long, requires = "newest")]
+        before_version: Option<u64>,
     },
 
     /// Read several records at once through your VTA (`rooms/keys/read/0.2`): it
@@ -815,7 +863,7 @@ pub(crate) enum RoomCommands {
         #[arg(required_unless_present = "newest", conflicts_with = "newest")]
         keys: Vec<String>,
         /// Read the conversation's newest records, in the order they were written: your
-        /// VTA lists the room newest first (`rooms/keys/browse/0.5`) and reads that page.
+        /// VTA lists the room newest first (`rooms/keys/browse/0.6`) and reads that page.
         #[arg(long)]
         newest: bool,
         /// With `--newest`: how many records to read from the head (default 50).
@@ -827,6 +875,10 @@ pub(crate) enum RoomCommands {
         /// With `--newest`: continue from the cursor an earlier `--newest` printed.
         #[arg(long, requires = "newest")]
         cursor: Option<String>,
+        /// With `--newest`: only records below this version — "load older" from the lowest
+        /// version already read (`rooms/keys/browse/0.6`).
+        #[arg(long, requires = "newest")]
+        before_version: Option<u64>,
         #[arg(long = "room")]
         room_id: String,
         /// Base URL of the host storing the room. Unused by this command, which reaches the
@@ -842,10 +894,13 @@ pub(crate) enum RoomCommands {
     Get {
         /// Record key.
         key: String,
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host storing the room.
         #[arg(long)]
         host: String,
+        /// The host's DID: the recipient the request names.
         #[arg(long)]
         host_did: Option<String>,
     },
@@ -1046,10 +1101,13 @@ pub(crate) enum RoomCommands {
     /// Prints what becomes unreadable and asks before sending; without a
     /// terminal it refuses unless `--yes` is given.
     Prune {
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host storing the room.
         #[arg(long)]
         host: String,
+        /// The host's DID: the recipient the request names.
         #[arg(long)]
         host_did: Option<String>,
         /// Drop every rung below this epoch. Must be below the room's current
@@ -1172,14 +1230,18 @@ pub(crate) enum RoomCommands {
         /// it for a VTC.
         #[arg(long)]
         host_did: Option<String>,
-        /// `open`, `attributed` or `private`. Fixed for the life of the room.
-        #[arg(long, default_value = "open")]
+        /// Fixed for the life of the room.
+        #[arg(long, default_value = "open", value_parser = ROOM_VISIBILITY)]
         visibility: String,
         /// How long the host holds the room after it lapses. Default 90 days.
         #[arg(long)]
         retention_days: Option<u32>,
     },
 }
+
+/// A room's visibility: what `rooms create` / `rooms owner register` accept,
+/// so a typo is refused here rather than by the host (#2590).
+const ROOM_VISIBILITY: [&str; 3] = ["open", "attributed", "private"];
 
 /// External accounts (`external/*/0.1`).
 #[derive(Subcommand)]
@@ -1243,8 +1305,9 @@ pub(crate) enum ExternalCommands {
         /// `put`, `get` or `delete`. Repeat for several.
         #[arg(long = "action")]
         actions: Vec<String>,
-        /// The longest credential lifetime it may request, in seconds.
-        #[arg(long, default_value_t = 900)]
+        /// The longest credential lifetime it may request: `N[s|m|h|d|w]`, or
+        /// seconds.
+        #[arg(long, default_value = "900", value_parser = vta_cli_common::duration::secs_arg_u32)]
         max_ttl: u32,
         /// Issuances per minute.
         #[arg(long, default_value_t = 60)]
@@ -1302,13 +1365,17 @@ pub(crate) enum ExternalCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Delete an archived account for good; its id is never reused.
+    /// Delete an archived account for good; its id is never reused. Asks
+    /// first on a terminal; without one needs `--yes`.
     Delete {
         id: String,
         #[arg(long = "context", value_name = "ID")]
         context: String,
         #[arg(long)]
         reason: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Ask for a credential as a bound consumer. Printed still sealed.
     Issue {
@@ -1324,7 +1391,8 @@ pub(crate) enum ExternalCommands {
         /// `s3-static-presign` account. Replaces `--prefix`/`--action`.
         #[arg(long, conflicts_with_all = ["prefix", "actions"])]
         presign: Option<String>,
-        #[arg(long, default_value_t = 900)]
+        /// How long the credential lasts: `N[s|m|h|d|w]`, or seconds.
+        #[arg(long, default_value = "900", value_parser = vta_cli_common::duration::secs_arg_u32)]
         ttl: u32,
     },
 }
@@ -1357,8 +1425,8 @@ pub(crate) enum RoomOwnerCommands {
         /// registration. A DID your VTA holds, not your CLI's key.
         #[arg(long)]
         owner: String,
-        /// `open`, `attributed` or `private`. Fixed for the life of the room.
-        #[arg(long)]
+        /// Fixed for the life of the room.
+        #[arg(long, value_parser = ROOM_VISIBILITY)]
         visibility: String,
         /// How long the host holds the room after it lapses (the host's default
         /// when absent, 90 days on a VTC or `room-host`).
@@ -1366,7 +1434,7 @@ pub(crate) enum RoomOwnerCommands {
         retention_days: Option<u64>,
         /// `chained` (history stays readable across membership changes) or
         /// `fromJoin`. Immutable; absent takes the host's default for good.
-        #[arg(long)]
+        #[arg(long, value_parser = ["chained", "fromJoin"])]
         retention_policy: Option<String>,
         /// A room used as a conversation: no wait before its watch signals
         /// (`--signal-delay none`), retracted messages' tombstones kept 7 days and
@@ -1399,17 +1467,21 @@ pub(crate) enum RoomOwnerCommands {
         #[arg(long = "room")]
         room_id: String,
         /// The room's signing key id, as printed when its DID was minted.
+        /// `pnm rooms use <room> --signing-key <id>` remembers it.
         #[arg(long = "signing-key")]
         signing_key: String,
         /// The joiner's persona DID — a DID their VTA holds for them, not their
-        /// CLI's key.
-        #[arg(long)]
+        /// CLI's key. `--member`, as `group-add` names the same person;
+        /// `--subject` is the older name (#2590).
+        #[arg(long = "member", visible_alias = "subject")]
         subject: String,
         /// When the invitation expires, RFC 3339 (`2027-01-01T00:00:00Z`).
         #[arg(long, conflicts_with = "valid_for")]
         valid_until: Option<String>,
         /// When the invitation expires, from now: `N[s|m|h|d|w]` (e.g. `7d`).
-        #[arg(long)]
+        /// `--expires`, as every lapsing grant spells it (#2589); `--valid-for`
+        /// is the older name.
+        #[arg(long = "expires", visible_alias = "valid-for", value_name = "DURATION")]
         valid_for: Option<String>,
         /// Where to write the invitation (the credential's JSON).
         #[arg(long)]
@@ -1434,8 +1506,9 @@ pub(crate) enum RoomOwnerCommands {
         /// When it expires, RFC 3339. Absent: no expiry of its own.
         #[arg(long, conflicts_with = "valid_for")]
         valid_until: Option<String>,
-        /// When it expires, from now: `N[s|m|h|d|w]`.
-        #[arg(long)]
+        /// When it expires, from now: `N[s|m|h|d|w]`. `--expires`, as every
+        /// lapsing grant spells it (#2589); `--valid-for` is the older name.
+        #[arg(long = "expires", visible_alias = "valid-for", value_name = "DURATION")]
         valid_for: Option<String>,
         /// Where to write the credential (JSON).
         #[arg(long)]
@@ -1463,15 +1536,17 @@ pub(crate) enum RoomOwnerCommands {
         /// `read`, `write`, `curate` or `admin`. Repeat, or separate with commas.
         #[arg(long = "action", value_delimiter = ',', required = true)]
         actions: Vec<String>,
-        /// When it expires, RFC 3339. One of this or `--valid-for` is required.
+        /// When it expires, RFC 3339. One of this or `--expires` is required.
         #[arg(
             long,
             conflicts_with = "valid_for",
             required_unless_present = "valid_for"
         )]
         valid_until: Option<String>,
-        /// When it expires, from now: `N[s|m|h|d|w]` (e.g. `90d`).
-        #[arg(long)]
+        /// When it expires, from now: `N[s|m|h|d|w]` (e.g. `90d`). `--expires`,
+        /// as every lapsing grant spells it (#2589); `--valid-for` is the older
+        /// name.
+        #[arg(long = "expires", visible_alias = "valid-for", value_name = "DURATION")]
         valid_for: Option<String>,
         /// Where to write the credential (JSON).
         #[arg(long)]
@@ -1499,6 +1574,7 @@ pub(crate) enum RoomOwnerCommands {
     /// writes the Welcome to `--out` for you to deliver to the member's key
     /// holder (`rooms/keys/welcome`) — never through the host.
     GroupAdd {
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
         /// The room host's DID: where the epoch advances.
@@ -1938,10 +2014,13 @@ pub(crate) enum RoomRecordsCommands {
     /// asks before removing anything. Without a terminal it refuses unless
     /// `--yes` is given.
     Prune {
+        /// The room's DID.
         #[arg(long = "room")]
         room_id: String,
+        /// Base URL of the host storing the room.
         #[arg(long)]
         host: String,
+        /// The host's DID: the recipient the request names.
         #[arg(long)]
         host_did: Option<String>,
         /// What to remove: `retracted` (tombstones older than the retention's
@@ -2162,9 +2241,10 @@ pub(crate) enum CollectionCommands {
         /// The persona DID to collect for.
         #[arg(long, value_name = "DID")]
         identifier: String,
-        /// How long the claim should last, in seconds (60–2592000; the VTA may grant less).
-        /// Twenty-four hours (86400) is the recommended lease.
-        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(60..=2_592_000))]
+        /// How long the claim should last: `N[s|m|h|d|w]` or seconds, 1m–30d
+        /// (the VTA may grant less). Twenty-four hours (`24h`) is the
+        /// recommended lease.
+        #[arg(long, value_name = "DURATION", value_parser = collection_lease_secs)]
         duration: Option<i64>,
     },
     /// Release the claim for a persona DID: yours ends at once (stop collecting first);
@@ -2699,7 +2779,8 @@ pub(crate) enum DidTemplateCommands {
         context: Option<String>,
     },
 
-    /// Delete a stored template.
+    /// Delete a stored template. Asks first on a terminal; without one
+    /// needs `--yes`.
     Delete {
         /// Template name.
         name: String,
@@ -2707,6 +2788,9 @@ pub(crate) enum DidTemplateCommands {
         /// of the global one.
         #[arg(long)]
         context: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 
     /// Export a stored template to stdout as a portable JSON file.
@@ -2758,6 +2842,12 @@ pub(crate) enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, PNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
     },
     /// Import VTA state from an encrypted backup file.
     ///
@@ -2774,6 +2864,16 @@ pub(crate) enum BackupCommands {
         /// a DID of its own. Without it a backup of another DID is refused.
         #[arg(long)]
         replace_identity: bool,
+        /// Read the backup password from this file, or `-` for stdin. Without
+        /// it, PNM_BACKUP_PASSWORD is read, then the terminal is asked (no echo).
+        /// With none of them and no terminal, the command fails rather than
+        /// wait: a scheduled backup names one (#2585).
+        #[arg(long, value_name = "PATH|-")]
+        password_file: Option<std::path::PathBuf>,
+        /// Replace the VTA's data without asking (needed when there is no
+        /// terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -2885,6 +2985,9 @@ pub(crate) enum WebvhCommands {
     DeleteServer {
         /// Server identifier to delete
         id: String,
+        /// Go ahead without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Create a WebVH DID
     CreateDid {
@@ -3006,8 +3109,9 @@ pub(crate) enum WebvhCommands {
         #[arg(long)]
         label: Option<String>,
         /// Skip the final "Publish?" confirmation prompt. Useful
-        /// for scripted runs.
-        #[arg(long)]
+        /// for scripted runs. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// List or remove the did:scid alias of an existing DID
@@ -3036,8 +3140,9 @@ pub(crate) enum WebvhCommands {
         /// Audit label for this update.
         #[arg(long)]
         label: Option<String>,
-        /// Skip the "Publish?" confirmation prompt.
-        #[arg(long)]
+        /// Skip the "Publish?" confirmation prompt. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// Register an existing serverless WebVH DID with a webvh hosting server.
@@ -3117,6 +3222,9 @@ pub(crate) enum WebvhCommands {
     DeleteDid {
         /// The DID to delete
         did: String,
+        /// Go ahead without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Rename this DID's key records to the verification-method ids its
     /// published document carries.
@@ -3213,12 +3321,16 @@ pub(crate) enum DidMgmtAgentNameCommands {
     ///
     /// Not a delete of anything this DID keeps: once released, the name can be
     /// claimed by any DID on the hosting domain. To stop a name resolving while
-    /// keeping it reserved to this DID, use `disable` instead.
+    /// keeping it reserved to this DID, use `disable` instead. Asks first on
+    /// a terminal; without one needs `--yes`.
     Remove {
         #[arg(long)]
         did: String,
         #[arg(long)]
         name: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Park a name: stop it resolving, keep it reserved to this DID.
     Disable {
@@ -3285,6 +3397,9 @@ pub(crate) enum DidMgmtServerCommands {
     Delete {
         /// Server identifier to delete.
         id: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -3410,8 +3525,9 @@ pub(crate) enum DidMgmtDidCommands {
         /// Audit label for this update.
         #[arg(long)]
         label: Option<String>,
-        /// Skip the final "Publish?" confirmation prompt.
-        #[arg(long)]
+        /// Skip the final "Publish?" confirmation prompt. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// List or remove the did:scid alias of an existing DID
@@ -3440,8 +3556,9 @@ pub(crate) enum DidMgmtDidCommands {
         /// Audit label for this update.
         #[arg(long)]
         label: Option<String>,
-        /// Skip the "Publish?" confirmation prompt.
-        #[arg(long)]
+        /// Skip the "Publish?" confirmation prompt. `--yes`, as on every
+        /// other command; `--no-confirm` is still accepted (#2591).
+        #[arg(long = "yes", short = 'y', alias = "no-confirm")]
         no_confirm: bool,
     },
     /// Register an existing serverless DID with a registered
@@ -3483,10 +3600,13 @@ pub(crate) enum DidMgmtDidCommands {
         /// The DID to look up.
         did: String,
     },
-    /// Delete a DID.
+    /// Delete a DID. Asks first on a terminal; without one needs `--yes`.
     Delete {
         /// The DID to delete.
         did: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Rename this DID's key records to the verification-method ids its
     /// published document carries.
@@ -3562,7 +3682,9 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 DidMgmtServerCommands::Update { id, label } => {
                     WebvhCommands::UpdateServer { id, label }
                 }
-                DidMgmtServerCommands::Delete { id } => WebvhCommands::DeleteServer { id },
+                DidMgmtServerCommands::Delete { id, yes } => {
+                    WebvhCommands::DeleteServer { id, yes }
+                }
             },
             // Intercepted in `main.rs` before this bridge is reached — agent
             // names are a new surface and deliberately have no legacy
@@ -3663,7 +3785,7 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     WebvhCommands::ListDids { context, server }
                 }
                 DidMgmtDidCommands::Get { did } => WebvhCommands::GetDid { did },
-                DidMgmtDidCommands::Delete { did } => WebvhCommands::DeleteDid { did },
+                DidMgmtDidCommands::Delete { did, yes } => WebvhCommands::DeleteDid { did, yes },
                 DidMgmtDidCommands::RealignKeys { did, dry_run } => {
                     WebvhCommands::RealignDidKeys { did, dry_run }
                 }
@@ -3906,9 +4028,9 @@ pub(crate) enum DidcommCommands {
         /// Provision this VTA's ACL on the target mediator before the handshake.
         #[arg(long, conflicts_with = "force")]
         setup_acl: bool,
-        /// Drain window for the prior mediator (seconds).
+        /// Drain window for the prior mediator: `N[s|m|h|d|w]` or seconds.
         /// Default: 24h per spec §3.6.
-        #[arg(long, default_value_t = 86_400)]
+        #[arg(long, default_value = "86400", value_parser = vta_cli_common::duration::secs_arg)]
         drain_ttl: u64,
         #[arg(long)]
         force: bool,
@@ -3921,8 +4043,8 @@ pub(crate) enum DidcommCommands {
     Disable {
         /// 0 = immediate teardown over REST transport. Server
         /// enforces a 1h minimum when invoked over DIDComm
-        /// transport (spec §3.6).
-        #[arg(long, default_value_t = 86_400)]
+        /// transport (spec §3.6). `N[s|m|h|d|w]` or seconds.
+        #[arg(long, default_value = "86400", value_parser = vta_cli_common::duration::secs_arg)]
         drain_ttl: u64,
     },
     /// Fail-forward the most recent DIDComm mutation by re-applying
@@ -3931,8 +4053,8 @@ pub(crate) enum DidcommCommands {
     Rollback {
         /// Drain window for the demoted mediator (seconds) when
         /// the rollback dispatches into update / disable. Default:
-        /// 24h. Omitted = use server-side default.
-        #[arg(long)]
+        /// 24h. Omitted = use server-side default. `N[s|m|h|d|w]` or seconds.
+        #[arg(long, value_parser = vta_cli_common::duration::secs_arg)]
         drain_ttl: Option<u64>,
     },
     /// Drain-set management.
@@ -4209,6 +4331,7 @@ pub(crate) enum AclCommands {
         direction: Option<String>,
     },
     /// Get an ACL entry by DID
+    #[command(visible_alias = "show")]
     Get {
         /// DID to look up
         did: String,
@@ -4220,10 +4343,15 @@ pub(crate) enum AclCommands {
     /// change-role`, which carries the compare-and-swap `pnm acl update`
     /// refuses to do without. For its context list and everything else, use
     /// `pnm acl update`. To revoke access use `pnm acl delete`.
+    #[command(visible_alias = "grant")]
     Create {
-        /// DID to grant access to
-        #[arg(long)]
-        did: String,
+        /// DID to grant access to. Positional, as on `get`, `update` and
+        /// `delete` (#2591); `--did <DID>` is still accepted.
+        #[arg(required_unless_present = "did_flag")]
+        did: Option<String>,
+        /// The DID, as a flag (the older spelling).
+        #[arg(long = "did", value_name = "DID", conflicts_with = "did", hide = true)]
+        did_flag: Option<String>,
         /// Role: admin, initiator, application, or reader
         #[arg(long)]
         role: String,
@@ -4303,9 +4431,13 @@ pub(crate) enum AclCommands {
     /// moved them since you looked, the change is refused rather than
     /// silently overwriting theirs — re-read with `pnm acl get` and retry.
     ChangeRole {
-        /// DID of the entry whose role is changing
-        #[arg(long)]
-        did: String,
+        /// DID of the entry whose role is changing. Positional, as on `get`,
+        /// `update` and `delete` (#2591); `--did <DID>` is still accepted.
+        #[arg(required_unless_present = "did_flag")]
+        did: Option<String>,
+        /// The DID, as a flag (the older spelling).
+        #[arg(long = "did", value_name = "DID", conflicts_with = "did", hide = true)]
+        did_flag: Option<String>,
         /// The role the subject currently holds
         #[arg(long = "from")]
         from_role: String,
@@ -4406,11 +4538,24 @@ pub(crate) enum AclCommands {
         /// Set the purposes to `any` (never `modelTraining`).
         #[arg(long)]
         purposes_any: bool,
+        /// Optional rationale, recorded in the audit log (`acl/update/0.3`
+        /// `reason`).
+        #[arg(long)]
+        reason: Option<String>,
     },
-    /// Delete an ACL entry
+    /// Delete an ACL entry. Irreversible: asks first on a terminal, and
+    /// without one needs `--yes`.
+    #[command(visible_alias = "revoke")]
     Delete {
         /// DID of the entry to delete
         did: String,
+        /// Optional rationale, recorded in the audit log (`acl/revoke/0.3`
+        /// `reason`).
+        #[arg(long)]
+        reason: Option<String>,
+        /// Delete without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -4622,6 +4767,9 @@ pub(crate) enum DeviceCommands {
         /// How aggressively to wipe: cache, cache-and-keys, or full.
         #[arg(long, default_value = "cache-and-keys")]
         scope: String,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Record a device's push WakeHandle and return the trigger allowlist.
     SetWake {
@@ -4726,6 +4874,9 @@ pub(crate) enum VaultCommands {
         /// Rationale recorded in the audit trail.
         #[arg(long)]
         reason: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Create/update an entry. `VaultWrite`. `--entry-file` carries the entry
     /// fields (`contextId`, `targets`, `label`, `secretKind`, …);
@@ -4843,6 +4994,9 @@ pub(crate) enum CredVaultCommands {
         /// Rationale recorded in the audit trail.
         #[arg(long)]
         reason: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -4940,8 +5094,14 @@ pub(crate) enum KeyCommands {
         /// BIP-32 derivation path (auto-derived from context if omitted)
         #[arg(long)]
         derivation_path: Option<String>,
-        /// BIP-39 mnemonic phrase
-        #[arg(long)]
+        /// Read a BIP-39 mnemonic phrase from this file, or `-` for stdin
+        /// (asked without echo on a terminal). Never on the command line,
+        /// where shell history and `ps` keep it (#2584).
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
         /// Human-readable label
         #[arg(long)]
@@ -4991,10 +5151,18 @@ pub(crate) enum KeyCommands {
         #[arg(long)]
         secret: bool,
     },
-    /// Revoke (invalidate) a key
+    /// Revoke (invalidate) a key. Irreversible: asks first on a terminal,
+    /// and without one needs `--yes`.
     Revoke {
         /// Key ID
         key_id: String,
+        /// Optional rationale, recorded in the audit log (`keys/revoke/0.1`
+        /// `reason`).
+        #[arg(long)]
+        reason: Option<String>,
+        /// Revoke without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Set whether a key's private half may ever be released.
     ///
@@ -5138,11 +5306,20 @@ pub(crate) enum KeyCommands {
     },
     /// List seed generations
     Seeds,
-    /// Rotate to a new seed generation
+    /// Rotate to a new seed generation. Asks first on a terminal, and
+    /// without one needs `--yes`.
     RotateSeed {
-        /// BIP-39 mnemonic phrase for the new seed (random if omitted)
-        #[arg(long)]
+        /// Read the BIP-39 mnemonic for the new seed from this file, or `-`
+        /// for stdin (asked without echo on a terminal). Random if omitted.
+        #[arg(long, value_name = "PATH|-")]
+        mnemonic_file: Option<std::path::PathBuf>,
+        /// Deprecated: puts the phrase on the command line. Use
+        /// `--mnemonic-file`.
+        #[arg(long, hide = true, conflicts_with = "mnemonic_file")]
         mnemonic: Option<String>,
+        /// Rotate without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -5185,6 +5362,10 @@ pub(crate) fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Setup { .. }
             | Commands::Vta { .. }
             | Commands::Bootstrap { .. }
+            | Commands::Completions { .. }
+            | Commands::Rooms {
+                command: RoomCommands::Use { .. }
+            }
     )
 }
 
@@ -5238,12 +5419,14 @@ where
 /// `NO_COLOR` is set; the block glyphs are text, not escapes, so the logo
 /// still reads.
 pub(crate) fn print_banner() {
-    let color = std::env::var_os("NO_COLOR").is_none();
-    let (cyan, magenta, yellow, dim, reset) = if color {
-        ("\x1b[36m", "\x1b[35m", "\x1b[33m", "\x1b[2m", "\x1b[0m")
-    } else {
-        ("", "", "", "", "")
-    };
+    use vta_cli_common::startup::banner_color;
+    let (cyan, magenta, yellow, dim, reset) = (
+        banner_color("\x1b[36m"),
+        banner_color("\x1b[35m"),
+        banner_color("\x1b[33m"),
+        banner_color("\x1b[2m"),
+        banner_color("\x1b[0m"),
+    );
 
     eprintln!(
         r#"
@@ -5263,6 +5446,19 @@ pub(crate) fn print_banner() {
 /// process out. Operations like a stuck mediator handshake can hold the
 /// async runtime for tens of seconds even though the runtime itself
 /// observed the signal — without this, the operator has no escape.
+/// `collection claim --duration`: a duration (`24h`) or seconds, held to the
+/// 1-minute – 30-day range the claim takes (#2589).
+fn collection_lease_secs(s: &str) -> Result<i64, String> {
+    let n = vta_cli_common::duration::secs_arg_i64(s)?;
+    if (60..=2_592_000).contains(&n) {
+        Ok(n)
+    } else {
+        Err(format!(
+            "{s} is {n} seconds; a claim lasts 60 to 2592000 (1m to 30d)"
+        ))
+    }
+}
+
 pub(crate) fn install_force_exit_handler() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -6503,7 +6699,7 @@ mod removal_verb_tests {
             let Commands::DidMgmt {
                 command:
                     DidMgmtCommands::Servers {
-                        command: DidMgmtServerCommands::Delete { id },
+                        command: DidMgmtServerCommands::Delete { id, .. },
                     },
             } = cli.command
             else {
@@ -6759,13 +6955,19 @@ pub(crate) enum WebsCommands {
     /// Rotate to the committed successor key
     Rotate {
         did: String,
-        #[arg(long)]
+        /// Refuse unless the DID's current version is this one.
+        #[arg(long = "expected-version", alias = "expect-version")]
         expect_version: Option<String>,
     },
-    /// Deactivate the DID for good and remove its slot from the host
+    /// Deactivate the DID for good and remove its slot from the host. Asks
+    /// first on a terminal; without one needs `--yes`.
     Delete {
         did: String,
-        #[arg(long)]
+        /// Refuse unless the DID's current version is this one.
+        #[arg(long = "expected-version", alias = "expect-version")]
         expect_version: Option<String>,
+        /// Go ahead without asking (needed when there is no terminal).
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }

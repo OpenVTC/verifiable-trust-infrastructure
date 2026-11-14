@@ -1,795 +1,34 @@
-//! Room files: the `rooms/blobs/*` tasks, `rooms/records/put` 0.2 and
-//! `rooms/info`, over [`vti_rooms::blobs`].
+//! Room files on this host: its limits, and the tests of the `rooms/blobs/*`, `rooms/info`
+//! and `rooms/records/{put,get,list}` tasks served through it.
 //!
-//! Every request is parsed with the **generated** payload type for its task, so
-//! what this host accepts is what the specification says, member for member.
-//! Authorization is the room's chain, exactly as for a record; the transfer
-//! tasks that carry no presentation (`upload/chunk`, `commit`, `abort`, the
-//! download `chunk`) are authorized by owning the transfer a verified chain
-//! opened, and answer `notFound` to anybody else.
+//! What each task does is [`vti_rooms_host`], shared with the VTC so the two hosts cannot
+//! answer one task two ways; this host stores committed blobs in one storage config.
 
-use std::sync::Arc;
-
-use serde_json::Value;
-use trust_tasks_rs::{DeclaredErrorCode, ErrorPayload, RejectReason, TrustTask, TrustTaskCode};
-use uuid::Uuid;
-use vti_rooms::Room;
-use vti_rooms::authz::{self, Action, AuthorizedAction};
-use vti_rooms::blob_tasks::{self, Refusal, TaskResult};
-use vti_rooms::blobs::BlobError;
-use vti_rooms::record_tasks;
-use vti_rooms::revocation_tasks;
-use vti_rooms::storage;
-use vti_rooms::wire::AuthorityPresentation;
-use vti_specs::rooms::records::get::v0_2 as get_v2_spec;
-
-use super::{Answer, HostState, from_app_error, now, reject, respond};
-
+#[cfg(test)]
+pub(crate) use crate::now;
+#[cfg(test)]
 pub(crate) use vti_rooms::blob_tasks::{
-    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, GET_V3_TYPE, GET_V4_TYPE, PUT_V3_TYPE,
-    PUT_V4_TYPE, PUT_V5_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE,
+    BLOB_GET_V2_TYPE, DOWNLOAD_CHUNK_TYPE, GET_V2_TYPE, GET_V3_TYPE, PUT_V3_TYPE, PUT_V4_TYPE,
+    PUT_V5_TYPE, UPLOAD_ABORT_V2_TYPE, UPLOAD_BEGIN_V2_TYPE, UPLOAD_CHUNK_V2_TYPE,
     UPLOAD_COMMIT_V2_TYPE, USAGE_TYPE,
 };
+#[cfg(test)]
+pub(crate) use vti_rooms::storage;
 
-/// Refuse with a code the task's specification declares.
-fn coded(
-    doc: &TrustTask<Value>,
-    code: DeclaredErrorCode,
-    message: impl Into<String>,
-    details: Option<Value>,
-) -> Answer {
-    let (slug, local) = code
-        .code
-        .rsplit_once(':')
-        .expect("a declared code is <slug>:<local>");
-    let mut payload = ErrorPayload::new(TrustTaskCode::Extended {
-        slug: slug.to_string(),
-        local: local.to_string(),
-    })
-    .with_message(message)
-    .with_retryable(code.retryable);
-    if let Some(d) = details {
-        payload = payload.with_details(d);
-    }
-    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    Answer {
-        status: trust_tasks_https::status_for_code(&routed.payload.code),
-        document: serde_json::to_value(&routed).unwrap_or(Value::Null),
-    }
-}
-
-/// Render a shared refusal as this host's reply.
-pub(crate) fn refused(doc: &TrustTask<Value>, refusal: Refusal) -> Answer {
-    match refusal {
-        Refusal::Declared {
-            code,
-            message,
-            details,
-        } => coded(doc, code, message, details),
-        Refusal::Malformed(reason) => reject(doc, RejectReason::MalformedRequest { reason }),
-        Refusal::Unavailable { retry_after_secs } => reject(
-            doc,
-            RejectReason::Unavailable {
-                retry_after: Some(
-                    chrono::Utc::now() + chrono::Duration::seconds(retry_after_secs as i64),
-                ),
-            },
-        ),
-        Refusal::TaskFailed(reason) => reject(
-            doc,
-            RejectReason::TaskFailed {
-                reason,
-                details: None,
-            },
-        ),
-        Refusal::App(e) => from_app_error(doc, &e),
-        Refusal::Internal(reason) => reject(doc, RejectReason::InternalError { reason }),
-        // `Refusal` is `#[non_exhaustive]`: one this host does not know yet is
-        // an internal error.
-        other => reject(
-            doc,
-            RejectReason::InternalError {
-                reason: format!("{other:?}"),
-            },
-        ),
-    }
-}
-
-/// Render a shared task's answer as this host's reply.
-fn render(doc: &TrustTask<Value>, result: TaskResult) -> Answer {
-    match result {
-        Ok(body) => respond(doc, body),
-        Err(r) => refused(doc, r),
-    }
-}
-
-/// Read the presentation and room, verify the chain for `action`, and return
-/// the room, the authenticated presenter and the authorization.
+/// The limits this host advertises in `rooms/info/0.5` (trust-tasks-tf #1289).
 ///
-/// A chain that does not confer `action` is the framework's standard
-/// `permissionDenied`, as for every `rooms/*` task: the family declares no
-/// task-specific code that would shadow it.
-async fn authorize(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: &Value,
-    action: Action,
-) -> Result<(Room, String, AuthorizedAction), Answer> {
-    let presentation: AuthorityPresentation =
-        serde_json::from_value(payload["presentation"].clone()).map_err(|e| {
-            reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("presentation: {e}"),
-                },
-            )
-        })?;
-    let room_id = payload["roomId"].as_str().unwrap_or_default();
-    let room = storage::get_room(&state.rooms, room_id)
-        .await
-        .map_err(|e| from_app_error(doc, &e))?;
-    let (presenter, verifier) = state
-        .presenter_and_verifier(doc)
-        .await
-        .map_err(|e| from_app_error(doc, &e))?;
-    let authorized = authz::authorize(
-        &room,
-        &presentation,
-        action,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    .map_err(|e| from_app_error(doc, &e))?;
-    Ok((room, presenter, authorized))
-}
-
-/// The authenticated presenter of a transfer task, which carries no presentation.
-/// Hold a transfer step that presents nothing to the room's revocation list, returning
-/// the room's gate for the step to commit under.
-async fn held_step(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: &Value,
-) -> Result<Option<vti_rooms::revocation::gate::Shared>, Answer> {
-    revocation_tasks::hold_transfer_step(&state.files, &state.rooms, &state.revocations, payload)
-        .await
-        .map_err(|r| refused(doc, r))
-}
-
-/// `rooms/revocations/put/0.1`: hold the room's signed list if it moves the room forward.
-pub(crate) async fn revocations_put(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    revocations(state, doc, payload, true).await
-}
-
-/// `rooms/revocations/get/0.1`: the list this host holds, unaltered.
-pub(crate) async fn revocations_get(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    revocations(state, doc, payload, false).await
-}
-
-async fn revocations(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-    put: bool,
-) -> Answer {
-    let room_id = payload["roomId"].as_str().unwrap_or_default();
-    let room = match storage::get_room(&state.rooms, room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
+/// - **No per-record limit of its own.** The HTTP door's body limit is axum's 2 MiB
+///   (2,097,152 bytes) — exactly the bound `rooms/records/put/0.6` declares — and nothing in
+///   the dispatch refuses a smaller record, so `maxRecordDocumentBytes` is absent and the
+///   declared bound governs.
+/// - **Every chunk at its own size.** A chunk document is admitted at its task's declared
+///   `maxDocumentBytes` and charged to nothing stricter, so `maxChunkSize` is the transfer
+///   ceiling.
+pub(crate) const HOST_LIMITS: vti_rooms::signal_delay::HostLimits =
+    vti_rooms::signal_delay::HostLimits {
+        max_record_document_bytes: None,
+        max_chunk_size: Some(vti_rooms::signal_delay::MAX_CHUNK_SIZE),
     };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (result, operation) = if put {
-        (
-            revocation_tasks::put(&room, &presenter, &payload, &verifier, &state.revocations).await,
-            vti_rooms::audit::RoomOperation::PutRevocations,
-        )
-    } else {
-        (
-            revocation_tasks::get(&room, &presenter, &payload, &verifier, &state.revocations).await,
-            vti_rooms::audit::RoomOperation::GetRevocations,
-        )
-    };
-    match result {
-        Ok((body, authorized)) => {
-            super::audit_room(&room, &authorized, operation, None);
-            respond(doc, body)
-        }
-        Err(r) => refused(doc, r),
-    }
-}
-
-async fn presenter(state: &HostState, doc: &TrustTask<Value>) -> Result<String, Answer> {
-    state
-        .presenter(doc)
-        .await
-        .map_err(|e| from_app_error(doc, &e))
-}
-
-pub(crate) async fn download_chunk(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    match presenter(state, doc).await {
-        Ok(p) => {
-            // Held to the room's revocation list: this step presents nothing, so the
-            // credentials that opened the transfer stand for it (*Enforcement* item 3).
-            let _gate = match held_step(state, doc, &payload).await {
-                Ok(g) => g,
-                Err(a) => return a,
-            };
-            render(
-                doc,
-                blob_tasks::download_chunk(&state.files, &p, &payload).await,
-            )
-        }
-        Err(a) => a,
-    }
-}
-
-/// `rooms/blobs/upload/begin/0.2`. This host stores blobs in a local directory, which
-/// cannot issue storage URLs, so every upload is proxied: a producer offering only
-/// `directParts` is refused `noTransferMode`.
-pub(crate) async fn begin_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<vti_specs::rooms::blobs::upload::begin::v0_2::Payload>(&payload)
-    {
-        return refused(doc, r);
-    }
-    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Write).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        blob_tasks::begin_v2(&state.files, &room, &presenter, &authorized, &payload).await,
-    )
-}
-
-/// `rooms/blobs/upload/chunk/0.2`, signed by the upload's key.
-pub(crate) async fn upload_chunk_v2(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    match presenter(state, doc).await {
-        Ok(p) => {
-            // Held to the room's revocation list: this step presents nothing, so the
-            // credentials that opened the transfer stand for it (*Enforcement* item 3).
-            let _gate = match held_step(state, doc, &payload).await {
-                Ok(g) => g,
-                Err(a) => return a,
-            };
-            render(
-                doc,
-                blob_tasks::upload_chunk_v2(&state.files, &p, &payload).await,
-            )
-        }
-        Err(a) => a,
-    }
-}
-
-/// `rooms/blobs/upload/commit/0.2`, signed by the upload's key.
-pub(crate) async fn commit_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    match presenter(state, doc).await {
-        Ok(p) => {
-            // The step that commits an upload begun before a list was accepted is refused
-            // if the list withdraws what began it (*Enforcement* item 3).
-            let _gate = match held_step(state, doc, &payload).await {
-                Ok(g) => g,
-                Err(a) => return a,
-            };
-            render(doc, blob_tasks::commit_v2(&state.files, &p, &payload).await)
-        }
-        Err(a) => a,
-    }
-}
-
-/// `rooms/blobs/upload/abort/0.2`, signed by the upload's key.
-pub(crate) async fn abort_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    match presenter(state, doc).await {
-        Ok(p) => render(doc, blob_tasks::abort_v2(&state.files, &p, &payload).await),
-        Err(a) => a,
-    }
-}
-
-/// `rooms/blobs/get/0.2`. Always proxied here: local storage issues no URLs.
-pub(crate) async fn get_blob_v2(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::blobs::get::v0_2::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    let (room, presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        blob_tasks::get_v2(&state.files, &room, &presenter, &authorized, &payload).await,
-    )
-}
-
-/// `rooms/usage/0.1`: who is using the room's space, for its owner. Needs `admin`.
-pub(crate) async fn usage(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::usage::v0_1::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
-    {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        blob_tasks::usage(&state.files, &room, &authorized, &payload).await,
-    )
-}
-
-/// `rooms/watch/0.1`: arm, re-arm or cancel one content-free signal to an address the
-/// member names, authorized exactly as a listing (`read`). The watch is this host's state
-/// and nothing else ([`vti_rooms::watch`]).
-pub(crate) async fn watch(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    watch_at(state, doc, payload, false).await
-}
-
-/// `rooms/watch/0.2`: 0.1, and a live watch — a signal per change, coalesced — on a room
-/// whose signal delay is `none` (`liveNotPermitted` otherwise), leased for at most 120 s.
-pub(crate) async fn watch_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    watch_at(state, doc, payload, true).await
-}
-
-async fn watch_at(state: &HostState, doc: &TrustTask<Value>, payload: Value, v2: bool) -> Answer {
-    let checked = if v2 {
-        vti_rooms::watch::check_payload_v2(&payload)
-    } else {
-        vti_rooms::watch::check_payload(&payload)
-    };
-    if let Err(r) = checked {
-        return refused(doc, r);
-    }
-    let room_id = payload["roomId"].as_str().unwrap_or_default();
-    let room = match storage::get_room(&state.rooms, room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    if let Err(r) = vti_rooms::watch::presentation(&payload, &room) {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    let now = chrono::Utc::now();
-    let result = if v2 {
-        state
-            .watches
-            .watch_v2(&room, authorized, &payload, now)
-            .await
-    } else {
-        state.watches.watch(&room, authorized, &payload, now).await
-    };
-    render(doc, result)
-}
-
-/// `rooms/records/put/0.3`: 0.2, and an `open` room's `cleartext` may carry the record's
-/// provenance and `validUntil` — stored and served exactly as received, never acted on
-/// (consumer item 11). A sealed write is 0.2's: those members travel inside the body.
-pub(crate) async fn put_v3(
-    state: &Arc<HostState>,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    let (blobs, cleartext) = match blob_tasks::put_v3_parts(&payload) {
-        Ok(parts) => parts,
-        Err(r) => return refused(doc, r),
-    };
-    super::put_with_blobs(
-        state,
-        doc,
-        blob_tasks::put_v3_as_v0_1(payload),
-        Some(blobs),
-        cleartext,
-        false,
-    )
-    .await
-}
-
-/// `rooms/records/put/0.4`: 0.3, and an `open` room's `cleartext` may carry a `file` — its
-/// manifest and the random key its blob is sealed under — stored and served as received
-/// (Host item 13), once the record's `blobs` is checked against it (Host item 12).
-pub(crate) async fn put_v4(
-    state: &Arc<HostState>,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    let (blobs, cleartext) = match blob_tasks::put_v4_parts(&payload) {
-        Ok(parts) => parts,
-        Err(r) => return refused(doc, r),
-    };
-    super::put_with_blobs(
-        state,
-        doc,
-        blob_tasks::put_v4_as_v0_1(payload),
-        Some(blobs),
-        cleartext,
-        true,
-    )
-    .await
-}
-
-/// `rooms/records/put/0.5`: 0.4, and an `open` room's `cleartext` may say what kind of
-/// record it is, what it answers and when it was written and edited, and its `file` an
-/// image's size and preview — each held to its schema, then stored and served as received
-/// and never acted on (Host item 14).
-pub(crate) async fn put_v5(
-    state: &Arc<HostState>,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    let (blobs, cleartext) = match blob_tasks::put_v5_parts(&payload) {
-        Ok(parts) => parts,
-        Err(r) => return refused(doc, r),
-    };
-    super::put_with_blobs(
-        state,
-        doc,
-        blob_tasks::put_v5_as_v0_1(payload),
-        Some(blobs),
-        cleartext,
-        true,
-    )
-    .await
-}
-
-/// `rooms/records/get/0.3`: 0.2, and the host's `createdAt`, `createdBy` and
-/// `bodyStoredAt` for the record.
-#[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
-pub(crate) async fn get_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::get::v0_3::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), true, None, false).await
-}
-
-/// `rooms/records/get/0.4`: 0.3, and the `purpose` the reader will use the record for,
-/// refused with `purposeNotGranted` where the presented chain does not grant it
-/// (VTI-ACL-110).
-pub(crate) async fn get_v4(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    mut payload: Value,
-) -> Answer {
-    let purpose = match blob_tasks::get_v4_purpose(&mut payload) {
-        Ok(p) => p,
-        Err(r) => return refused(doc, r),
-    };
-    super::get_versioned(
-        state,
-        doc,
-        blob_tasks::as_v0_1(payload),
-        true,
-        purpose,
-        true,
-    )
-    .await
-}
-
-/// `rooms/records/list/0.6`: 0.5, with each row's `kind` on an `open` room and the host's
-/// `createdAt`, `createdBy` and `bodyStoredAt`.
-#[allow(deprecated)] // still served beside list/0.7, to readers that ask for it (trust-tasks-tf #1088)
-pub(crate) async fn list_v6(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::list::v0_6::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    super::list_records(state, doc, blob_tasks::as_v0_1(payload), super::ListAt::V6).await
-}
-
-/// `rooms/records/list/0.7`: 0.6, oldest or newest first, its cursor bound to the order it
-/// was issued under — refused as `invalidCursor` under the other (trust-tasks-tf #1088).
-pub(crate) async fn list_v7(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let (order, v0_1) = match record_tasks::list_v7_parts(&payload) {
-        Ok(parts) => parts,
-        Err(r) => return refused(doc, r),
-    };
-    super::list_records(state, doc, v0_1, super::ListAt::V7(order)).await
-}
-
-/// A 0.1 listing answered as 0.7, its rows already `RecordMetadataV3` and in its order.
-pub(crate) async fn list_v7_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room: &Room,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        record_tasks::list_v7_response(snapshot, room, response).await,
-    )
-}
-
-/// A 0.1 listing answered as 0.6, its rows already `RecordMetadataV3`.
-pub(crate) async fn list_v6_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room: &Room,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        record_tasks::list_v6_response(snapshot, room, response).await,
-    )
-}
-
-/// A get/0.2 response answered as 0.3.
-pub(crate) async fn get_v3_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room: &Room,
-    record: &vti_rooms::Record,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        blob_tasks::get_v3_response(snapshot, room, record, response).await,
-    )
-}
-
-/// `rooms/records/get/0.2`: the 0.1 read, whose answer also names the
-/// record's blobs.
-#[allow(deprecated)] // get/0.2 and list/0.5 are served beside get/0.3 and list/0.6, to readers that ask for them
-pub(crate) async fn get_v2(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<get_v2_spec::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    super::get_versioned(state, doc, blob_tasks::as_v0_1(payload), false, None, false).await
-}
-
-/// `rooms/records/list/0.5`: the 0.1 listing, each row naming its blobs, the room's
-/// `lastPrune` on every page and the continuation token named `nextCursor`.
-#[allow(deprecated)] // get/0.2 and list/0.5 are served beside get/0.3 and list/0.6, to readers that ask for them
-pub(crate) async fn list_v5(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::list::v0_5::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    super::list_records(state, doc, blob_tasks::as_v0_1(payload), super::ListAt::V5).await
-}
-
-/// A 0.1 listing answered as 0.5.
-pub(crate) async fn list_v5_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room: &Room,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        record_tasks::list_v5_response(snapshot, room, response).await,
-    )
-}
-
-/// A 0.1 create response with its recorded retention, answered as 0.2.
-pub(crate) fn create_v2_response(
-    doc: &TrustTask<Value>,
-    response: impl serde::Serialize,
-    recorded: Option<&vti_rooms::record_retention::RecordRetention>,
-) -> Answer {
-    render(doc, record_tasks::create_v2_response(response, recorded))
-}
-
-/// `rooms/info/0.3`: 0.1's answer, the record retention in force and the latest prune.
-#[allow(deprecated)] // still served beside info/0.4 (trust-tasks-tf #1084)
-pub(crate) async fn info_v3(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::info::v0_3::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        record_tasks::info_v3(&state.files, &room, &authorized, &payload).await,
-    )
-}
-
-/// `rooms/info/0.4`: 0.3's answer, and the room's signal delay.
-pub(crate) async fn info_v4(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::info::v0_4::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    render(
-        doc,
-        vti_rooms::signal_delay::info_v4(&state.files, &room, &authorized, &payload).await,
-    )
-}
-
-/// `rooms/signal-delay/set/0.1`: change whether this host waits a randomised interval before
-/// the room's watch signals. Needs `admin`. This host applies either setting.
-pub(crate) async fn signal_delay_set(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<vti_specs::rooms::signal_delay::set::v0_1::Payload>(&payload)
-    {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
-    {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    match vti_rooms::signal_delay::set(
-        &state.files,
-        &state.rooms,
-        &room,
-        &authorized,
-        &payload,
-        vti_rooms::signal_delay::SignalDelayPolicy::Either,
-        now(),
-    )
-    .await
-    {
-        Ok((body, audit)) => {
-            super::audit_room_detail(
-                &room,
-                &authorized,
-                vti_rooms::audit::RoomOperation::SetSignalDelay,
-                audit.detail(),
-            );
-            // `rooms/watch/0.2` Host item 6: a room set back to `randomised` holds no live
-            // watch, from now — ended without a signal.
-            if audit.recorded.is_randomised() {
-                state.watches.end_live_watches(&room.room_id).await;
-            }
-            respond(doc, body)
-        }
-        Err(r) => refused(doc, r),
-    }
-}
-
-/// `rooms/records/prune/0.2`: remove what the room's record retention makes eligible.
-/// Needs `admin` — never `curate` or `write`.
-pub(crate) async fn records_prune(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::records::prune::v0_2::Payload>(&payload) {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
-    {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    match record_tasks::prune(
-        &state.files,
-        &state.rooms,
-        &state.records,
-        &room,
-        &authorized,
-        &payload,
-        now(),
-    )
-    .await
-    {
-        Ok((body, audit)) => {
-            if let Some(audit) = audit {
-                super::audit_room_detail(
-                    &room,
-                    &authorized,
-                    vti_rooms::audit::RoomOperation::PruneRecords,
-                    audit.detail(),
-                );
-            }
-            respond(doc, body)
-        }
-        Err(r) => refused(doc, r),
-    }
-}
-
-/// `rooms/records/retention/set/0.1`: replace the room's record retention. Needs `admin`.
-pub(crate) async fn retention_set(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Answer {
-    if let Err(r) =
-        blob_tasks::parse::<vti_specs::rooms::records::retention::set::v0_1::Payload>(&payload)
-    {
-        return refused(doc, r);
-    }
-    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Admin).await
-    {
-        Ok(r) => r,
-        Err(a) => return a,
-    };
-    match record_tasks::retention_set(
-        &state.files,
-        &state.rooms,
-        &room,
-        &authorized,
-        &payload,
-        None,
-        now(),
-    )
-    .await
-    {
-        Ok((body, audit)) => {
-            super::audit_room_detail(
-                &room,
-                &authorized,
-                vti_rooms::audit::RoomOperation::SetRecordRetention,
-                audit.detail(),
-            );
-            respond(doc, body)
-        }
-        Err(r) => refused(doc, r),
-    }
-}
-
-/// A 0.1 get response with `blobs` added, answered as 0.2.
-pub(crate) async fn get_v2_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room_id: &str,
-    key: &str,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        blob_tasks::get_v2_response(snapshot, room_id, key, response).await,
-    )
-}
-
-/// Why `rooms/records/put` 0.2 refused a record's `blobs`, as that task's
-/// declared codes.
-pub(crate) fn record_blobs_refused(doc: &TrustTask<Value>, e: BlobError) -> Answer {
-    refused(doc, blob_tasks::record_blobs_refused(e))
-}
-
-/// A shared task's answer, as this host's reply.
-pub(crate) fn record_refused_or(doc: &TrustTask<Value>, result: TaskResult) -> Answer {
-    render(doc, result)
-}
-
-/// Check `payload` against its version's generated type `P`, and return it as the 0.1
-/// body the shared handler reads (`ext` removed) — or the refusal.
-pub(crate) fn checked_v0_1<P: serde::de::DeserializeOwned>(
-    doc: &TrustTask<Value>,
-    payload: Value,
-) -> Result<Value, Answer> {
-    blob_tasks::parse::<P>(&payload).map_err(|r| refused(doc, r))?;
-    Ok(blob_tasks::as_v0_1(payload))
-}
-
-/// Render a `rooms/records/put` refusal the shared tasks produced.
-pub(crate) fn record_refused(doc: &TrustTask<Value>, refusal: blob_tasks::Refusal) -> Answer {
-    refused(doc, refusal)
-}
 
 #[cfg(test)]
 mod tests {
@@ -932,6 +171,112 @@ mod tests {
         #[allow(deprecated)] // still served beside 0.7
         let old = read(&h, &f, vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE, None).await;
         assert_eq!(keys(&old), ["m0", "m1", "m2"]);
+    }
+
+    /// `rooms/records/list/0.8` (trust-tasks-tf #1289): `beforeVersion` loads older from a
+    /// version under either order, an empty band is an empty page, and a cursor is refused
+    /// with `invalidCursor` under another `sinceVersion` or `beforeVersion`.
+    #[tokio::test]
+    async fn list_0_8_loads_older_by_version_and_binds_its_cursor_to_the_bounds() {
+        let h = host(eager());
+        let f = room(&h).await;
+        for i in 0..5 {
+            let (status, out) = put_v5(&h, &f, &format!("m{i}"), json!({ "body": "hi" })).await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+        }
+        let list = |extra: Value| {
+            let mut payload = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+            for (k, v) in extra.as_object().unwrap() {
+                payload[k] = v.clone();
+            }
+            call(
+                &h.app,
+                vti_rooms::record_tasks::LIST_V8_TYPE,
+                payload,
+                &f.owner,
+            )
+        };
+        let versions = |out: &Value| -> Vec<u64> {
+            out["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["version"].as_u64().unwrap())
+                .collect()
+        };
+
+        let (status, head) = list(json!({ "order": "newestFirst", "limit": 2 })).await;
+        assert_eq!(status, StatusCode::OK, "{head}");
+        let top = versions(&head);
+        assert_eq!(top.len(), 2, "{head}");
+        let lowest = *top.iter().min().unwrap();
+
+        // Load older from the lowest version held, with no cursor kept.
+        let (status, older) = list(json!({
+            "order": "newestFirst", "limit": 2, "beforeVersion": lowest
+        }))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{older}");
+        assert!(versions(&older).iter().all(|v| *v < lowest), "{older}");
+        assert_eq!(versions(&older).len(), 2, "{older}");
+        let cursor = older["nextCursor"]
+            .as_str()
+            .expect("one remains")
+            .to_string();
+        assert!(
+            older["dataCommitment"].is_string() && older["recordCount"] == 5,
+            "the head is the whole room's: {older}"
+        );
+
+        // The cursor continues only under the bounds it was issued for.
+        let (_, rest) = list(json!({
+            "order": "newestFirst", "limit": 2, "beforeVersion": lowest, "cursor": cursor
+        }))
+        .await;
+        assert_eq!(versions(&rest).len(), 1, "{rest}");
+        for other in [
+            json!({ "order": "newestFirst", "cursor": cursor }),
+            json!({ "order": "newestFirst", "beforeVersion": lowest + 1, "cursor": cursor }),
+            json!({ "order": "newestFirst", "beforeVersion": lowest, "sinceVersion": 0, "cursor": cursor }),
+        ] {
+            let (status, out) = list(other).await;
+            assert_ne!(status, StatusCode::OK, "{out}");
+            assert_eq!(
+                out["code"],
+                vti_specs::rooms::records::list::v0_8::error_codes::INVALID_CURSOR.to_string(),
+                "{out}"
+            );
+        }
+
+        // Oldest first, bounded above; and an empty band.
+        let (_, up) = list(json!({ "beforeVersion": lowest })).await;
+        assert!(versions(&up).windows(2).all(|w| w[0] < w[1]), "{up}");
+        assert!(versions(&up).iter().all(|v| *v < lowest), "{up}");
+        let (status, empty) = list(json!({ "sinceVersion": 2, "beforeVersion": 3 })).await;
+        assert_eq!(status, StatusCode::OK, "{empty}");
+        assert!(versions(&empty).is_empty(), "{empty}");
+    }
+
+    /// `rooms/info/0.5` (trust-tasks-tf #1289): 0.4's answer and this host's limits — no
+    /// per-record limit of its own, every chunk admitted at the transfer ceiling.
+    #[tokio::test]
+    async fn info_0_5_states_this_hosts_limits() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let (status, info) = call(
+            &h.app,
+            vti_rooms::signal_delay::INFO_V5_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{info}");
+        assert_eq!(info["maxChunkSize"], 262_144, "{info}");
+        assert!(info.get("maxRecordDocumentBytes").is_none(), "{info}");
+        assert_eq!(
+            info["signalDelay"], "randomised",
+            "0.4's members stand: {info}"
+        );
     }
 
     /// Records every `rooms/changed` signal; reaches every address.
@@ -3134,7 +2479,12 @@ mod tests {
             )
             .await;
             assert_ne!(status, StatusCode::OK, "{uri}: {out}");
-            assert!(out.to_string().contains("unsupportedType"), "{uri}: {out}");
+            // A version of a task this host serves at others: `unsupportedVersion`, naming the
+            // versions it does serve, as the VTC answers.
+            assert!(
+                out.to_string().contains("unsupportedVersion"),
+                "{uri}: {out}"
+            );
         }
     }
 

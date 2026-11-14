@@ -64,14 +64,14 @@ async fn row(vtc: &TestVtc, did: &str) -> vtc_service::acl::VtcAclEntry {
         .unwrap_or_else(|| panic!("{did} survives"))
 }
 
-async fn audit_rows(vtc: &TestVtc, variant: &str) -> Vec<vti_common::audit::AuditEnvelope> {
+async fn audit_rows(vtc: &TestVtc, variant: &str) -> Vec<vtc_audit::AuditEnvelope> {
     vtc.state
         .audit_ks
         .prefix_iter_raw(Vec::new())
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter(|env| env.event.variant_name() == variant)
         .collect()
 }
@@ -121,10 +121,10 @@ async fn a_boot_over_legacy_rows_migrates_audits_and_raises_an_acknowledgement()
     assert_eq!(audited.len(), 1);
     assert_eq!(
         audited[0].event.severity(),
-        vti_common::audit::AuditSeverity::Critical
+        vtc_audit::AuditSeverity::Critical
     );
     match &audited[0].event {
-        vti_common::audit::AuditEvent::AclMigrated(data) => {
+        vtc_audit::AuditEvent::AclMigrated(data) => {
             assert_eq!(data.migrated, 6);
             assert_eq!(data.administrators, 3);
             assert_eq!(data.lost_admin_authority, vec![SCOPED.to_string()]);

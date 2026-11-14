@@ -38,7 +38,7 @@
 //! shapes are compatible; it does not prove `scopes` survived, and a dropped
 //! scope list on an admin entry is a **permanent super-admin**.
 
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 use vta_sdk::client::{CreateAclRequest, UpdateAclRequest, VtaClient};
 
@@ -500,7 +500,7 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
     // signed `webvh/dids/get/1.0` document over `/trust-tasks`, read as the
     // raw envelope so the `record`/`log` shape itself is checked, not just
     // what the SDK's typed methods choose to project from it.
-    let (issuer_did, _) = vta_service::test_support::did_for_seed(0x30);
+    let (issuer_did, _) = vta_test_support::did_for_seed(0x30);
     let issuer_token = mock.ctx.mint_token(&issuer_did, "admin", vec![]).await;
     let raw = |include_log: bool| {
         let url = format!("{}/trust-tasks", mock.base_url());
@@ -518,7 +518,7 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
                     "payload": { "did": did, "includeLog": include_log },
                 }))
                 .expect("envelope deserialises");
-            vta_service::test_support::sign_as(0x30, &mut doc);
+            vta_test_support::sign_as(0x30, &mut doc);
             reqwest::Client::new()
                 .post(url)
                 .bearer_auth(token)

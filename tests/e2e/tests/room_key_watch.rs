@@ -44,7 +44,7 @@ use vta_sdk::session::TspSession;
 use vta_sdk::trust_tasks::{
     TASK_ROOMS_KEYS_ACT_0_12, TASK_ROOMS_KEYS_CHANGED_0_1, TASK_ROOMS_KEYS_WATCH_0_1,
 };
-use vta_service::test_support::{MockVta, seed_holder_key, seed_room_membership};
+use vta_test_support::{MockVta, seed_holder_key, seed_room_membership};
 use vti_rooms_dtg::test_support::Party;
 
 mod common;

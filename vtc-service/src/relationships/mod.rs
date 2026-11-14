@@ -56,6 +56,8 @@
 //! the answer; the precedence rule it applies lives in
 //! [`crate::credentials::lifecycle`] and is stated once there.
 
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod rate_limit;
 pub mod storage;
 
@@ -66,8 +68,8 @@ use uuid::Uuid;
 
 pub use crate::credentials::lifecycle::{self, InForce, LifecycleEventKind, LifecycleLog};
 pub use storage::{
-    RELATIONSHIPS_BY_DID_PREFIX, RELATIONSHIPS_PREFIX, delete_relationship, find_by_hash,
-    get_relationship, issuer_counterparties_besides, list_all, list_for_did,
+    LifecycleRecordError, RELATIONSHIPS_BY_DID_PREFIX, RELATIONSHIPS_PREFIX, delete_relationship,
+    find_by_hash, get_relationship, issuer_counterparties_besides, list_all, list_for_did,
     record_lifecycle_event, store_relationship, supersede_prior_edges,
 };
 

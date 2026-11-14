@@ -730,6 +730,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // 0.4, in either order and a page at a time: still a read, stores nothing. A resend
     // with the same cursor reads the same position again.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5, RetrySafe),
+    // 0.5 within an exclusive `beforeVersion`: still a read, stores nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_6, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing. The

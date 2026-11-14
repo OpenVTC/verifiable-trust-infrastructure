@@ -55,6 +55,7 @@ base64 = { workspace = true }
 url = { workspace = true }
 ratatui = { workspace = true }
 clap = { workspace = true, features = ["env"] }
+clap_complete = { workspace = true }
 dialoguer = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }

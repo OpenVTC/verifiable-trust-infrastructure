@@ -52,7 +52,7 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, AuditWriter, RegistryRecordPolicyOverrideData, RegistrySyncOutcomeData,
 };
 use vti_common::error::AppError;
@@ -710,7 +710,7 @@ mod tests {
     use crate::registry::client::MockRegistryClient;
     use crate::registry::model::{SyncJob, SyncJobKind};
     use crate::registry::storage::{get_record, store_sync_job};
-    use vti_common::audit::{AuditEvent, AuditKeyStore, AuditWriter, MemberAddedData};
+    use vtc_audit::{AuditEvent, AuditKeyStore, AuditWriter, MemberAddedData};
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -789,7 +789,7 @@ mod tests {
         w.write(
             "did:key:zAdmin",
             Some(did),
-            AuditEvent::MemberUpdated(vti_common::audit::MemberUpdatedData {
+            AuditEvent::MemberUpdated(vtc_audit::MemberUpdatedData {
                 fields_changed: vec!["publishConsent".into()],
                 changes: vec![],
             }),
@@ -963,7 +963,7 @@ default publish_on_join := false
     async fn rtbf_override_audit_failure_does_not_advance_cursor_and_re_emits() {
         use crate::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
         use sha2::{Digest, Sha256};
-        use vti_common::audit::{AuditEnvelope, MemberRemovedData};
+        use vtc_audit::{AuditEnvelope, MemberRemovedData};
 
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {

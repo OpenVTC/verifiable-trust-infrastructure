@@ -34,7 +34,7 @@ use crate::install::{InstallTokenSigner, InstallTokenStore};
 use crate::server::AppState;
 use crate::store::Store;
 use crate::supervisor::SupervisorKind;
-use vti_common::audit::{AuditKeyStore, AuditWriter};
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
 
 /// The default `vtc_did` used by [`TestVtc`] — a sentinel that satisfies
@@ -112,18 +112,8 @@ pub fn test_community_x25519_public() -> [u8; 32] {
     x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*secret)).to_bytes()
 }
 
-/// Pin jsonwebtoken's default `CryptoProvider` to `aws_lc` once per
-/// process. The workspace compiles `jsonwebtoken` with only the
-/// `aws_lc_rs` backend; when `cargo test` unifies features across crates
-/// the auto-select panics unless one provider is installed explicitly.
-/// Idempotent — safe to call from every test file.
-pub fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
+/// The fixtures both services share live in `vti_common::test_support` (#2572).
+pub use vti_common::test_support::{build_offline_atm, init_jwt_provider};
 
 /// Builder for a tempdir-backed in-process VTC under test.
 ///
@@ -533,6 +523,9 @@ impl TestVtcBuilder {
         let audit_checkpoint_ks = store
             .keyspace("audit_checkpoint")
             .expect("audit_checkpoint ks");
+        let audit_index_ks = store
+            .keyspace(crate::store::keyspaces::AUDIT_INDEX)
+            .expect("audit_index ks");
         let consumed_invitations_ks = store
             .keyspace("consumed_invitations")
             .expect("consumed_invitations ks");
@@ -828,6 +821,7 @@ impl TestVtcBuilder {
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,
+            audit_index_ks,
             outbox_ks,
             tsp_relationships_ks,
             consumed_invitations_ks,
@@ -1177,27 +1171,6 @@ impl Drop for MockVtc {
     }
 }
 
-/// Build a fully-offline [`ATM`](affinidi_tdk::messaging::ATM) for unit tests
-/// that need `atm.unpack` without a live mediator. No secrets and no network
-/// mode are configured, so it can unpack a **plaintext** DIDComm envelope
-/// (which needs no keys) but not decrypt a JWE — exactly what the
-/// plaintext-forgery regression needs. Pair with [`MockVtc::start_with_atm`].
-pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
-    use affinidi_tdk::common::TDKSharedState;
-    use affinidi_tdk::common::config::TDKConfig;
-    use affinidi_tdk::messaging::config::ATMConfig;
-
-    let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
-        .await
-        .expect("TDK shared state");
-    affinidi_tdk::messaging::ATM::new(
-        ATMConfig::builder().build().expect("ATM config"),
-        std::sync::Arc::new(tdk),
-    )
-    .await
-    .expect("offline ATM")
-}
-
 /// Every Trust Task URI this VTC's dispatcher serves: its own list plus the
 /// `rooms/*` verbs it hosts.
 ///
@@ -1205,11 +1178,47 @@ pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
 /// it covers a verb the moment it is dispatched — which is the property the
 /// DIDComm envelope parity test (`tests/didcomm_envelope_binding.rs`) holds.
 pub fn served_trust_task_uris() -> Vec<&'static str> {
-    crate::trust_tasks::DISPATCHED_URIS
+    crate::trust_tasks::dispatched_uris()
         .iter()
         .chain(vti_rooms::wire::ROOMS_DISPATCHED_URIS)
         .copied()
         .collect()
+}
+
+/// An ACL entry as the fixtures seed one: `did` holding `role` with `admin`
+/// authority, written at install time, with no label, expiry, grants or
+/// suspension.
+pub fn seeded_acl_entry(
+    did: &str,
+    role: crate::acl::VtcRole,
+    admin: crate::acl::AdminAuthority,
+) -> crate::acl::VtcAclEntry {
+    crate::acl::VtcAclEntry {
+        did: did.into(),
+        admin,
+        delegated_by: None,
+        role,
+        label: None,
+        created_at: 0,
+        created_by: "did:key:vtc-install".into(),
+        updated_at: None,
+        updated_by: None,
+        expires_at: None,
+        resource_grants: Vec::new(),
+        group_grants: Vec::new(),
+        label_set_by_subject: false,
+        suspension: None,
+    }
+}
+
+/// Seed `did` into `acl` holding `role` with the authority the role implies
+/// — the fixture every test that needs "an administrator" or "a member"
+/// starts from (#2579: one fixture, not one per test module).
+pub async fn seed_acl(acl: &crate::store::KeyspaceHandle, did: &str, role: crate::acl::VtcRole) {
+    let admin = role.implied_authority();
+    crate::acl::store_acl_entry(acl, &seeded_acl_entry(did, role, admin))
+        .await
+        .expect("seed ACL row");
 }
 
 #[cfg(all(feature = "transport-harness", feature = "tsp"))]

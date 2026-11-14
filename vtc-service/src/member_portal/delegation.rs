@@ -34,7 +34,7 @@
 //! session that keeps it live, and the audit row item 7 requires.
 
 use serde::{Deserialize, Serialize};
-use vti_common::audit::{AuditEvent, MemberPortalKeyUsedData};
+use vtc_audit::{AuditEvent, MemberPortalKeyUsedData};
 use vti_common::auth::session::{SessionState, get_session, now_epoch};
 use vti_common::store::KeyspaceHandle;
 use vti_oob_server::delegation::{self as shared, DelegatedKey, DelegationLiveness, Liveness};

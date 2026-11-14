@@ -31,7 +31,16 @@ pub(crate) async fn run(
             device_id,
             reason,
             scope,
-        } => dev::cmd_device_wipe(client, device_id, reason, scope).await,
+            yes,
+        } => {
+            if !vta_cli_common::confirm::confirm_or_cancel(
+                &format!("wipe device {device_id} ({scope})"),
+                yes,
+            )? {
+                return Ok(());
+            }
+            dev::cmd_device_wipe(client, device_id, reason, scope).await
+        }
         DeviceCommands::SetWake {
             gateway,
             handle,

@@ -1,6 +1,6 @@
 //! CRUD helpers for [`super::Member`] over the `members` keyspace.
 
-use vti_common::audit::AuditKey;
+use vtc_audit::AuditKey;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::KeyspaceHandle;
@@ -17,7 +17,9 @@ pub const MEMBER_EXTENSIONS_MAX_BYTES: usize = 16 * 1024;
 /// `Tombstone` in Phase 1.
 pub const DEFAULT_DEPARTURE_PREFERENCE: Disposition = Disposition::PolicyDefault;
 
-const PREFIX: &[u8] = b"members:";
+/// Every member row lives at `members:<did>`.
+pub const MEMBERS_PREFIX: &[u8] = b"members:";
+const PREFIX: &[u8] = MEMBERS_PREFIX;
 
 fn member_key(did: &str) -> Vec<u8> {
     let mut k = PREFIX.to_vec();
@@ -169,7 +171,7 @@ pub async fn list_members_filtered(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use vti_common::audit::AuditKeyStore;
+    use vtc_audit::AuditKeyStore;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 

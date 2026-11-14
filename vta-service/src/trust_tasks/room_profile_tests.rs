@@ -1968,6 +1968,128 @@ async fn browse_0_5_refuses_newest_first_at_a_host_without_list_0_7() {
     );
 }
 
+// ─── `rooms/keys/browse/0.6` (trust-tasks-tf #1289) ─────────────────────────────────────
+//
+// `beforeVersion` passed through to the host's list/0.8, and `hostRefused` — never a listing
+// without the bound — at a host that predates list/0.8.
+
+const BROWSE_0_6: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_6;
+const LIST_V8: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE;
+
+async fn browse_v0_6(v: &Vta, room: &str, host: &str, extra: Value) -> Value {
+    let mut payload = json!({ "roomId": room, "host": host });
+    for (k, val) in extra.as_object().unwrap() {
+        payload[k] = val.clone();
+    }
+    body(
+        super::super::room_group::handle_browse_v0_6(
+            &v.state,
+            &admin(),
+            request(BROWSE_0_6, payload),
+        )
+        .await,
+    )
+}
+
+/// "Load older" from the lowest version a surface holds, with no cursor kept: the rows
+/// below it, newest first, never comparable against `recordCount` — even read to the end.
+#[tokio::test]
+async fn browse_0_6_loads_older_from_a_version() {
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 5).await;
+    let head = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "limit": 2, "maxPages": 1 }),
+    )
+    .await;
+    let top = row_versions(&head);
+    assert_eq!(top.len(), 2, "{head}");
+    assert_eq!(host.received(LIST_V8), 1, "list/0.8 at the host");
+    let lowest = *top.iter().min().unwrap();
+
+    let older = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "beforeVersion": lowest }),
+    )
+    .await;
+    let below = row_versions(&older);
+    assert!(!below.is_empty(), "{older}");
+    assert!(below.iter().all(|v| *v < lowest), "{older}");
+    assert!(below.windows(2).all(|w| w[0] > w[1]), "downward: {below:?}");
+    assert_eq!(older["payload"]["complete"], true, "{older}");
+    assert_eq!(
+        older["payload"]["verification"]["count"], "notComparable",
+        "a listing bounded above is never compared: {older}"
+    );
+}
+
+/// At a host without list/0.8, a browse naming `beforeVersion` is `hostRefused` with the
+/// host's refusal — never listed without the bound; one that names none is listed with
+/// list/0.7, newest first as asked.
+#[tokio::test]
+async fn browse_0_6_refuses_before_version_at_a_host_without_list_0_8() {
+    const PREDATES_V8: &[&str] = &[vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE];
+    let host = start_host_refusing(false, PREDATES_V8).await;
+    let (room, owner) = open_room_with(&host, 3).await;
+
+    let got = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "beforeVersion": 3 }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_6::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["details"]["code"], "unsupportedType",
+        "{got}"
+    );
+    assert_eq!(host.received(LIST_V7), 0, "never listed without the bound");
+
+    let got = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(got["payload"]["complete"], true, "{got}");
+    let down = row_versions(&got);
+    assert!(down.windows(2).all(|w| w[0] > w[1]), "{down:?}");
+    assert_eq!(host.received(LIST_V7), 1);
+}
+
+/// browse/0.6 names its refusals at its own version: no membership is `notAMember`; a host
+/// nobody answers at is `hostUnreachable`.
+#[tokio::test]
+async fn browse_0_6_names_its_refusals() {
+    let mut s = sealed_room().await;
+    let stranger = Party::new().did;
+    let got = browse_v0_6(&s.owner, &stranger, &s.host.did, json!({})).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_6::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+    let got = browse_v0_6(&s.owner, &s.room.did, &dead, json!({ "beforeVersion": 9 })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_6::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+}
+
 /// browse/0.5 names its refusals as 0.4 does, at its own version: no membership is
 /// `notAMember`; a host nobody answers at is `hostUnreachable`.
 #[tokio::test]

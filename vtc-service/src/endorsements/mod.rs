@@ -30,6 +30,8 @@
 //! are issuable. The endorsements module here trusts that
 //! invariant; the route layer enforces it at issue time.
 
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod storage;
 
 use chrono::{DateTime, Utc};

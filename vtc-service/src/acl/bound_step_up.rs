@@ -73,7 +73,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, OperationStepUpApprovedData, OperationStepUpData};
+use vtc_audit::{AuditEvent, OperationStepUpApprovedData, OperationStepUpData};
 use vti_common::auth::passkey::store::{
     get_passkey_user_by_cred, get_passkey_user_by_did, store_passkey_user,
 };
@@ -325,7 +325,7 @@ pub struct StepUpEvidence {
     pub bound_to: String,
 }
 
-impl From<StepUpEvidence> for vti_common::audit::StepUpEvidence {
+impl From<StepUpEvidence> for vtc_audit::StepUpEvidence {
     fn from(e: StepUpEvidence) -> Self {
         Self {
             kind: e.kind,

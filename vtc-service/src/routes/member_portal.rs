@@ -25,7 +25,7 @@ use tracing::{info, warn};
 use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
-use vti_common::audit::{AuditEvent, MemberPasskeyData};
+use vtc_audit::{AuditEvent, MemberPasskeyData};
 use vti_common::auth::passkey::store::{
     PasskeyUser, get_all_passkeys, get_passkey_user_by_cred, get_passkey_user_by_did, get_pending,
     store_auth_state, store_credential_mapping, store_passkey_user, store_pending,

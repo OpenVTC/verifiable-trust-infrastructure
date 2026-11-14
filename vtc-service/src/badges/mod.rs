@@ -845,7 +845,7 @@ pub async fn holder_slots_of_entry(
 pub(crate) async fn audit(
     state: &crate::server::AppState,
     actor: &str,
-    data: vti_common::audit::BadgeChangedData,
+    data: vtc_audit::BadgeChangedData,
 ) -> Result<(), AppError> {
     let writer = state
         .audit_writer
@@ -857,11 +857,7 @@ pub(crate) async fn audit(
                 .into(),
         })?;
     writer
-        .write(
-            actor,
-            None,
-            vti_common::audit::AuditEvent::BadgeChanged(data),
-        )
+        .write(actor, None, vtc_audit::AuditEvent::BadgeChanged(data))
         .await
         .map(drop)
 }
@@ -915,7 +911,7 @@ pub async fn on_group_exit(
         audit(
             state,
             actor,
-            vti_common::audit::BadgeChangedData {
+            vtc_audit::BadgeChangedData {
                 badge_id: a.badge_id.clone(),
                 award_id: Some(a.award_id.clone()),
                 entry_id: Some(a.entry_id.clone()),

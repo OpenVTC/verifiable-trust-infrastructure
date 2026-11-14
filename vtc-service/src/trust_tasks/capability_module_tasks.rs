@@ -43,8 +43,9 @@
 //! generated `#response`, the shape `trust-tasks-capability-client`'s
 //! `parse_capability_reply` reads.
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use trust_tasks_rs::{RejectReason, TrustTask};
 use vti_specs::governance::capability::{
     disable::v0_1 as disable, enable::v0_1 as enable, list::v0_1 as list,
 };
@@ -60,32 +61,25 @@ use crate::capability_modules::{self as modules, ModuleError, ModuleState};
 use crate::error::TaskError;
 use crate::server::AppState;
 
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const ENABLE_TYPE: &str = <enable::Payload as Payload>::TYPE_URI;
-pub(crate) const DISABLE_TYPE: &str = <disable::Payload as Payload>::TYPE_URI;
-
-/// Every URI [`dispatch`] routes. `super::DISPATCHED_URIS` names each of these
-/// and `dispatcher_routes_every_dispatched_uri` holds the two in step.
-pub(crate) const URIS: &[&str] = &[LIST_TYPE, ENABLE_TYPE, DISABLE_TYPE];
-
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        ENABLE_TYPE => handle_enable(state, ctx, doc).await,
-        DISABLE_TYPE => handle_disable(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, enable::Payload => |state, ctx, doc| handle_enable(state, ctx, doc));
+    on!(routes, disable::Payload => |state, ctx, doc| handle_disable(state, ctx, doc))
 }
 
 // Answer with `body` held to the generated `#response` type and its schema
 // (an `internalError` when it is not: the mismatch is this service's fault).
 use vti_trust_task_server::typed::respond;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ENABLE_TYPE: &str = <enable::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DISABLE_TYPE: &str = <disable::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 fn refuse(doc: &TrustTask<Value>, e: ModuleError) -> TrustTaskOutcome {
     let declared =
@@ -384,15 +378,15 @@ async fn handle_disable(
 
 #[cfg(test)]
 mod tests {
-    use super::super::members_admin_tests::{
-        assert_conforms, error_code, payload_of, seed_acl, signed,
-    };
     use super::super::{JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core};
     use super::*;
     use crate::capability_modules::ProjectionStatus;
     use crate::join::JoinTransport;
     use crate::registry::{MockRegistryClient, RegistryError};
     use crate::test_support::{TEST_VTC_DID, TestVtc};
+    use crate::trust_tasks::test_fixtures::{
+        assert_conforms, error_code, payload_of, seed_acl, signed,
+    };
     use std::sync::Arc;
     use vti_common::capability_client::{CapabilityReply, parse_capability_reply};
     use vti_rooms_dtg::test_support::Party;
@@ -504,17 +498,15 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter_map(|(_, v)| {
-                serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok()
-            })
+            .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
             .filter_map(|env| match env.event {
-                vti_common::audit::AuditEvent::CapabilityModuleChanged(d) => Some(d),
+                vtc_audit::AuditEvent::CapabilityModuleChanged(d) => Some(d),
                 _ => None,
             })
             .collect()
     }
 
-    use vti_common::audit::CapabilityModuleChangedData;
+    use vtc_audit::CapabilityModuleChangedData;
 
     // ── list ─────────────────────────────────────────────────────────────
 
@@ -559,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn the_capability_clients_own_list_request_is_answered() {
         let f = fixture().await;
-        let doc = super::super::members_admin_tests::sign(
+        let doc = crate::trust_tasks::test_fixtures::sign(
             &f.member,
             vti_common::capability_client::build_list_document(&f.member.did, TEST_VTC_DID),
         )

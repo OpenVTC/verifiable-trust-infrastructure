@@ -1369,8 +1369,8 @@ async fn audit_rows(
 /// envelope (what a VTA writes now) by its operation, as the VTA's own reader
 /// flattens it.
 fn audit_row(raw: &[u8]) -> Option<vta_sdk::protocols::audit_management::list::AuditLogEntry> {
-    use vti_common::audit::AuditEnvelope;
-    use vti_common::audit::event::AuditEvent;
+    use vta_audit::VtaAuditEnvelope as AuditEnvelope;
+    use vta_audit::VtaAuditEvent as AuditEvent;
     if let Ok(env) = serde_json::from_slice::<AuditEnvelope>(raw) {
         let AuditEvent::VtaOperation(op) = &env.event else {
             return None;

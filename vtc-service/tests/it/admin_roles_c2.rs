@@ -167,7 +167,7 @@ async fn actions_of_kind(fix: &Fixture, kind: &str) -> Vec<ActionRecord> {
         .collect()
 }
 
-async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vti_common::audit::AuditEnvelope> {
+async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vtc_audit::AuditEnvelope> {
     fix.vtc
         .state
         .audit_ks
@@ -175,7 +175,7 @@ async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vti_common::audit::Audi
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter(|env| env.event.variant_name() == variant)
         .collect()
 }
@@ -847,7 +847,7 @@ async fn vti_apv_022_a_sole_admin_defines_and_deletes_a_role_on_their_own_gestur
         .await
         .into_iter()
         .filter_map(|env| match env.event {
-            vti_common::audit::AuditEvent::SingleAdminMode(d) => Some(d),
+            vtc_audit::AuditEvent::SingleAdminMode(d) => Some(d),
             _ => None,
         })
         .filter(|d| d.event == "consentWaived")

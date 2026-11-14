@@ -10,7 +10,75 @@ use sha2::{Digest, Sha256};
 
 use super::class::IdempotencyClass;
 use crate::error::AppError;
+use crate::store::expiry_index::{ExpiryIndex, RecordState, SweepCount, Unreadable};
 use crate::store::{Batch, KeyspaceHandle};
+
+/// Records ordered by expiry, so the sweep reads only what expired (#2626):
+/// rows `idem-exp:{deadline}:idem:{principal}:{key}`. Records an older build
+/// wrote are indexed by the first sweep that runs without the marker.
+const EXPIRY: ExpiryIndex = ExpiryIndex {
+    record_prefix: b"idem:",
+    index_prefix: b"idem-exp:",
+    marker: b"meta:idem-exp-index",
+};
+
+/// Remove every expired idempotency record in `ks`, reading only the ones due
+/// (bounded pages over the expiry index, never one read of every record —
+/// each holds a whole response, and over vsock that read is one frame that
+/// stops fitting, #2626). An unreadable record is removed.
+pub async fn sweep_expired(
+    ks: &KeyspaceHandle,
+    now: DateTime<Utc>,
+) -> Result<SweepCount, AppError> {
+    EXPIRY
+        .sweep(
+            ks,
+            now,
+            Unreadable::Remove,
+            |v| match serde_json::from_slice::<CacheEntry>(v) {
+                Ok(entry) if entry.is_expired(now) => RecordState::Expired,
+                Ok(entry) => RecordState::Live(entry.expires_at),
+                Err(_) => RecordState::Unreadable,
+            },
+        )
+        .await
+}
+
+/// `response_body` as a base64 string rather than a JSON array of numbers,
+/// which costs three to four bytes per byte on disk, in the journal and in
+/// every sweep's decode (#2629). Reads both forms, so a record an older build
+/// wrote still replays.
+mod body_bytes {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<u8>, D::Error> {
+        struct BodyVisitor;
+        impl<'de> Visitor<'de> for BodyVisitor {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a base64 string or an array of bytes")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<u8>, E> {
+                STANDARD.decode(v).map_err(E::custom)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<Vec<u8>, A::Error> {
+                let mut out = Vec::with_capacity(items.size_hint().unwrap_or(0));
+                while let Some(b) = items.next_element::<u8>()? {
+                    out.push(b);
+                }
+                Ok(out)
+            }
+        }
+        de.deserialize_any(BodyVisitor)
+    }
+}
 
 /// Identifier scoping the idempotency cache. **Never plaintext on
 /// disk** — the principal bytes are hashed and the hash becomes part
@@ -136,6 +204,8 @@ pub struct CacheEntry {
     pub request_hash: [u8; 32],
     pub response_status: u16,
     pub response_headers: Vec<(String, String)>,
+    /// Stored as base64; an older record's array of numbers still reads.
+    #[serde(with = "body_bytes")]
     pub response_body: Vec<u8>,
     pub class: IdempotencyClass,
     pub created_at: DateTime<Utc>,
@@ -201,6 +271,9 @@ impl IdempotencyStore {
     /// setting `expires_at = created_at + class.ttl_seconds()`.
     pub async fn put(&self, principal_hash: &[u8; 32], entry: &CacheEntry) -> Result<(), AppError> {
         let storage_key = storage_key(principal_hash, &entry.idempotency_key);
+        EXPIRY
+            .insert(&self.ks, entry.expires_at, &storage_key)
+            .await?;
         self.ks.insert(storage_key, entry).await
     }
 
@@ -296,6 +369,9 @@ impl IdempotencyStore {
         // the reclaim unconditionally after the read let every attempt that
         // read the same stale record take it, and each run the operation.
         for _ in 0..WRITE_ATTEMPTS {
+            // Indexed first: an index row without its record is dropped by the
+            // sweep, a record without one would never be swept.
+            EXPIRY.insert(&self.ks, pending.expires_at, &sk).await?;
             if self.ks.insert_if_absent(sk.clone(), &pending).await? {
                 return Ok(ClaimOutcome::Claimed);
             }
@@ -327,6 +403,7 @@ impl IdempotencyStore {
                     batch
                         .require_unchanged(sk.clone(), raw)
                         .insert(sk.clone(), &existing)?;
+                    EXPIRY.stage(&mut batch, until, &sk);
                     if !self.ks.apply_batch(batch).await?.is_applied() {
                         continue;
                     }
@@ -349,6 +426,7 @@ impl IdempotencyStore {
             batch
                 .require_unchanged(sk.clone(), raw)
                 .insert(sk.clone(), &pending)?;
+            EXPIRY.stage(&mut batch, pending.expires_at, &sk);
             if self.ks.apply_batch(batch).await?.is_applied() {
                 return Ok(ClaimOutcome::Claimed);
             }
@@ -1026,6 +1104,55 @@ mod tests {
         let e: CacheEntry = serde_json::from_value(json).expect("legacy record decodes");
         assert_eq!(e.state, EntryState::Completed);
         assert!(e.has_replayable_response());
+    }
+
+    /// #2629: the body is written as base64, and a record an older build wrote
+    /// with the body as an array of numbers still reads, byte for byte.
+    #[test]
+    fn the_response_body_is_base64_and_the_old_array_form_still_reads() {
+        let mut entry = sample_entry();
+        entry.response_body = b"{\"ok\":true}\n\x00\xff".to_vec();
+        let written = serde_json::to_value(&entry).unwrap();
+        assert!(written["response_body"].is_string(), "{written}");
+        let back: CacheEntry = serde_json::from_value(written).unwrap();
+        assert_eq!(back, entry);
+
+        let mut legacy = serde_json::to_value(&entry).unwrap();
+        legacy["response_body"] = serde_json::json!(entry.response_body);
+        assert!(legacy["response_body"].is_array());
+        let read: CacheEntry = serde_json::from_value(legacy).unwrap();
+        assert_eq!(read.response_body, entry.response_body);
+    }
+
+    /// #2626: the sweep removes what expired through the expiry index, and a
+    /// record written before the index existed is still swept.
+    #[tokio::test]
+    async fn the_sweep_finds_indexed_and_legacy_records() {
+        let (store, _dir) = temp_store();
+        let principal = Principal::AuthToken(b"Bearer t".to_vec()).hash();
+        let now = Utc::now();
+        let mut dead = sample_entry();
+        dead.idempotency_key = "dead".into();
+        dead.expires_at = now - Duration::seconds(1);
+        store.put(&principal, &dead).await.unwrap();
+        let mut live = sample_entry();
+        live.idempotency_key = "live".into();
+        live.expires_at = now + Duration::hours(1);
+        store.put(&principal, &live).await.unwrap();
+        // Written as an older build did: no index row.
+        let mut legacy = sample_entry();
+        legacy.idempotency_key = "legacy".into();
+        legacy.expires_at = now - Duration::seconds(1);
+        store
+            .ks
+            .insert(storage_key(&principal, "legacy"), &legacy)
+            .await
+            .unwrap();
+
+        let swept = sweep_expired(&store.ks, now).await.unwrap();
+        assert_eq!(swept.purged, 2);
+        let left = store.ks.prefix_keys("idem:").await.unwrap();
+        assert_eq!(left, vec![storage_key(&principal, "live")]);
     }
 
     #[tokio::test]

@@ -26,6 +26,8 @@
 //! registration; so is anything that is not an absolute predicate IRI
 //! (`invalidUri`).
 
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod storage;
 
 use chrono::{DateTime, Utc};

@@ -308,28 +308,67 @@ impl TspSender {
         })
     }
 
-    /// Shorten the reply timeout — test-only, so a recovery test does not wait
-    /// the full 30s per dropped attempt. Gated on `transport-harness` too,
-    /// because that is where its only callers (the D6 tests) live; a plain
-    /// `cfg(test)` build without the harness feature would see it as dead code.
-    #[cfg(all(test, feature = "transport-harness"))]
-    pub(crate) fn with_reply_timeout(mut self, timeout: std::time::Duration) -> Self {
+    /// [`from_app_state`](Self::from_app_state) for the transport harness.
+    ///
+    /// The `harness_*` twins and the hooks below exist only under the test-only
+    /// `transport-harness` feature: their only callers are the D6 tests in
+    /// `vta-test-support`'s transport harness, which sits outside this crate
+    /// (#2570). Production code reaches the `pub(crate)` originals.
+    #[cfg(feature = "transport-harness")]
+    #[doc(hidden)]
+    pub fn harness_from_app_state(state: &crate::server::AppState) -> Option<Self> {
+        Self::from_app_state(state)
+    }
+
+    /// [`first_attempt`](Self::first_attempt) for the transport harness:
+    /// whether the peer answered. Test-only, under `transport-harness`.
+    #[cfg(feature = "transport-harness")]
+    #[doc(hidden)]
+    pub async fn harness_first_attempt_replied(
+        &self,
+        recipient: &str,
+        peer_mediator: Option<&str>,
+        thread: &str,
+        framed: &[u8],
+    ) -> bool {
+        matches!(
+            self.first_attempt(recipient, peer_mediator, thread, framed)
+                .await,
+            TspAttempt::Reply(_)
+        )
+    }
+
+    /// [`idle_reestablish_due`](Self::idle_reestablish_due) for the transport
+    /// harness. Test-only, under `transport-harness`.
+    #[cfg(feature = "transport-harness")]
+    #[doc(hidden)]
+    pub async fn harness_idle_reestablish_due(&self, recipient: &str) -> bool {
+        self.idle_reestablish_due(recipient).await
+    }
+
+    /// Shorten the reply timeout, so a recovery test does not wait the full 30s
+    /// per dropped attempt.
+    #[cfg(feature = "transport-harness")]
+    #[doc(hidden)]
+    pub fn with_reply_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.reply_timeout = timeout;
         self
     }
 
     /// The shared recovery coordinator, for asserting attempt/give-up counts in
     /// a test.
-    #[cfg(all(test, feature = "transport-harness"))]
-    pub(crate) fn recovery(&self) -> &affinidi_messaging_sdk::RecoveryCoordinator {
+    #[cfg(feature = "transport-harness")]
+    #[doc(hidden)]
+    pub fn recovery(&self) -> &affinidi_messaging_sdk::RecoveryCoordinator {
         &self.recovery
     }
 
     /// Drive the D6 recovery for a `recipient` whose send just timed out —
     /// exposed for the recovery test; production reaches it through
     /// [`send_tsp`](Outbound::send_tsp).
-    #[cfg(all(test, feature = "transport-harness"))]
-    pub(crate) async fn recover_for_test(
+    #[cfg(feature = "transport-harness")]
+    #[doc(hidden)]
+    pub async fn recover_for_test(
         &self,
         recipient: &str,
         thread: &str,

@@ -421,6 +421,22 @@ What is used, and what is deliberately not:
 
 ## 8. Troubleshooting
 
+A failed call is a **tool result** with `isError: true`, not a JSON-RPC
+error, so the model reads it and can correct itself. Its text is a small JSON
+body:
+
+```json
+{ "error": "forbidden", "message": "forbidden: …", "next": "call vta_status …" }
+```
+
+`error` is a stable kind — the VTA's refusal (`forbidden`, `notFound`,
+`invalidRequest`, `conflict`, `consentRequired`, `rateLimited`, `notServed`, …),
+a transport failure (`transport`), the bridge's own state (`notConnected`), or
+the local guard (`deniedByLocalPolicy`, `declinedByOperator`) — and `next` says
+what to do about it. `details` carries what a caller acts on: served versions,
+a consent code. Only a request the bridge cannot parse at all is a JSON-RPC
+error.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | The host lists **no tools** | The server exited before speaking MCP — a bad `--confirm` value, an unopenable `--audit-log`, or a `--enroll` refusal | Read the host's MCP server log; those three are fatal by design |
@@ -429,7 +445,7 @@ What is used, and what is deliberately not:
 | `this MCP host cannot ask you (it does not support elicitation)` | `--confirm` needs a prompt the host cannot show — or a bridge older than the protocol cap was reached at MCP `2026-07-28` | Upgrade and reconnect the host (§6.1); else `--confirm never`, or `--allow` the specific slug |
 | Calls fail or time out only while a **second assistant session** is open | Two stdio bridges on one identity: two sockets for one DID (§6.1) | One bridge with `--listen` |
 | `401` from the bridge's URL | No `Authorization: Bearer` header, or a different token | The host must send the bridge's token (§6.1) |
-| A call fails as a transport timeout | The VTA does not serve that URI | Ask `vta_supported_tasks` first — an unserved URI times out rather than erroring cleanly |
+| `vta_call` answers `notServed` | The VTA's discovery answer does not list that URI (the bridge asks once, before the first `vta_call`, and remembers) | Use a version from `details.servedVersions`, or `vta_supported_tasks`. If discovery itself is refused, the bridge sends the call and the VTA answers |
 | `vault_release` fails with `UnsupportedTransport` | It opens a `didcomm-authcrypt` envelope with this client's own keys | Use a DIDComm mode (rung 1 or 2), not REST/token |
 | `issue_vp is unavailable` | No holder identity | Set `VTA_MCP_HOLDER_DID` + `VTA_MCP_HOLDER_KEY` |
 | "Not authenticated" but `pnm auth status` is fine | Session store lookup | Pass the slug as `pnm` knows it; `--vta` handles the `vta:` prefix |

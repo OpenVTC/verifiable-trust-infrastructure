@@ -37,11 +37,10 @@
 
 use std::sync::Arc;
 
+use crate::event::{VtaAuditEvent, VtaAuditWriter, VtaOperationData};
 use async_trait::async_trait;
 use vta_sdk::protocols::audit_management::list::AuditLogEntry;
-use vti_common::audit::event::{AuditEvent, VtaOperationData};
 use vti_common::audit::key_store::AuditKeyStore;
-use vti_common::audit::writer::AuditWriter;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -145,7 +144,7 @@ pub const AUDIT_KEY_CREATED: &str = "audit.key.created";
 pub struct ChainedKeyspaceAuditSink {
     keyspace: KeyspaceHandle,
     key_store: AuditKeyStore,
-    writer: AuditWriter,
+    writer: VtaAuditWriter,
     /// Runs the establish-key-then-open-the-chain sequence once per process,
     /// so concurrent first writes cannot both open it.
     opened: Arc<tokio::sync::OnceCell<()>>,
@@ -154,7 +153,7 @@ pub struct ChainedKeyspaceAuditSink {
 impl ChainedKeyspaceAuditSink {
     pub fn new(keyspace: KeyspaceHandle, key_keyspace: KeyspaceHandle) -> Self {
         let key_store = AuditKeyStore::new(key_keyspace);
-        let writer = AuditWriter::new(keyspace.clone(), key_store.clone())
+        let writer = VtaAuditWriter::new(keyspace.clone(), key_store.clone())
             // The keyspace already has an ordering and rows that use it, so
             // the seconds stay the leading field: the retention sweep compares
             // keys against `log:{cutoff:020}:` and stops at the first row past
@@ -204,7 +203,7 @@ impl ChainedKeyspaceAuditSink {
             .write(
                 SYSTEM_ACTOR,
                 None,
-                AuditEvent::VtaOperation(VtaOperationData {
+                VtaAuditEvent::VtaOperation(VtaOperationData {
                     action: AUDIT_KEY_CREATED.to_string(),
                     resource: Some(key.key_id.as_uuid().to_string()),
                     outcome: "success".to_string(),
@@ -238,7 +237,7 @@ impl AuditSink for ChainedKeyspaceAuditSink {
             .write(
                 &entry.actor,
                 target,
-                AuditEvent::VtaOperation(VtaOperationData {
+                VtaAuditEvent::VtaOperation(VtaOperationData {
                     action: entry.action.clone(),
                     resource: resource.map(str::to_string),
                     outcome: entry.outcome.clone(),
@@ -467,7 +466,7 @@ mod chained_sink_tests {
         }
     }
 
-    async fn envelopes(ks: &KeyspaceHandle) -> Vec<vti_common::audit::AuditEnvelope> {
+    async fn envelopes(ks: &KeyspaceHandle) -> Vec<crate::VtaAuditEnvelope> {
         let pairs = ks.prefix_iter_raw("log:").await.expect("scan");
         pairs
             .iter()
@@ -496,7 +495,7 @@ mod chained_sink_tests {
 
         let opening = &found[0];
         match &opening.event {
-            vti_common::audit::event::AuditEvent::VtaOperation(op) => {
+            crate::VtaAuditEvent::VtaOperation(op) => {
                 assert_eq!(op.action, AUDIT_KEY_CREATED);
                 assert_eq!(
                     op.resource.as_deref(),
@@ -504,7 +503,6 @@ mod chained_sink_tests {
                     "the opening entry names the key it is hashed under"
                 );
             }
-            other => panic!("unexpected opening event: {other:?}"),
         }
         assert_eq!(opening.actor_did_plain.as_deref(), Some(SYSTEM_ACTOR));
     }
@@ -613,10 +611,9 @@ mod chained_sink_tests {
             "a key id is not an identifier to commit to"
         );
         match &key_row.event {
-            vti_common::audit::event::AuditEvent::VtaOperation(op) => {
+            crate::VtaAuditEvent::VtaOperation(op) => {
                 assert_eq!(op.resource.as_deref(), Some("key-3f2a"));
             }
-            other => panic!("unexpected event: {other:?}"),
         }
     }
 }
@@ -626,7 +623,8 @@ mod verify_support_tests {
     //! The sink's half of what verification depends on. The verifier itself
     //! lives in `vta-service`, where the keyspace read path is.
     use super::*;
-    use vti_common::audit::{AuditEnvelope, verify_chain};
+    use crate::VtaAuditEnvelope as AuditEnvelope;
+    use vti_common::audit::verify_chain;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -708,9 +706,8 @@ mod verify_support_tests {
 
         // Rewrite what an entry says happened, leaving its hashes alone —
         // the edit an operator covering their tracks would make.
-        if let vti_common::audit::event::AuditEvent::VtaOperation(op) = &mut envelopes[2].event {
-            op.outcome = "failure".to_string();
-        }
+        let crate::VtaAuditEvent::VtaOperation(op) = &mut envelopes[2].event;
+        op.outcome = "failure".to_string();
         assert!(
             verify_chain(&envelopes).is_err(),
             "an altered entry must not verify"

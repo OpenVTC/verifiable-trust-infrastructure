@@ -18,6 +18,7 @@
 //! | `revoke/start`, `revoke/finish` | the member revoking their own step-up passkey, a community administrator revoking one for a member, or an administrator revoking their own session passkey (which `start` refuses below their last) | a user-verified assertion from the producer's own passkeys — the subject's remaining step-up passkeys for a self-revoke, the administrator's session passkeys otherwise — plus, for an administrator, their ACL row |
 //! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_specs::auth::passkey::admin_list::v0_1 as admin_list;
@@ -34,26 +35,24 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::server::AppState;
 
+#[cfg(test)]
+pub(crate) const REVOKE_START_TYPE: &str =
+    <revoke_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const REVOKE_FINISH_TYPE: &str =
+    <revoke_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const REDEEM_FINISH_TYPE: &str =
+    <redeem_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ADMIN_LIST_TYPE: &str = <admin_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 pub(crate) const INVITE_TYPE: &str = <invite::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 pub(crate) const REDEEM_START_TYPE: &str =
     <redeem_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REDEEM_FINISH_TYPE: &str =
-    <redeem_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REVOKE_START_TYPE: &str =
-    <revoke_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REVOKE_FINISH_TYPE: &str =
-    <revoke_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const ADMIN_LIST_TYPE: &str = <admin_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    INVITE_TYPE,
-    REDEEM_START_TYPE,
-    REDEEM_FINISH_TYPE,
-    REVOKE_START_TYPE,
-    REVOKE_FINISH_TYPE,
-    ADMIN_LIST_TYPE,
-];
 
 /// Tasks whose response carries a bearer secret — the invite's token and
 /// claim code, a redemption's `enrollmentId`. The duplicate-execution record
@@ -62,21 +61,14 @@ pub(crate) const URIS: &[&str] = &[
 /// acceptance window.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITE_TYPE, REDEEM_START_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        INVITE_TYPE => handle_invite(state, ctx, doc).await,
-        REDEEM_START_TYPE => handle_redeem_start(state, ctx, doc).await,
-        REDEEM_FINISH_TYPE => handle_redeem_finish(state, ctx, doc).await,
-        REVOKE_START_TYPE => handle_revoke_start(state, ctx, doc).await,
-        REVOKE_FINISH_TYPE => handle_revoke_finish(state, ctx, doc).await,
-        ADMIN_LIST_TYPE => handle_admin_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, invite::Payload => |state, ctx, doc| handle_invite(state, ctx, doc));
+    let routes = on!(routes, redeem_start::Payload => |state, ctx, doc| handle_redeem_start(state, ctx, doc));
+    let routes = on!(routes, redeem_finish::Payload => |state, ctx, doc| handle_redeem_finish(state, ctx, doc));
+    let routes = on!(routes, revoke_start::Payload => |state, ctx, doc| handle_revoke_start(state, ctx, doc));
+    let routes = on!(routes, revoke_finish::Payload => |state, ctx, doc| handle_revoke_finish(state, ctx, doc));
+    on!(routes, admin_list::Payload => |state, ctx, doc| handle_admin_list(state, ctx, doc))
 }
 
 /// `auth/passkey/enroll/invite/0.3`. Letting a member bind a second factor is
@@ -243,16 +235,13 @@ async fn handle_revoke_start(
         .subject
         .as_ref()
         .map_or(producer.as_str(), |s| s.as_str());
-    let session = match crate::routes::admin::passkeys::is_session_credential_of(
-        state,
-        subject,
-        credential_id,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let session =
+        match crate::auth::admin_passkeys::is_session_credential_of(state, subject, credential_id)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
     if session {
         if subject != producer {
             // An administrator's login passkey is theirs to remove: no
@@ -271,8 +260,7 @@ async fn handle_revoke_start(
             Ok(a) => a,
             Err(reject) => return reject,
         };
-        return match crate::routes::admin::passkeys::revoke_start(state, &actor.did, &payload).await
-        {
+        return match crate::auth::admin_passkeys::revoke_start(state, &actor.did, &payload).await {
             Ok(response) => success_response(&doc, response),
             Err(e) => task_error_to_reject(&doc, &e),
         };
@@ -299,8 +287,7 @@ async fn handle_revoke_finish(
     };
     // A handle `revoke/start` minted for a session credential is finished
     // where it was started.
-    match crate::routes::admin::passkeys::owns_revocation(state, payload.revocation_id.as_str())
-        .await
+    match crate::auth::admin_passkeys::owns_revocation(state, payload.revocation_id.as_str()).await
     {
         Ok(false) => {}
         Ok(true) => {
@@ -308,7 +295,7 @@ async fn handle_revoke_finish(
                 Ok(a) => a,
                 Err(reject) => return reject,
             };
-            return match crate::routes::admin::passkeys::revoke_finish(state, &actor.did, &payload)
+            return match crate::auth::admin_passkeys::revoke_finish(state, &actor.did, &payload)
                 .await
             {
                 Ok(response) => success_response(&doc, response),
@@ -368,7 +355,7 @@ mod tests {
     use axum::http::StatusCode;
     use serde_json::{Value, json};
     use uuid::Uuid;
-    use vti_common::audit::AuditEvent;
+    use vtc_audit::AuditEvent;
     use vti_common::auth::passkey::store::{
         PasskeyUser, get_all_passkeys, store_credential_mapping, store_passkey_user,
     };
@@ -377,7 +364,6 @@ mod tests {
         CreationChallengeResponse, PublicKeyCredential, RequestChallengeResponse,
     };
 
-    use super::super::members_admin_tests::{error_code, payload_of, seed_acl, signed, unsigned};
     use super::super::soft_authenticator::SoftEd25519Authenticator;
     use super::super::{
         JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, TrustTaskOutcome, dispatch_trust_task_core,
@@ -391,6 +377,7 @@ mod tests {
     use crate::join::JoinTransport;
     use crate::step_up_passkey::MAX_WRONG_CODES;
     use crate::test_support::TestVtc;
+    use crate::trust_tasks::test_fixtures::{error_code, payload_of, seed_acl, signed, unsigned};
     use trust_tasks_rs::TrustTask;
     use trust_tasks_rs::validate::ValidatedPayload;
 
@@ -684,7 +671,7 @@ mod tests {
             .unwrap();
         let mut out: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
         for (_, value) in rows {
-            if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&value)
+            if let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&value)
                 && let AuditEvent::StepUpPasskeyChanged(d) = env.event
             {
                 out.push((env.timestamp, d.stage));

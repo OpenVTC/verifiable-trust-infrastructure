@@ -28,7 +28,7 @@ use vti_common::acl::Capability;
 use vti_common::vault::{
     LifecycleError, SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultListFilter,
     VaultSecret, VaultStatus, delete_vault_entry, get_stored_vault_entry, get_vault_entry,
-    list_vault_entries as list_entries_store, put_stored_vault_entry,
+    list_vault_entries_page as list_entries_page, put_stored_vault_entry,
 };
 
 use crate::auth::AuthClaims;
@@ -677,10 +677,26 @@ pub(super) async fn handle_list(
         any_status,
     };
 
-    let mut entries = match list_entries_store(&state.vault_ks, &filter).await {
-        Ok(v) => v,
-        Err(e) => return app_error_to_reject(&doc, e),
+    // Keyset pagination (`vault/list/0.4`): entries in `id` order, a page
+    // resuming strictly after the last id the previous one returned, under the
+    // filters its cursor was minted for. A maintainer with more matching
+    // entries MUST return a `nextCursor`.
+    let filters = list_cursor_filters(&req);
+    let after = match req.cursor.as_deref() {
+        Some(cursor) => match open_list_cursor(cursor, &filters) {
+            Some(after) => Some(after),
+            None => {
+                return reject_declared(
+                    &doc,
+                    vti_specs::vault::list::v0_4::error_codes::CURSOR_INVALID,
+                    "vault/list: the cursor was not issued by this VTA for these filters; list \
+                     again from the first page",
+                );
+            }
+        },
+        None => None,
     };
+    let limit = req.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIST_LIMIT);
 
     // If the caller is not a super-admin and queried without a `contextId`
     // filter, narrow the result set to visible contexts only. This is
@@ -693,30 +709,17 @@ pub(super) async fn handle_list(
     // old test skipped the narrowing for it entirely — returning every entry
     // in every context to a caller entitled to none. Same defect as the
     // explicit-filter path above.
-    if !auth.is_super_admin() && req.context_id.is_none() {
-        entries.retain(|e| auth.has_context_access(&e.context_id));
-    }
+    let narrow = !auth.is_super_admin() && req.context_id.is_none();
+    let visible =
+        |e: &vti_common::vault::VaultEntry| !narrow || auth.has_context_access(&e.context_id);
 
-    // Keyset pagination (`vault/list/0.4`): entries in `id` order, a page
-    // resuming strictly after the last id the previous one returned, under the
-    // filters its cursor was minted for. A maintainer with more matching
-    // entries MUST return a `nextCursor`.
-    entries.sort_by(|a, b| a.id.cmp(&b.id));
-    let filters = list_cursor_filters(&req);
-    if let Some(cursor) = req.cursor.as_deref() {
-        let Some(after) = open_list_cursor(cursor, &filters) else {
-            return reject_declared(
-                &doc,
-                vti_specs::vault::list::v0_4::error_codes::CURSOR_INVALID,
-                "vault/list: the cursor was not issued by this VTA for these filters; list \
-                 again from the first page",
-            );
+    // One page read from the store, from the cursor (#2627), never every
+    // entry and its secret decoded per page.
+    let (entries, more) =
+        match list_entries_page(&state.vault_ks, &filter, visible, after.as_deref(), limit).await {
+            Ok(v) => v,
+            Err(e) => return app_error_to_reject(&doc, e),
         };
-        entries.retain(|e| e.id > after);
-    }
-    let limit = req.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIST_LIMIT);
-    let more = entries.len() > limit;
-    entries.truncate(limit);
     let next_cursor = more
         .then(|| entries.last().map(|e| list_cursor(&filters, &e.id)))
         .flatten();
