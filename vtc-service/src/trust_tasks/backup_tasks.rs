@@ -874,7 +874,7 @@ mod tests {
     use sha2::Digest as _;
     use vti_rooms_dtg::test_support::Party;
 
-    use super::super::members_admin_tests::{
+    use crate::trust_tasks::test_fixtures::{
         dispatch, dispatch_didcomm, error_code, payload_of, seed_acl, signed,
     };
 

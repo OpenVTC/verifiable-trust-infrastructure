@@ -924,9 +924,6 @@ mod tests {
     use serde_json::{Value, json};
     use vti_rooms_dtg::test_support::Party;
 
-    use super::super::members_admin_tests::{
-        assert_conforms, error_code, payload_of, signed, unsigned,
-    };
     use super::super::{
         ACL_GRANT_TYPE, ACL_LIST_TYPE, ACL_REVOKE_TYPE, ACL_SHOW_TYPE, ACL_UPDATE_TYPE,
         JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core,
@@ -937,6 +934,9 @@ mod tests {
     };
     use crate::join::JoinTransport;
     use crate::test_support::TestVtc;
+    use crate::trust_tasks::test_fixtures::{
+        assert_conforms, error_code, payload_of, signed, unsigned,
+    };
     use trust_tasks_rs::TrustTask;
 
     const TRANSPORTS: [JoinTransport; 3] = [
