@@ -9241,6 +9241,7 @@ dependencies = [
  "vti-common",
  "vti-rooms",
  "vti-rooms-dtg",
+ "vti-rooms-host",
  "vti-secrets",
  "vti-specs",
  "vti-trust-task-server",
@@ -12523,6 +12524,7 @@ dependencies = [
  "vti-oob-server",
  "vti-rooms",
  "vti-rooms-dtg",
+ "vti-rooms-host",
  "vti-secrets",
  "vti-specs",
  "vti-trust-task-server",
@@ -12735,6 +12737,25 @@ dependencies = [
  "vti-common",
  "vti-rooms",
  "vti-rooms-dtg",
+]
+
+[[package]]
+name = "vti-rooms-host"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tracing",
+ "trust-tasks-rs",
+ "uuid",
+ "vti-common",
+ "vti-rooms",
+ "vti-rooms-dtg",
+ "vti-specs-rooms",
+ "vti-trust-task-server",
 ]
 
 [[package]]

@@ -693,7 +693,7 @@ When adding a flow, add it here and a line to the root index.
   `{code, reason}`, only `remove/0.4` gives it `{stage, code}`.
 - **Code**: `vti-rooms/src/{revocation,revocation_tasks,authz}.rs`,
   `vti-rooms-dtg/src/lib.rs` (`verify_room_signed`, `credential_facts`),
-  `room-host/src/files.rs`, `vtc-service/src/rooms/{handlers,files}.rs`,
+  `vti-rooms-host/src/files.rs` (`handle_revocations`, the held transfer steps),
   `vta-service/src/operations/room_revocation.rs`,
   `vta-service/src/trust_tasks/{room_owner,room_owner_revoke,room_owner_group,room_list_delivery}.rs`,
   `vtc-service/src/rooms/departures.rs` (`remove_member`).

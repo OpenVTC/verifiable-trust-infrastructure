@@ -98,9 +98,6 @@ Layer 5 (longest internal chain 5):
   vti-witness            → vta-sdk, vti-common, vti-secrets, vti-specs
 
 Layer 6 (longest internal chain 6):
-  room-host              → vta-sdk, vtc-client, vti-common, vti-rooms,
-                           vti-rooms-dtg, vti-secrets, vti-specs,
-                           vti-trust-task-server
   vta-cli-common         → vta-sdk, vtc-client, vti-common, vti-rooms,
                            vti-specs
   vta-keys               → vta-config, vta-keyspaces, vta-sdk, vti-common,
@@ -109,20 +106,25 @@ Layer 6 (longest internal chain 6):
   vta-support            → vta-config, vta-keyspaces, vta-sdk, vti-common
   vta-sweepers           → vta-audit, vta-keyspaces, vta-vault, vti-common
   vtc-mcp                → vta-sdk, vtc-client, vti-mcp-common, vti-specs
-  vtc-service            → vta-sdk, vtc-audit, vti-common, vti-oob-server,
-                           vti-rooms, vti-rooms-dtg, vti-secrets, vti-specs,
-                           vti-trust-task-server, vti-vetting-pcs, vti-voting,
-                           vti-vtn
+  vti-rooms-host         → vti-common, vti-rooms, vti-rooms-dtg,
+                           vti-specs-rooms, vti-trust-task-server
 
 Layer 7 (longest internal chain 7):
   cnm-cli                → vta-cli-common, vta-sdk, vtc-client, vti-specs,
                            vti-voting
   pnm-cli                → vta-cli-common, vta-sdk
+  room-host              → vta-sdk, vtc-client, vti-common, vti-rooms,
+                           vti-rooms-dtg, vti-rooms-host, vti-secrets,
+                           vti-specs, vti-trust-task-server
   vta-backup             → vta-config, vta-keys, vta-keyspaces, vta-sdk,
                            vta-support, vti-common
   vta-external           → vta-keys, vta-sdk, vti-common, vti-specs
   vta-tee                → vta-config, vta-keys, vta-keyspaces, vta-support,
                            vti-common
+  vtc-service            → vta-sdk, vtc-audit, vti-common, vti-oob-server,
+                           vti-rooms, vti-rooms-dtg, vti-rooms-host,
+                           vti-secrets, vti-specs, vti-trust-task-server,
+                           vti-vetting-pcs, vti-voting, vti-vtn
 
 Layer 8 (longest internal chain 8):
   vta-service            → vta-audit, vta-backup, vta-cli-common, vta-config,
@@ -180,6 +182,7 @@ Layer 9 (longest internal chain 9):
 | `vta-persona` | VTA persona store: the holder's own identity attributes, the profiles projected over them, the bindings assigning a profile to a persona DID, and the contacts peers disclose |
 | `vti-rooms` | **Data rooms** without the service: storage, wire types, authorization (`authz::authorize`), revocation lists, retention, watches — run by both hosts (`room-host`, `vtc-service`) and the VTA (detail: `docs/02-vta/data-rooms.md`) |
 | `vti-rooms-dtg` | The DTG credential-chain verifier for data rooms (room-signed lists, credential facts, profile statements) |
+| `vti-rooms-host` | **The `rooms/*` handler layer**, written once for both hosts: one `AsyncDispatcher` over a small object-safe `RoomHost` trait (keyspaces, verifier resolver, audit sink, charge hook, registration governance, limits); `served_uris` and `is_consequential` are read off the registrations. `room-host` and `vtc-service` each implement `RoomHost` and receive through their own `Spine` (#2575) |
 | `vti-rooms-wasm` | A data room's member half for the browser — MLS group custody, record sealing, the epoch key chain — compiled to WebAssembly (`publish = false`; built by `scripts/build-rooms-wasm-npm.sh`) |
 | `room-host` | A host service that stores data-room records for rooms it does not govern — a delivery service, not a community (`publish = false`) |
 | `vti-webauthn` | DID-VM-resolved WebAuthn assertion verifier (the `webauthn-vti-v1` cryptosuite), used by `vta-service` |
@@ -627,7 +630,7 @@ Mechanics: [`RELEASING.md`](RELEASING.md).
   baseline resolves without a lockfile. Read what
   `scripts/semver-build-failure.py` attributes it to before blaming our crate
   (#1667).
-- **37 of 48 crates publish**; the eleven that do not set `publish = false`
+- **38 of 49 crates publish**; the eleven that do not set `publish = false`
   with a comment saying why. `vtc-service` publishes as a binary with pre-built web
   bundles — a new `include_dir!` / `include_str!` outside tests must sit inside
   its `include` list. `vta-service` publishes because `openvtc-core`

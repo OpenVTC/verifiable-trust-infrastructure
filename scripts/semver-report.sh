@@ -126,6 +126,7 @@ EXCLUDED=(
   vta-webvh
   vti-webauthn
   vtc-audit
+  vti-rooms-host
   vtc-service
 )
 

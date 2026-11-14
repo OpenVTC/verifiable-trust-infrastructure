@@ -168,6 +168,7 @@ COPY vti-common/ vti-common/
 COPY vti-mcp-common/ vti-mcp-common/
 COPY vti-rooms/ vti-rooms/
 COPY vti-rooms-dtg/ vti-rooms-dtg/
+COPY vti-rooms-host/ vti-rooms-host/
 COPY vti-rooms-wasm/ vti-rooms-wasm/
 COPY vti-secrets/ vti-secrets/
 COPY vti-specs/ vti-specs/

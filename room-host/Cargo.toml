@@ -23,6 +23,8 @@ vti-rooms = { path = "../vti-rooms", version = "0.35" }
 vti-common = { path = "../vti-common", version = "0.64" }
 # The store-backed accepted-document-id record the VTA and the VTC keep (VTI-OPS-029).
 vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.10" }
+# The `rooms/*` handlers, shared with the VTC behind one `RoomHost` trait (#2575).
+vti-rooms-host = { path = "../vti-rooms-host", version = "0.1" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
 # The room client, for pulling from a write-primary. Host-neutral despite the
 # name: a mirror reads its primary exactly as any member would, because that is
