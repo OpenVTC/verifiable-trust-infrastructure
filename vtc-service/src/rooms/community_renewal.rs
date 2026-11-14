@@ -619,7 +619,7 @@ async fn held(
         .ask(VAULT_QUERY, query, SIGN_TIMEOUT)
         .await
         .map_err(|e| match e {
-            HolderError::Refused { code, message } if code.contains("ermission") || code.contains("orbidden") => format!(
+            HolderError::Refused { code, message } if code == trust_tasks_rs::StandardCode::PermissionDenied.as_str() => format!(
                 "vault/credentials/query: the community's VTA refused ({code} {message}). A room \
                  created before this release has no record of where the VTA keeps the \
                  community's credentials for it, and finding them takes `vault-read` on this \

@@ -199,6 +199,52 @@ impl LifecycleEventKind {
     }
 }
 
+/// Why [`LifecycleLog::record`] refused an event.
+///
+/// Typed at the source so a caller picks a wire error code from the variant
+/// (`terminal` on `vtc/relationships/{suspend,restore}`), never from the
+/// wording of the message (#2578). Converts into [`AppError::Conflict`] with
+/// the message unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LifecycleError {
+    /// The event's record time is earlier than the last event's.
+    #[error(
+        "lifecycle event recorded at {at} predates the last recorded event at {last} — \
+         the log is append-only and ordered by record time"
+    )]
+    OutOfOrder {
+        at: DateTime<Utc>,
+        last: DateTime<Utc>,
+    },
+    /// The last event was terminal (superseded or withdrawn); nothing follows it.
+    #[error(
+        "artifact was {verb} at {at} and that is terminal — give effect back by issuing a \
+         fresh artifact, not by reversing the record"
+    )]
+    Terminal {
+        verb: &'static str,
+        at: DateTime<Utc>,
+    },
+    /// A suspension of an artifact already suspended.
+    #[error(
+        "artifact is already suspended; a second suspension records nothing a reader could \
+         act on"
+    )]
+    AlreadySuspended,
+    /// A restoration of an artifact that is not suspended.
+    #[error(
+        "restoration reverses a suspension, and this artifact is not suspended — an artifact \
+         that is merely expired is restored by re-issuance, not by a lifecycle event"
+    )]
+    NotSuspended,
+}
+
+impl From<LifecycleError> for AppError {
+    fn from(e: LifecycleError) -> Self {
+        AppError::Conflict(e.to_string())
+    }
+}
+
 /// One entry in an artifact's lifecycle log: what happened, and when this
 /// service recorded it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -263,7 +309,8 @@ impl LifecycleLog {
 
     /// Append an event, enforcing the transition rules.
     ///
-    /// Rejections are [`AppError::Conflict`] rather than `Validation`: the
+    /// Rejections are a [`LifecycleError`], which converts into an
+    /// [`AppError::Conflict`] rather than `Validation`: the
     /// request is well-formed and the caller may well be entitled to make it —
     /// it is the artifact's current state that refuses, and a retry after the
     /// state changes could succeed. That is the distinction the workspace's
@@ -278,7 +325,7 @@ impl LifecycleLog {
         &mut self,
         kind: LifecycleEventKind,
         now: DateTime<Utc>,
-    ) -> Result<&LifecycleEvent, AppError> {
+    ) -> Result<&LifecycleEvent, LifecycleError> {
         if let Some(last) = self.latest() {
             // Monotonic, because the vector order is the precedence order. A
             // backwards timestamp would produce a log in which `standing_at`
@@ -286,19 +333,16 @@ impl LifecycleLog {
             // and every answer after that point would depend on which of two
             // equally "current" entries was scanned first.
             if now < last.recorded_at {
-                return Err(AppError::Conflict(format!(
-                    "lifecycle event recorded at {now} predates the last recorded \
-                     event at {} — the log is append-only and ordered by record time",
-                    last.recorded_at
-                )));
+                return Err(LifecycleError::OutOfOrder {
+                    at: now,
+                    last: last.recorded_at,
+                });
             }
             if last.kind.is_terminal() {
-                return Err(AppError::Conflict(format!(
-                    "artifact was {} at {} and that is terminal — give effect back \
-                     by issuing a fresh artifact, not by reversing the record",
-                    last.kind.verb(),
-                    last.recorded_at
-                )));
+                return Err(LifecycleError::Terminal {
+                    verb: last.kind.verb(),
+                    at: last.recorded_at,
+                });
             }
         }
 
@@ -308,19 +352,10 @@ impl LifecycleLog {
         );
         match &kind {
             LifecycleEventKind::Suspended { .. } if standing_is_suspension => {
-                return Err(AppError::Conflict(
-                    "artifact is already suspended; a second suspension records \
-                     nothing a reader could act on"
-                        .into(),
-                ));
+                return Err(LifecycleError::AlreadySuspended);
             }
             LifecycleEventKind::Restored { .. } if !standing_is_suspension => {
-                return Err(AppError::Conflict(
-                    "restoration reverses a suspension, and this artifact is not \
-                     suspended — an artifact that is merely expired is restored by \
-                     re-issuance, not by a lifecycle event"
-                        .into(),
-                ));
+                return Err(LifecycleError::NotSuspended);
             }
             _ => {}
         }
@@ -606,7 +641,7 @@ mod tests {
         let err = log
             .record(restored(), now - Duration::days(1))
             .expect_err("the log is ordered by record time");
-        assert!(format!("{err:?}").contains("append-only"), "{err:?}");
+        assert!(err.to_string().contains("append-only"), "{err:?}");
     }
 
     // ─── Restoration versus replacement ──────────────────────
@@ -644,7 +679,7 @@ mod tests {
         let err = log
             .record(restored(), now)
             .expect_err("a superseded artifact is replaced, not restorable");
-        assert!(format!("{err:?}").contains("terminal"), "{err:?}");
+        assert!(err.to_string().contains("terminal"), "{err:?}");
         assert!(log.is_terminal());
     }
 
@@ -659,10 +694,7 @@ mod tests {
         let err = fresh
             .record(restored(), now)
             .expect_err("nothing to restore");
-        assert!(
-            format!("{err:?}").contains("reverses a suspension"),
-            "{err:?}"
-        );
+        assert!(err.to_string().contains("reverses a suspension"), "{err:?}");
 
         let mut reinstated = LifecycleLog::default();
         reinstated.record(suspended(), now).unwrap();
@@ -670,10 +702,7 @@ mod tests {
         let err = reinstated
             .record(restored(), now)
             .expect_err("already restored");
-        assert!(
-            format!("{err:?}").contains("reverses a suspension"),
-            "{err:?}"
-        );
+        assert!(err.to_string().contains("reverses a suspension"), "{err:?}");
     }
 
     #[test]
@@ -682,7 +711,7 @@ mod tests {
         let mut log = LifecycleLog::default();
         log.record(suspended(), now).unwrap();
         let err = log.record(suspended(), now).expect_err("already suspended");
-        assert!(format!("{err:?}").contains("already suspended"), "{err:?}");
+        assert!(err.to_string().contains("already suspended"), "{err:?}");
     }
 
     /// A suspended artifact may still be withdrawn or superseded — suspension

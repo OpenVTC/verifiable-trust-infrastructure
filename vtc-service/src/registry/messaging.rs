@@ -629,6 +629,24 @@ fn tsp_envelope(doc: &TrustTask<Value>) -> Result<Vec<u8>, RegistryError> {
     crate::outbound::seal_trust_task_tsp(doc).map_err(|e| RegistryError::Transient(e.to_string()))
 }
 
+/// Whether `reply` is the registry's declared "no such record" refusal of a
+/// `registry/record/delete` — read from the reply's `code`, as the
+/// specification declares it, never from the wording of a message (#2578).
+/// The code is the same at 0.1 and 0.2; both are compared so a re-pin that
+/// changed one would not go unnoticed.
+fn is_delete_not_found(reply: &TrustTask<Value>) -> bool {
+    use vti_specs::registry::record::delete::{v0_1, v0_2};
+    reply.type_uri.slug() == "trust-task-error"
+        && reply
+            .payload
+            .get("code")
+            .and_then(Value::as_str)
+            .is_some_and(|code| {
+                code == v0_1::error_codes::NOT_FOUND.code
+                    || code == v0_2::error_codes::NOT_FOUND.code
+            })
+}
+
 /// Whether `reply` is a registry saying it knows this task but not this
 /// version of it.
 fn is_unsupported_version(reply: &TrustTask<Value>) -> bool {
@@ -884,17 +902,13 @@ impl TrustRegistryClient for MessagingRegistryClient {
                         protocol,
                     )
                     .await?;
-                match classify(&reply, "registry/record/delete") {
-                    // Already absent is the effect a delete wants — the same
-                    // tolerance `delete_trust_record` gives. Without it, a
-                    // record already gone failed the job permanently.
-                    Err(RegistryError::Permanent(m))
-                        if m.contains("registry/record/delete:notFound") =>
-                    {
-                        Ok(())
-                    }
-                    other => other,
+                // Already absent is the effect a delete wants — the same
+                // tolerance `delete_trust_record` gives. Without it, a record
+                // already gone failed the job permanently.
+                if is_delete_not_found(&reply) {
+                    return Ok(());
                 }
+                classify(&reply, "registry/record/delete")
             }
         }
     }
@@ -1010,7 +1024,7 @@ impl TrustRegistryClient for MessagingRegistryClient {
                         return Ok(out);
                     }
                     if page + 1 == MAX_PAGES {
-                        return Err(RegistryError::Transient(format!(
+                        return Err(RegistryError::PaginationExhausted(format!(
                             "the trust registry is still paginating after {MAX_PAGES} pages \
                              ({} records); refusing to compare a partial enumeration",
                             out.len()
@@ -1121,15 +1135,11 @@ impl TrustRegistryClient for MessagingRegistryClient {
                         protocol,
                     )
                     .await?;
-                match classify(&reply, "registry/record/delete") {
-                    // Already absent is the effect a delete wants.
-                    Err(RegistryError::Permanent(m))
-                        if m.contains("registry/record/delete:notFound") =>
-                    {
-                        Ok(())
-                    }
-                    other => other,
+                // Already absent is the effect a delete wants.
+                if is_delete_not_found(&reply) {
+                    return Ok(());
                 }
+                classify(&reply, "registry/record/delete")
             }
         }
     }
@@ -1315,7 +1325,7 @@ impl MessagingRegistryClient {
                             || "this community's records".to_string(),
                             |a| format!("`{a}`"),
                         );
-                        return Err(RegistryError::Transient(format!(
+                        return Err(RegistryError::PaginationExhausted(format!(
                             "the trust registry is still paginating {what} after \
                              {MAX_PAGES} pages; refusing to answer from a partial list"
                         )));
@@ -1461,6 +1471,26 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed["type"], vta_sdk::tsp_binding::ENVELOPE_TYPE);
         assert_eq!(parsed["document"]["type"], RECORD_QUERY);
+    }
+
+    /// #2578: an absent record is tolerated on the delete's declared code,
+    /// never on words in a message — a refusal whose message happens to quote
+    /// the code is still a refusal.
+    #[test]
+    fn delete_not_found_is_read_from_the_code_not_the_message() {
+        assert!(is_delete_not_found(&error_doc(
+            "registry/record/delete:notFound"
+        )));
+        let quoted = TrustTask::new(
+            "urn:uuid:err".to_string(),
+            crate::trust_tasks::helpers::framework_error_type_uri(),
+            json!({
+                "code": "permissionDenied",
+                "message": "not registry/record/delete:notFound — you may not delete it",
+            }),
+        );
+        assert!(!is_delete_not_found(&quoted));
+        assert!(!is_delete_not_found(&error_doc("notFound")));
     }
 
     #[test]

@@ -739,7 +739,7 @@ pub(crate) async fn record_lifecycle_as(
     rel: &Relationship,
     verb: EdgeLifecycleVerb,
     reason: Option<String>,
-) -> Result<LifecycleResponse, AppError> {
+) -> Result<LifecycleResponse, crate::relationships::LifecycleRecordError> {
     let now = Utc::now();
     let id = rel.id;
     let updated = crate::relationships::record_lifecycle_event(

@@ -734,7 +734,7 @@ pub async fn verify(
             Err(e) if e.is_retriable() => {
                 // Running out of pages is reported as retriable, and never
                 // resolves by itself: say so where an operator will see it.
-                if e.to_string().contains("still paginating") {
+                if matches!(e, crate::registry::RegistryError::PaginationExhausted(_)) {
                     warn!(
                         error = %e,
                         "git-ns verify is skipped: the registry holds more records for one \

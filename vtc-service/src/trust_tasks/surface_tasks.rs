@@ -826,16 +826,28 @@ async fn handle_accepts_register(
     // names are registered, the statement type is registered, the vetting
     // requirements are satisfiable, every requirement is one this community
     // can evaluate, and the manifest can publish the result.
-    if let Some(query) = &criterion.query
-        && let Err(AppError::Validation(m)) =
-            crate::schemas::accepts::validate_accepts_query(&state.schemas_ks, query).await
-    {
-        let code = if m.starts_with("invalid DCQL query") {
-            ACCEPTS_REGISTER_ERR_INVALID_QUERY
-        } else {
-            ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE
-        };
-        return declared(&doc, code, m);
+    if let Some(query) = &criterion.query {
+        use crate::schemas::accepts::AcceptsQueryError;
+        let code =
+            match crate::schemas::accepts::validate_accepts_query(&state.schemas_ks, query).await {
+                Ok(_) => None,
+                Err(e @ AcceptsQueryError::InvalidQuery(_)) => {
+                    Some((ACCEPTS_REGISTER_ERR_INVALID_QUERY, e))
+                }
+                // An uncheckable `trusted_authorities` has no code of its own in
+                // register 0.x; it has always been answered as the unregistered-type
+                // refusal, and stays so until the specification names one.
+                Err(e @ AcceptsQueryError::UnregisteredType(_))
+                | Err(e @ AcceptsQueryError::UncheckableTrustedAuthorities(_)) => {
+                    Some((ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE, e))
+                }
+                // A store failure is not a refusal of the query; `store_accepts`
+                // re-runs the check below and propagates it.
+                Err(AcceptsQueryError::Store(_)) => None,
+            };
+        if let Some((code, e)) = code {
+            return declared(&doc, code, e.to_string());
+        }
     }
     if let Some(vetting) = &criterion.vetting {
         match crate::endorsement_types::storage::type_exists(
@@ -1172,6 +1184,8 @@ async fn handle_edge_lifecycle(
     doc: TrustTask<Value>,
     verb: EdgeVerb,
 ) -> TrustTaskOutcome {
+    use crate::credentials::lifecycle::LifecycleError;
+    use crate::relationships::LifecycleRecordError;
     use crate::routes::relationships::EdgeLifecycleVerb;
     let (not_found, already, terminal, route_verb) = match verb {
         EdgeVerb::Suspend => (
@@ -1244,12 +1258,17 @@ async fn handle_edge_lifecycle(
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(AppError::Conflict(m)) if m.contains("terminal") => {
-            declared_as(&doc, terminal, AppError::Conflict(m))
+        Err(LifecycleRecordError::Refused(e @ LifecycleError::Terminal { .. })) => {
+            declared_as(&doc, terminal, e.into())
         }
-        Err(e @ AppError::Conflict(_)) => declared_as(&doc, already, e),
-        Err(AppError::NotFound(_)) => missing(&doc),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(LifecycleRecordError::Refused(e)) => declared_as(&doc, already, e.into()),
+        // The row kept changing under the retries: a state conflict, answered
+        // as the edge already being where the verb would put it, as before.
+        Err(LifecycleRecordError::Other(e @ AppError::Conflict(_))) => {
+            declared_as(&doc, already, e)
+        }
+        Err(LifecycleRecordError::Other(AppError::NotFound(_))) => missing(&doc),
+        Err(LifecycleRecordError::Other(e)) => app_error_to_reject(&doc, &e),
     }
 }
 
