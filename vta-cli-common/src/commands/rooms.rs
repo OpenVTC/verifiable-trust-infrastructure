@@ -636,6 +636,9 @@ pub struct NewestPage<'a> {
     pub pages: Option<u64>,
     /// A `nextCursor` an earlier `--newest` printed, to read the page before it.
     pub cursor: Option<&'a str>,
+    /// Only records below this version (`rooms/keys/browse/0.6`): "load older" from the
+    /// lowest version already shown, with no cursor to keep.
+    pub before_version: Option<u64>,
 }
 
 /// The page size `--newest` asks for when `--limit` is not given.
@@ -675,9 +678,10 @@ fn oldest_first_command(room_id: &str, host_url: &str, host_did: &str) -> String
     format!("pnm rooms list --room {room_id} --host {host_url} --host-did {host_did}")
 }
 
-/// `rooms/keys/browse/0.5`, newest first: the member's VTA lists the room at its host from
-/// the head down, `pages` host pages, and answers the host's cursor when it stopped early.
-/// Every refusal that has a better command names it.
+/// `rooms/keys/browse/0.6` (0.5 from a VTA that predates it, for a page naming no
+/// `--before-version`), newest first: the member's VTA lists the room at its host from the
+/// head down — or from below `--before-version` — `pages` host pages, and answers the host's
+/// cursor when it stopped early. Every refusal that has a better command names it.
 async fn browse_newest(
     client: &VtaClient,
     target: &RoomTarget<'_>,
@@ -699,13 +703,26 @@ async fn browse_newest(
         order: Some(vta_sdk::client::RoomListOrder::NewestFirst),
         max_pages: Some(page.pages.unwrap_or(1).max(1)),
         cursor: page.cursor.map(str::to_string),
+        before_version: page.before_version,
     };
     let fallback = oldest_first_command(target.room_id, target.host_url, host_did);
+    // Paging older by cursor instead of by version: what to run where `--before-version`
+    // cannot be served.
+    let by_cursor = format!(
+        "pnm rooms {verb} --newest --room {} --host {} --host-did {host_did}, then the \
+         --cursor it prints",
+        target.room_id, target.host_url
+    );
     match client
         .room_browse(target.room_id, host_did, &options, None)
         .await
     {
         Ok(listing) => Ok(serde_json::to_value(listing)?),
+        Err(VtaError::UnsupportedTaskType { .. }) if page.before_version.is_some() => Err(format!(
+            "your VTA does not serve `rooms/keys/browse/0.6`, which pages older by \
+                 version. Upgrade it, or page older with the cursor instead:\n  {by_cursor}"
+        )
+        .into()),
         Err(VtaError::UnsupportedTaskType { .. }) => Err(format!(
             "your VTA does not serve `rooms/keys/browse/0.5`, which lists a room newest first. \
              Upgrade it, or list the room oldest first, to the end:\n  {fallback}"
@@ -721,7 +738,13 @@ async fn browse_newest(
                 .and_then(|d| d.get("code"))
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if host_code == "unsupportedType" {
+            if host_code == "unsupportedType" && page.before_version.is_some() {
+                Err(format!(
+                    "the room's host does not serve `rooms/records/list/0.8`, so it cannot list \
+                     below a version. Page older with the cursor instead:\n  {by_cursor}"
+                )
+                .into())
+            } else if host_code == "unsupportedType" {
                 Err(format!(
                     "the room's host does not serve `rooms/records/list/0.7`, so it cannot list \
                      newest first. List the room oldest first, to the end:\n  {fallback}"
@@ -730,7 +753,7 @@ async fn browse_newest(
             } else if host_code.ends_with("invalidCursor") {
                 Err(format!(
                     "the host refused the cursor: it was not issued for this newest-first \
-                     listing (or has expired). Start again from the head:\n  pnm rooms {verb} \
+                     listing and these bounds (or has expired). Start again from the head:\n  pnm rooms {verb} \
                      --newest --room {} --host {} --host-did {host_did}",
                     target.room_id, target.host_url
                 )
@@ -743,15 +766,48 @@ async fn browse_newest(
     }
 }
 
-/// What to run for the page before this one, when the VTA stopped with a cursor.
-fn older_page_hint(verb: &str, target: &RoomTarget<'_>, listing: &Value) -> Option<String> {
+/// What to run for the page before this one, when the VTA stopped with a cursor: the
+/// cursor, and — needing no cursor kept, from a VTA and host serving browse/0.6 and
+/// list/0.8 — `--before-version` the lowest version on this page.
+///
+/// The cursor line repeats this page's `--prefix`, `--since-version` and
+/// `--before-version`: a host's cursor is accepted only under the bounds it was issued for
+/// (`rooms/records/list/0.8`).
+fn older_page_hint(
+    verb: &str,
+    target: &RoomTarget<'_>,
+    page: &NewestPage<'_>,
+    listing: &Value,
+) -> Option<String> {
     let cursor = listing.get("nextCursor").and_then(Value::as_str)?;
-    Some(format!(
-        "Older records: pnm rooms {verb} --newest --room {} --host {} --host-did {} --cursor {cursor}",
+    let mut base = format!(
+        "pnm rooms {verb} --newest --room {} --host {} --host-did {}",
         target.room_id,
         target.host_url,
         target.host_did.unwrap_or("<the host's DID>")
-    ))
+    );
+    if let Some(p) = page.prefix {
+        base.push_str(&format!(" --prefix {p}"));
+    }
+    if let Some(s) = page.since_version {
+        base.push_str(&format!(" --since-version {s}"));
+    }
+    let bounded = match page.before_version {
+        Some(b) => format!("{base} --before-version {b}"),
+        None => base.clone(),
+    };
+    let lowest = listing["records"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.get("version").and_then(Value::as_u64))
+        .min();
+    Some(match lowest {
+        Some(v) => format!(
+            "Older records: {bounded} --cursor {cursor}\n           or: {base} --before-version {v}"
+        ),
+        None => format!("Older records: {bounded} --cursor {cursor}"),
+    })
 }
 
 /// `rooms list --newest` — a conversation from its head: the newest page of the room's
@@ -781,7 +837,7 @@ pub async fn cmd_rooms_list_newest(
             list_row(r, &names);
         }
     }
-    match older_page_hint("list", &target, &listing) {
+    match older_page_hint("list", &target, &page, &listing) {
         Some(hint) => println!("\n{hint}"),
         None => println!("\nThat is the whole listing."),
     }
@@ -803,7 +859,7 @@ pub async fn cmd_rooms_read_newest(
         .filter(|r| r.get("status").and_then(Value::as_str) != Some("retracted"))
         .filter_map(|r| r.get("key").and_then(Value::as_str).map(str::to_string))
         .collect();
-    let hint = older_page_hint("read", &target, &listing);
+    let hint = older_page_hint("read", &target, &page, &listing);
     if keys.is_empty() {
         println!("No records at the head of this room.");
     } else {
@@ -3104,8 +3160,8 @@ fn signal_delay_refused(e: vtc_client::VtcError, target: &RoomTarget<'_>) -> Str
     }
 }
 
-/// `rooms/info/0.4` as JSON (0.3, read as `randomised`, from a host that predates it), read
-/// under `read`.
+/// `rooms/info/0.5` as JSON (0.4 or 0.3 from a host that predates it — 0.3 read as
+/// `randomised`), read under `read`.
 async fn read_info(
     client: &VtaClient,
     target: &RoomTarget<'_>,

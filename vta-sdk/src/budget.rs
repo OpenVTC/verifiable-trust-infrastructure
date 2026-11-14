@@ -187,6 +187,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4,
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5,
+    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_6,
     // The profile walk fetches one location per epoch down to where it finds one, and a
     // write lists, seals and puts — each a call to the room's host.
     trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1,

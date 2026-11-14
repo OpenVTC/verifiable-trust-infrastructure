@@ -1054,11 +1054,25 @@ pub(super) async fn handle_browse_v0_5(
     browse_at(state, auth, doc, BrowseVersion::V0_5).await
 }
 
+/// `rooms/keys/browse/0.6`: 0.5, and `beforeVersion` passed through to the host's
+/// `rooms/records/list/0.8` — how a member's surface loads older records from the lowest
+/// version it holds, without the host's short-lived cursor (trust-tasks-tf #1289). A host
+/// that does not serve list/0.8 is `hostRefused` for a browse naming `beforeVersion`, never
+/// listed without the bound; without it, the browse falls back as 0.5's does.
+pub(super) async fn handle_browse_v0_6(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    browse_at(state, auth, doc, BrowseVersion::V0_6).await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrowseVersion {
     V0_3,
     V0_4,
     V0_5,
+    V0_6,
 }
 
 /// The request members `browse` reads.
@@ -1075,6 +1089,8 @@ struct BrowseRequest {
     max_pages: Option<u64>,
     /// 0.5: the host's cursor, passed through on the first page, never read here.
     cursor: Option<String>,
+    /// 0.6: the exclusive upper bound on `version`, passed through to list/0.8.
+    before_version: Option<u64>,
 }
 
 /// The most host pages one browse reads of its own accord, whatever the caller asked.
@@ -1086,7 +1102,7 @@ const BROWSE_MAX_PAGES: usize = 64;
 /// serves it; else, for a request that does not ask for `newestFirst`, as 0.4 does — and
 /// for one that does, it answers `hostRefused` rather than list oldest first. 0.1 and 0.2
 /// are not served.
-#[allow(deprecated)] // browse/0.3–0.4 and list/0.5–0.6 are still served and read beside browse/0.5 and list/0.7
+#[allow(deprecated)] // browse/0.3–0.5 and list/0.5–0.7 are still served and read beside browse/0.6 and list/0.8
 async fn browse_at(
     state: &AppState,
     auth: &AuthClaims,
@@ -1116,6 +1132,7 @@ async fn browse_at(
                 order: None,
                 max_pages: None,
                 cursor: None,
+                before_version: None,
             }),
         BrowseVersion::V0_4 => parse_payload::<vti_specs::rooms::keys::browse::v0_4::Payload>(&doc)
             .map(|r| BrowseRequest {
@@ -1127,6 +1144,7 @@ async fn browse_at(
                 order: None,
                 max_pages: None,
                 cursor: None,
+                before_version: None,
             }),
         BrowseVersion::V0_5 => {
             use vti_specs::rooms::keys::browse::v0_5 as browse;
@@ -1148,6 +1166,40 @@ async fn browse_at(
                             order,
                             max_pages: r.max_pages.map(u64::from),
                             cursor: r.cursor.map(|c| c.to_string()),
+                            before_version: None,
+                        }),
+                        Err(other) => Err(app_error_to_reject(
+                            &doc,
+                            vti_common::error::AppError::Validation(format!(
+                                "`order` {other} is not one this agent lists in"
+                            )),
+                        )),
+                    }
+                }
+                Err(resp) => Err(resp),
+            }
+        }
+        BrowseVersion::V0_6 => {
+            use vti_specs::rooms::keys::browse::v0_6 as browse;
+            match parse_payload::<browse::Payload>(&doc) {
+                Ok(r) => {
+                    let order = match r.order {
+                        None => Ok(None),
+                        Some(browse::ListOrder::OldestFirst) => Ok(Some("oldestFirst")),
+                        Some(browse::ListOrder::NewestFirst) => Ok(Some("newestFirst")),
+                        Some(other) => Err(other),
+                    };
+                    match order {
+                        Ok(order) => Ok(BrowseRequest {
+                            room_id: r.room_id.to_string(),
+                            host: r.host.to_string(),
+                            prefix: r.prefix.map(|p| p.to_string()),
+                            since_version: r.since_version,
+                            limit: r.limit.map(u64::from),
+                            order,
+                            max_pages: r.max_pages.map(u64::from),
+                            cursor: r.cursor.map(|c| c.to_string()),
+                            before_version: r.before_version.map(|b| b.get()),
                         }),
                         Err(other) => Err(app_error_to_reject(
                             &doc,
@@ -1182,6 +1234,9 @@ async fn browse_at(
         // 0.3 keeps the refusal it has always given.
         Err(vti_common::error::AppError::NotFound(why)) if version != BrowseVersion::V0_3 => {
             let code = match version {
+                BrowseVersion::V0_6 => {
+                    vti_specs::rooms::keys::browse::v0_6::error_codes::NOT_A_MEMBER
+                }
                 BrowseVersion::V0_5 => {
                     vti_specs::rooms::keys::browse::v0_5::error_codes::NOT_A_MEMBER
                 }
@@ -1198,6 +1253,7 @@ async fn browse_at(
         BrowseVersion::V0_3 => vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
         BrowseVersion::V0_4 => vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE,
         BrowseVersion::V0_5 => vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE,
+        BrowseVersion::V0_6 => vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE,
     };
     let newest_first = req.order == Some("newestFirst");
 
@@ -1234,10 +1290,15 @@ async fn browse_at(
         if let Some(c) = &cursor {
             payload["cursor"] = serde_json::json!(c);
         }
-        if list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE
-            && let Some(o) = req.order
-        {
+        let ordered = list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE
+            || list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE;
+        if ordered && let Some(o) = req.order {
             payload["order"] = serde_json::json!(o);
+        }
+        if list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE
+            && let Some(b) = req.before_version
+        {
+            payload["beforeVersion"] = serde_json::json!(b);
         }
 
         let mut sent = send_as_member_typed(
@@ -1261,6 +1322,25 @@ async fn browse_at(
                 )) if code == "unsupportedType"
             )
         };
+        // 0.6: a host without list/0.8 is asked list/0.7 only for a browse that names no
+        // `beforeVersion` — one that does is `hostRefused`, never listed without its bound.
+        if page == 0
+            && unsupported(&sent)
+            && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE
+            && req.before_version.is_none()
+        {
+            list_task = vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE;
+            sent = send_as_member_typed(
+                state,
+                auth,
+                &presenting,
+                &resolver,
+                &req.host,
+                list_task,
+                payload.clone(),
+            )
+            .await;
+        }
         if page == 0
             && unsupported(&sent)
             && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE
@@ -1302,6 +1382,16 @@ async fn browse_at(
             (Err(e), BrowseVersion::V0_3) => return app_error_to_reject(&doc, e.into_app_error()),
             (Err(e), BrowseVersion::V0_4) => {
                 use vti_specs::rooms::keys::browse::v0_4::error_codes as codes;
+                return host_failure(
+                    &doc,
+                    e,
+                    &req.host,
+                    codes::HOST_UNREACHABLE,
+                    codes::HOST_REFUSED,
+                );
+            }
+            (Err(e), BrowseVersion::V0_6) => {
+                use vti_specs::rooms::keys::browse::v0_6::error_codes as codes;
                 return host_failure(
                     &doc,
                     e,
@@ -1375,7 +1465,11 @@ async fn browse_at(
     // reader manufactured. A listing resumed from a cursor did not start at the room's
     // first record in its order, however it ends (0.5 item 6); the order itself does not
     // matter — a whole room read newest first holds what one read oldest first does.
-    let filtered = req.prefix.is_some() || req.since_version.is_some() || req.cursor.is_some();
+    // `beforeVersion` bounds the listing above, so it is never comparable either (0.6).
+    let filtered = req.prefix.is_some()
+        || req.since_version.is_some()
+        || req.before_version.is_some()
+        || req.cursor.is_some();
     let count = match (&head, complete, filtered) {
         (None, _, _) => "notOffered",
         (Some(_), false, _) | (Some(_), _, true) => "notComparable",
@@ -1420,7 +1514,7 @@ async fn browse_at(
     }
     // 0.5 item 4: the host's continuation, unchanged, exactly when the listing is not
     // complete. Earlier versions carry none.
-    if version == BrowseVersion::V0_5
+    if matches!(version, BrowseVersion::V0_5 | BrowseVersion::V0_6)
         && !complete
         && let Some(next) = cursor
     {

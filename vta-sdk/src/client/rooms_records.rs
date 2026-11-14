@@ -1,4 +1,4 @@
-//! A member's records, through their own VTA: `rooms/keys/browse/0.5`, `rooms/keys/read/0.2`
+//! A member's records, through their own VTA: `rooms/keys/browse/0.6`, `rooms/keys/read/0.2`
 //! (one record or a batch), `rooms/keys/seal/0.3` and `rooms/keys/act/0.11` — and the
 //! writer's rule for the members a room's profile governs (trust-tasks-tf #1027).
 //!
@@ -22,8 +22,9 @@
 //! # Versions, and older VTAs
 //!
 //! Each method sends the newest version and falls back when the VTA answers
-//! [`VtaError::UnsupportedTaskType`]: browse/0.4 then 0.3 (only for a browse naming no
-//! `order`, `maxPages` or `cursor`, which only 0.5 carries), read/0.1 (a batch read key by key), seal/0.2
+//! [`VtaError::UnsupportedTaskType`]: browse/0.5 (only for a browse naming no
+//! `beforeVersion`, which only 0.6 carries), then 0.4 and 0.3 (only for a browse naming no
+//! `order`, `maxPages` or `cursor`, which only 0.5 on carry), read/0.1 (a batch read key by key), seal/0.2
 //! — the last only for a body using none of the governed members, which 0.2 refuses.
 
 use std::collections::HashMap;
@@ -36,11 +37,11 @@ use crate::trust_tasks;
 
 #[allow(deprecated)] // act/0.11: still served and sent; 0.12 adds only rooms/watch
 use vti_specs::rooms::keys::act::v0_11 as act;
-use vti_specs::rooms::keys::{browse::v0_5 as browse, read::v0_2 as read};
+use vti_specs::rooms::keys::{browse::v0_6 as browse, read::v0_2 as read};
 
 /// The order a browse lists a room in (`rooms/_shared/0.2` `ListOrder`): `oldestFirst`,
 /// the default, or `newestFirst`, which reads the room's head first.
-pub use vti_specs::rooms::keys::browse::v0_5::ListOrder as RoomListOrder;
+pub use vti_specs::rooms::keys::browse::v0_6::ListOrder as RoomListOrder;
 
 /// Round-trip timeout (seconds) for one record or a listing: one host request at the VTA, a
 /// trace to check, possibly a repair.
@@ -74,15 +75,28 @@ pub struct RoomBrowse {
     /// and `Some(1)`, one page from the head — a conversation's first screen.
     pub max_pages: Option<u64>,
     /// A `nextCursor` from an earlier browse of the same room at the same host, with the
-    /// same `prefix`, `since_version` and `order` (browse/0.5).
+    /// same `prefix`, `since_version`, `before_version` and `order` (browse/0.5).
     pub cursor: Option<String>,
+    /// Only records below this version — an exclusive upper bound, the counterpart of
+    /// `since_version` (browse/0.6, the host's `rooms/records/list/0.8`). "Load older" passes
+    /// the lowest version the surface holds, with no cursor to keep.
+    pub before_version: Option<u64>,
 }
 
 impl RoomBrowse {
-    /// Whether this browse names anything only browse/0.5 carries, so that an older VTA
+    /// Whether this browse names anything only browse/0.5 on carry, so that an older VTA
     /// must not be asked it (it would read the whole room, oldest first).
     pub fn needs_v0_5(&self) -> bool {
-        self.order.is_some() || self.max_pages.is_some() || self.cursor.is_some()
+        self.order.is_some()
+            || self.max_pages.is_some()
+            || self.cursor.is_some()
+            || self.needs_v0_6()
+    }
+
+    /// Whether this browse names `before_version`, which only browse/0.6 carries: a VTA
+    /// that predates it must not be asked, since it would list without the bound.
+    pub fn needs_v0_6(&self) -> bool {
+        self.before_version.is_some()
     }
 }
 
@@ -197,15 +211,20 @@ pub fn check_record_members(
 }
 
 impl VtaClient {
-    /// `rooms/keys/browse/0.5` — the room's records at `host_did`, metadata only, read as the
+    /// `rooms/keys/browse/0.6` — the room's records at `host_did`, metadata only, read as the
     /// member and checked against what the host committed to. Rows are `RecordMetadataV3` as
     /// the host's `rooms/records/list` served them: `createdAt`, `bodyStoredAt`,
     /// `createdBy` (`open` and `attributed`) and `kind` (`open`), absent where the host
     /// predates them. With [`RoomBrowse::order`] `newestFirst` they come from the room's
     /// head down; with [`RoomBrowse::max_pages`] the VTA stops early and answers
-    /// `complete: false` with the `nextCursor` to pass back as [`RoomBrowse::cursor`].
+    /// `complete: false` with the `nextCursor` to pass back as [`RoomBrowse::cursor`]. With
+    /// [`RoomBrowse::before_version`] only records below it are listed — "load older".
     ///
-    /// A VTA that does not serve 0.5 is asked browse/0.4, then 0.3 — but only for a browse
+    /// A VTA that does not serve 0.6 is asked browse/0.5 — only for a browse that
+    /// [`RoomBrowse::needs_v0_6`] says does not need it, since it would list without the
+    /// bound. A host that serves no `rooms/records/list/0.8` answers a browse naming
+    /// `before_version` `hostRefused`. A VTA that does not serve 0.5 either is asked
+    /// browse/0.4, then 0.3 — but only for a browse
     /// that [`RoomBrowse::needs_v0_5`] says does not need it. Otherwise its
     /// [`VtaError::UnsupportedTaskType`] is returned as it came: an older VTA would read
     /// the whole room, oldest first, and a surface taking its first rows for the room's
@@ -239,13 +258,24 @@ impl VtaClient {
         if let Some(c) = &options.cursor {
             v0_5["cursor"] = json!(c);
         }
+        let mut v0_6 = v0_5.clone();
+        if let Some(b) = options.before_version {
+            v0_6["beforeVersion"] = json!(b);
+        }
         let mut value = self
             .dispatch_trust_task(
-                trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5,
-                v0_5,
+                trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_6,
+                v0_6,
                 ROOM_READ_TIMEOUT,
             )
             .await;
+        if matches!(value, Err(VtaError::UnsupportedTaskType { .. })) && !options.needs_v0_6() {
+            #[allow(deprecated)] // browse/0.5 is asked of a VTA that predates 0.6
+            let v0_5_uri = trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5;
+            value = self
+                .dispatch_trust_task(v0_5_uri, v0_5, ROOM_READ_TIMEOUT)
+                .await;
+        }
         #[allow(deprecated)] // browse/0.4 and 0.3 are asked of a VTA that predates 0.5
         for older in [
             trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4,
