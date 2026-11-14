@@ -23,6 +23,7 @@ pub mod handshake;
 #[cfg(feature = "didcomm")]
 pub mod live_prover;
 /// Durable Trust Task pushes to peers, over `vti_common::trust_task_push`.
+pub mod mediator_wake;
 pub mod push;
 /// Startup self-readiness gate for the mediator connection. Transport-neutral:
 /// the mediator authenticates us by resolving our DID whichever protocol we

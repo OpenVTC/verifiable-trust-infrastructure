@@ -329,6 +329,13 @@ impl DIDCommBridge {
         self.snapshot().map(|i| i.profile.clone())
     }
 
+    /// The ATM and its mediator-registered profile of **one** session, taken
+    /// together, or `None` before the service is published — what a
+    /// `messaging/wake/request` needs (`crate::messaging::mediator_wake`).
+    pub fn wake_wiring(&self) -> Option<(ATM, Arc<ATMProfile>)> {
+        self.snapshot().map(|i| (i.atm.clone(), i.profile.clone()))
+    }
+
     /// The service, ATM and own DID of **one** session, taken together, or
     /// `None` before the service is published — what a Trust Task push needs
     /// (`crate::messaging::push`). One snapshot rather than three accessor

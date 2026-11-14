@@ -77,6 +77,36 @@ sequenceDiagram
     V->>R: executed
 ```
 
+### Reaching the approver's device
+
+The `task-consent/request` push goes through the VTA's durable push engine
+(`vti_common::trust_task_push`): the transport both sides speak, TSP > DIDComm >
+REST, escalated to the next one when an attempt yields no delivery evidence.
+
+- **Receipts.** Every DIDComm and TSP attempt asks the approver's delivery layer
+  for a `messaging/receipt/0.1` under the attempt's own outbox key (VTI-TRN-060).
+  A receipt settles the attempt delivered, and only one from the approver itself
+  counts (VTI-TRN-062). An approver whose client receipts — anything on
+  `vta-sdk`'s `DIDCommSession`, which is built `with_receipts` — gives the VTA
+  delivery evidence across mediators.
+- **No evidence path.** An attempt relayed to the approver's own mediator, to an
+  approver not known to send receipts, has no evidence the VTA could wait for:
+  its mediator relayed it away and cannot answer. At the end of its window the
+  push records `unconfirmable` and is **not** escalated — escalating would send
+  the approver a second copy over another transport an hour later (VTI-TRN-042
+  as amended, VTI-TRN-064). An approver known to receipt is escalated as before.
+- **Waking the device.** The VTA rings the device's doorbell once, when the first
+  attempt is queued. With an ACL `DeviceBinding` wake channel (set through
+  `device/set-wake`), it sends `push/wake` to the device's push gateway. With
+  none — an approver this VTA never bound a device for — it asks the approver's
+  own mediator to ring it, with `messaging/wake/request/0.1` naming the queued
+  message by the id that mediator stores it under (#2663; VTI-TRN-070 – 074,
+  VTI-APV-024). Once per push, never re-rung while pending; the mediator answers
+  every request with the same empty response, which is dropped. A mediator that
+  predates the task refuses it, quietly, and is not asked again for an hour: the
+  device collects on its next connection, as it always has. The mediator rings
+  only a device that gave it a wake handle (`messaging/wake/set/0.1`).
+
 ## Timers — all hardcoded
 
 None of these are configurable. Plan your operator experience around them.

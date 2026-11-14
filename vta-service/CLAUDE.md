@@ -170,6 +170,42 @@ When adding a flow, add it here and a line to the root index.
   (`MediatorReadinessConfig`).
 - **Docs**: `docs/02-vta/mediator-connection.md`.
 
+### Delivery receipts and waking a device through its mediator
+- **What**: Delivery evidence for pushes across mediators (#2553) and a doorbell
+  for a device the VTA holds no wake channel for (#2663, design C). Every
+  messaging service (main session, collector, watch addresses, transient
+  handshake; the VTC's; `vta-sdk`'s `DIDCommSession`) is built
+  `MessagingService::with_receipts` with an `AtmReceiptPacker` for its own
+  profile, so a message that asks is receipted to its authenticated sender
+  (VTI-TRN-061). The push engine (`vti_common::trust_task_push`) asks for a
+  receipt on every DIDComm and TSP attempt under the attempt's outbox key
+  (`request_receipt`, `tsp_envelope`; VTI-TRN-060). Cross-mediator TSP is scoped
+  `Relayed` (`TspPushTransport::delivery_scope`). The confirmation sweep runs
+  with the service's `receipt_reach()` (`vti_common::outbox_store::confirmation_loop`).
+  Wake: `step_up::trigger_gateway_wake` uses the ACL `DeviceBinding` wake channel
+  first; with none, `messaging::mediator_wake::request_wake` sends one
+  `messaging/wake/request/0.1` to the recipient's mediator naming the first
+  attempt's stored id (`trust_task_push::stored_message_id`).
+- **Invariants to preserve**: a receipt settles an entry only from the party it
+  was addressed to (the delivery layer's rule, VTI-TRN-062) — never settle one
+  from a payload DID. A `Relayed` attempt to a recipient not in `ReceiptReach`
+  finishes `unconfirmable` and is **not** escalated (VTI-TRN-042 as amended,
+  VTI-TRN-064); one to a known receipt sender escalates as before; a `Local`
+  one is confirmed by the status poll as before. Never re-ring a pending wake
+  request (VTI-TRN-072): one per push, an id named once is never named again.
+  The wake request is fire-and-forget (VTI-TRN-074): its `#response` is dropped
+  as a reply no waiter claimed; an older mediator's `trust-task-error` is
+  consumed quietly by the spine (`mediator_wake::note_refusal`) and the mediator
+  is not asked again for an hour — never surface it as an error. `urgency` is
+  constant, never chosen by task type (VTI-TRN-071).
+- **Code**: `vti-common/src/{trust_task_push,outbox_store}.rs`,
+  `vta-service/src/messaging/{mediator_wake,service,collector,watch_addresses,transient_handshake}.rs`,
+  `vta-service/src/trust_tasks/step_up.rs` (`trigger_gateway_wake`),
+  `vtc-service/src/messaging.rs`, `vta-sdk/src/didcomm_session.rs`.
+- **Docs**: `docs/02-vta/task-consent.md` (*Reaching the approver's device*),
+  `docs/03-vtc/credential-delivery.md`,
+  `docs/05-design-notes/mobile-agent-architecture.md` §4.8.
+
 ### Admin credential cold-start
 - **What**: Bootstrap the first operator without a running VTA.
 - **Flow**: PNM mints ephemeral `did:key` locally → operator runs

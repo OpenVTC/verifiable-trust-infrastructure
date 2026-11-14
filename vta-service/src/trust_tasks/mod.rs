@@ -1189,6 +1189,19 @@ pub(crate) async fn accept_from_proven_sender(
                     Some(format!("{code}: {message}"))
                 })
                 .unwrap_or_else(|| "<unreadable payload>".to_string());
+            // A mediator this VTA just asked to wake a device, refusing the
+            // task: an older mediator. Expected, and the fallback (the device
+            // collects on its next connection) is today's behaviour, so it is
+            // consumed quietly and the mediator is not asked again for a while
+            // (`messaging::mediator_wake`, #2663).
+            if crate::messaging::mediator_wake::note_refusal(sender_vid) {
+                tracing::debug!(
+                    sender = %sender_vid,
+                    %reason,
+                    "mediator refused a wake request; not asking it again for a while"
+                );
+                return silent();
+            }
             tracing::warn!(
                 sender = %sender_vid,
                 %reason,
@@ -7250,6 +7263,73 @@ mod didcomm_sender_binding {
             outcome.body.is_empty(),
             "{}",
             String::from_utf8_lossy(&outcome.body)
+        );
+    }
+
+    /// #2663 (VTI-TRN-074): a mediator answers every `messaging/wake/request`
+    /// with the same empty `#response`. Nothing waits on it, and it is dropped
+    /// in silence like any reply no waiter claimed.
+    #[tokio::test]
+    async fn a_wake_request_response_is_dropped_in_silence() {
+        let (state, _dir, victim, _attacker, _vta_did) = setup().await;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": "urn:uuid:wake-response",
+            "type": format!(
+                "{}#response",
+                <vti_specs::messaging::wake::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI
+            ),
+            "threadId": "urn:uuid:wake-request",
+            "payload": {},
+        }))
+        .unwrap();
+        let outcome = accept_from_proven_sender(
+            &state,
+            &victim.did,
+            &body,
+            transport::TransportConfidentiality::EndToEnd,
+        )
+        .await;
+        assert!(
+            outcome.body.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&outcome.body)
+        );
+    }
+
+    /// #2663: a mediator that predates `messaging/wake/request` refuses it with
+    /// a `trust-task-error`. That refusal is consumed quietly and answered with
+    /// nothing; the device collects on its next connection, as before.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn an_older_mediators_wake_refusal_is_consumed_quietly() {
+        let (state, _dir, victim, _attacker, _vta_did) = setup().await;
+        // This VTA just asked `victim` (standing in for a mediator) to wake a
+        // device.
+        let _ = crate::messaging::mediator_wake::send_once(
+            &state,
+            "did:example:addressee",
+            &victim.did,
+            "urn:example:stored-id-for-refusal-test",
+        )
+        .await;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": "urn:uuid:wake-refusal",
+            "type": framework_error_type_uri().to_string(),
+            "threadId": "urn:uuid:wake-request",
+            "payload": { "code": "unsupportedType", "message": "not served" },
+        }))
+        .unwrap();
+        let outcome = accept_from_proven_sender(
+            &state,
+            &victim.did,
+            &body,
+            transport::TransportConfidentiality::EndToEnd,
+        )
+        .await;
+        assert!(outcome.body.is_empty());
+        assert!(
+            !crate::messaging::mediator_wake::note_refusal(&victim.did),
+            "the refusal was already taken by the spine"
         );
     }
 
