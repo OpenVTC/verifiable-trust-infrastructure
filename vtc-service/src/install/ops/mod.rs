@@ -42,6 +42,8 @@
 //! shared slug, with the DID carried in the token — are retired in favour of
 //! this one (trust-tasks-tf #976) and no longer served.
 
+pub(crate) mod bootstrap;
+pub(crate) mod invites;
 use std::sync::Arc;
 
 use axum::http::StatusCode;

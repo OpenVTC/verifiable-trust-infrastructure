@@ -862,9 +862,9 @@ async fn observe(
         // The count is the read's own: `vtc/join-requests/list`'s default
         // (pending) filter, its exact `totalEstimate`, from a one-row page —
         // the same `limit: 1` read the console's badge and tile make.
-        let pending = crate::routes::join_requests::read::list_join_requests_inner(
+        let pending = crate::join::ops::read::list_join_requests_inner(
             state,
-            crate::routes::join_requests::read::ListJoinRequestsQuery {
+            crate::join::ops::read::ListJoinRequestsQuery {
                 status: Some(crate::join::JoinStatus::Pending),
                 cursor: None,
                 limit: Some(1),

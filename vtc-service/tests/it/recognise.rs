@@ -19,7 +19,7 @@ use http_body_util::BodyExt;
 
 use vtc_service::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
 use vtc_service::recognition::VerifiedForeignCredential;
-use vtc_service::routes::recognise::{RecogniseResponse, mint_recognised_session};
+use vtc_service::recognition::recognise::{RecogniseResponse, mint_recognised_session};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
@@ -606,7 +606,7 @@ async fn code_of(err: vtc_service::error::TaskError) -> serde_json::Value {
 /// recognised", and this workspace has no registry stub to drive that with.
 #[tokio::test]
 async fn the_recognise_task_answers_with_the_codes_its_spec_declares() {
-    use vtc_service::routes::recognise::{
+    use vtc_service::recognition::recognise::{
         RECOGNISE_ERR_CREDENTIAL_INVALID, RECOGNISE_ERR_ROLE_NOT_MAPPED,
     };
 

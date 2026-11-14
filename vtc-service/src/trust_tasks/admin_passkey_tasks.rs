@@ -1,6 +1,6 @@
 //! An administrator's own login passkeys on the signed-document spine —
 //! `auth/passkey/list/0.1` and `auth/passkey/enroll/{start,finish}/0.2`. The
-//! operations are [`crate::routes::admin::passkeys`]'s; this file decides only
+//! operations are [`crate::auth::admin_passkeys`]'s; this file decides only
 //! who is asking. Revoking one is `auth/passkey/revoke/{start,finish}/0.2`,
 //! one Type URI for both purposes, routed in [`super::step_up_passkey_tasks`].
 //!
@@ -25,7 +25,7 @@
 //!
 //! Members' step-up passkeys are a different store; `revoke/{start,finish}/0.2`
 //! covers both purposes and is dispatched by [`super::step_up_passkey_tasks`],
-//! which hands a session credential back to [`crate::routes::admin::passkeys`].
+//! which hands a session credential back to [`crate::auth::admin_passkeys`].
 
 use super::routing::{Routes, on};
 use serde_json::Value;
@@ -36,7 +36,7 @@ use vti_specs::auth::passkey::{
 
 use super::helpers::{TrustTaskOutcome, success_response, task_error_to_reject};
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
-use crate::routes::admin::passkeys;
+use crate::auth::admin_passkeys as passkeys;
 use crate::server::AppState;
 
 /// Register every task this family serves (#2579).

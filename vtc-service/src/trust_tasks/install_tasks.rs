@@ -47,8 +47,8 @@ use vti_specs::vtc::install::claim::{
 
 use super::helpers::{TrustTaskOutcome, reject_with, success_response, task_error_to_reject};
 use super::{JoinAuthCtx, parse_spec_payload};
-use crate::routes::admin::bootstrap::BootstrapRequest;
-use crate::routes::install::{ClaimFinishRequest, ClaimStartRequest};
+use crate::install::ops::bootstrap::BootstrapRequest;
+use crate::install::ops::{ClaimFinishRequest, ClaimStartRequest};
 use crate::server::AppState;
 
 #[cfg(test)]
@@ -209,7 +209,7 @@ async fn handle_claim_start(state: &AppState, doc: TrustTask<Value>) -> TrustTas
         install_token: payload.install_token.to_string(),
         claim_secret: payload.claim_secret.as_ref().map(|s| s.to_string()),
     };
-    match crate::routes::install::claim_start(state, req).await {
+    match crate::install::ops::claim_start(state, req).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -237,7 +237,7 @@ async fn handle_claim_finish(state: &AppState, doc: TrustTask<Value>) -> TrustTa
         webauthn_response,
         webauthn_assertion: Value::Object(payload.webauthn_assertion),
     };
-    match crate::routes::install::claim_finish(state, req).await {
+    match crate::install::ops::claim_finish(state, req).await {
         Ok(claimed) => {
             let built: Result<claim_finish::Response, _> = claim_finish::Response::builder()
                 .admin_did(claimed.admin_did)
@@ -265,7 +265,7 @@ async fn handle_bootstrap(state: &AppState, doc: TrustTask<Value>) -> TrustTaskO
     let req = BootstrapRequest {
         setup_session_token: payload.setup_session_token.to_string(),
     };
-    match crate::routes::admin::bootstrap::bootstrap(state, req).await {
+    match crate::install::ops::bootstrap::bootstrap(state, req).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => task_error_to_reject(&doc, &e),
     }

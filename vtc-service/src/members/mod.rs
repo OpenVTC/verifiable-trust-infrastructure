@@ -28,6 +28,8 @@
 
 pub mod inbound_vmc;
 pub mod match_code;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod pseudonym;
 pub mod storage;
 

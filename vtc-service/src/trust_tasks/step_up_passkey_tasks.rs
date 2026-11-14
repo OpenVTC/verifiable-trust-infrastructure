@@ -235,16 +235,13 @@ async fn handle_revoke_start(
         .subject
         .as_ref()
         .map_or(producer.as_str(), |s| s.as_str());
-    let session = match crate::routes::admin::passkeys::is_session_credential_of(
-        state,
-        subject,
-        credential_id,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
+    let session =
+        match crate::auth::admin_passkeys::is_session_credential_of(state, subject, credential_id)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
     if session {
         if subject != producer {
             // An administrator's login passkey is theirs to remove: no
@@ -263,8 +260,7 @@ async fn handle_revoke_start(
             Ok(a) => a,
             Err(reject) => return reject,
         };
-        return match crate::routes::admin::passkeys::revoke_start(state, &actor.did, &payload).await
-        {
+        return match crate::auth::admin_passkeys::revoke_start(state, &actor.did, &payload).await {
             Ok(response) => success_response(&doc, response),
             Err(e) => task_error_to_reject(&doc, &e),
         };
@@ -291,8 +287,7 @@ async fn handle_revoke_finish(
     };
     // A handle `revoke/start` minted for a session credential is finished
     // where it was started.
-    match crate::routes::admin::passkeys::owns_revocation(state, payload.revocation_id.as_str())
-        .await
+    match crate::auth::admin_passkeys::owns_revocation(state, payload.revocation_id.as_str()).await
     {
         Ok(false) => {}
         Ok(true) => {
@@ -300,7 +295,7 @@ async fn handle_revoke_finish(
                 Ok(a) => a,
                 Err(reject) => return reject,
             };
-            return match crate::routes::admin::passkeys::revoke_finish(state, &actor.did, &payload)
+            return match crate::auth::admin_passkeys::revoke_finish(state, &actor.did, &payload)
                 .await
             {
                 Ok(response) => success_response(&doc, response),

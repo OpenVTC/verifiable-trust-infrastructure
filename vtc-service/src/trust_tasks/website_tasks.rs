@@ -618,7 +618,7 @@ async fn handle_commit(state: &AppState, actor: &str, doc: TrustTask<Value>) -> 
                 Ok(b) => b,
                 Err(e) => return app_error_to_reject(&doc, &AppError::Io(e)),
             };
-            match crate::routes::website::files::write_file(
+            match crate::website::ops::files::write_file(
                 state,
                 actor,
                 &path,
@@ -643,13 +643,13 @@ async fn handle_commit(state: &AppState, actor: &str, doc: TrustTask<Value>) -> 
                     });
                     success_response(&doc, body)
                 }
-                Err(crate::routes::website::files::WriteError::Precondition(m)) => {
+                Err(crate::website::ops::files::WriteError::Precondition(m)) => {
                     declared(&doc, COMMIT_ERR_PRECONDITION_FAILED, m)
                 }
-                Err(crate::routes::website::files::WriteError::Path(m)) => {
+                Err(crate::website::ops::files::WriteError::Path(m)) => {
                     declared(&doc, COMMIT_ERR_PATH_REFUSED, m)
                 }
-                Err(crate::routes::website::files::WriteError::App(e)) => {
+                Err(crate::website::ops::files::WriteError::App(e)) => {
                     app_error_to_reject(&doc, &e)
                 }
             }
@@ -727,7 +727,7 @@ async fn handle_deploy(state: &AppState, actor: &str, doc: TrustTask<Value>) -> 
             "the staged bundle no longer matches its committed SHA-256",
         );
     }
-    match crate::routes::website::deploy::deploy_inner(state, actor, &bytes).await {
+    match crate::website::ops::deploy::deploy_inner(state, actor, &bytes).await {
         Ok(response) => {
             record.phase = Phase::Done;
             if let Err(e) = store_record(state, &record).await {
@@ -831,7 +831,7 @@ async fn handle_files_list(state: &AppState, doc: TrustTask<Value>) -> TrustTask
     };
     let cursor = payload.cursor.map(|c| c.to_string());
     let limit = payload.limit.map(|n| n.get() as u32);
-    match crate::routes::website::files::list(state, cursor, limit).await {
+    match crate::website::ops::files::list(state, cursor, limit).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -849,7 +849,7 @@ async fn handle_files_delete(
         Err(reject) => return reject,
     };
     let path = payload.path.to_string();
-    match crate::routes::website::files::delete(state, actor, path).await {
+    match crate::website::ops::files::delete(state, actor, path).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => super::helpers::task_error_to_reject(&doc, &e),
     }
@@ -861,7 +861,7 @@ async fn handle_generations_list(state: &AppState, doc: TrustTask<Value>) -> Tru
     if let Err(reject) = parse_spec_payload::<generations_list::Payload>(&doc) {
         return reject;
     }
-    match crate::routes::website::generations::list(state).await {
+    match crate::website::ops::generations::list(state).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => super::helpers::task_error_to_reject(&doc, &e),
     }
@@ -887,7 +887,7 @@ async fn handle_rollback(state: &AppState, actor: &str, doc: TrustTask<Value>) -
             },
         );
     };
-    match crate::routes::website::generations::rollback(state, actor, gen_num).await {
+    match crate::website::ops::generations::rollback(state, actor, gen_num).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => super::helpers::task_error_to_reject(&doc, &e),
     }

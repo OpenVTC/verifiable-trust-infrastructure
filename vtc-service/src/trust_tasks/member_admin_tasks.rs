@@ -45,7 +45,7 @@ pub(super) async fn handle_member_credentials(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::members::credentials::read_member_credentials(
+    match crate::members::ops::credentials::read_member_credentials(
         state,
         &actor.did,
         body.did.as_str(),
@@ -56,16 +56,16 @@ pub(super) async fn handle_member_credentials(
         // The task's one declared code, carried as a code rather than flattened
         // into `taskFailed` (SPEC §8.5) — the same distinction the REST route's
         // `CredentialsError` makes in its body.
-        Err(crate::routes::members::credentials::CredentialsError::NotFound(message)) => {
+        Err(crate::members::ops::credentials::CredentialsError::NotFound(message)) => {
             task_error_to_reject(
                 &doc,
                 &crate::error::TaskError::declared(
-                    crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
+                    crate::members::ops::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
                     AppError::NotFound(message),
                 ),
             )
         }
-        Err(crate::routes::members::credentials::CredentialsError::Other(e)) => {
+        Err(crate::members::ops::credentials::CredentialsError::Other(e)) => {
             app_error_to_reject(&doc, &e)
         }
     }
@@ -108,17 +108,12 @@ pub(super) async fn handle_member_update(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    let req: crate::routes::members::update::UpdateMemberRequest = match parse_payload(&doc) {
+    let req: crate::members::ops::update::UpdateMemberRequest = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::members::update::update_member_inner(
-        state,
-        &actor,
-        checked.did.as_str(),
-        req,
-    )
-    .await
+    match crate::members::ops::update::update_member_inner(state, &actor, checked.did.as_str(), req)
+        .await
     {
         Ok(envelope) => success_response(&doc, envelope),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -149,11 +144,11 @@ pub(super) async fn handle_member_admin_remove(
     };
     // Same reason as `update` above: `disposition` and `reason` are optional
     // and the route's body type is the one that says so.
-    let body: crate::routes::members::remove::RemoveBody = match parse_payload(&doc) {
+    let body: crate::members::ops::remove::RemoveBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::members::remove::admin_remove_inner(
+    match crate::members::ops::remove::admin_remove_inner(
         state,
         &actor,
         checked.did.as_str(),
@@ -167,7 +162,7 @@ pub(super) async fn handle_member_admin_remove(
     {
         Ok(outcome) => success_response(
             &doc,
-            crate::routes::members::remove::RemoveResponse::from(outcome),
+            crate::members::ops::remove::RemoveResponse::from(outcome),
         ),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -211,7 +206,7 @@ pub(super) async fn handle_member_purge(
     match crate::ceremony::purge_member(state, &actor.did, checked.did.as_str()).await {
         Ok(outcome) => success_response(
             &doc,
-            crate::routes::members::remove::RemoveResponse::from(outcome),
+            crate::members::ops::remove::RemoveResponse::from(outcome),
         ),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -827,7 +822,7 @@ mod members_admin_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND),
+            Some(crate::members::ops::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
@@ -849,7 +844,7 @@ mod members_admin_tests {
 
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::members::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN),
+            Some(crate::members::ops::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
@@ -875,7 +870,7 @@ mod members_admin_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert_eq!(
             error_code(&out).as_deref(),
-            Some(crate::routes::members::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN),
+            Some(crate::members::ops::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN),
             "{}",
             String::from_utf8_lossy(&out.body)
         );

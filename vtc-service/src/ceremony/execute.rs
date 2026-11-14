@@ -12,7 +12,7 @@
 //! ## Single entry point, shared by the bespoke flow
 //!
 //! [`apply`] is the one executor. The MVP's manual join-approve route
-//! ([`crate::routes::join_requests::decide::decide`]) is refactored
+//! ([`crate::join::ops::decide::decide`]) is refactored
 //! to go through it too — it builds an [`EffectPlan::Admit`] and calls
 //! [`apply`], so the pipeline genuinely supersedes the bespoke write
 //! path rather than duplicating it. The approve route's integration
@@ -513,7 +513,7 @@ async fn remint(
     let now = crate::auth::session::now_epoch();
     let mut next = acl.clone();
     next.role = new_role.clone();
-    if crate::routes::acl::expressible_in_v0_1(&acl) {
+    if crate::acl::ops::expressible_in_v0_1(&acl) {
         next.admin = new_role.implied_authority();
     }
 

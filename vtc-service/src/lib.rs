@@ -90,4 +90,6 @@ pub mod website;
 // A `#[cfg(...)]` here would hide the module from the crate's own `cargo
 // test` builds (which don't pass `--features test-support`); the module
 // header handles the gating itself.
+/// The audit log's reads (`audit/list`, `audit/verify`).
+pub(crate) mod audit_ops;
 pub mod test_support;

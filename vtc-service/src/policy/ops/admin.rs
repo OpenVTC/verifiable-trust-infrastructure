@@ -86,7 +86,7 @@ pub struct UploadBody {
     #[serde(default)]
     pub enabled: Option<bool>,
     /// Ecosystem extension members. MUST carry
-    /// `org.openvtc.purpose` — see [`crate::routes::policies::read::PURPOSE_EXT_KEY`]
+    /// `org.openvtc.purpose` — see [`crate::policy::ops::read::PURPOSE_EXT_KEY`]
     /// for why purpose is intrinsic here.
     #[serde(default)]
     pub ext: Option<serde_json::Value>,
@@ -105,14 +105,14 @@ impl UploadBody {
         let raw = self
             .ext
             .as_ref()
-            .and_then(|e| e.get(crate::routes::policies::read::PURPOSE_EXT_KEY))
+            .and_then(|e| e.get(crate::policy::ops::read::PURPOSE_EXT_KEY))
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 AppError::Validation(format!(
                     "ext.{} is required: this maintainer binds a policy's purpose \
                      intrinsically (it is fixed by the module's Rego package), so it \
                      cannot be deferred to activation as canonical policy/upsert assumes",
-                    crate::routes::policies::read::PURPOSE_EXT_KEY,
+                    crate::policy::ops::read::PURPOSE_EXT_KEY,
                 ))
             })?;
         serde_json::from_value(serde_json::Value::String(raw.to_owned())).map_err(|e| {
@@ -152,7 +152,7 @@ impl UploadBody {
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct UploadResponse {
-    pub policy: crate::routes::policies::read::PolicyModuleResponse,
+    pub policy: crate::policy::ops::read::PolicyModuleResponse,
     /// Canonical-required (`wasCreated`): true when this call created a new
     /// module lineage rather than revising an existing one. VTC's first
     /// revision for a purpose is a creation.

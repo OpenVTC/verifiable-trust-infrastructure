@@ -60,8 +60,8 @@ pub const UPDATE_ERR_ADMIN_ROLE_FORBIDDEN: &str =
 /// someone who said no. Declared by the specification (trust-tasks-tf #789).
 pub const UPDATE_ERR_CONSENT_GRANT_FORBIDDEN: &str =
     vti_specs::vtc::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN.code;
+use crate::members::ops::read::{MemberEnvelope, MemberResponse};
 use crate::members::{Disposition, Member, get_member, store_member};
-use crate::routes::members::read::{MemberEnvelope, MemberResponse};
 use crate::server::AppState;
 
 /// Body of the PATCH request. Every field is optional; a request
@@ -153,7 +153,7 @@ pub(crate) async fn update_member_inner(
     // are not authority and stay editable.
     let self_edit = auth.did == did;
     if self_edit && req.role.is_some() {
-        return Err(crate::routes::acl::own_role_refusal(
+        return Err(crate::acl::ops::own_role_refusal(
             crate::acl::admin_consent::single_admin_mode(state).await,
         )
         .into());
@@ -312,11 +312,11 @@ pub(crate) async fn update_member_inner(
             let self_set = self_edit && new_label.is_some();
             if self_set || acl.label_set_by_subject {
                 changes.push(FieldChange {
-                    field: crate::routes::acl::LABEL_SET_BY_SUBJECT.into(),
+                    field: crate::acl::ops::LABEL_SET_BY_SUBJECT.into(),
                     old: Some(JsonValue::Bool(acl.label_set_by_subject)),
                     new: Some(JsonValue::Bool(self_set)),
                 });
-                fields_changed.push(crate::routes::acl::LABEL_SET_BY_SUBJECT.into());
+                fields_changed.push(crate::acl::ops::LABEL_SET_BY_SUBJECT.into());
             }
             updated.label = new_label;
             updated.label_set_by_subject = self_set;

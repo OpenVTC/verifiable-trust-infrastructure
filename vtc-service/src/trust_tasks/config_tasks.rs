@@ -62,7 +62,7 @@ pub(super) async fn handle_community_profile_update(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::community::profile::update_profile_inner(state, &actor.did, update).await {
+    match crate::community::ops::profile::update_profile_inner(state, &actor.did, update).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -99,7 +99,7 @@ pub(super) async fn handle_config_export(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::admin::config::export_inner(state).await {
+    match crate::community::ops::config::export_inner(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -226,7 +226,7 @@ pub(super) async fn handle_config_import(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    let request: crate::routes::admin::config::ImportRequest = match parse_payload(&doc) {
+    let request: crate::community::ops::config::ImportRequest = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -235,7 +235,7 @@ pub(super) async fn handle_config_import(
     // `config/patch` does. A preview writes nothing and asks nothing, and a
     // document the import refuses outright asks for no gesture.
     if request.confirm
-        && request.document.schema_version == crate::routes::admin::config::EXPORT_SCHEMA_VERSION
+        && request.document.schema_version == crate::community::ops::config::EXPORT_SCHEMA_VERSION
     {
         // VTI-CMP-090: an import that changes the trusted-witness list takes
         // the gesture and the consent `config/patch` does.
@@ -250,7 +250,7 @@ pub(super) async fn handle_config_import(
         {
             return refusal;
         }
-        match crate::routes::admin::config::lowered_threshold(
+        match crate::community::ops::config::lowered_threshold(
             state,
             &request.document.config_overrides,
         )
@@ -281,7 +281,7 @@ pub(super) async fn handle_config_import(
             Err(e) => return app_error_to_reject(&doc, &e),
         }
     }
-    match crate::routes::admin::config::import_inner(state, &actor.did, request).await {
+    match crate::community::ops::config::import_inner(state, &actor.did, request).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -325,11 +325,11 @@ pub(super) async fn handle_endorsement_type_register(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    let body: crate::routes::endorsement_types::RegisterBody = match parse_payload(&doc) {
+    let body: crate::endorsement_types::ops::RegisterBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::endorsement_types::register_inner(state, &actor.did, body).await {
+    match crate::endorsement_types::ops::register_inner(state, &actor.did, body).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -357,7 +357,7 @@ pub(super) async fn handle_endorsement_type_delete(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::endorsement_types::delete_inner(
+    match crate::endorsement_types::ops::delete_inner(
         state,
         &actor.did,
         checked.type_uri.to_string(),
@@ -416,7 +416,7 @@ pub(super) async fn handle_backup_export(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::backup::export_inner(
+    match crate::backup::ops::export_inner(
         state,
         &actor.did,
         checked.password.as_str(),
@@ -483,11 +483,11 @@ pub(super) fn refuse_hop_by_hop_backup(
 mod config_pair_tests {
     use super::*;
     use crate::acl::VtcRole;
-    use crate::community::{CommunityProfile, load_profile, store_profile};
-    use crate::config_store::ConfigStore;
-    use crate::routes::admin::config::{
+    use crate::community::ops::config::{
         IMPORT_ERR_COMMUNITY_DID_MISMATCH, IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION, export_inner,
     };
+    use crate::community::{CommunityProfile, load_profile, store_profile};
+    use crate::config_store::ConfigStore;
     use crate::test_support::{TEST_VTC_DID, TestVtc};
     use crate::trust_tasks::test_fixtures::{
         assert_conforms, dispatch, error_code, payload_of, seed_acl, signed, unsigned,
@@ -894,7 +894,7 @@ mod endorsement_type_tests {
     use super::*;
     use crate::acl::VtcRole;
     use crate::endorsement_types::get_type;
-    use crate::routes::endorsement_types::{
+    use crate::endorsement_types::ops::{
         CLAIM_SCHEMA_MAX_BYTES, DELETE_ERR_IN_USE, DELETE_ERR_NOT_FOUND, REGISTER_ERR_EXISTS,
         REGISTER_ERR_RESERVED,
     };

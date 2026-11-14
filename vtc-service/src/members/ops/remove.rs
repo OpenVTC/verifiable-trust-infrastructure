@@ -30,10 +30,10 @@ use vti_common::error::AppError;
 use crate::acl::admin_consent::Operation;
 use crate::acl::get_acl_entry;
 
+use crate::acl::ops::caller_covers_target;
 use crate::ceremony::{LeaveOutcome, remove_inner};
 use crate::error::TaskError;
 use crate::members::Disposition;
-use crate::routes::acl::caller_covers_target;
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize, Default)]

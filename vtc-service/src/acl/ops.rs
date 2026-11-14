@@ -977,7 +977,8 @@ pub(crate) async fn commit_grant(
     // A reduced entry must bind now: the subject's live sessions go — unless
     // the subject asked for it itself, from the session it is acting in.
     if reduces && self_edit == SelfEdit::No {
-        let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, &entry.did).await?;
+        let revoked =
+            crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, &entry.did).await?;
         info!(did = %entry.did, revoked, "subject sessions revoked after ACL privilege reduction");
     }
     // A write by a covering administrator re-affirms a delegation under review
@@ -1446,7 +1447,7 @@ pub(crate) async fn set_community_role(
     // sessions end now — and the entries it delegated are re-evaluated.
     let reduced = written.admin.narrows_from(&prior.admin);
     if reduced {
-        let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, did).await?;
+        let revoked = crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, did).await?;
         info!(did = %did, revoked, "subject sessions revoked after ACL privilege reduction");
         delegation::on_granter_changed(state, did, Some(&written)).await?;
     }
@@ -1672,7 +1673,7 @@ pub(crate) async fn remove_entry(
     )
     .await?;
 
-    let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, &did).await?;
+    let revoked = crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, &did).await?;
     delegation::clear(state, &did).await?;
     delegation::on_granter_changed(state, &did, None).await?;
 
@@ -1959,7 +1960,7 @@ pub(crate) async fn swap_key(
     }
     let repointed = delegation::repoint(state, current, new).await?;
     // VTI-CLT-031: the previous key has no standing.
-    let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, current).await?;
+    let revoked = crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, current).await?;
     info!(
         old = %current,
         new = %new,

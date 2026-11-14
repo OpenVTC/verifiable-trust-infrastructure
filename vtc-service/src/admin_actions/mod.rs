@@ -713,7 +713,7 @@ pub const IMMEDIATE_EXT: &str = "immediate";
 pub(crate) fn immediate_request(payload: &Value) -> Result<Option<ImmediateRequest>, AppError> {
     let Some(v) = payload
         .get("ext")
-        .and_then(|e| e.get(crate::routes::acl::EXT_NS))
+        .and_then(|e| e.get(crate::acl::ops::EXT_NS))
         .and_then(|o| o.get(IMMEDIATE_EXT))
     else {
         return Ok(None);
@@ -752,12 +752,12 @@ pub(crate) fn without_immediate(payload: &Value) -> Value {
         return out;
     };
     if let Some(ours) = ext
-        .get_mut(crate::routes::acl::EXT_NS)
+        .get_mut(crate::acl::ops::EXT_NS)
         .and_then(Value::as_object_mut)
     {
         ours.remove(IMMEDIATE_EXT);
         if ours.is_empty() {
-            ext.remove(crate::routes::acl::EXT_NS);
+            ext.remove(crate::acl::ops::EXT_NS);
         }
     }
     if ext.is_empty()

@@ -9,7 +9,7 @@
 //! Every handler is the same shape: authority from the **verified signer's ACL
 //! row**, read now ([`super::admin_signer`]); the payload held to its
 //! published schema ([`super::parse_spec_payload`]); then the one shared
-//! operation in [`crate::routes::acl`]. Writing an entry takes
+//! operation in [`crate::acl::ops`]. Writing an entry takes
 //! `vtc.roles.assign` and is bounded by the writer's own entry
 //! ([`crate::acl::granting`], §6.3). Reading the ACL takes any administrative
 //! role. The ACL has no REST route: this is the only door, on every transport.
@@ -41,8 +41,8 @@ use super::routing::{Routes, on};
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::capability::CeilingError;
 use crate::acl::granting::GrantRefusal;
+use crate::acl::ops::{self as ops, EntryParseError, WriteError};
 use crate::error::{AppError, TaskError};
-use crate::routes::acl::{self as ops, EntryParseError, WriteError};
 use crate::server::AppState;
 
 /// Register every task this family serves (#2579).
@@ -831,7 +831,7 @@ pub(super) async fn settle_witness_list_gate(
         Ok(Some(change)) => change,
         Err(e) => return Err(app_error_to_reject(doc, &e)),
     };
-    match crate::routes::admin::config::lowered_threshold(state, overrides).await {
+    match crate::community::ops::config::lowered_threshold(state, overrides).await {
         Ok(None) => {}
         Ok(Some(_)) => {
             return Err(app_error_to_reject(

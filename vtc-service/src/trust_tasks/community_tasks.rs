@@ -171,7 +171,7 @@ async fn handle_profile_show(
     if let Err(reject) = member_with::<profile_show::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::community::profile::show_profile(state).await {
+    match crate::community::ops::profile::show_profile(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -185,7 +185,7 @@ async fn handle_ceremonies_list(
     if let Err(reject) = member_with::<ceremonies_list::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    success_response(&doc, crate::routes::ceremonies::list())
+    success_response(&doc, crate::ceremony::listing::list())
 }
 
 /// `vtc/directory/query/0.1` — the subject's record as the directory policy
@@ -253,11 +253,11 @@ async fn handle_endorsement_types_list(
     if let Err(reject) = admin_with::<endorsement_types_list::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    let query: crate::routes::endorsement_types::ListQuery = match parse_payload(&doc) {
+    let query: crate::endorsement_types::ops::ListQuery = match parse_payload(&doc) {
         Ok(q) => q,
         Err(reject) => return reject,
     };
-    match crate::routes::endorsement_types::list(state, query).await {
+    match crate::endorsement_types::ops::list(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -272,10 +272,10 @@ async fn handle_recognition_check(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let query = crate::routes::recognition_admin::CheckQuery {
+    let query = crate::recognition::admin::CheckQuery {
         did: payload.did.to_string(),
     };
-    match crate::routes::recognition_admin::check(state, query).await {
+    match crate::recognition::admin::check(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -301,11 +301,11 @@ async fn handle_members_list(
     {
         return app_error_to_reject(&doc, &e);
     }
-    let query: crate::routes::members::read::ListMembersQuery = match parse_payload(&doc) {
+    let query: crate::members::ops::read::ListMembersQuery = match parse_payload(&doc) {
         Ok(q) => q,
         Err(reject) => return reject,
     };
-    match crate::routes::members::read::list_members_inner(state, query).await {
+    match crate::members::ops::read::list_members_inner(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -319,7 +319,7 @@ async fn handle_members_removed(
     if let Err(reject) = admin_with::<members_removed::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::members::read::list_removed(state).await {
+    match crate::members::ops::read::list_removed(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -334,7 +334,7 @@ async fn handle_members_show(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::members::read::show_member(state, payload.did.as_str()).await {
+    match crate::members::ops::read::show_member(state, payload.did.as_str()).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -362,15 +362,11 @@ async fn handle_members_solicit_vmc(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let body = crate::routes::members::request_vmc::RequestVmcBody {
+    let body = crate::members::ops::request_vmc::RequestVmcBody {
         reason: payload.reason.map(|r| r.to_string()),
     };
-    match crate::routes::members::request_vmc::request_vmc(
-        state,
-        payload.member_did.to_string(),
-        body,
-    )
-    .await
+    match crate::members::ops::request_vmc::request_vmc(state, payload.member_did.to_string(), body)
+        .await
     {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -398,12 +394,11 @@ async fn handle_join_requests_list(
     {
         return app_error_to_reject(&doc, &e);
     }
-    let query: crate::routes::join_requests::read::ListJoinRequestsQuery = match parse_payload(&doc)
-    {
+    let query: crate::join::ops::read::ListJoinRequestsQuery = match parse_payload(&doc) {
         Ok(q) => q,
         Err(reject) => return reject,
     };
-    match crate::routes::join_requests::read::list_join_requests_inner(state, query).await {
+    match crate::join::ops::read::list_join_requests_inner(state, query).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -426,7 +421,7 @@ async fn handle_join_requests_show(
             },
         );
     };
-    match crate::routes::join_requests::read::show_join_request(state, id).await {
+    match crate::join::ops::read::show_join_request(state, id).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -442,7 +437,7 @@ async fn handle_relationships_graph(
     if let Err(reject) = admin_with::<relationships_graph::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::relationships::graph(state).await {
+    match crate::relationships::ops::graph(state).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -465,11 +460,11 @@ async fn handle_invitations_issue(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let body: crate::routes::invitations::IssueInvitationBody = match parse_payload(&doc) {
+    let body: crate::join::invitations::IssueInvitationBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::invitations::issue(state, &actor.did, body).await {
+    match crate::join::invitations::issue(state, &actor.did, body).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -484,7 +479,7 @@ async fn handle_invitations_list(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::invitations::list(state, &actor.did).await {
+    match crate::join::invitations::list(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -499,7 +494,7 @@ async fn handle_invitations_revoke(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::invitations::revoke(state, &actor.did, payload.id.to_string()).await {
+    match crate::join::invitations::revoke(state, &actor.did, payload.id.to_string()).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -515,7 +510,7 @@ async fn handle_invitations_deliver(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::invitations::deliver(state, &actor.did, payload).await {
+    match crate::join::invitations::deliver(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &crate::error::TaskError::from(e)),
     }

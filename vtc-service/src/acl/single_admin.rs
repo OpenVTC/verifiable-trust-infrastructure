@@ -121,7 +121,7 @@ pub enum SelfEditGate {
 ///
 /// Whether the exception applies at all — the mode on, the requester the only
 /// unrestricted entry, the result still unrestricted — is decided by
-/// [`crate::routes::acl::plan_write`] before this is reached.
+/// [`crate::acl::ops::plan_write`] before this is reached.
 pub async fn authorize_self_edit(
     state: &AppState,
     requester: &str,

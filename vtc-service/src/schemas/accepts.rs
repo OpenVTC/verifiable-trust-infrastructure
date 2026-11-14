@@ -424,7 +424,7 @@ pub async fn store_accepts(
         Some(old) => old.position,
         None => next_position(schemas_ks).await?,
     };
-    let served = crate::routes::join_requests::manifest::manifest_criterion(criterion.clone())?;
+    let served = crate::join::ops::manifest::manifest_criterion(criterion.clone())?;
     if let Some(old) = existing {
         supersede(schemas_ks, old, Some(&served.digest)).await?;
     }
@@ -478,7 +478,7 @@ async fn supersede(
     old: AcceptsCriterion,
     replacement_digest: Option<&str>,
 ) -> Result<(), AppError> {
-    let digest = crate::routes::join_requests::manifest::manifest_criterion(old.clone())
+    let digest = crate::join::ops::manifest::manifest_criterion(old.clone())
         .map(|s| s.digest)
         // A stored row the manifest can no longer carry was never published as
         // it stands, so no applicant can be citing it.
@@ -951,7 +951,7 @@ mod tests {
         let mut first = criterion("kernel", MEMBERSHIP_VCT);
         first.vetting = Some(vetting(2, json!({})));
         let first = store_accepts(&ks, &first).await.unwrap();
-        let first_digest = crate::routes::join_requests::manifest::manifest_criterion(first)
+        let first_digest = crate::join::ops::manifest::manifest_criterion(first)
             .unwrap()
             .digest;
 
@@ -983,7 +983,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let digest = crate::routes::join_requests::manifest::manifest_criterion(first)
+        let digest = crate::join::ops::manifest::manifest_criterion(first)
             .unwrap()
             .digest;
         delete_accepts(&ks, "open").await.unwrap();

@@ -13,9 +13,9 @@
 //!
 //! What is the community's own is what a bundle holds: `initiate-export`
 //! serializes and encrypts the community's state exactly as
-//! `vtc/backup/export` does ([`crate::routes::backup::export_inner`]), and
+//! `vtc/backup/export` does ([`crate::backup::ops::export_inner`]), and
 //! `finalize-import` applies it exactly as `vtc/backup/import` does
-//! ([`crate::routes::backup::import_inner`]).
+//! ([`crate::backup::ops::import_inner`]).
 //!
 //! # Only `chunkedTrustTask`
 //!
@@ -229,7 +229,7 @@ async fn handle_initiate_export(
     }
     // The same export `vtc/backup/export` produces — and audits, as
     // `BackupExported`, naming this administrator.
-    let exported = match crate::routes::backup::export_inner(
+    let exported = match crate::backup::ops::export_inner(
         state,
         &actor.did,
         req.password.as_str(),
@@ -527,7 +527,7 @@ async fn handle_finalize_import(
             }
         }
     }
-    let result = match crate::routes::backup::import_inner(
+    let result = match crate::backup::ops::import_inner(
         state,
         &actor.did,
         &envelope,
@@ -617,7 +617,7 @@ async fn restore_consent(
     use crate::acl::admin_consent::{self, Act, Operation, SignedGate};
     if crate::admin_actions::executing().is_none()
         && let Err(e) =
-            crate::routes::backup::import_inner(state, &actor.did, envelope, password, false).await
+            crate::backup::ops::import_inner(state, &actor.did, envelope, password, false).await
     {
         return Err(RestoreGate::Refused(task_error_reject(doc, e)));
     }

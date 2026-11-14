@@ -529,9 +529,9 @@ async fn verify_answer(
     }
 
     // 4. Status, never assumed.
-    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
+    let fetcher = crate::join::ops::present::credential_status_fetcher(state);
     for (_, _, p) in &verified {
-        let status = crate::routes::join_requests::present::resolve_presented_status(
+        let status = crate::join::ops::present::resolve_presented_status(
             p.credential_status.as_ref(),
             Some(&p.issuer_did),
             &fetcher,

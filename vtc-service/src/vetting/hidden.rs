@@ -328,7 +328,7 @@ pub(crate) async fn publish_hidden_vetting_core(
     // Read the digest back off the criterion as the manifest will serve it, rather than
     // computing it here a second way. Two computations of one digest is how they come to
     // disagree, and this one is what an applicant's proof binds to.
-    let served = crate::routes::join_requests::manifest::manifest_criterion(criterion)?;
+    let served = crate::join::ops::manifest::manifest_criterion(criterion)?;
 
     Ok(PublishHiddenVettingResponse {
         criterion_id,
@@ -427,7 +427,7 @@ async fn audit_change(
 
 /// The criterion's `requirementsDigest` as the manifest serves it.
 fn served_digest(criterion: AcceptsCriterion) -> Result<Option<String>, AppError> {
-    let served = crate::routes::join_requests::manifest::manifest_criterion(criterion)?;
+    let served = crate::join::ops::manifest::manifest_criterion(criterion)?;
     Ok(served
         .json
         .get("requirementsDigest")

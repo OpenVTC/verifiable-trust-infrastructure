@@ -150,7 +150,7 @@ pub(super) async fn handle_present(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
 
-    let outcome = match crate::routes::join_requests::present::present_and_decide_join(
+    let outcome = match crate::join::ops::present::present_and_decide_join(
         state,
         &body.vp_token,
         &challenge.aud,

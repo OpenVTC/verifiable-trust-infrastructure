@@ -52,9 +52,9 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::acl::admin_consent::Act;
+use crate::acl::ops::conform;
 use crate::rooms::storage_configs::{SettingsError, kind_of, mode_of, state_of};
 use crate::rooms::storage_credentials::SealedRefusal;
-use crate::routes::acl::conform;
 use crate::server::AppState;
 
 #[cfg(test)]

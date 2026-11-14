@@ -208,13 +208,13 @@ async fn deciding_on_the_join_requests_page_closes_the_item() {
     let req = referred(&vtc.state).await;
     let rec = join_item(&vtc.state, &req).await;
 
-    crate::routes::join_requests::decide::decide_inner(
+    crate::join::ops::decide::decide_inner(
         &vtc.state,
         &a.did,
         "rest",
         req.id,
-        crate::routes::join_requests::decide::DecideBody {
-            decision: crate::routes::join_requests::decide::Decision::Rejected,
+        crate::join::ops::decide::DecideBody {
+            decision: crate::join::ops::decide::Decision::Rejected,
             reason: None,
         },
     )
@@ -494,7 +494,7 @@ fn request_with(id: u128, status: JoinStatus) -> JoinRequest {
 /// walks only them, and `totalEstimate` counts them.
 #[tokio::test]
 async fn join_requests_filter_before_paging_and_count_the_matches() {
-    use crate::routes::join_requests::read::{ListJoinRequestsQuery, list_join_requests_inner};
+    use crate::join::ops::read::{ListJoinRequestsQuery, list_join_requests_inner};
     let vtc = vtc().await;
     // Ten decided requests sort before the two pending ones.
     for i in 1..=10 {
@@ -555,7 +555,7 @@ async fn join_requests_filter_before_paging_and_count_the_matches() {
 
 #[tokio::test]
 async fn members_filter_before_paging_and_count_the_matches() {
-    use crate::routes::members::read::{ListMembersQuery, list_members_inner};
+    use crate::members::ops::read::{ListMembersQuery, list_members_inner};
     let vtc = vtc().await;
     let mut members = Vec::new();
     for _ in 0..3 {

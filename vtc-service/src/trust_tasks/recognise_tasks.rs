@@ -40,7 +40,7 @@ async fn handle_challenge(state: &AppState, doc: TrustTask<Value>) -> TrustTaskO
     if let Err(reject) = parse_spec_payload::<recognise_challenge::Payload>(&doc) {
         return reject;
     }
-    match crate::routes::recognise::recognise_challenge(state).await {
+    match crate::recognition::recognise::recognise_challenge(state).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -52,7 +52,7 @@ async fn handle_recognise(state: &AppState, doc: TrustTask<Value>) -> TrustTaskO
         Err(reject) => return reject,
     };
     let presentation = Value::Object(payload.presentation);
-    match crate::routes::recognise::recognise(state, presentation).await {
+    match crate::recognition::recognise::recognise(state, presentation).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => task_error_to_reject(&doc, &e),
     }

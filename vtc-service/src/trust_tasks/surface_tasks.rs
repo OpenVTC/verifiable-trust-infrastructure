@@ -421,7 +421,7 @@ async fn handle_branding_update(
         Err(reject) => return reject,
     };
     let body = doc.payload.get("branding").cloned().unwrap_or(Value::Null);
-    match crate::routes::community::branding::update_branding(state, &actor, &body).await {
+    match crate::community::ops::branding::update_branding(state, &actor, &body).await {
         Ok(b) => success_response(&doc, json!({ "branding": b })),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -450,7 +450,7 @@ async fn handle_theme_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::community::theme::{ThemeUpdateError, update_theme};
+    use crate::community::ops::theme::{ThemeUpdateError, update_theme};
 
     let actor = match as_capable::<theme_update::Payload>(
         state,
@@ -542,7 +542,7 @@ async fn handle_requested_update(
             }
         }
     }
-    match crate::routes::community::requested_attributes::update_requested_attributes(
+    match crate::community::ops::requested_attributes::update_requested_attributes(
         state, &actor, body,
     )
     .await
@@ -560,7 +560,7 @@ async fn handle_join_discovery_show(
     if let Err(reject) = as_member::<join_discovery_show::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::community::join_discovery::show_join_discovery(state).await {
+    match crate::community::ops::join_discovery::show_join_discovery(state).await {
         Ok(d) => success_response(&doc, json!({ "joinDiscovery": d })),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -602,7 +602,7 @@ async fn handle_join_discovery_update(
                 );
             }
         };
-    match crate::routes::community::join_discovery::update_join_discovery(state, &actor, &setting)
+    match crate::community::ops::join_discovery::update_join_discovery(state, &actor, &setting)
         .await
     {
         Ok(d) => success_response(&doc, json!({ "joinDiscovery": d })),
@@ -628,7 +628,7 @@ async fn handle_schemas_register(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let body: crate::routes::schemas::RegisterSchemaBody = match parse_payload(&doc) {
+    let body: crate::schemas::ops::RegisterSchemaBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -641,7 +641,7 @@ async fn handle_schemas_register(
             format!("credentialSchema does not compile: {e}"),
         );
     }
-    match crate::routes::schemas::register_inner(state, &actor, body).await {
+    match crate::schemas::ops::register_inner(state, &actor, body).await {
         Ok(entry) => success_response(&doc, json!({ "schema": entry })),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -767,7 +767,7 @@ async fn handle_schemas_delete(
             Some(json!({ "criterionIds": users.iter().take(16).collect::<Vec<_>>() })),
         );
     }
-    match crate::routes::schemas::delete_inner(state, &actor, &type_uri).await {
+    match crate::schemas::ops::delete_inner(state, &actor, &type_uri).await {
         Ok(id) => success_response(&doc, json!({ "typeUri": id })),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, SCHEMAS_DELETE_ERR_NOT_FOUND, e),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -883,7 +883,7 @@ async fn handle_accepts_register(
             return refusal;
         }
     }
-    match crate::routes::schemas::register_accepts_inner(state, &actor, criterion).await {
+    match crate::schemas::ops::register_accepts_inner(state, &actor, criterion).await {
         Ok(criterion) => success_response(&doc, json!({ "criterion": criterion.to_wire() })),
         // Every check above passed, so what is left is the manifest refusing it.
         Err(AppError::Validation(m)) => declared(&doc, ACCEPTS_REGISTER_ERR_NOT_PUBLISHABLE, m),
@@ -1046,7 +1046,7 @@ async fn handle_accepts_delete(
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    match crate::routes::schemas::delete_accepts_inner(state, &actor, id.trim()).await {
+    match crate::schemas::ops::delete_accepts_inner(state, &actor, id.trim()).await {
         Ok(id) => success_response(&doc, json!({ "id": id })),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, ACCEPTS_DELETE_ERR_NOT_FOUND, e),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -1125,12 +1125,12 @@ async fn handle_revocations_list(
     if let Err(reject) = as_admin::<revocations_list::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    let wanted: Option<crate::routes::vetting::RevocationReviewState> =
+    let wanted: Option<crate::vetting::ops::RevocationReviewState> =
         match member_of(&doc, "reviewState") {
             Ok(w) => w,
             Err(reject) => return reject,
         };
-    match crate::routes::vetting::revocation_rows(state).await {
+    match crate::vetting::ops::revocation_rows(state).await {
         Ok(rows) => page(
             &doc,
             rows.into_iter()
@@ -1163,7 +1163,7 @@ async fn handle_edge_lifecycle(
 ) -> TrustTaskOutcome {
     use crate::credentials::lifecycle::LifecycleError;
     use crate::relationships::LifecycleRecordError;
-    use crate::routes::relationships::EdgeLifecycleVerb;
+    use crate::relationships::ops::EdgeLifecycleVerb;
     let (not_found, already, terminal, route_verb) = match verb {
         EdgeVerb::Suspend => (
             SUSPEND_ERR_NOT_FOUND,
@@ -1229,7 +1229,7 @@ async fn handle_edge_lifecycle(
             Err(_) => return missing(&doc),
         }
     };
-    match crate::routes::relationships::record_lifecycle_as(
+    match crate::relationships::ops::record_lifecycle_as(
         state, &actor, capacity, &rel, route_verb, reason,
     )
     .await
@@ -1273,7 +1273,7 @@ async fn handle_join_vetting_show(
     let Ok(uuid) = id.parse::<Uuid>() else {
         return not_found(&doc);
     };
-    match crate::routes::join_requests::read::vetting_of(state, uuid).await {
+    match crate::join::ops::read::vetting_of(state, uuid).await {
         Ok(response) => success_response(&doc, response),
         Err(AppError::NotFound(_)) => not_found(&doc),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -1294,7 +1294,7 @@ async fn handle_join_query(
     {
         return reject;
     }
-    let body: crate::routes::join_requests::present::SendQueryRequest =
+    let body: crate::join::ops::present::SendQueryRequest =
         match serde_json::from_value(without_ext(&doc)) {
             Ok(b) => b,
             Err(e) => {
@@ -1306,7 +1306,7 @@ async fn handle_join_query(
                 );
             }
         };
-    match crate::routes::join_requests::present::send_query_inner(state, body).await {
+    match crate::join::ops::present::send_query_inner(state, body).await {
         Ok(response) => success_response(&doc, response),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, JOIN_QUERY_ERR_CRITERION_NOT_FOUND, e),
         Err(e) => app_error_to_reject(&doc, &e),

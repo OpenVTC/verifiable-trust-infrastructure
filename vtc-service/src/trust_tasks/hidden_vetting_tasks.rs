@@ -158,7 +158,7 @@ pub(super) async fn handle_pcs_binding_reset(
 /// criterion. Admin only, read from the signer's ACL entry — the same `VtcRole::Admin` the REST
 /// route's `AdminAuth` demanded, and the only gate that route applied. Was `POST /vetting/hidden`;
 /// the derivation itself is
-/// [`crate::routes::vetting_hidden::publish_hidden_vetting_core`], shared with that route.
+/// [`crate::vetting::hidden::publish_hidden_vetting_core`], shared with that route.
 #[cfg(feature = "vetting-pcs")]
 pub(super) async fn handle_hidden_publish(
     state: &AppState,
@@ -207,7 +207,7 @@ pub(super) async fn handle_hidden_publish(
             }
         }
     };
-    match crate::routes::vetting_hidden::publish_hidden_vetting_core(
+    match crate::vetting::hidden::publish_hidden_vetting_core(
         state,
         &actor,
         &doc,
@@ -229,8 +229,8 @@ pub(super) async fn handle_hidden_publish(
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(crate::routes::vetting_hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
-        Err(crate::routes::vetting_hidden::Halted::Gate(outcome)) => outcome,
+        Err(crate::vetting::hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
+        Err(crate::vetting::hidden::Halted::Gate(outcome)) => outcome,
     }
 }
 
@@ -259,7 +259,7 @@ pub(super) async fn handle_hidden_withdraw(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::vetting_hidden::withdraw_hidden_vetting_core(
+    match crate::vetting::hidden::withdraw_hidden_vetting_core(
         state,
         &actor,
         &doc,
@@ -268,8 +268,8 @@ pub(super) async fn handle_hidden_withdraw(
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(crate::routes::vetting_hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
-        Err(crate::routes::vetting_hidden::Halted::Gate(outcome)) => outcome,
+        Err(crate::vetting::hidden::Halted::Refused(e)) => task_error_to_reject(&doc, &e),
+        Err(crate::vetting::hidden::Halted::Gate(outcome)) => outcome,
     }
 }
 
@@ -298,11 +298,8 @@ pub(super) async fn handle_hidden_show(
             Ok(p) => p,
             Err(reject) => return reject,
         };
-    match crate::routes::vetting_hidden::show_hidden_vetting_core(
-        state,
-        payload.criterion_id.to_string(),
-    )
-    .await
+    match crate::vetting::hidden::show_hidden_vetting_core(state, payload.criterion_id.to_string())
+        .await
     {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),

@@ -361,7 +361,7 @@ async fn handle_renew(
     if let Err(reject) = parse_spec_payload::<renew::Payload>(&doc) {
         return reject;
     }
-    match crate::routes::members::renew::renew_inner(state, &caller).await {
+    match crate::members::ops::renew::renew_inner(state, &caller).await {
         Ok(res) => respond_as::<renew::Response>(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -387,11 +387,11 @@ async fn handle_rotate_challenge(
     // The route's own body carries `reason` as the audit enum the challenge
     // row stores; the generated parse above has already held it to the
     // specification's `enum`.
-    let body: crate::routes::members::rotate::ChallengeBody = match parse_payload(&doc) {
+    let body: crate::members::ops::rotate::ChallengeBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::members::rotate::challenge_inner(state, &caller, body.reason).await {
+    match crate::members::ops::rotate::challenge_inner(state, &caller, body.reason).await {
         Ok(res) => respond_as::<rotate_challenge::Response>(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -414,11 +414,11 @@ async fn handle_rotate(
     if let Err(reject) = parse_spec_payload::<rotate::Payload>(&doc) {
         return reject;
     }
-    let body: crate::routes::members::rotate::FinishBody = match parse_payload(&doc) {
+    let body: crate::members::ops::rotate::FinishBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::members::rotate::rotate_inner(state, &caller, body).await {
+    match crate::members::ops::rotate::rotate_inner(state, &caller, body).await {
         // `rotate_inner` answers `vmc: null` when the swap succeeded and
         // re-issuing the credentials did not; the published response requires
         // both, so `respond_as` refuses that reply rather than send it. The
@@ -438,7 +438,7 @@ async fn handle_personhood_revoke(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::members::personhood::{RevokeCapacity, revoke_inner};
+    use crate::members::ops::personhood::{RevokeCapacity, revoke_inner};
 
     let signer = match proven_signer(ctx, &doc) {
         Ok(s) => s,
@@ -521,7 +521,7 @@ async fn handle_relationships_list(
         Err(reject) => return reject,
     };
     let limit = body.limit.map(|n| n.get() as usize);
-    let page = match crate::routes::members::relationships::list_inner(
+    let page = match crate::members::ops::relationships::list_inner(
         state,
         body.did.as_str(),
         body.cursor.as_deref(),
@@ -562,7 +562,7 @@ async fn handle_relationships_list(
 /// `vtc/relationships/publish/0.2` — lodge a VRC in the community graph.
 ///
 /// The bearer-less REST route verifies this document's proof itself and then
-/// runs [`publish_inner`](crate::routes::relationships::publish_inner); the
+/// runs [`publish_inner`](crate::relationships::ops::publish_inner); the
 /// spine has verified it already, so this runs the same function on the same
 /// signer — rate limit, VRC proof, publish authorization, policy and all.
 async fn handle_relationships_publish(
@@ -570,7 +570,7 @@ async fn handle_relationships_publish(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::relationships::{PublishError, publish_inner};
+    use crate::relationships::ops::{PublishError, publish_inner};
 
     let signer = match proven_signer(ctx, &doc) {
         Ok(s) => s,
@@ -617,7 +617,7 @@ async fn handle_relationships_revoke(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::relationships::{
+    use crate::relationships::ops::{
         REVOKE_ERR_NOT_FOUND, revoke_authorized, verify_revoke_authorization,
     };
 
@@ -711,7 +711,7 @@ async fn handle_endorsements_issue(
     if let Err(reject) = parse_spec_payload::<end_issue::Payload>(&doc) {
         return reject;
     }
-    let body: crate::routes::endorsements::IssueBody = match parse_payload(&doc) {
+    let body: crate::endorsements::ops::IssueBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
@@ -727,7 +727,7 @@ async fn handle_endorsements_issue(
             );
         }
     };
-    match crate::routes::endorsements::issue_inner(state, &actor, body, &request).await {
+    match crate::endorsements::ops::issue_inner(state, &actor, body, &request).await {
         Ok(res) => respond_as::<end_issue::Response>(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -757,12 +757,12 @@ async fn handle_endorsements_list(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    let filter = crate::routes::endorsements::ListFilter {
+    let filter = crate::endorsements::ops::ListFilter {
         subject_did: body.subject_did.map(|d| d.to_string()),
         type_uri: body.type_uri.map(|t| t.to_string()),
         include_revoked: body.include_revoked,
     };
-    match crate::routes::endorsements::list_inner(
+    match crate::endorsements::ops::list_inner(
         state,
         &filter,
         body.cursor.as_deref(),
@@ -781,7 +781,7 @@ async fn handle_endorsements_show(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::endorsements::{SHOW_ERR_NOT_FOUND, show_inner};
+    use crate::endorsements::ops::{SHOW_ERR_NOT_FOUND, show_inner};
 
     if let Err(reject) = endorsement_actor(
         state,
@@ -821,7 +821,7 @@ async fn handle_endorsements_revoke(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::endorsements::{REVOKE_ERR_NOT_FOUND, revoke_inner};
+    use crate::endorsements::ops::{REVOKE_ERR_NOT_FOUND, revoke_inner};
 
     let actor = match endorsement_actor(
         state,
@@ -1073,10 +1073,7 @@ mod tests {
             json!({}),
         )
         .await;
-        assert_eq!(
-            code(&out),
-            crate::routes::members::renew::RENEW_ERR_NOT_MEMBER
-        );
+        assert_eq!(code(&out), crate::members::ops::renew::RENEW_ERR_NOT_MEMBER);
     }
 
     #[tokio::test]
@@ -1128,7 +1125,7 @@ mod tests {
         .await;
         assert_eq!(
             code(&out),
-            crate::routes::members::rotate::ROTATE_CHALLENGE_ERR_NOT_MEMBER
+            crate::members::ops::rotate::ROTATE_CHALLENGE_ERR_NOT_MEMBER
         );
     }
 
@@ -1148,7 +1145,7 @@ mod tests {
             chrono::DateTime::parse_from_rfc3339(challenge["expiresAt"].as_str().unwrap())
                 .unwrap()
                 .timestamp();
-        let bytes = crate::routes::members::rotate::canonical_signing_bytes(
+        let bytes = crate::members::ops::rotate::canonical_signing_bytes(
             Uuid::parse_str(&rotation_id).unwrap(),
             &old.did,
             &new.did,
@@ -1369,7 +1366,7 @@ mod tests {
         .await;
         assert_eq!(
             code(&out),
-            crate::routes::members::relationships::LIST_ERR_NOT_FOUND
+            crate::members::ops::relationships::LIST_ERR_NOT_FOUND
         );
     }
 
@@ -1443,7 +1440,7 @@ mod tests {
         .await;
         assert_eq!(
             code(&out),
-            crate::routes::relationships::PUBLISH_ERR_VRC_INVALID
+            crate::relationships::ops::PUBLISH_ERR_VRC_INVALID
         );
     }
 
@@ -1500,10 +1497,7 @@ mod tests {
             payload.clone(),
         )
         .await;
-        assert_eq!(
-            code(&out),
-            crate::routes::relationships::REVOKE_ERR_NOT_FOUND
-        );
+        assert_eq!(code(&out), crate::relationships::ops::REVOKE_ERR_NOT_FOUND);
         let out = send(
             &f.vtc,
             JoinTransport::DIDComm,
@@ -1628,7 +1622,7 @@ mod tests {
             json!({ "endorsementId": Uuid::new_v4().to_string() }),
         )
         .await;
-        assert_eq!(code(&out), crate::routes::endorsements::SHOW_ERR_NOT_FOUND);
+        assert_eq!(code(&out), crate::endorsements::ops::SHOW_ERR_NOT_FOUND);
     }
 
     /// The endorsement's own subject is not thereby entitled to the row.
@@ -1676,7 +1670,7 @@ mod tests {
             .await;
             assert_eq!(
                 code(&again),
-                crate::routes::endorsements::REVOKE_ERR_ALREADY_REVOKED
+                crate::endorsements::ops::REVOKE_ERR_ALREADY_REVOKED
             );
         }
     }

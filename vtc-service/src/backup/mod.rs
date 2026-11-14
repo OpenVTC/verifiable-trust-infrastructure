@@ -11,6 +11,8 @@
 //! (`keyspaces::BACKED_UP` ∪ `EXCLUDED_FROM_BACKUP` == `ALL`) guarantees
 //! no keyspace is silently omitted.
 
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 use std::collections::BTreeMap;
 
 use aes_gcm::aead::Aead;

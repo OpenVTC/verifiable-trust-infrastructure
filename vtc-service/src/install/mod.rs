@@ -26,6 +26,8 @@
 //! See spec §4.1 / §4.2 for the consumer-facing flow.
 
 pub mod claim_secret;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod state_machine;
 pub mod token;
 

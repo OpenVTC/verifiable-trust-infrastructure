@@ -1225,7 +1225,7 @@ pub async fn claim_start_v0_3(
         if wrong >= MAX_WRONG_CODES {
             // A voided invitation is withdrawn like a revoked one: the entry
             // it wrote, unclaimed, goes with it (#2660).
-            crate::routes::admin::invites::withdraw_invite_grant(
+            crate::install::ops::invites::withdraw_invite_grant(
                 state,
                 "vtc/install/claim/start",
                 &jti,
@@ -1308,7 +1308,7 @@ pub async fn claim_finish_v0_3(
     signer: &str,
     payload: &claim_finish::Payload,
     statement: &Value,
-) -> Result<crate::routes::install::ClaimedSetupSession> {
+) -> Result<crate::install::ops::ClaimedSetupSession> {
     use claim_finish::error_codes as codes;
     let ks = &state.step_up_approvers_ks;
     let claim_id = payload.claim_id.as_str();
@@ -1389,7 +1389,7 @@ pub async fn claim_finish_v0_3(
     // parked for it would never take effect, leaving the invited
     // administrator unable to answer a step-up. Such a binding takes effect
     // here, with the claim.
-    let invitation = crate::routes::install::has_administrator(state).await?;
+    let invitation = crate::install::ops::has_administrator(state).await?;
     // Item 6: consume the claim and the token, bind the approver — parked for
     // the bootstrap on a fresh community — and mint the setup-session token.
     state
@@ -1402,7 +1402,7 @@ pub async fn claim_finish_v0_3(
     // the claim makes it the administrator's own. After the token is spent, so
     // a crash between leaves an entry that lapses rather than a permanent one
     // whose token is still open.
-    crate::routes::admin::invites::confirm_invite_grant(state, &claim.admin_did).await?;
+    crate::install::ops::invites::confirm_invite_grant(state, &claim.admin_did).await?;
     let session_expires =
         now_epoch().saturating_add(crate::install::INSTALL_SESSION_DEFAULT_TTL_SECS);
     let pending = PendingInstallBinding {
@@ -1447,13 +1447,15 @@ pub async fn claim_finish_v0_3(
         audit_installed(state, &jti, &pending).await?;
     }
     info!(jti = %claim.jti, admin_did = %claim.admin_did, approver = %approver_did, invitation, "install claim 0.3 completed");
-    Ok(crate::routes::install::issue_setup_session(
-        state,
-        install_signer,
-        claim.admin_did,
-        &claim.jti,
+    Ok(
+        crate::install::ops::issue_setup_session(
+            state,
+            install_signer,
+            claim.admin_did,
+            &claim.jti,
+        )
+        .await?,
     )
-    .await?)
 }
 
 /// The approver an install claim 0.3 parked for `(install_jti, admin_did)`,

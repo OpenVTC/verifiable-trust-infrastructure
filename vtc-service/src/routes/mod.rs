@@ -1,38 +1,15 @@
-pub(crate) mod acl;
-pub(crate) mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
-pub(crate) mod audit;
 pub mod auth;
-pub(crate) mod backup;
-pub(crate) mod ceremonies;
 pub(crate) mod community;
 pub(crate) mod credential_exchange;
 pub(crate) mod did_log;
-pub(crate) mod endorsement_types;
-pub(crate) mod endorsements;
 pub(crate) mod health;
-pub(crate) mod install;
-pub(crate) mod invitations;
-pub mod join_requests;
 pub(crate) mod member_portal;
-pub(crate) mod members;
 pub(crate) mod oid4vp;
-pub(crate) mod policies;
-pub mod recognise;
-pub(crate) mod recognition_admin;
-pub(crate) mod registry_admin;
-pub(crate) mod relationships;
 pub(crate) mod rooms;
-pub(crate) mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
-pub(crate) mod vetting;
-/// Hidden-vetter admission: the operator's publish route (development branch `zkp-pcs`).
-#[cfg(feature = "vetting-pcs")]
-pub mod vetting_hidden;
-#[cfg(feature = "website")]
-pub(crate) mod website;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -83,7 +60,7 @@ use crate::server::AppState;
     // Likewise the admin verbs with no route at all — signed documents only —
     // whose shapes the console's signed calls are typed by.
     components(schemas(
-        policies::read::PolicyStatusFilter,
+        crate::policy::ops::read::PolicyStatusFilter,
         crate::git_ns::admin_reads::GitNsNamespaceList,
         crate::git_ns::admin_reads::GitNsRepoList,
         crate::git_ns::admin_reads::GitNsRightList,
@@ -94,11 +71,11 @@ use crate::server::AppState;
         crate::git_ns::admin_reads::GitNsActivity,
         // A repository's drift, as `git-ns/view/0.6`'s `repos[].sync` carries it.
         vta_sdk::openapi::GitNsView06DriftItem,
-        acl::AclEntryEnvelope,
+        crate::acl::ops::AclEntryEnvelope,
         vta_sdk::openapi::VetterList01Payload,
         vta_sdk::openapi::VetterList01Response,
-        endorsement_types::RegisterBody,
-        endorsement_types::RegisterResponse,
+        crate::endorsement_types::ops::RegisterBody,
+        crate::endorsement_types::ops::RegisterResponse,
         vta_sdk::openapi::EndorsementTypeDelete01Response,
         // The operational verbs the console signs (`trust_tasks::admin_tasks`).
         health::DiagnosticsResponse,
@@ -336,15 +313,15 @@ use crate::server::AppState;
         vta_sdk::openapi::StorageConfigsUpdate03Response,
         vta_sdk::openapi::StorageConfigsRetire03Response,
         vta_sdk::openapi::StorageConfigsProbe01Response,
-        audit::AuditListResponse,
+        crate::audit_ops::AuditListResponse,
         crate::config_store::EffectiveConfig,
-        admin::config::PatchResponse,
-        admin::config::ReloadResponse,
-        admin::config::RestartResponse,
-        admin::invites::ListInvitesResponse,
-        admin::invites::CreateInviteRequest,
-        admin::invites::CreateInviteResponse,
-        admin::invites::RevokeInviteResponse,
+        crate::community::ops::config::PatchResponse,
+        crate::community::ops::config::ReloadResponse,
+        crate::community::ops::config::RestartResponse,
+        crate::install::ops::invites::ListInvitesResponse,
+        crate::install::ops::invites::CreateInviteRequest,
+        crate::install::ops::invites::CreateInviteResponse,
+        crate::install::ops::invites::RevokeInviteResponse,
         auth::SessionListResponse,
         auth::RevokeSessionResponse,
         // The console's bearer → cookie bridge and an administrator's own
@@ -353,45 +330,45 @@ use crate::server::AppState;
         auth::AdminSessionResponse,
         auth::WhoamiResponse,
         auth::SessionView,
-        admin::passkeys::ListResponse,
-        admin::passkeys::RegisteredCredential,
-        admin::passkeys::RegisterStartResponse,
-        admin::passkeys::RegisterFinishResponse,
-        admin::passkeys::RevokeStartResponse,
-        admin::passkeys::RevokeFinishResponse,
+        crate::auth::admin_passkeys::ListResponse,
+        crate::auth::admin_passkeys::RegisteredCredential,
+        crate::auth::admin_passkeys::RegisterStartResponse,
+        crate::auth::admin_passkeys::RegisterFinishResponse,
+        crate::auth::admin_passkeys::RevokeStartResponse,
+        crate::auth::admin_passkeys::RevokeFinishResponse,
         // The community verbs the console signs (`trust_tasks::community_tasks`).
-        community::profile::CommunityProfileResponse,
-        ceremonies::CeremonyListResponse,
+        crate::community::ops::profile::CommunityProfileResponse,
+        crate::ceremony::listing::CeremonyListResponse,
         vti_common::pagination::Paginated<crate::endorsement_types::EndorsementType>,
-        recognition_admin::RecognitionCheck,
-        members::read::RemovedMembersResponse,
-        members::read::MemberEnvelope,
-        members::request_vmc::RequestVmcBody,
-        members::request_vmc::RequestVmcResponse,
-        join_requests::read::JoinRequestEnvelope,
-        relationships::RelationshipsGraph,
-        invitations::IssueInvitationBody,
-        invitations::IssueInvitationResponse,
-        invitations::InvitationListResponse,
-        invitations::RevokeResponse,
+        crate::recognition::admin::RecognitionCheck,
+        crate::members::ops::read::RemovedMembersResponse,
+        crate::members::ops::read::MemberEnvelope,
+        crate::members::ops::request_vmc::RequestVmcBody,
+        crate::members::ops::request_vmc::RequestVmcResponse,
+        crate::join::ops::read::JoinRequestEnvelope,
+        crate::relationships::ops::RelationshipsGraph,
+        crate::join::invitations::IssueInvitationBody,
+        crate::join::invitations::IssueInvitationResponse,
+        crate::join::invitations::InvitationListResponse,
+        crate::join::invitations::RevokeResponse,
         vta_sdk::openapi::InvitationDeliver01Payload,
         vta_sdk::openapi::InvitationDeliver01Response,
         // The verbs whose shapes are documented for codegen though every
         // bearer route is gone: the roster and join queue, a member's
         // credentials, the join decision, a vetter grant, and the policy log.
-        vti_common::pagination::Paginated<members::read::MemberResponse>,
+        vti_common::pagination::Paginated<crate::members::ops::read::MemberResponse>,
         vti_common::pagination::Paginated<crate::join::JoinRequest>,
         vta_sdk::openapi::MemberCredentials01Response,
-        join_requests::decide::DecideResponse,
+        crate::join::ops::decide::DecideResponse,
         vta_sdk::openapi::VetterGrant01Response,
-        policies::read::PolicyListResponse,
-        policies::read::PolicyModuleResponse,
-        policies::admin::UploadResponse,
+        crate::policy::ops::read::PolicyListResponse,
+        crate::policy::ops::read::PolicyModuleResponse,
+        crate::policy::ops::admin::UploadResponse,
         crate::policy::PolicyPurpose,
         // The administration surfaces the console signs (`trust_tasks::surface_tasks`).
-        join_requests::read::JoinRequestVettingResponse,
-        join_requests::read::JoinRequestVetting,
-        join_requests::read::JoinRequestVettingStatement,
+        crate::join::ops::read::JoinRequestVettingResponse,
+        crate::join::ops::read::JoinRequestVetting,
+        crate::join::ops::read::JoinRequestVettingStatement,
         // The join criteria, as the console registers and lists them
         // (`vtc/schemas/accepts/{register,list}/0.2`) and as applicants read
         // them (`vtc/join-requests/manifest/0.4`).
@@ -403,10 +380,10 @@ use crate::server::AppState;
         // (`vtc/endorsements/{list,show,revoke}/0.1`) — bearer REST routes for
         // all three had no caller once the spine dispatched them (tt-tf#689)
         // and were removed.
-        endorsements::EndorsementRow,
-        vti_common::pagination::Paginated<endorsements::EndorsementRow>,
-        endorsements::EndorsementEnvelope,
-        endorsements::RevokeResponse,
+        crate::endorsements::ops::EndorsementRow,
+        vti_common::pagination::Paginated<crate::endorsements::ops::EndorsementRow>,
+        crate::endorsements::ops::EndorsementEnvelope,
+        crate::endorsements::ops::RevokeResponse,
         // The admin resend-on-behalf the console signs
         // (`vtc/vetting/vetters/resend/0.2`) — its admin-only bearer REST
         // route had no caller once the spine dispatched it (tt-tf#689) and
@@ -416,12 +393,12 @@ use crate::server::AppState;
         // (`vtc/website/{files/list,files/delete,generations/list,rollback}/0.1`,
         // `trust_tasks::website_tasks`) — every bearer REST route for these had
         // no caller once vtc-client/cnm-cli/admin-ui moved onto the signed door.
-        website::files::ListResponse,
-        website::files::FileEntry,
-        website::files::DeleteResponse,
-        website::generations::GenerationsResponse,
-        website::generations::GenerationRow,
-        website::generations::RollbackResponse,
+        crate::website::ops::files::ListResponse,
+        crate::website::ops::files::FileEntry,
+        crate::website::ops::files::DeleteResponse,
+        crate::website::ops::generations::GenerationsResponse,
+        crate::website::ops::generations::GenerationRow,
+        crate::website::ops::generations::RollbackResponse,
         // The vetting admin reads the console signs
         // (`vtc/vetting/vetters/grants/list/0.1`, `vtc/vetting/auto-grant/
         // {show,update}/0.1`, `vtc/vetting/revocations/list/0.1`,
@@ -435,8 +412,8 @@ use crate::server::AppState;
         vta_sdk::protocols::vetting::AutoGrantStatus,
         vta_sdk::protocols::vetting::AutoGrantConfig,
         vta_sdk::protocols::vetting::AutoGrantSweep,
-        crate::routes::vetting::VettingRevocationRow,
-        crate::routes::vetting::RevocationReviewState,
+        crate::vetting::ops::VettingRevocationRow,
+        crate::vetting::ops::RevocationReviewState,
     )),
 )]
 pub struct ApiDoc;

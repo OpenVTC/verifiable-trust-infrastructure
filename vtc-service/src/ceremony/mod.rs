@@ -65,6 +65,8 @@ pub mod evaluate;
 pub mod execute;
 pub mod facts;
 pub mod invariant;
+/// The ceremony registry the console renders (`vtc/ceremonies/list`).
+pub(crate) mod listing;
 pub mod orchestrate;
 pub mod removal_notice;
 pub mod step_up_passkey_notice;

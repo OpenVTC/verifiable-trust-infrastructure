@@ -56,6 +56,8 @@
 //! the answer; the precedence rule it applies lives in
 //! [`crate::credentials::lifecycle`] and is stated once there.
 
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod rate_limit;
 pub mod storage;
 

@@ -841,7 +841,7 @@ fn member_credentials_response() -> Value {
     ack["credentialSubject"] = json!({ "id": COMMUNITY_DID, "digestMultibase": "zQmExample" });
     member.record_member_vmc("urn:uuid:c0de1234-5678-4abc-9def-0123456789ab", ack, true);
     to_v(
-        crate::routes::members::credentials::credentials_response(&member)
+        crate::members::ops::credentials::credentials_response(&member)
             .expect("a populated member projects"),
     )
 }
@@ -976,9 +976,9 @@ const VEC_ID: &str = "urn:uuid:11111111-1111-4111-8111-111111111111";
 /// Serialised from the real `EndorsementRow`, not hand-written — see the
 /// `endorsements/revoke` note in the table (#1095) for why that matters.
 fn endorsement_row(
-    issued: crate::routes::endorsements::CredentialReference,
-) -> crate::routes::endorsements::EndorsementRow {
-    crate::routes::endorsements::EndorsementRow {
+    issued: crate::endorsements::ops::CredentialReference,
+) -> crate::endorsements::ops::EndorsementRow {
+    crate::endorsements::ops::EndorsementRow {
         endorsement_id: "11111111-1111-4111-8111-111111111111"
             .parse()
             .expect("fixture uuid"),
@@ -995,7 +995,7 @@ fn endorsement_row(
 /// is not on the stored row, and the credential itself rides on `issue` alone.
 fn endorsement() -> Value {
     serde_json::to_value(endorsement_row(
-        crate::routes::endorsements::CredentialReference {
+        crate::endorsements::ops::CredentialReference {
             credential_id: VEC_ID.into(),
             issued_at: Some(TS.parse().expect("fixture timestamp")),
             expires_at: None,
@@ -2192,8 +2192,8 @@ fn table() -> Vec<Conformance> {
             }),
             // `issue` is the one route that holds the credential and the
             // expiry it just computed; a read sends neither.
-            serde_json::to_value(crate::routes::endorsements::IssueResponse {
-                endorsement: endorsement_row(crate::routes::endorsements::CredentialReference {
+            serde_json::to_value(crate::endorsements::ops::IssueResponse {
+                endorsement: endorsement_row(crate::endorsements::ops::CredentialReference {
                     credential_id: VEC_ID.into(),
                     issued_at: Some(TS.parse().expect("fixture timestamp")),
                     expires_at: Some(TS.parse().expect("fixture timestamp")),
@@ -2230,9 +2230,9 @@ fn table() -> Vec<Conformance> {
             // over-reports. Building the fixture from the type the handler
             // actually returns closes that gap for this row: change the
             // struct and this fixture changes with it.
-            serde_json::to_value(crate::routes::endorsements::RevokeResponse {
+            serde_json::to_value(crate::endorsements::ops::RevokeResponse {
                 endorsement_id: "11111111-1111-4111-8111-111111111111".into(),
-                revocation: crate::routes::endorsements::RevocationDetail {
+                revocation: crate::endorsements::ops::RevocationDetail {
                     credential_id: "urn:uuid:22222222-2222-4222-8222-222222222222".into(),
                     revoked_at: "2026-08-23T09:00:00Z".into(),
                 },
@@ -2877,16 +2877,16 @@ fn table() -> Vec<Conformance> {
             // the service has never emitted: it groups halves by endpoint
             // pair and says whether the edge is reciprocated. Two wrongs
             // agreeing is what let this read as conformant.
-            serde_json::to_value(crate::routes::relationships::RelationshipsGraph {
+            serde_json::to_value(crate::relationships::ops::RelationshipsGraph {
                 nodes: vec![
-                    crate::routes::relationships::GraphNode { did: DID.into() },
-                    crate::routes::relationships::GraphNode {
+                    crate::relationships::ops::GraphNode { did: DID.into() },
+                    crate::relationships::ops::GraphNode {
                         did: OTHER_DID.into()
                     },
                 ],
-                edges: vec![crate::routes::relationships::GraphEdge {
+                edges: vec![crate::relationships::ops::GraphEdge {
                     endpoints: vec![DID.into(), OTHER_DID.into()],
-                    halves: vec![crate::routes::relationships::GraphHalf {
+                    halves: vec![crate::relationships::ops::GraphHalf {
                         id: REQUEST_ID.into(),
                         issuer_did: DID.into(),
                         subject_did: OTHER_DID.into(),
@@ -2946,8 +2946,8 @@ fn table() -> Vec<Conformance> {
             // `endorsements/revoke` note below — a hand-written fixture is
             // what let that row describe a shape the handler had stopped
             // sending.
-            serde_json::to_value(crate::routes::website::files::ListResponse {
-                items: vec![crate::routes::website::files::FileEntry {
+            serde_json::to_value(crate::website::ops::files::ListResponse {
+                items: vec![crate::website::ops::files::FileEntry {
                     path: "index.html".into(),
                     size: 2048,
                     etag: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
@@ -2970,8 +2970,8 @@ fn table() -> Vec<Conformance> {
             s::website::generations::list::v0_1::Response,
             json!({}),
             // Serialised from the real `GenerationsResponse` / `GenerationRow`.
-            serde_json::to_value(crate::routes::website::generations::GenerationsResponse {
-                generations: vec![crate::routes::website::generations::GenerationRow {
+            serde_json::to_value(crate::website::ops::generations::GenerationsResponse {
+                generations: vec![crate::website::ops::generations::GenerationRow {
                     generation: "1".into(),
                     current: false,
                     deployed_at: TS.parse().expect("fixture timestamp"),
@@ -3047,7 +3047,7 @@ fn table() -> Vec<Conformance> {
             s::website::deploy::v0_1::Payload,
             s::website::deploy::v0_1::Response,
             json!({ "uploadId": REQUEST_ID }),
-            to_v(crate::routes::website::deploy::DeployResponse {
+            to_v(crate::website::ops::deploy::DeployResponse {
                 deploy_mode: "managed".into(),
                 bundle_sha256: SITE_ETAG.into(),
                 bundle_size_bytes: 4096,
@@ -3082,7 +3082,7 @@ fn table() -> Vec<Conformance> {
             to_v(
                 // With the directory's disclosure statement the way
                 // `directory::disclosure` generates it from the base schema.
-                crate::routes::join_requests::manifest::response(
+                crate::join::ops::manifest::response(
                     COMMUNITY_DID.into(),
                     vec![crate::schemas::accepts::AcceptsCriterion {
                         id: "kernel-developer".into(),
@@ -3937,13 +3937,13 @@ fn table() -> Vec<Conformance> {
             s::vetting::revocations::list::v0_1::Response,
             json!({ "reviewState": "needsReview", "cursor": "o0", "limit": 50 }),
             json!({
-                "items": [to_v(crate::routes::vetting::VettingRevocationRow {
+                "items": [to_v(crate::vetting::ops::VettingRevocationRow {
                     issuer: OTHER_DID.into(),
                     statement_id: VEC_ID.into(),
                     statement_digest_multibase: "zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG".into(),
                     reason: Some("mistake".into()),
                     recorded_at: TS.parse().expect("fixture timestamp"),
-                    review_state: crate::routes::vetting::RevocationReviewState::NeedsReview,
+                    review_state: crate::vetting::ops::RevocationReviewState::NeedsReview,
                     affected_join_requests: vec![uuid()],
                     affected_members: vec![DID.into()],
                 })],
@@ -3953,7 +3953,7 @@ fn table() -> Vec<Conformance> {
             s::relationships::suspend::v0_2::Payload,
             s::relationships::suspend::v0_2::Response,
             json!({ "id": REQUEST_ID, "reason": "under review" }),
-            to_v(crate::routes::relationships::LifecycleResponse {
+            to_v(crate::relationships::ops::LifecycleResponse {
                 id: uuid(),
                 state: crate::relationships::InForce::Suspended {
                     since: TS.parse().expect("fixture timestamp"),
@@ -3964,7 +3964,7 @@ fn table() -> Vec<Conformance> {
             s::relationships::restore::v0_2::Payload,
             s::relationships::restore::v0_2::Response,
             json!({ "id": REQUEST_ID }),
-            to_v(crate::routes::relationships::LifecycleResponse {
+            to_v(crate::relationships::ops::LifecycleResponse {
                 id: uuid(),
                 state: crate::relationships::InForce::Yes,
             })
@@ -3974,7 +3974,7 @@ fn table() -> Vec<Conformance> {
             s::join_requests::vetting::show::v0_1::Response,
             json!({ "id": REQUEST_ID }),
             {
-                use crate::routes::join_requests::read as r;
+                use crate::join::ops::read as r;
                 to_v(r::JoinRequestVettingResponse {
                     request_id: uuid(),
                     vetting: Some(r::JoinRequestVetting {
@@ -4012,7 +4012,7 @@ fn table() -> Vec<Conformance> {
             // `SendQueryRequest` (routes/join_requests/present.rs) is read, never
             // written, so it has no `Serialize` to build this from.
             json!({ "holderDid": DID, "criterionId": "membership" }),
-            to_v(crate::routes::join_requests::present::SendQueryResponse {
+            to_v(crate::join::ops::present::SendQueryResponse {
                 thread_id: REQUEST_ID.into(),
                 holder_did: DID.into(),
                 query: vta_sdk::protocols::credential_exchange::QueryBody {

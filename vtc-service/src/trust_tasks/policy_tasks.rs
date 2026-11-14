@@ -44,7 +44,7 @@ use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::error::AppError;
 use crate::policy::PolicyPurpose;
-use crate::routes::policies::{admin as policy_admin, read as policy_read};
+use crate::policy::ops::{admin as policy_admin, read as policy_read};
 use crate::server::AppState;
 
 #[cfg(test)]
@@ -445,7 +445,7 @@ async fn handle_did_register(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::routes::admin::did_register::register_inner(state, &actor.did, payload).await {
+    match crate::community::ops::did_register::register_inner(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
     }
