@@ -22,6 +22,11 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio (or, wi
 - **A session the community advertises is never replaced by HTTPS.** `auto`
   errors with what was advertised and what failed; `--transport rest` is the
   operator's explicit way to post signed documents for a diagnosis.
+- **A refusal is a tool result, not a protocol error** (#2594):
+  `server::outcome` turns `VtcError::Refused` into a `ToolError` of kind
+  `refused` carrying the community's code and document, and `vtc_call`
+  refuses a URI the community's discovery answer does not list (`notServed`)
+  before sending. `ErrorData` is only for an argument outside its domain.
 - **A parked operation is an outcome.** `VtcError::Parked` becomes a
   successful result with `status: "parked"` naming the action; it is never
   an error and never resent.

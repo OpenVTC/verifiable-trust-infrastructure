@@ -1582,6 +1582,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
         memory_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks: policy_ks.clone(),
+        policy_cache: std::sync::Arc::new(crate::policy::PolicyCache::new()),
         task_consent_ks: store.keyspace(crate::keyspaces::TASK_CONSENT).unwrap(),
         service_state_ks,
         sealed_nonces_ks,

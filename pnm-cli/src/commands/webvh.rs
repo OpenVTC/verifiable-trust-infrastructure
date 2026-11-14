@@ -1,6 +1,7 @@
 //! Dispatch for `pnm did-mgmt …` (the module keeps the retired `webvh` name).
 
 use vta_cli_common::commands::webvh;
+use vta_cli_common::confirm::confirm_or_cancel;
 use vta_sdk::client::VtaClient;
 
 use crate::cli::WebvhCommands;
@@ -17,7 +18,12 @@ pub(crate) async fn run(
         WebvhCommands::UpdateServer { id, label } => {
             webvh::cmd_webvh_server_update(client, &id, label).await
         }
-        WebvhCommands::DeleteServer { id } => webvh::cmd_webvh_server_remove(client, &id).await,
+        WebvhCommands::DeleteServer { id, yes } => {
+            if !confirm_or_cancel(&format!("remove server `{id}` from the registry"), yes)? {
+                return Ok(());
+            }
+            webvh::cmd_webvh_server_remove(client, &id).await
+        }
         WebvhCommands::CreateDid {
             context,
             server,
@@ -136,7 +142,12 @@ pub(crate) async fn run(
             webvh::cmd_webvh_did_list(client, context.as_deref(), server.as_deref()).await
         }
         WebvhCommands::GetDid { did } => webvh::cmd_webvh_did_get(client, &did).await,
-        WebvhCommands::DeleteDid { did } => webvh::cmd_webvh_did_delete(client, &did).await,
+        WebvhCommands::DeleteDid { did, yes } => {
+            if !confirm_or_cancel(&format!("delete {did} and its keys"), yes)? {
+                return Ok(());
+            }
+            webvh::cmd_webvh_did_delete(client, &did).await
+        }
         WebvhCommands::RealignDidKeys { did, dry_run } => {
             webvh::cmd_webvh_did_realign_keys(client, &did, dry_run).await
         }

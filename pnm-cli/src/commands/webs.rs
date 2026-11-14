@@ -112,7 +112,16 @@ pub(crate) async fn run(
         WebsCommands::Delete {
             did,
             expect_version,
-        } => webs::cmd_webs_delete(client, &did, expect_version.as_deref()).await,
+            yes,
+        } => {
+            if !vta_cli_common::confirm::confirm_or_cancel(
+                &format!("deactivate {did} for good and remove its slot from the host"),
+                yes,
+            )? {
+                return Ok(());
+            }
+            webs::cmd_webs_delete(client, &did, expect_version.as_deref()).await
+        }
     }
 }
 

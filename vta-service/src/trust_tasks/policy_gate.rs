@@ -226,7 +226,11 @@ async fn decide(
         policy::build_policy_input(type_uri, payload, &auth.did, &auth.acr, &auth.amr, class);
     input.request.subject = task_subject(state, auth, type_uri, payload).await;
 
-    let policies = match policy::load_active_for_context(&state.policy_ks, &input.context_id).await
+    // Compiled once per change to the policy keyspace, not per task (#2623).
+    let policies = match state
+        .policy_cache
+        .active_for_context(&state.policy_ks, &input.context_id)
+        .await
     {
         Ok(p) => p,
         Err(e) => {
@@ -237,7 +241,22 @@ async fn decide(
         }
     };
 
-    let decision = decide_with_extended(&policies, &input);
+    // On the blocking pool: evaluation is synchronous, CPU-bound and allowed up
+    // to `POLICY_EVAL_TIME_LIMIT` per policy (twice for a `GATED_AS` URI), and on
+    // an executor thread one slow policy stalled unrelated requests (#2623).
+    let decision = match tokio::task::spawn_blocking(move || {
+        decide_with_extended(&policies, &input)
+    })
+    .await
+    {
+        Ok(decision) => decision,
+        Err(e) => {
+            tracing::error!(error = %e, type_uri, "policy evaluation panicked — denying (fail-closed)");
+            return Some(GateReject::Reason(RejectReason::PermissionDenied {
+                reason: "policy evaluation unavailable".to_string(),
+            }));
+        }
+    };
     match decision.decision {
         Disposition::Allow => None,
         Disposition::Deny => Some(GateReject::Reason(RejectReason::PermissionDenied {

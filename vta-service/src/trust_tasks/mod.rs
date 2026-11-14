@@ -37,6 +37,7 @@
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize as _;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 
@@ -645,7 +646,7 @@ async fn validate_payload(
         return None;
     };
 
-    match trust_tasks_rs::validate::against_schema(schema, &doc.payload) {
+    match vta_sdk::schema_cache::check(schema, &doc.payload) {
         Ok(()) => None,
         Err(e) => {
             // A schema error quotes the offending value. For a task whose payload is text a
@@ -1194,14 +1195,17 @@ pub(crate) async fn accept_from_proven_sender(
             // being the sender. (A reply delivered to a waiter above answers a
             // request we sent, under a thread id only we and the peer know; the
             // waiter decides how far to trust it.)
-            if let Err(reason) = bind_document_to_sender(state, sender_vid, body).await {
-                tracing::warn!(
-                    sender = %sender_vid,
-                    ?reason,
-                    "trust-task document is not bound to its sender by a proof — refused"
-                );
-                return refuse_without_standing(state, body, reason).await;
-            }
+            let verified = match bind_document_to_sender(state, sender_vid, body).await {
+                Ok(verified) => verified,
+                Err(reason) => {
+                    tracing::warn!(
+                        sender = %sender_vid,
+                        ?reason,
+                        "trust-task document is not bound to its sender by a proof — refused"
+                    );
+                    return refuse_without_standing(state, body, reason).await;
+                }
+            };
             use crate::messaging::auth::Standing;
             use operation_budget::Caller;
             match crate::messaging::auth::resolve_trust_task_sender(state, sender_vid, body).await {
@@ -1215,12 +1219,10 @@ pub(crate) async fn accept_from_proven_sender(
                         Standing::Acl => Caller::Client(&auth.did),
                         Standing::ZeroAuthority => Caller::Unauthenticated,
                     };
-                    match state
-                        .operation_budget
-                        .charge(caller, &ceremony::peek_type_uri(body).unwrap_or_default())
-                    {
+                    let type_uri = verified.doc().type_uri.to_string();
+                    match state.operation_budget.charge(caller, &type_uri) {
                         Ok(()) => {
-                            dispatch_trust_task_core(state, &auth, body, confidentiality).await
+                            dispatch_verified_core(state, &auth, verified, confidentiality).await
                         }
                         Err(refused) => over_budget(state, body, refused).await,
                     }
@@ -1318,8 +1320,13 @@ pub(crate) async fn verified_issuer(
         vti_common::auth::verify_trust_task_proof_value(received, &state.trust_task_vm_resolver())
             .await
             .ok()?;
-    let signer = signer.split('#').next().unwrap_or(&signer).to_string();
-    (doc.issuer.as_deref() == Some(signer.as_str())).then_some(signer)
+    issuer_if_signer(doc, &signer)
+}
+
+/// `signer` without its fragment, when that is `doc`'s `issuer`.
+fn issuer_if_signer(doc: &TrustTask<Value>, signer: &str) -> Option<String> {
+    let signer = signer.split('#').next().unwrap_or(signer);
+    (doc.issuer.as_deref() == Some(signer)).then(|| signer.to_string())
 }
 
 /// Hand a reply to its waiter, if the peer the request went to signed it.
@@ -1328,7 +1335,11 @@ async fn deliver_reply(state: &AppState, body: &[u8]) -> bool {
     let Ok(received) = serde_json::from_slice::<Value>(body) else {
         return false;
     };
-    let Ok(doc) = serde_json::from_value::<TrustTask<Value>>(received.clone()) else {
+    // Verify only a document some waiter could take (#2624).
+    if !state.pending_replies.is_waiting(&received) {
+        return false;
+    }
+    let Ok(doc) = TrustTask::<Value>::deserialize(&received) else {
         return false;
     };
     let signer = verified_issuer(state, &received, &doc).await;
@@ -1345,15 +1356,30 @@ pub(crate) async fn bind_document_to_sender(
     state: &AppState,
     sender_vid: &str,
     body: &[u8],
-) -> Result<(), RejectReason> {
+) -> Result<received::VerifiedDocument, RejectReason> {
+    let received: Value =
+        serde_json::from_slice(body).map_err(|e| RejectReason::MalformedRequest {
+            reason: format!("not a Trust Task document: {e}"),
+        })?;
+    bind_received_to_sender(state, sender_vid, received).await
+}
+
+/// [`bind_document_to_sender`] over the JSON the bytes already parsed to. The
+/// answer is the document parsed and, when it carries a proof, verified — once
+/// for the whole dispatch ([`received::VerifiedDocument`], #2624).
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn bind_received_to_sender(
+    state: &AppState,
+    sender_vid: &str,
+    received: Value,
+) -> Result<received::VerifiedDocument, RejectReason> {
     let sender = sender_vid.split('#').next().unwrap_or(sender_vid);
     let malformed = |e: serde_json::Error| RejectReason::MalformedRequest {
         reason: format!("not a Trust Task document: {e}"),
     };
     // The JSON as received is what the proof is verified over (VTI-45); the
     // typed document is its parse, read for `issuer` and `type`.
-    let received: Value = serde_json::from_slice(body).map_err(malformed)?;
-    let doc: TrustTask<Value> = serde_json::from_value(received.clone()).map_err(malformed)?;
+    let doc = TrustTask::<Value>::deserialize(&received).map_err(malformed)?;
     if doc.proof.is_none() {
         // A public task's specification declares the request proof OPTIONAL,
         // and it is accepted unsigned over HTTPS; refusing the same document
@@ -1361,19 +1387,21 @@ pub(crate) async fn bind_document_to_sender(
         // transport, which VTI-OPS-021 forbids. A proof that IS attached is
         // still verified and bound below.
         if is_public_task(&doc.type_uri.for_routing().to_string()) {
-            return Ok(());
+            return Ok(received::VerifiedDocument::new(received, doc, None));
         }
         return Err(RejectReason::ProofRequired);
     }
-    let signer =
-        vti_common::auth::verify_trust_task_proof_value(&received, &state.trust_task_vm_resolver())
-            .await
-            .map_err(|e| RejectReason::ProofInvalid {
-                reason: e.to_string(),
-            })?;
-    let signer = signer.split('#').next().unwrap_or(&signer).to_string();
+    let verified = received::verify_received(&received, &state.trust_task_vm_resolver())
+        .await
+        .map_err(|e| RejectReason::ProofInvalid {
+            reason: e.to_string(),
+        })?;
+    let signer = verified.as_str();
+    let signer = signer.split('#').next().unwrap_or(signer);
     match doc.issuer.as_deref() {
-        Some(issuer) if issuer == signer && issuer == sender => Ok(()),
+        Some(issuer) if issuer == signer && issuer == sender => Ok(
+            received::VerifiedDocument::new(received, doc, Some(verified)),
+        ),
         Some(issuer) if issuer != signer => Err(RejectReason::ProofInvalid {
             reason: "the proof verifies as a DID other than the document's issuer".to_string(),
         }),
@@ -1389,14 +1417,50 @@ pub(crate) async fn bind_document_to_sender(
     }
 }
 
+/// What the spine is handed: the bytes as received (REST, and every caller
+/// that has not bound the document to a sender), or a document a DIDComm/TSP
+/// sender binding already parsed and verified.
+enum SpineInput<'a> {
+    Bytes(&'a [u8]),
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    Verified(Box<received::VerifiedDocument>),
+}
+
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     auth: &AuthClaims,
     body: &[u8],
     confidentiality: transport::TransportConfidentiality,
 ) -> TrustTaskOutcome {
+    dispatch_spine(state, auth, SpineInput::Bytes(body), confidentiality).await
+}
+
+/// [`dispatch_trust_task_core`] for a document [`bind_document_to_sender`]
+/// already parsed and verified: neither is done again (#2624).
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(crate) async fn dispatch_verified_core(
+    state: &AppState,
+    auth: &AuthClaims,
+    verified: received::VerifiedDocument,
+    confidentiality: transport::TransportConfidentiality,
+) -> TrustTaskOutcome {
+    dispatch_spine(
+        state,
+        auth,
+        SpineInput::Verified(Box::new(verified)),
+        confidentiality,
+    )
+    .await
+}
+
+async fn dispatch_spine(
+    state: &AppState,
+    auth: &AuthClaims,
+    input: SpineInput<'_>,
+    confidentiality: transport::TransportConfidentiality,
+) -> TrustTaskOutcome {
     let outcome = transport::with_confidentiality(confidentiality, async move {
-        dispatch_trust_task_inner(state, auth, body).await
+        dispatch_trust_task_inner(state, auth, input).await
     })
     .await;
     // Before the conformance observation below, so what that layer sees is what
@@ -1486,22 +1550,32 @@ pub(crate) async fn dispatch_auth_family(state: &AppState, body: &[u8]) -> Trust
 async fn dispatch_trust_task_inner(
     state: &AppState,
     auth: &AuthClaims,
-    body: &[u8],
+    input: SpineInput<'_>,
 ) -> TrustTaskOutcome {
-    // 1. Parse the envelope.
-    let doc: TrustTask<Value> = match serde_json::from_slice(body) {
-        Ok(d) => d,
-        // No `type` to attribute the request to, so nothing to count and no
-        // successor to name. The one exit that legitimately carries no
-        // deprecation signal.
-        Err(e) => return body_parse_error_response(&e.to_string()),
-    };
-    // The same bytes as JSON, kept verbatim: every proof on this document is
-    // verified over what was received, never over a re-serialisation of `doc`
-    // (VTI-45). It parsed as a Trust Task, so it parses as JSON.
-    let received: std::sync::Arc<Value> = match serde_json::from_slice(body) {
-        Ok(v) => std::sync::Arc::new(v),
-        Err(e) => return body_parse_error_response(&e.to_string()),
+    // 1. Parse the envelope — once (#2624). The JSON is kept verbatim: every
+    // proof on this document is verified over what was received, never over a
+    // re-serialisation of `doc` (VTI-45); `doc` is its typed parse.
+    let (received, doc, proof) = match input {
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        SpineInput::Verified(verified) => verified.into_parts(),
+        SpineInput::Bytes(body) => {
+            let received: Value = match serde_json::from_slice(body) {
+                Ok(v) => v,
+                // No `type` to attribute the request to, so nothing to count
+                // and no successor to name. The one exit that legitimately
+                // carries no deprecation signal.
+                Err(e) => return body_parse_error_response(&e.to_string()),
+            };
+            let doc = match TrustTask::<Value>::deserialize(&received) {
+                Ok(d) => d,
+                Err(e) => return body_parse_error_response(&e.to_string()),
+            };
+            (
+                std::sync::Arc::new(received),
+                doc,
+                None::<received::VerifiedSigner>,
+            )
+        }
     };
 
     // 2. Is this an answer rather than a question?
@@ -1520,10 +1594,19 @@ async fn dispatch_trust_task_inner(
     //
     // An empty body is the "nothing goes back" signal the transports already
     // understand: `handle_tsp` drops an empty reply rather than sealing one.
-    if state.pending_replies.complete(
-        &received,
-        verified_issuer(state, &received, &doc).await.as_deref(),
-    ) {
+    //
+    // The proof is verified for this only when some waiter holds the thread
+    // (#2624), and not again when the sender binding already verified it.
+    if state.pending_replies.is_waiting(&received)
+        && state.pending_replies.complete(
+            &received,
+            match &proof {
+                Some(signer) => issuer_if_signer(&doc, signer.as_str()),
+                None => verified_issuer(state, &received, &doc).await,
+            }
+            .as_deref(),
+        )
+    {
         tracing::debug!(
             thread_id = ?doc.thread_id,
             "inbound document delivered to a waiting request"
@@ -1583,9 +1666,15 @@ async fn dispatch_trust_task_inner(
     // Built in `boxed_task`'s frame rather than this one (VTI-08): inline, a
     // debug build keeps a slot here for the validated future and another for
     // the task-local wrapper around it.
-    let mut outcome =
-        boxed_task(|| received::scope(received, dispatch_trust_task_validated(state, auth, doc)))
-            .await;
+    let mut outcome = boxed_task(|| {
+        received::scope_parsed(
+            received,
+            Some(doc.clone()),
+            proof,
+            dispatch_trust_task_validated(state, auth, doc),
+        )
+    })
+    .await;
 
     dispatch_audit.record(state, &auth.did, &outcome).await;
 
@@ -3733,14 +3822,25 @@ mod tests {
     #[test]
     fn the_spine_signs_every_response_it_returns() {
         let src = include_str!("mod.rs");
-        let start = src
-            .find("pub(crate) async fn dispatch_trust_task_core(")
-            .expect("the spine is still named that");
-        let body = &src[start..];
-        let end = body.find("\n}\n").expect("the spine has an end");
-
+        let body_of = |signature: &str| {
+            let start = src.find(signature).expect("the spine is still named that");
+            let body = &src[start..];
+            let end = body.find("\n}\n").expect("the spine has an end");
+            &body[..end]
+        };
+        // Both doors in — bytes, and a document a sender binding already
+        // verified (#2624) — go through the one function that signs.
+        for door in [
+            "pub(crate) async fn dispatch_trust_task_core(",
+            "pub(crate) async fn dispatch_verified_core(",
+        ] {
+            assert!(
+                body_of(door).contains("dispatch_spine("),
+                "`{door}` no longer goes through `dispatch_spine`, which signs"
+            );
+        }
         assert!(
-            body[..end].contains("sign_response("),
+            body_of("async fn dispatch_spine(").contains("sign_response("),
             "the dispatch spine no longer signs its responses. 265 published \
              specifications require a proof on the response (SPEC §7.3 item 7). \
              `VtaClient` verifies one since #1341, so dropping this would break \
@@ -5619,11 +5719,15 @@ mod response_coverage {
         let sender = crate::test_support::test_admin_did().0;
 
         let doc = vti_45_javascript_ping(&vta_did);
-        assert_eq!(
+        let bound =
             super::bind_document_to_sender(&state, &sender, &serde_json::to_vec(&doc).unwrap())
-                .await,
-            Ok(())
-        );
+                .await
+                .unwrap_or_else(|r| panic!("not bound: {r:?}"));
+        // Verified once, here; the spine reuses this rather than verifying again.
+        let signer = bound
+            .signer()
+            .expect("a signed document carries its signer");
+        assert_eq!(signer.as_str().split('#').next(), Some(sender.as_str()));
 
         let mut tampered = doc;
         tampered["payload"] = json!({ "extra": true });

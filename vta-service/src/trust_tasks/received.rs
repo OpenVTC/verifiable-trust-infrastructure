@@ -29,8 +29,88 @@ use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vti_common::auth::{DiProofError, TrustTaskVmResolver};
 
+/// What a dispatch records about the document it is running.
+pub(crate) struct Received {
+    /// The JSON as it arrived.
+    value: Arc<Value>,
+    /// Its parse, compared against the document a handler verifies. Parsed
+    /// once here rather than at every verification (#2624).
+    parsed: Option<TrustTask<Value>>,
+    /// The signer its proof already verified as, when the transport's sender
+    /// binding verified it ([`VerifiedDocument`]).
+    proof: Option<VerifiedSigner>,
+}
+
 tokio::task_local! {
-    static RECEIVED: Arc<Value>;
+    static RECEIVED: Arc<Received>;
+}
+
+/// The DID a received document's proof verifies as — the raw result of
+/// `verify_trust_task_proof_value` over that document as received, with the
+/// node's own resolver. Constructible only by running that verification
+/// ([`verify_received`]), so holding one is having verified.
+#[derive(Clone, Debug)]
+pub(crate) struct VerifiedSigner(String);
+
+impl VerifiedSigner {
+    /// The signer as the verification reported it (it may carry a fragment).
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Verify `received`'s proof as received.
+pub(crate) async fn verify_received(
+    received: &Value,
+    resolver: &TrustTaskVmResolver,
+) -> Result<VerifiedSigner, DiProofError> {
+    vti_common::auth::verify_trust_task_proof_value(received, resolver)
+        .await
+        .map(VerifiedSigner)
+}
+
+/// A document bound to its transport-proven sender: parsed once from the bytes
+/// received, and its proof — when it carries one — verified once
+/// (`trust_tasks::bind_document_to_sender`). The spine takes this rather than
+/// the bytes, so the proof is not verified again for the same document
+/// (#2624; the workspace's typestate rule for verified wire forms).
+pub(crate) struct VerifiedDocument {
+    received: Arc<Value>,
+    doc: TrustTask<Value>,
+    proof: Option<VerifiedSigner>,
+}
+
+impl VerifiedDocument {
+    /// Pair `received` — and `doc`, its parse — with the verification already
+    /// run over it. `proof` is `None` only for a document that carries no
+    /// proof. Only the sender binding constructs one.
+    pub(crate) fn new(
+        received: Value,
+        doc: TrustTask<Value>,
+        proof: Option<VerifiedSigner>,
+    ) -> Self {
+        Self {
+            received: Arc::new(received),
+            doc,
+            proof,
+        }
+    }
+
+    /// The typed document.
+    pub(crate) fn doc(&self) -> &TrustTask<Value> {
+        &self.doc
+    }
+
+    /// The verified signer, when the document carries a proof.
+    #[cfg(test)]
+    pub(crate) fn signer(&self) -> Option<&VerifiedSigner> {
+        self.proof.as_ref()
+    }
+
+    /// Its parts: the JSON as received, the typed document, the verification.
+    pub(crate) fn into_parts(self) -> (Arc<Value>, TrustTask<Value>, Option<VerifiedSigner>) {
+        (self.received, self.doc, self.proof)
+    }
 }
 
 /// Run `f` with `received` — the inbound document parsed from its wire bytes —
@@ -41,21 +121,43 @@ tokio::task_local! {
 /// temporary in its own poll frame on first poll, and in a debug build that
 /// frame stays live under every handler: about 64 KiB, enough to put
 /// `contexts/create` past the VTI-08 stack budget.
+#[cfg(test)]
 pub(crate) fn scope<F>(
     received: Arc<Value>,
     f: F,
-) -> tokio::task::futures::TaskLocalFuture<Arc<Value>, F>
+) -> tokio::task::futures::TaskLocalFuture<Arc<Received>, F>
 where
     F: std::future::Future,
 {
-    RECEIVED.scope(received, f)
+    let parsed = <TrustTask<Value> as serde::Deserialize>::deserialize(&*received).ok();
+    scope_parsed(received, parsed, None, f)
 }
 
-/// The received JSON, when it is `doc` as received.
-fn received_form_of(doc: &TrustTask<Value>) -> Option<Arc<Value>> {
+/// [`scope`] with the parse already made and, for a [`VerifiedDocument`], the
+/// signer its proof verified as. `parsed` must be the parse of `received`.
+pub(crate) fn scope_parsed<F>(
+    received: Arc<Value>,
+    parsed: Option<TrustTask<Value>>,
+    proof: Option<VerifiedSigner>,
+    f: F,
+) -> tokio::task::futures::TaskLocalFuture<Arc<Received>, F>
+where
+    F: std::future::Future,
+{
+    RECEIVED.scope(
+        Arc::new(Received {
+            value: received,
+            parsed,
+            proof,
+        }),
+        f,
+    )
+}
+
+/// The recorded document, when it is `doc` as received.
+fn received_form_of(doc: &TrustTask<Value>) -> Option<Arc<Received>> {
     let received = RECEIVED.try_with(Arc::clone).ok()?;
-    let parsed: TrustTask<Value> = serde_json::from_value((*received).clone()).ok()?;
-    (&parsed == doc).then_some(received)
+    (received.parsed.as_ref()? == doc).then_some(received)
 }
 
 /// `doc` as received when this dispatch recorded it; its typed form re-serialised otherwise
@@ -63,21 +165,29 @@ fn received_form_of(doc: &TrustTask<Value>) -> Option<Arc<Value>> {
 /// notification, so a client can verify it later (VTI-NTF-050) — keeps this.
 pub(crate) fn document_as_received(doc: &TrustTask<Value>) -> Value {
     match received_form_of(doc) {
-        Some(received) => (*received).clone(),
+        Some(received) => (*received.value).clone(),
         None => serde_json::to_value(doc).unwrap_or(Value::Null),
     }
 }
 
 /// Verify `doc`'s proof over the JSON it arrived as, when this dispatch
 /// recorded it; over its typed form otherwise. See the module docs.
+///
+/// When the transport's sender binding already verified this very document
+/// (a [`VerifiedDocument`] dispatch), that result is returned rather than
+/// verifying it again (#2624): the same function over the same JSON with the
+/// same resolver — every caller passes the node's `trust_task_vm_resolver`.
 pub(crate) async fn verify_trust_task_proof(
     doc: &TrustTask<Value>,
     resolver: &TrustTaskVmResolver,
 ) -> Result<String, DiProofError> {
     match received_form_of(doc) {
-        Some(received) => {
-            vti_common::auth::verify_trust_task_proof_value(&received, resolver).await
-        }
+        Some(received) => match &received.proof {
+            Some(signer) => Ok(signer.0.clone()),
+            None => {
+                vti_common::auth::verify_trust_task_proof_value(&received.value, resolver).await
+            }
+        },
         None => vti_common::auth::verify_trust_task_proof_with(doc, resolver).await,
     }
 }
@@ -89,7 +199,9 @@ pub(crate) async fn verify_approval_proof(
     resolver: &TrustTaskVmResolver,
 ) -> Result<String, DiProofError> {
     match received_form_of(doc) {
-        Some(received) => vti_common::auth::verify_approval_proof_value(&received, resolver).await,
+        Some(received) => {
+            vti_common::auth::verify_approval_proof_value(&received.value, resolver).await
+        }
         None => vti_common::auth::verify_approval_proof_with(doc, resolver).await,
     }
 }

@@ -210,6 +210,11 @@ fn print_cursor_footer(result: &ListAuditLogsResultBody) {
 /// Display the current audit retention period.
 pub async fn cmd_get_retention(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
     let result = client.get_audit_retention().await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&result)?;
+        return Ok(());
+    }
     println!("\n  \x1b[1mAudit Retention\x1b[0m");
     println!(
         "  Retention period: \x1b[36m{}\x1b[0m days",

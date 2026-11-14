@@ -344,6 +344,12 @@ dtg-credentials = "0.14"
 # computation and no I/O. `tls-aws-lc-rs` goes with `resolve-http` — it exists
 # only to fetch over HTTPS.
 jsonschema = { version = "0.60", default-features = false, features = ["idna"] }
+# The `jsonschema` release `trust-tasks-rs` 0.37 validates Trust Task payloads
+# with, under its own name so it cannot be confused with the one above.
+# `vta_sdk::schema_cache` compiles each generated payload schema once with it
+# (#2622), so a cached check is the same check `against_schema` makes. Goes when
+# the workspace reaches `trust-tasks-rs` >= 0.38 and its `SchemaValidator`.
+jsonschema-trust-tasks = { package = "jsonschema", version = "0.46", default-features = false }
 
 # Async runtime. 1.49 stabilised `runtime::Id`, which
 # `vta_sdk::resolver::shared_did_resolver` keys on.
@@ -849,6 +855,8 @@ dialoguer = "0.12"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
+# Shell completions for pnm / cnm (`completions <shell>`). Same 4.6 line as clap.
+clap_complete = "4.6"
 
 # Terminal UI
 ratatui = "0.30"

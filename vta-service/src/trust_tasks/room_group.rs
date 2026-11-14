@@ -402,8 +402,10 @@ pub(super) async fn handle_chain_v0_2(
         return r;
     }
 
-    use trust_tasks_rs::validate::ValidatedPayload as _;
-    if let Err(e) = vti_specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload) {
+    if let Err(e) = vta_sdk::schema_cache::check_payload::<
+        vti_specs::rooms::keys::chain::v0_2::Payload,
+    >(&doc.payload)
+    {
         return super::helpers::malformed_request_response(format!(
             "payload refused by its schema: {}",
             e.messages().join("; ")

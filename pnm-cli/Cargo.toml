@@ -39,6 +39,7 @@ vta-cli-common = { path = "../vta-cli-common", version = "0.61", features = [
 affinidi-did-resolver-cache-sdk = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["env"] }
+clap_complete = { workspace = true }
 dialoguer = { workspace = true }
 # `pnm messaging console`: the mediator console and its engine.
 # 0.43 is the release on `affinidi-messaging-sdk` 0.37 / `trust-tasks-rs` 0.32

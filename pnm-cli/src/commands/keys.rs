@@ -14,17 +14,19 @@ pub(crate) async fn run(
         KeyCommands::Create {
             key_type,
             derivation_path,
+            mnemonic_file,
             mnemonic,
             label,
             context_id,
             internal,
             yes,
         } => {
+            let mnemonic = keys::read_mnemonic(mnemonic_file.as_deref(), mnemonic)?;
             keys::cmd_key_create(
                 client,
                 &key_type,
                 derivation_path,
-                mnemonic,
+                mnemonic.map(|m| m.to_string()),
                 label,
                 context_id,
                 internal,
@@ -50,7 +52,11 @@ pub(crate) async fn run(
             .await
         }
         KeyCommands::Get { key_id, secret } => keys::cmd_key_get(client, &key_id, secret).await,
-        KeyCommands::Revoke { key_id } => keys::cmd_key_revoke(client, &key_id).await,
+        KeyCommands::Revoke {
+            key_id,
+            reason,
+            yes,
+        } => keys::cmd_key_revoke(client, &key_id, reason.as_deref(), yes).await,
         KeyCommands::SetExportability { key_id, exportable } => {
             keys::cmd_key_set_exportability(client, &key_id, exportable).await
         }
@@ -126,6 +132,13 @@ pub(crate) async fn run(
             keys::cmd_key_sign_csr(client, &key_id, &subject, out.as_deref()).await
         }
         KeyCommands::Seeds => keys::cmd_seeds_list(client).await,
-        KeyCommands::RotateSeed { mnemonic } => keys::cmd_seeds_rotate(client, mnemonic).await,
+        KeyCommands::RotateSeed {
+            mnemonic_file,
+            mnemonic,
+            yes,
+        } => {
+            let mnemonic = keys::read_mnemonic(mnemonic_file.as_deref(), mnemonic)?;
+            keys::cmd_seeds_rotate(client, mnemonic, yes).await
+        }
     }
 }

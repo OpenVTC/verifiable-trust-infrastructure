@@ -30,6 +30,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::server::{VtcMcp, outcome};
+use vti_mcp_common::tool_error::ToolError;
 
 /// The Trust Task URIs the workflows send. Every one is held to the pinned
 /// index by `every_workflow_uri_is_pinned`.
@@ -165,11 +166,19 @@ impl VtcMcp {
         {
             Ok(call) => call,
             Err(refused) => {
-                let (status, message) = match *refused {
-                    Err(e) => ("refused-locally", e.message.to_string()),
-                    Ok(_) => ("refused-locally", "refused".to_string()),
+                // A local refusal is a tool result carrying the guard's
+                // words; a protocol error carries its own.
+                let message = match *refused {
+                    Err(e) => e.message.to_string(),
+                    Ok(result) => result
+                        .content
+                        .first()
+                        .and_then(|c| c.as_text())
+                        .and_then(|t| serde_json::from_str::<Value>(&t.text).ok())
+                        .and_then(|body| body["message"].as_str().map(str::to_string))
+                        .unwrap_or_else(|| "refused".to_string()),
                 };
-                progress.record(slug, status, json!({ "error": message }));
+                progress.record(slug, "refused-locally", json!({ "error": message }));
                 return StepEnd::Stopped;
             }
         };
@@ -217,7 +226,7 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let report = run(peer).await;
-        call.finish(Ok(report))
+        call.finish(Ok::<_, ToolError>(report))
     }
 
     /// The group workflow: create, appoint managers, add bindings, add
@@ -774,33 +783,35 @@ impl VtcMcp {
         &self,
         p: &ActionDecideParams,
         peer: Option<&Peer<RoleServer>>,
-    ) -> Result<Value, McpError> {
+    ) -> Result<Value, ToolError> {
         let client = self.client()?;
         // `show_action` answers the action itself, unwrapped.
         let action = outcome(self.health.observe(client.show_action(&p.action_id).await))?;
         let verified = vtc_client::actions::verify_action(&action).map_err(|e| {
-            McpError::internal_error(
+            ToolError::new(
+                "actionMismatch",
                 format!(
                     "refusing to decide {}: {e}. What the action says is not what would run; \
                      do not approve it.",
                     p.action_id
                 ),
-                None,
             )
+            .with_next("nothing was decided. Tell the operator; do not retry.")
         })?;
         let Some(decision) =
             vtc_client::actions::decision_for(&verified.action, p.approve, p.reason.as_deref())
-                .map_err(|e| McpError::internal_error(e, None))?
+                .map_err(|e| ToolError::new("cannotDecide", e))?
         else {
-            return Err(McpError::internal_error(
+            return Err(ToolError::new(
+                "cannotDecide",
                 format!(
                     "this identity cannot decide {} now: the action is not open, it is not \
                      waiting for this identity, or this identity has already decided it \
                      (it carries no challenge for this caller)",
                     p.action_id
                 ),
-                None,
-            ));
+            )
+            .with_next("read the action with vtc_actions_show before trying again."));
         };
         let match_code = verified.action["payloadDigest"]
             .as_str()
@@ -840,18 +851,23 @@ impl VtcMcp {
         match answer {
             Ok(true) => {}
             Ok(false) => {
-                return Err(McpError::invalid_request(
+                return Err(ToolError::refused_locally(
+                    "declined",
                     format!("{prompt} — declined by the operator; nothing was decided."),
-                    None,
+                    "vtc_status",
                 ));
             }
             Err(reason) => {
-                return Err(McpError::invalid_request(
+                return Err(ToolError::new(
+                    "notConfirmed",
                     format!(
                         "{prompt} — could not obtain the operator's confirmation ({reason}), so \
                          nothing was decided: a decision is never sent unconfirmed."
                     ),
-                    None,
+                )
+                .with_next(
+                    "deciding an action always asks the operator through the MCP host; use a \
+                     host that supports elicitation, or decide it in the console.",
                 ));
             }
         }

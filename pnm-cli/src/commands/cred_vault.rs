@@ -34,7 +34,15 @@ pub(crate) async fn run(
             cv::cmd_cred_delete(client, id, force, reason).await
         }
         CredVaultCommands::Restore { id, reason } => cv::cmd_cred_restore(client, id, reason).await,
-        CredVaultCommands::Purge { id, reason } => cv::cmd_cred_purge(client, id, reason).await,
+        CredVaultCommands::Purge { id, reason, yes } => {
+            if !vta_cli_common::confirm::confirm_or_cancel(
+                &format!("purge credential {id} permanently"),
+                yes,
+            )? {
+                return Ok(());
+            }
+            cv::cmd_cred_purge(client, id, reason).await
+        }
     }
 }
 

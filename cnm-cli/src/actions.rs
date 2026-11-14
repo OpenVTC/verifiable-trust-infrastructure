@@ -88,11 +88,32 @@ pub async fn run(
             ActionsCommands::List { view } => {
                 let mut cursor: Option<String> = None;
                 let mut first = true;
+                // JSON under --json or off a terminal (#2588): every page's
+                // actions in one array, with the first page's counts and ext.
+                let json = vta_cli_common::render::is_json_output();
+                let mut all: Vec<Value> = Vec::new();
+                let mut head: Option<Value> = None;
                 loop {
                     let page = vtc
                         .client
                         .list_actions(view.wire(), cursor.as_deref())
                         .await?;
+                    if json {
+                        all.extend(page["actions"].as_array().cloned().unwrap_or_default());
+                        if head.is_none() {
+                            head = Some(serde_json::json!({
+                                "counts": page["counts"],
+                                "ext": page["ext"],
+                            }));
+                        }
+                        match page["nextCursor"].as_str() {
+                            Some(next) => {
+                                cursor = Some(next.to_string());
+                                continue;
+                            }
+                            None => break,
+                        }
+                    }
                     if first {
                         // VTI-APV-022 item 3: the mode is reported wherever
                         // an administrator reads the action list.
@@ -113,11 +134,23 @@ pub async fn run(
                         None => break,
                     }
                 }
+                if json {
+                    let mut out = head.unwrap_or_else(|| serde_json::json!({}));
+                    out["actions"] = Value::Array(all);
+                    vta_cli_common::render::print_json(&out)?;
+                }
                 Ok(())
             }
             ActionsCommands::Show { action_id } => {
-                let verified = verified(vtc.client.show_action(&action_id).await?)?;
-                render(&verified);
+                let raw = vtc.client.show_action(&action_id).await?;
+                // Verified either way: the summary is re-derived from the
+                // payload, and JSON output is no excuse to skip that.
+                let verified = verified(raw.clone())?;
+                if vta_cli_common::render::is_json_output() {
+                    vta_cli_common::render::print_json(&raw)?;
+                } else {
+                    render(&verified);
+                }
                 Ok(())
             }
             ActionsCommands::Cancel { action_id, reason } => {
