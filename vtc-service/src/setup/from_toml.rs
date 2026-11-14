@@ -418,8 +418,8 @@ pub async fn run_setup_from_file(file_path: PathBuf, single_admin: bool) -> Resu
 }
 
 /// Print a terse, scrape-friendly completion block. Unlike the
-/// interactive summary this never prompts and never prints the admin
-/// private key (no TTY to consciously confirm a reveal); the install URL
+/// interactive summary this never prompts; like it, it never prints the
+/// admin private key, only the owner-only file holding it. The install URL
 /// + claim code are the actionable outputs.
 fn print_setup_summary_terse(outcome: &SetupOutcome) {
     println!("VTC setup complete.");
@@ -436,10 +436,9 @@ fn print_setup_summary_terse(outcome: &SetupOutcome) {
         "offline_admin_grant={}",
         super::wizard::offline_acl_add_command(outcome)
     );
-    if outcome.admin_key_json.is_some() {
-        println!(
-            "admin_key=<not printed in non-interactive mode; re-run interactively if you need it>"
-        );
+    // The key itself is never printed (#2703); only the owner-only file.
+    if let Some(key_file) = outcome.admin_key_file.as_deref() {
+        println!("admin_key_file={}", key_file.display());
     }
 }
 
