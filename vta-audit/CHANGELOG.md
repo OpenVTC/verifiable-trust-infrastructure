@@ -2,6 +2,65 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.36.0...vta-audit-v0.37.0) — 2026-11-14
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Changed
+
+- **vtc**: Vtc-audit leaf crate, one regorus engine, typed error codes, trust_tasks split, AdminActor ([#2728](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2728))
+
+* refactor(vti-common)!: move the VTC's audit-event vocabulary to a new vtc-audit leaf crate
+
+
+
+### Performance
+
+- **vta**: Cache compiled schemas and policies, verify once, bound sweeps and list pages ([#2713](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2713))
+
+* perf(vta-sdk,vta-service): compile each Trust Task payload schema once ([#2622](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2622))
+
+  trust-tasks-rs 0.37's against_schema / validate_value parse and compile the
+  schema on every call. vta_sdk::schema_cache keeps the compiled validator by
+  the &'static schema text's address (the same technique as trust-tasks-rs
+  0.38's SchemaValidator), with the jsonschema release trust-tasks-rs 0.37 uses
+  so the check and its error text are unchanged. The dispatch spine, the SDK's
+  send-side check, room act, notifications, rooms, task consent, vetting and
+  the VTA's per-handler payload checks use it.
+
+  trust-tasks-rs 0.38 moves in lockstep with affinidi-tdk and the messaging
+  SDK, so the bump is left to that train; this module then wraps
+  SchemaValidator.
+
+
+
 ## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-audit-v0.35.0...vta-audit-v0.36.0) — 2026-11-12
 
 

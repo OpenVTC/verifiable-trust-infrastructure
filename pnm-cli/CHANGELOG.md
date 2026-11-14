@@ -2,6 +2,82 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.61.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.60.0...pnm-cli-v0.61.0) — 2026-11-14
+
+
+### Added
+
+- **rooms**: Load older by version (records/list 0.8, keys/browse 0.6) and host limits in rooms/info 0.5 ([#2727](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2727))
+
+* build(vti-specs-rooms): pin rooms/records/list 0.8, rooms/keys/browse 0.6, rooms/info 0.5
+
+  trustoverip/dtgwg-trust-tasks-tf#1289, for #2294 points 3 and 4. Older versions
+  stay pinned beside them while they are still served or sent. The registry's
+  in-place refresh of rooms/records/put 0.1-0.5 and rooms/keys/list 0.2 (marking
+  them superseded) is left out: adopting put/0.6 is separate work.
+
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Documentation
+
+- Operator guides, CLI remediation strings and the crate map match the tree, checked in CI ([#2706](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2706))
+
+* fix(cli): operator-facing remediation strings name commands that parse
+
+  Every error, hint and --help string that tells an operator what to run now
+  names a command the current pnm / vta / cnm accepts ([#2631](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2631)): the retired
+  `pnm webvh …` / `vta webvh …` surface becomes `did-mgmt servers|dids …`,
+  `pnm auth login` (pnm has none) becomes `pnm setup`, `pnm acl delete`
+  takes the DID positionally, `list-domains` sits under `dids`, the backup
+  descriptor hints no longer name `pnm backup save|restore`, and stale doc
+  comments (`pnm passkey-enroll-token`, `vta export-mnemonic`, `cnm community
+  info`) are corrected. A pnm and a vta test parse each remediation command
+  through Cli::try_parse_from.
+
+  The --template help is derived from vta_sdk::did_templates::BUILTIN_NAMES
+  and no longer lists the retired did-hosting-* template names ([#2635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2635)). The
+  `rooms keys key-package` help gives the 14-day KeyPackage lifetime the code
+  holds ([#2632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2632)), and `rooms prune` no longer says a prune reaches the host
+  only: members' VTAs discard rungs at or below the epoch floor ([#2633](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2633)).
+
+
+
+### Fixed
+
+- **cli**: CLI and MCP operator UX sweep (confirmations, secrets off argv, JSON everywhere, room defaults, tool-level MCP errors) ([#2726](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2726))
+
+* fix(cli): a corrupt profile is fatal, saves are atomic, one start-up for pnm and cnm, --version and completions
+
+
+
 ## [0.60.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.59.0...pnm-cli-v0.60.0) — 2026-11-12
 
 
