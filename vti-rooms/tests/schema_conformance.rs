@@ -952,6 +952,10 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::records::list::v0_7::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE,
+            <rooms::records::list::v0_8::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_RECORDS_GET_V3_TYPE,
             <rooms::records::get::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
@@ -1006,6 +1010,10 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             vti_rooms::wire::ROOMS_INFO_V4_TYPE,
             <rooms::info::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_INFO_V5_TYPE,
+            <rooms::info::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE,

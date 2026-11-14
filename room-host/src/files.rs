@@ -511,29 +511,28 @@ pub(crate) async fn list_v7(state: &HostState, doc: &TrustTask<Value>, payload: 
     super::list_records(state, doc, v0_1, super::ListAt::V7(order)).await
 }
 
-/// A 0.1 listing answered as 0.7, its rows already `RecordMetadataV3` and in its order.
-pub(crate) async fn list_v7_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room: &Room,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        record_tasks::list_v7_response(snapshot, room, response).await,
-    )
+/// `rooms/records/list/0.8`: 0.7, and an exclusive `beforeVersion` under either order; its
+/// cursor bound to the order and both bounds — refused as `invalidCursor` under any other
+/// (trust-tasks-tf #1289).
+pub(crate) async fn list_v8(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    let (at, v0_1) = match record_tasks::list_v8_parts(&payload) {
+        Ok(parts) => parts,
+        Err(r) => return refused(doc, r),
+    };
+    super::list_records(state, doc, v0_1, at).await
 }
 
-/// A 0.1 listing answered as 0.6, its rows already `RecordMetadataV3`.
-pub(crate) async fn list_v6_response(
+/// A 0.1 listing answered at `at`, its rows already in that version's shape and order.
+pub(crate) async fn list_response(
     snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
     doc: &TrustTask<Value>,
     room: &Room,
     response: impl serde::Serialize,
+    at: super::ListAt,
 ) -> Answer {
     render(
         doc,
-        record_tasks::list_v6_response(snapshot, room, response).await,
+        record_tasks::list_response(snapshot, room, response, at).await,
     )
 }
 
@@ -571,19 +570,6 @@ pub(crate) async fn list_v5(state: &HostState, doc: &TrustTask<Value>, payload: 
     super::list_records(state, doc, blob_tasks::as_v0_1(payload), super::ListAt::V5).await
 }
 
-/// A 0.1 listing answered as 0.5.
-pub(crate) async fn list_v5_response(
-    snapshot: &vti_rooms::blobs::ReadSnapshot<'_>,
-    doc: &TrustTask<Value>,
-    room: &Room,
-    response: impl serde::Serialize,
-) -> Answer {
-    render(
-        doc,
-        record_tasks::list_v5_response(snapshot, room, response).await,
-    )
-}
-
 /// A 0.1 create response with its recorded retention, answered as 0.2.
 pub(crate) fn create_v2_response(
     doc: &TrustTask<Value>,
@@ -609,7 +595,39 @@ pub(crate) async fn info_v3(state: &HostState, doc: &TrustTask<Value>, payload: 
     )
 }
 
+/// The limits this host advertises in `rooms/info/0.5` (trust-tasks-tf #1289).
+///
+/// - **No per-record limit of its own.** The HTTP door's body limit is axum's 2 MiB
+///   (2,097,152 bytes) — exactly the bound `rooms/records/put/0.6` declares — and nothing in
+///   the dispatch refuses a smaller record, so `maxRecordDocumentBytes` is absent and the
+///   declared bound governs.
+/// - **Every chunk at its own size.** A chunk document is admitted at its task's declared
+///   `maxDocumentBytes` and charged to nothing stricter, so `maxChunkSize` is the transfer
+///   ceiling.
+pub(crate) const HOST_LIMITS: vti_rooms::signal_delay::HostLimits =
+    vti_rooms::signal_delay::HostLimits {
+        max_record_document_bytes: None,
+        max_chunk_size: Some(vti_rooms::signal_delay::MAX_CHUNK_SIZE),
+    };
+
+/// `rooms/info/0.5`: 0.4's answer, and the host's own limits ([`HOST_LIMITS`]).
+pub(crate) async fn info_v5(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
+    if let Err(r) = blob_tasks::parse::<vti_specs::rooms::info::v0_5::Payload>(&payload) {
+        return refused(doc, r);
+    }
+    let (room, _presenter, authorized) = match authorize(state, doc, &payload, Action::Read).await {
+        Ok(r) => r,
+        Err(a) => return a,
+    };
+    render(
+        doc,
+        vti_rooms::signal_delay::info_v5(&state.files, &room, &authorized, &payload, HOST_LIMITS)
+            .await,
+    )
+}
+
 /// `rooms/info/0.4`: 0.3's answer, and the room's signal delay.
+#[allow(deprecated)] // still served beside info/0.5 (trust-tasks-tf #1289)
 pub(crate) async fn info_v4(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
     if let Err(r) = blob_tasks::parse::<vti_specs::rooms::info::v0_4::Payload>(&payload) {
         return refused(doc, r);
@@ -932,6 +950,112 @@ mod tests {
         #[allow(deprecated)] // still served beside 0.7
         let old = read(&h, &f, vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE, None).await;
         assert_eq!(keys(&old), ["m0", "m1", "m2"]);
+    }
+
+    /// `rooms/records/list/0.8` (trust-tasks-tf #1289): `beforeVersion` loads older from a
+    /// version under either order, an empty band is an empty page, and a cursor is refused
+    /// with `invalidCursor` under another `sinceVersion` or `beforeVersion`.
+    #[tokio::test]
+    async fn list_0_8_loads_older_by_version_and_binds_its_cursor_to_the_bounds() {
+        let h = host(eager());
+        let f = room(&h).await;
+        for i in 0..5 {
+            let (status, out) = put_v5(&h, &f, &format!("m{i}"), json!({ "body": "hi" })).await;
+            assert_eq!(status, StatusCode::OK, "{out}");
+        }
+        let list = |extra: Value| {
+            let mut payload = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+            for (k, v) in extra.as_object().unwrap() {
+                payload[k] = v.clone();
+            }
+            call(
+                &h.app,
+                vti_rooms::record_tasks::LIST_V8_TYPE,
+                payload,
+                &f.owner,
+            )
+        };
+        let versions = |out: &Value| -> Vec<u64> {
+            out["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["version"].as_u64().unwrap())
+                .collect()
+        };
+
+        let (status, head) = list(json!({ "order": "newestFirst", "limit": 2 })).await;
+        assert_eq!(status, StatusCode::OK, "{head}");
+        let top = versions(&head);
+        assert_eq!(top.len(), 2, "{head}");
+        let lowest = *top.iter().min().unwrap();
+
+        // Load older from the lowest version held, with no cursor kept.
+        let (status, older) = list(json!({
+            "order": "newestFirst", "limit": 2, "beforeVersion": lowest
+        }))
+        .await;
+        assert_eq!(status, StatusCode::OK, "{older}");
+        assert!(versions(&older).iter().all(|v| *v < lowest), "{older}");
+        assert_eq!(versions(&older).len(), 2, "{older}");
+        let cursor = older["nextCursor"]
+            .as_str()
+            .expect("one remains")
+            .to_string();
+        assert!(
+            older["dataCommitment"].is_string() && older["recordCount"] == 5,
+            "the head is the whole room's: {older}"
+        );
+
+        // The cursor continues only under the bounds it was issued for.
+        let (_, rest) = list(json!({
+            "order": "newestFirst", "limit": 2, "beforeVersion": lowest, "cursor": cursor
+        }))
+        .await;
+        assert_eq!(versions(&rest).len(), 1, "{rest}");
+        for other in [
+            json!({ "order": "newestFirst", "cursor": cursor }),
+            json!({ "order": "newestFirst", "beforeVersion": lowest + 1, "cursor": cursor }),
+            json!({ "order": "newestFirst", "beforeVersion": lowest, "sinceVersion": 0, "cursor": cursor }),
+        ] {
+            let (status, out) = list(other).await;
+            assert_ne!(status, StatusCode::OK, "{out}");
+            assert_eq!(
+                out["code"],
+                vti_specs::rooms::records::list::v0_8::error_codes::INVALID_CURSOR.to_string(),
+                "{out}"
+            );
+        }
+
+        // Oldest first, bounded above; and an empty band.
+        let (_, up) = list(json!({ "beforeVersion": lowest })).await;
+        assert!(versions(&up).windows(2).all(|w| w[0] < w[1]), "{up}");
+        assert!(versions(&up).iter().all(|v| *v < lowest), "{up}");
+        let (status, empty) = list(json!({ "sinceVersion": 2, "beforeVersion": 3 })).await;
+        assert_eq!(status, StatusCode::OK, "{empty}");
+        assert!(versions(&empty).is_empty(), "{empty}");
+    }
+
+    /// `rooms/info/0.5` (trust-tasks-tf #1289): 0.4's answer and this host's limits — no
+    /// per-record limit of its own, every chunk admitted at the transfer ceiling.
+    #[tokio::test]
+    async fn info_0_5_states_this_hosts_limits() {
+        let h = host(eager());
+        let f = room(&h).await;
+        let (status, info) = call(
+            &h.app,
+            vti_rooms::signal_delay::INFO_V5_TYPE,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+            &f.owner,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{info}");
+        assert_eq!(info["maxChunkSize"], 262_144, "{info}");
+        assert!(info.get("maxRecordDocumentBytes").is_none(), "{info}");
+        assert_eq!(
+            info["signalDelay"], "randomised",
+            "0.4's members stand: {info}"
+        );
     }
 
     /// Records every `rooms/changed` signal; reaches every address.

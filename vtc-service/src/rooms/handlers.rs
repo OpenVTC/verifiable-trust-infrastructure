@@ -205,9 +205,11 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<RoomCtx, TrustTaskOutcome> {
         .on_async(handle_claim_owner)
         .on_async(super::files::handle_info_v3)
         .on_async(super::files::handle_info_v4)
+        .on_async(super::files::handle_info_v5)
         .on_async(super::files::handle_list_records_v5)
         .on_async(super::files::handle_list_records_v6)
         .on_async(super::files::handle_list_records_v7)
+        .on_async(super::files::handle_list_records_v8)
         .on_async(super::files::handle_records_prune)
         .on_async(super::files::handle_epoch_chain_v2)
         .on_async(super::files::handle_epoch_prune_v2)
@@ -831,16 +833,8 @@ pub(super) async fn get_record<P>(
     }
 }
 
-/// The version a `rooms/records/list` is answered at.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum ListAt {
-    /// 0.5: `RecordMetadata` rows, oldest first.
-    V5,
-    /// 0.6: `RecordMetadataV3` rows, oldest first.
-    V6,
-    /// 0.7: 0.6's rows, in the order the request asked for (trust-tasks-tf #1088).
-    V7(storage::RecordOrder),
-}
+/// The version a `rooms/records/list` is answered at — room-host's too.
+pub(crate) use vti_rooms::record_tasks::ListAt;
 
 /// `rooms/records/list/0.5`: rows name their blobs, every page carries the room's
 /// `lastPrune`, and the continuation token is `nextCursor`. From 0.6 the rows are
@@ -854,11 +848,7 @@ pub(super) async fn list_records<P>(
     req: ListRecordsBody,
     at: ListAt,
 ) -> TrustTaskOutcome {
-    let v6 = !matches!(at, ListAt::V5);
-    let order = match at {
-        ListAt::V7(order) => order,
-        ListAt::V5 | ListAt::V6 => storage::RecordOrder::OldestFirst,
-    };
+    let v6 = at.rows_v3();
     let state = &ctx.state;
 
     let room = match storage::get_room(&state.rooms_ks, &req.room_id).await {
@@ -890,17 +880,7 @@ pub(super) async fn list_records<P>(
     // Paginated honestly: the page the caller asked for, and a cursor when more
     // remain. This used to `take(limit)` and drop the rest without a word, so a
     // short page and a complete room were indistinguishable.
-    let page = match storage::list_records_page_in(
-        &state.room_records_ks,
-        &req.room_id,
-        req.prefix.as_deref(),
-        req.since_version,
-        req.cursor.as_deref(),
-        req.limit,
-        order,
-    )
-    .await
-    {
+    let page = match vti_rooms::record_tasks::list_page(&state.room_records_ks, &req, at).await {
         Ok(p) => p,
         Err(e) => return app_error_to_reject(doc, &e),
     };
@@ -935,17 +915,9 @@ pub(super) async fn list_records<P>(
     match storage::get_room(&state.rooms_ks, &req.room_id).await {
         // The room as it stands under the lock: its `lastPrune` is the one the page and head
         // were taken with.
-        Ok(now_room) if matches!(at, ListAt::V7(_)) => super::files::render(
-            doc,
-            vti_rooms::record_tasks::list_v7_response(&snapshot, &now_room, response).await,
-        ),
-        Ok(now_room) if v6 => super::files::render(
-            doc,
-            vti_rooms::record_tasks::list_v6_response(&snapshot, &now_room, response).await,
-        ),
         Ok(now_room) => super::files::render(
             doc,
-            vti_rooms::record_tasks::list_v5_response(&snapshot, &now_room, response).await,
+            vti_rooms::record_tasks::list_response(&snapshot, &now_room, response, at).await,
         ),
         Err(e) => app_error_to_reject(doc, &e),
     }
@@ -3536,6 +3508,79 @@ mod tests {
             payload_of(&out)["code"],
             vti_specs::rooms::records::list::v0_7::error_codes::INVALID_CURSOR.to_string()
         );
+    }
+
+    /// `rooms/records/list/0.8` and `rooms/info/0.5` on the community's host
+    /// (trust-tasks-tf #1289): load older from a version, a cursor bound to its bounds, and
+    /// the community's own per-record limit — the 65,536-byte document default — stated.
+    #[tokio::test]
+    async fn list_0_8_loads_older_and_info_0_5_states_the_record_limit() {
+        let tv = build_test_vtc().await;
+        let state = &tv.state;
+        let f = RoomFixture::new(Visibility::Open).await;
+        assert!(create(state, &f).await.status.is_success());
+        for key in ["m0", "m1", "m2", "m3"] {
+            let out = send(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+                json!({ "roomId": f.room.room_id, "key": key, "presentation": f.as_owner(),
+                        "cleartext": { "body": key } }),
+                &f,
+            )
+            .await;
+            assert!(out.status.is_success(), "put: {}", payload_of(&out));
+        }
+        let list = |extra: Value| {
+            let mut payload = json!({ "roomId": f.room.room_id, "presentation": f.as_owner() });
+            for (k, v) in extra.as_object().unwrap() {
+                payload[k] = v.clone();
+            }
+            send(
+                state,
+                vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE,
+                payload,
+                &f,
+            )
+        };
+        let versions = |p: &Value| -> Vec<u64> {
+            p["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["version"].as_u64().unwrap())
+                .collect()
+        };
+
+        let head = payload_of(&list(json!({ "order": "newestFirst", "limit": 2 })).await);
+        let lowest = *versions(&head).iter().min().expect("two rows");
+        let older = payload_of(
+            &list(json!({ "order": "newestFirst", "limit": 1, "beforeVersion": lowest })).await,
+        );
+        assert_eq!(versions(&older).len(), 1, "{older}");
+        assert!(versions(&older)[0] < lowest, "{older}");
+        let cursor = older["nextCursor"]
+            .as_str()
+            .expect("one remains")
+            .to_string();
+        let out = list(json!({ "order": "newestFirst", "cursor": cursor })).await;
+        assert!(!out.status.is_success());
+        assert_eq!(
+            payload_of(&out)["code"],
+            vti_specs::rooms::records::list::v0_8::error_codes::INVALID_CURSOR.to_string()
+        );
+
+        let info = payload_of(
+            &send(
+                state,
+                vti_rooms::wire::ROOMS_INFO_V5_TYPE,
+                json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+                &f,
+            )
+            .await,
+        );
+        assert_eq!(info["maxRecordDocumentBytes"], 65_536, "{info}");
+        assert_eq!(info["maxChunkSize"], 262_144, "{info}");
+        assert_eq!(info["signalDelay"], "randomised", "{info}");
     }
 
     /// VTI-ACL-110 on the community's host: get/0.4 holds a read to the purposes the

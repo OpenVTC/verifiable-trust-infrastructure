@@ -760,10 +760,12 @@ async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
         vti_rooms::signal_delay::CREATE_V3_TYPE => create(state, &doc, payload).await,
         vti_rooms::record_tasks::INFO_V3_TYPE => files::info_v3(state, &doc, payload).await,
         vti_rooms::signal_delay::INFO_V4_TYPE => files::info_v4(state, &doc, payload).await,
+        vti_rooms::signal_delay::INFO_V5_TYPE => files::info_v5(state, &doc, payload).await,
         vti_rooms::signal_delay::SET_TYPE => files::signal_delay_set(state, &doc, payload).await,
         vti_rooms::record_tasks::LIST_V5_TYPE => files::list_v5(state, &doc, payload).await,
         vti_rooms::record_tasks::LIST_V6_TYPE => files::list_v6(state, &doc, payload).await,
         vti_rooms::record_tasks::LIST_V7_TYPE => files::list_v7(state, &doc, payload).await,
+        vti_rooms::record_tasks::LIST_V8_TYPE => files::list_v8(state, &doc, payload).await,
         vti_rooms::record_tasks::PRUNE_TYPE => files::records_prune(state, &doc, payload).await,
         vti_rooms::record_tasks::RETENTION_SET_TYPE => {
             files::retention_set(state, &doc, payload).await
@@ -839,8 +841,10 @@ fn is_consequential(type_uri: &str) -> bool {
             | vti_rooms::record_tasks::LIST_V5_TYPE
             | vti_rooms::record_tasks::LIST_V6_TYPE
             | vti_rooms::record_tasks::LIST_V7_TYPE
+            | vti_rooms::record_tasks::LIST_V8_TYPE
             | vti_rooms::record_tasks::INFO_V3_TYPE
             | vti_rooms::signal_delay::INFO_V4_TYPE
+            | vti_rooms::signal_delay::INFO_V5_TYPE
             | vti_rooms::revocation_tasks::GET_TYPE
     )
 }
@@ -1411,31 +1415,20 @@ async fn get_versioned(
     }
 }
 
-/// The version a `rooms/records/list` is answered at.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum ListAt {
-    /// 0.5: `RecordMetadata` rows, oldest first.
-    V5,
-    /// 0.6: `RecordMetadataV3` rows, oldest first.
-    V6,
-    /// 0.7: 0.6's rows, in the order the request asked for (trust-tasks-tf #1088).
-    V7(storage::RecordOrder),
-}
+/// The version a `rooms/records/list` is answered at — the VTC's too.
+pub(crate) use vti_rooms::record_tasks::ListAt;
 
 /// `rooms/records/list/0.5`, read as [`ListRecordsBody`]: rows name their blobs, every page
 /// carries the room's `lastPrune`, and the continuation token is `nextCursor`. From 0.6 the
-/// rows are `RecordMetadataV3`; at 0.7 they come oldest or newest first.
+/// rows are `RecordMetadataV3`; at 0.7 they come oldest or newest first; at 0.8 within an
+/// exclusive `beforeVersion` too.
 async fn list_records(
     state: &HostState,
     doc: &TrustTask<Value>,
     payload: Value,
     at: ListAt,
 ) -> Answer {
-    let v6 = !matches!(at, ListAt::V5);
-    let order = match at {
-        ListAt::V7(order) => order,
-        ListAt::V5 | ListAt::V6 => storage::RecordOrder::OldestFirst,
-    };
+    let v6 = at.rows_v3();
     let req: ListRecordsBody = match serde_json::from_value(payload) {
         Ok(r) => r,
         Err(e) => {
@@ -1475,17 +1468,7 @@ async fn list_records(
     // Under the record-write lock, which a prune also holds: the page, the head and the
     // room's `lastPrune` are one snapshot.
     let snapshot = state.files.read_snapshot(&req.room_id).await;
-    match storage::list_records_page_in(
-        &state.records,
-        &req.room_id,
-        req.prefix.as_deref(),
-        req.since_version,
-        req.cursor.as_deref(),
-        req.limit,
-        order,
-    )
-    .await
-    {
+    match vti_rooms::record_tasks::list_page(&state.records, &req, at).await {
         Ok(page) => {
             // Metadata, never bodies — the same rule the VTC serves under, because it is a
             // property of the task rather than of any one host.
@@ -1519,13 +1502,7 @@ async fn list_records(
             // The room as it stands under the lock: its `lastPrune` is the one the page and
             // head were taken with.
             match storage::get_room(&state.rooms, &req.room_id).await {
-                Ok(now_room) if matches!(at, ListAt::V7(_)) => {
-                    files::list_v7_response(&snapshot, doc, &now_room, response).await
-                }
-                Ok(now_room) if v6 => {
-                    files::list_v6_response(&snapshot, doc, &now_room, response).await
-                }
-                Ok(now_room) => files::list_v5_response(&snapshot, doc, &now_room, response).await,
+                Ok(now_room) => files::list_response(&snapshot, doc, &now_room, response, at).await,
                 Err(e) => from_app_error(doc, &e),
             }
         }

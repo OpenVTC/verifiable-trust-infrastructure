@@ -586,6 +586,7 @@ pub(crate) async fn run(
             newest,
             pages,
             cursor,
+            before_version,
         } => {
             let target = RoomTarget {
                 host_url: &host,
@@ -602,6 +603,7 @@ pub(crate) async fn run(
                         limit,
                         pages,
                         cursor: cursor.as_deref(),
+                        before_version,
                     },
                 )
                 .await
@@ -615,6 +617,7 @@ pub(crate) async fn run(
             limit,
             pages,
             cursor,
+            before_version,
             room_id,
             host,
             host_did,
@@ -637,6 +640,7 @@ pub(crate) async fn run(
                         limit,
                         pages,
                         cursor: cursor.as_deref(),
+                        before_version,
                         ..Default::default()
                     },
                 )

@@ -1095,6 +1095,20 @@ mod tests {
             } => assert_eq!(cursor.as_deref(), Some("n412")),
             _ => panic!("expected List"),
         }
+        // `rooms/keys/browse/0.6`: load older from a version, beside or instead of a cursor.
+        match with(&["--newest", "--before-version", "412"])
+            .expect("parses")
+            .command
+        {
+            Commands::Rooms {
+                command: RoomCommands::List { before_version, .. },
+            } => assert_eq!(before_version, Some(412)),
+            _ => panic!("expected List"),
+        }
+        assert!(
+            with(&["--before-version", "412"]).is_err(),
+            "--before-version needs --newest"
+        );
         assert!(with(&["--pages", "2"]).is_err(), "--pages needs --newest");
         assert!(
             with(&["--cursor", "n4"]).is_err(),
