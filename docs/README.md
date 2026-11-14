@@ -304,6 +304,9 @@ area they cover:
   which layer owns retry, and the `idempotencyKey` contract.
 - **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
   how the VTA crate was split, and where the program stops.
+- **[vtc-service decomposition](05-design-notes/vtc-service-decomposition.md)** —
+  the plan for the VTC crate: keyspace leaf, per-subsystem stores, the few
+  extractable subsystems, and why it stops much earlier than the VTA's.
 
 Others:
 

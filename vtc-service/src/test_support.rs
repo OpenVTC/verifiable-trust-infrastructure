@@ -533,6 +533,9 @@ impl TestVtcBuilder {
         let audit_checkpoint_ks = store
             .keyspace("audit_checkpoint")
             .expect("audit_checkpoint ks");
+        let audit_index_ks = store
+            .keyspace(crate::store::keyspaces::AUDIT_INDEX)
+            .expect("audit_index ks");
         let consumed_invitations_ks = store
             .keyspace("consumed_invitations")
             .expect("consumed_invitations ks");
@@ -828,6 +831,7 @@ impl TestVtcBuilder {
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,
+            audit_index_ks,
             outbox_ks,
             tsp_relationships_ks,
             consumed_invitations_ks,

@@ -41,7 +41,7 @@ pub mod managers;
 pub mod policy;
 pub mod renewal;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -469,6 +469,22 @@ pub async fn groups_of(ks: &KeyspaceHandle, entry_id: &str) -> Result<Vec<Member
     {
         if let Ok(m) = serde_json::from_slice::<Membership>(&raw) {
             out.push(m);
+        }
+    }
+    Ok(out)
+}
+
+/// Every entry's active group memberships, by entry identifier, from one scan
+/// of the `mg:` index — what [`groups_of`] reads one entry at a time.
+pub async fn active_groups_by_entry(
+    ks: &KeyspaceHandle,
+) -> Result<HashMap<String, BTreeSet<String>>, AppError> {
+    let mut out: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for (_, raw) in ks.prefix_iter_raw(b"mg:".to_vec()).await? {
+        if let Ok(m) = serde_json::from_slice::<Membership>(&raw)
+            && m.state == "active"
+        {
+            out.entry(m.entry_id).or_default().insert(m.group_id);
         }
     }
     Ok(out)

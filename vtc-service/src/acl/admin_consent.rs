@@ -134,7 +134,7 @@ use vti_common::task_consent::{self, effects::StatePin};
 use vti_specs::task_consent::decision::v0_2 as decision;
 use vti_specs::task_consent::request::v0_1 as request;
 
-use super::{CapRef, Capability, ResourceQualifier, VtcAclEntry, get_acl_entry, list_acl_entries};
+use super::{CapRef, Capability, ResourceQualifier, VtcAclEntry, get_acl_entry};
 use crate::auth::session::now_epoch;
 use crate::config_store::{ConfigStore, UNRESTRICTED_ADMIN_CONSENT_THRESHOLD};
 use crate::server::AppState;
@@ -581,7 +581,7 @@ pub fn may_decide(entry: &VtcAclEntry, act: Act, stake: &[CapRef], now: u64) -> 
 /// reduction cools off it can neither grant nor consent, so it never counts
 /// toward the attrition guard either.
 pub async fn role_assigners(state: &AppState, now: u64) -> Result<Vec<String>, AppError> {
-    Ok(list_acl_entries(&state.acl_ks)
+    Ok(super::list_authority_entries(&state.acl_ks)
         .await?
         .into_iter()
         .filter(|e| is_live_role_assigner(e, now) && !e.is_suspended())
@@ -1607,7 +1607,7 @@ pub(crate) async fn approvers_for(
         }
         _ => Default::default(),
     };
-    Ok(list_acl_entries(&state.acl_ks)
+    Ok(super::list_authority_entries(&state.acl_ks)
         .await?
         .into_iter()
         .filter(|e| may_decide(e, act, &stake, now))

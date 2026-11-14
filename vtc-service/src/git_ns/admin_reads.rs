@@ -1348,10 +1348,11 @@ pub(crate) async fn activity_list(
         activity_list::error_codes::NOT_ADMINISTRATOR.code,
     )?;
     let mut items: Vec<(chrono::DateTime<chrono::Utc>, GitNsActivityItem)> = Vec::new();
-    for (_, v) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
-            continue;
-        };
+    // Only the git-namespace rows, through the audit index — never a decode of
+    // the whole audit log per read (#2599).
+    for env in
+        crate::audit_index::git_ns_operations(&state.audit_ks, &state.audit_index_ks, None).await?
+    {
         let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event else {
             continue;
         };

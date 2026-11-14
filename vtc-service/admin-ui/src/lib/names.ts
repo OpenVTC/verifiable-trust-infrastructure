@@ -131,6 +131,9 @@ interface NamedMember {
 
 const MEMBERS_TASK = "https://trusttasks.org/spec/vtc/members/list/0.2";
 
+/** How long the console-wide name book is fresh before a view re-reads it. */
+export const NAME_BOOK_STALE_MS = 5 * 60_000;
+
 /**
  * The console-wide `NameBook`.
  *
@@ -179,7 +182,10 @@ export function useNameBook(): NameBook {
     },
     // Labels change rarely and this is decoration on every other view;
     // refetching it on each mount would triple the console's request count.
-    staleTime: 60_000,
+    // Five minutes, not one: each refresh walks every page of the ACL, and a
+    // stale label renders a DID's own name a little late, nothing worse
+    // (#2601).
+    staleTime: NAME_BOOK_STALE_MS,
   });
 
   return query.data ?? EMPTY_BOOK;

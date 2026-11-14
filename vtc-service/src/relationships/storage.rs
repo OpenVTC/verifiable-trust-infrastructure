@@ -27,6 +27,20 @@ fn primary_key(id: Uuid) -> Vec<u8> {
     k
 }
 
+/// Digest-index prefix, in the **primary** keyspace so each row is written in
+/// the same store batch as the relationship it names:
+/// `relhash:<vrc-digest-multibase>` → the relationship id. What
+/// [`find_by_hash`] reads, so an idempotent publish is one lookup rather than
+/// a decode of every stored VRC (#2603). Disjoint from
+/// [`RELATIONSHIPS_PREFIX`], so no scan of relationships sees it.
+pub const RELATIONSHIP_HASH_PREFIX: &[u8] = b"relhash:";
+
+fn hash_key(vrc_digest_multibase: &str) -> Vec<u8> {
+    let mut k = RELATIONSHIP_HASH_PREFIX.to_vec();
+    k.extend_from_slice(vrc_digest_multibase.as_bytes());
+    k
+}
+
 fn index_key(did: &str, id: Uuid) -> Vec<u8> {
     let mut k = RELATIONSHIPS_BY_DID_PREFIX.to_vec();
     k.extend_from_slice(did.as_bytes());
@@ -59,17 +73,21 @@ pub async fn get_relationship(
 /// invisible to per-DID list queries; the next list call's
 /// orphan-tolerant walk handles this without operator
 /// intervention.
+///
+/// The row and its digest-index row ([`find_by_hash`]) are one store batch in
+/// the primary keyspace, so a stored VRC is always found by its digest.
 pub async fn store_relationship(
     primary: &KeyspaceHandle,
     index: &KeyspaceHandle,
     rel: &Relationship,
 ) -> Result<(), AppError> {
-    primary
-        .insert(
-            String::from_utf8(primary_key(rel.id)).expect("ascii key"),
-            rel,
-        )
-        .await?;
+    let mut batch = Batch::new();
+    batch.insert(primary_key(rel.id), rel)?;
+    batch.insert_raw(
+        hash_key(&rel.vrc_digest_multibase),
+        rel.id.to_string().into_bytes(),
+    );
+    primary.apply_batch(batch).await?;
     // Index entries store just the relationship id as the
     // value — the primary keyspace holds the body. Storing
     // the id explicitly (rather than relying on the key
@@ -111,6 +129,11 @@ pub async fn delete_relationship(
         // the row gone instead of writing it back after this delete.
         let mut batch = Batch::new();
         batch.remove(primary_key(id));
+        // Its digest row goes with it — only while it still names this edge.
+        let digest_row = hash_key(&rel.vrc_digest_multibase);
+        if primary.get_raw(digest_row.clone()).await? == Some(id.to_string().into_bytes()) {
+            batch.remove(digest_row);
+        }
         primary.apply_batch(batch).await?;
         index.remove(index_key(&rel.issuer_did, id)).await?;
         if rel.subject_did != rel.issuer_did {
@@ -223,7 +246,7 @@ pub async fn record_lifecycle_event(
 /// that row, so an edge withdrawn since the scan is skipped, not refused.
 pub async fn supersede_prior_edges(
     primary: &KeyspaceHandle,
-    _index: &KeyspaceHandle,
+    index: &KeyspaceHandle,
     issuer_did: &str,
     subject_did: &str,
     except_id: Uuid,
@@ -231,7 +254,9 @@ pub async fn supersede_prior_edges(
     now: DateTime<Utc>,
 ) -> Result<Vec<Uuid>, AppError> {
     let mut superseded = Vec::new();
-    for rel in list_all(primary).await? {
+    // Only the issuer's own edges, through the by-DID index — never a decode
+    // of every stored VRC on each publish (#2603).
+    for rel in edges_of(primary, index, issuer_did).await? {
         if rel.id == except_id || rel.issuer_did != issuer_did || rel.subject_did != subject_did {
             continue;
         }
@@ -256,26 +281,64 @@ pub async fn supersede_prior_edges(
     Ok(superseded)
 }
 
-/// Find an existing relationship by VRC SHA-256 hash. Walks
-/// the primary keyspace; small VTCs are fine (a Phase 5
-/// scaling pass adds a hash-keyed secondary index if
-/// needed). Used for idempotent publish: a second publish
-/// of the same VRC body returns the existing id.
+/// Find an existing relationship by VRC SHA-256 hash, through the
+/// `relhash:` digest index — one lookup, not a decode of every stored VRC
+/// (#2603). Used for idempotent publish: a second publish of the same VRC
+/// body returns the existing id. The row it names is checked against the
+/// digest, so a stale index row answers `None`, never another edge.
 pub async fn find_by_hash(
     primary: &KeyspaceHandle,
     vrc_digest_multibase: &str,
 ) -> Result<Option<Relationship>, AppError> {
-    let pairs = primary
-        .prefix_iter_raw(RELATIONSHIPS_PREFIX.to_vec())
-        .await?;
-    for (_k, v) in pairs {
-        if let Ok(rel) = decode(&v)
-            && rel.vrc_digest_multibase == vrc_digest_multibase
-        {
-            return Ok(Some(rel));
+    let Some(id) = primary.get_raw(hash_key(vrc_digest_multibase)).await? else {
+        return Ok(None);
+    };
+    let Some(id) = std::str::from_utf8(&id)
+        .ok()
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return Ok(None);
+    };
+    Ok(get_relationship(primary, id)
+        .await?
+        .filter(|rel| rel.vrc_digest_multibase == vrc_digest_multibase))
+}
+
+/// Rebuild the `relhash:` digest index from every stored relationship — at
+/// boot and after a restore, so rows written before the index existed are
+/// found by [`find_by_hash`]. Drops rows naming no edge with that digest.
+/// Returns how many index rows it wrote (0 when the index was whole).
+pub async fn rebuild_hash_index(primary: &KeyspaceHandle) -> Result<usize, AppError> {
+    // Where several edges share a digest, the first in key order is named —
+    // what `find_by_hash` answered when it scanned.
+    let mut wanted: std::collections::BTreeMap<String, Uuid> = std::collections::BTreeMap::new();
+    for rel in list_all(primary).await? {
+        wanted.entry(rel.vrc_digest_multibase).or_insert(rel.id);
+    }
+    let mut batch = Batch::new();
+    for (key, value) in primary
+        .prefix_iter_raw(RELATIONSHIP_HASH_PREFIX.to_vec())
+        .await?
+    {
+        let digest = String::from_utf8_lossy(&key[RELATIONSHIP_HASH_PREFIX.len()..]).into_owned();
+        match wanted.get(&digest) {
+            Some(id) if id.to_string().as_bytes() == value.as_slice() => {
+                wanted.remove(&digest);
+            }
+            Some(_) => {}
+            None => {
+                batch.remove(key);
+            }
         }
     }
-    Ok(None)
+    let indexed = wanted.len();
+    for (digest, id) in wanted {
+        batch.insert_raw(hash_key(&digest), id.to_string().into_bytes());
+    }
+    if !batch.is_empty() {
+        primary.apply_batch(batch).await?;
+    }
+    Ok(indexed)
 }
 
 /// List **every** relationship (full primary-keyspace scan). For the admin
@@ -354,6 +417,37 @@ pub async fn list_for_did(
 
     let snapshot_id: u64 = hydrated.len() as u64;
     paginate(hydrated, cursor, limit, &audit_key.key, snapshot_id, decode)
+}
+
+/// Every edge `did` is an endpoint of, through the by-DID index, in id order.
+/// Post-filtered on the decoded endpoints for the `did:webvh` prefix caveat of
+/// [`list_for_did`].
+async fn edges_of(
+    primary: &KeyspaceHandle,
+    index: &KeyspaceHandle,
+    did: &str,
+) -> Result<Vec<Relationship>, AppError> {
+    let mut index_prefix = RELATIONSHIPS_BY_DID_PREFIX.to_vec();
+    index_prefix.extend_from_slice(did.as_bytes());
+    index_prefix.push(b':');
+    let mut out = Vec::new();
+    for idx_key in index.prefix_keys(index_prefix).await? {
+        let Some(Ok(id)) = std::str::from_utf8(&idx_key)
+            .ok()
+            .and_then(|s| s.rsplit(':').next())
+            .map(Uuid::parse_str)
+        else {
+            continue;
+        };
+        // An unreadable row is skipped, as `list_all` skips it.
+        if let Some(raw) = primary.get_raw(primary_key(id)).await?
+            && let Ok(rel) = decode(&raw)
+            && (rel.issuer_did == did || rel.subject_did == did)
+        {
+            out.push(rel);
+        }
+    }
+    Ok(out)
 }
 
 /// Counterparties this DID already has an edge to, as issuer, excluding
@@ -655,6 +749,81 @@ mod tests {
         assert_eq!(got.map(|r| r.id), Some(rel.id));
         let miss = find_by_hash(&primary, "feedface").await.unwrap();
         assert!(miss.is_none());
+    }
+
+    /// #2603: the digest row is written in the row's own batch and goes with
+    /// it, so `find_by_hash` is one lookup and never names a deleted edge.
+    #[tokio::test]
+    async fn the_digest_index_follows_store_and_delete() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let rel = fresh("did:key:zA", "did:key:zB");
+        let before = primary.journal_seqno().unwrap();
+        store_relationship(&primary, &index, &rel).await.unwrap();
+        // The primary row and its digest row: one record in the primary
+        // keyspace (the by-DID rows are their own keyspace's writes after it).
+        assert!(primary.journal_seqno().unwrap() > before);
+        assert_eq!(
+            primary
+                .get_raw(hash_key(&rel.vrc_digest_multibase))
+                .await
+                .unwrap(),
+            Some(rel.id.to_string().into_bytes())
+        );
+        delete_relationship(&primary, &index, rel.id).await.unwrap();
+        assert!(
+            primary
+                .get_raw(hash_key(&rel.vrc_digest_multibase))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            find_by_hash(&primary, &rel.vrc_digest_multibase)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The index rows are not relationships: a full listing never sees one.
+        store_relationship(&primary, &index, &fresh("did:key:zC", "did:key:zD"))
+            .await
+            .unwrap();
+        assert_eq!(list_all(&primary).await.unwrap().len(), 1);
+    }
+
+    /// #2603: rows stored before the digest index existed are found after the
+    /// boot rebuild, and a stale index row is dropped.
+    #[tokio::test]
+    async fn the_rebuild_backfills_the_digest_index() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let old = fresh("did:key:zA", "did:key:zB");
+        // Written as an older version did: the row alone.
+        primary
+            .insert(String::from_utf8(primary_key(old.id)).unwrap(), &old)
+            .await
+            .unwrap();
+        primary
+            .insert_raw(hash_key("stale"), Uuid::new_v4().to_string().into_bytes())
+            .await
+            .unwrap();
+        assert!(
+            find_by_hash(&primary, &old.vrc_digest_multibase)
+                .await
+                .unwrap()
+                .is_none(),
+            "not indexed yet"
+        );
+        assert_eq!(rebuild_hash_index(&primary).await.unwrap(), 1);
+        assert_eq!(
+            find_by_hash(&primary, &old.vrc_digest_multibase)
+                .await
+                .unwrap()
+                .map(|r| r.id),
+            Some(old.id)
+        );
+        assert!(primary.get_raw(hash_key("stale")).await.unwrap().is_none());
+        // A second rebuild finds the index whole.
+        assert_eq!(rebuild_hash_index(&primary).await.unwrap(), 0);
+        let _ = index;
     }
 
     #[tokio::test]

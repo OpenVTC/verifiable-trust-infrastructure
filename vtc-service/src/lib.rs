@@ -19,6 +19,7 @@ pub mod admin_events;
 #[cfg(feature = "admin-ui")]
 pub mod admin_ui;
 pub mod audit_checkpoint;
+pub mod audit_index;
 pub mod auth;
 pub mod backup;
 pub mod badges;

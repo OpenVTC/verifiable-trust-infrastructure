@@ -447,6 +447,11 @@ struct ElectionRecord {
     /// The decryption round, once an encrypted election has closed with its key formed.
     decryption: Option<Decryption<Target>>,
     result: Option<Value>,
+    /// The running totals last served, with the board length they were counted at: a
+    /// provisional result is answered from here until the board grows, rather than counted
+    /// over every ballot on every read (#2604). Only a cast changes what is counted, and every
+    /// cast appends to the board.
+    provisional: Option<(usize, u64, Value)>,
 }
 
 /// The most entry bytes one `voting/board/read` page carries, unless its one entry is larger: a
@@ -701,6 +706,29 @@ impl ElectionRecord {
         })
     }
 
+    /// [`Self::tally_now`] for running totals, from the cache while the board has not grown.
+    fn provisional_tally(&mut self, now: DateTime<Utc>) -> Result<Value, Failure> {
+        let size = self.board.len();
+        let (n, questions) = match &self.provisional {
+            Some((at, n, questions)) if *at == size => (*n, questions.clone()),
+            _ => {
+                let ballots: Vec<&cast::Ballot> = self.counted.values().map(|(_, b)| b).collect();
+                let (n, questions) = tally::tally(&self.manifest, ballots, true)?;
+                let questions = serde_json::to_value(&questions)
+                    .map_err(|e| Failure::standard("internalError", e.to_string()))?;
+                self.provisional = Some((size, n, questions.clone()));
+                (n, questions)
+            }
+        };
+        Ok(json!({
+            "electionId": self.id(),
+            "manifestDigest": digest_multibase(&self.digest),
+            "ballotsCounted": n,
+            "questions": questions,
+            "head": self.head(size, now),
+        }))
+    }
+
     fn tally_now(&self, provisional: bool, now: DateTime<Utc>) -> Result<Value, Failure> {
         let ballots: Vec<&cast::Ballot> = self.counted.values().map(|(_, b)| b).collect();
         let (n, questions) = tally::tally(&self.manifest, ballots, provisional)?;
@@ -854,6 +882,7 @@ impl BallotBox {
             ceremony,
             decryption: None,
             result: None,
+            provisional: None,
         })
     }
 
@@ -1377,7 +1406,7 @@ impl BallotBox {
         let (result, provisional) = match (&e.result, e.state) {
             (Some(r), State::Tallied) => (r.clone(), false),
             (_, State::Voting) if e.manifest.results_before_close => {
-                (e.tally_now(true, now)?, true)
+                (e.provisional_tally(now)?, true)
             }
             _ => return Err(Failure::task("notTallied", "no result yet")),
         };

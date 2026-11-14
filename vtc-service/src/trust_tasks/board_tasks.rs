@@ -1472,7 +1472,7 @@ async fn another_facilitator(
     board_id: &str,
 ) -> Result<bool, AppError> {
     let q = ResourceQualifier::Board(board_id.to_string());
-    Ok(crate::acl::list_acl_entries(&state.acl_ks)
+    Ok(crate::acl::list_authority_entries(&state.acl_ks)
         .await?
         .iter()
         .any(|e| e.did != who.did && e.can(Capability::BoardsManage, Some(&q))))

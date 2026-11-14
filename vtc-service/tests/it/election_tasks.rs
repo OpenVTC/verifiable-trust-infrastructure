@@ -1490,7 +1490,7 @@ async fn an_open_election_runs_against_a_real_ballot_box_over_a_mediator() {
     )
     .unwrap();
     let box_state = Arc::new(BoxState::new(
-        BallotBox::new(&box_did),
+        vti_voting_service::boxes::Boxes::new(&box_did),
         Identity {
             did: box_did.clone(),
             key,
@@ -1716,7 +1716,7 @@ async fn a_member_votes_from_pnm_through_their_own_vta() {
     )
     .unwrap();
     let box_state = Arc::new(BoxState::new(
-        BallotBox::new(&box_did),
+        vti_voting_service::boxes::Boxes::new(&box_did),
         Identity {
             did: box_did.clone(),
             key: box_key,

@@ -455,12 +455,23 @@ impl HookRelay {
 
     /// Walk audit envelopes newer than the cursor into hook jobs.
     ///
-    /// v1 scans the audit keyspace and filters by timestamp (the seek
-    /// optimization the registry tail uses, P3.8, is a follow-up); rows are
-    /// already deduplicated by the cursor plus the per-row `audit_seq`.
+    /// Seeks past everything at or before the cursor, as the registry tail
+    /// does (P3.8): audit keys are `<rfc3339-ts>:<event_id>` and sort
+    /// chronologically, so a `<cursor-ts>:` lower bound skips the processed
+    /// history and a tick costs the rows written since the last one — not a
+    /// read and decode of the whole, ever-growing log every five seconds
+    /// (#2599). The `timestamp <= cursor` check below still settles the exact
+    /// boundary (several events can share a timestamp).
     async fn walk_audit_tail(&self) -> Result<(), AppError> {
         let cursor = get_cursor(&self.cursor_ks).await?;
-        let pairs = self.audit_ks.prefix_iter_raw(Vec::new()).await?;
+        let pairs = match cursor {
+            Some(c) => {
+                self.audit_ks
+                    .range_from_raw(format!("{}:", c.to_rfc3339()).into_bytes())
+                    .await?
+            }
+            None => self.audit_ks.prefix_iter_raw(Vec::new()).await?,
+        };
         let mut newest = cursor;
         for (_k, v) in pairs {
             let Ok(envelope) = serde_json::from_slice::<AuditEnvelope>(&v) else {

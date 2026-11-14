@@ -146,6 +146,11 @@ opens the sealed bundle, and writes:
   `keri.cesr`.
 - `config.toml` — the VTC's runtime configuration.
 - The `VtcKeyBundle` to the configured secrets backend.
+- `<data_dir>/keys/admin-key.json` — the admin DID's private key material
+  (owner-only, `0600`; a re-run against the same data directory never
+  overwrites it and writes `admin-key.<timestamp>.json` beside it). Setup
+  prints only this path, never the key. Move it to wherever the client that
+  acts as the admin DID keeps its keys, then delete this copy.
 
 The wizard prints a one-shot **install URL**. Save it.
 
@@ -184,8 +189,9 @@ same shape the mediator and did-hosting services use:
    one), provisions against the VTA, writes the same `did.jsonl` /
    `config.toml` / sealed bundle as the interactive path, and prints a
    terse `key=value` block (including the install URL + claim code).
-   The admin private key is **never** printed in non-interactive mode —
-   re-run interactively if you need it.
+   The admin private key is never printed; like the interactive wizard,
+   phase 2 writes it to `<data_dir>/keys/admin-key.json` (`0600`) and
+   prints `admin_key_file=<path>`.
 
 For the full walkthrough — including the secret-store `backend` selector
 and a Kubernetes example — see

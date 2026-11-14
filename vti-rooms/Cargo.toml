@@ -74,9 +74,11 @@ vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.8" }
 # description and pulls axum, fjall and tokio, none of which build for wasm. It
 # is the `host` feature's whole content.
 vti-common = { path = "../vti-common", version = "0.64", optional = true }
-# Room files (`blobs`), also host-only: one lock serialising reservations and
-# reference counts, minted transfer handles, and the collection log line.
-tokio = { workspace = true, optional = true, features = ["sync", "fs"] }
+# Room files (`blobs`), also host-only: the host lock over reservations and
+# reference counts, per-room record locks, minted transfer handles, and the
+# collection log line. `rt` for `spawn_blocking`: a room's commitment is hashed
+# off the async executor (`storage`).
+tokio = { workspace = true, optional = true, features = ["sync", "fs", "rt"] }
 uuid = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 
