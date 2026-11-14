@@ -800,7 +800,7 @@ pub(super) async fn get_record<P>(
     // Read under the lock every record write holds — and every prune: a 0.2 read names the
     // blobs of the version it returns, and every read's head must be one snapshot with its
     // root, which a prune moves both of (`HeadVersion`).
-    let snapshot = state.room_files.read_snapshot().await;
+    let snapshot = state.room_files.read_snapshot(&req.room_id).await;
     match storage::get_record(&state.room_records_ks, &req.room_id, &req.key).await {
         Ok(record) => {
             audit_room_for(
@@ -886,7 +886,7 @@ pub(super) async fn list_records<P>(
 
     // Under the record-write lock, which a prune also holds: the page, the head and the
     // room's `lastPrune` are one snapshot.
-    let snapshot = state.room_files.read_snapshot().await;
+    let snapshot = state.room_files.read_snapshot(&req.room_id).await;
     // Paginated honestly: the page the caller asked for, and a cursor when more
     // remain. This used to `take(limit)` and drop the rest without a word, so a
     // short page and a complete room were indistinguishable.
