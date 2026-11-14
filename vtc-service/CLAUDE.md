@@ -29,29 +29,55 @@ Rust workspace for **Verifiable Trust Communities (VTC)**. A VTC manages a commu
 
 ```
 src/
-├── acl/                ACL storage + role types (VtcRole)
-├── audit_*.rs          audit index/checkpoints; the vocabulary is `vtc-audit`
-├── auth/               session, AuthClaims/AdminAuth/SuperAdminAuth extractors
+├── acl/                ACL storage, role types, capabilities, consent;
+│                       `ops` (the `acl/*` operations)
+├── admin_actions/      The administrator action list (parked consent, cooling off)
+├── admin_events/       The console's live channel (`vtc/admin/events/*`)
+├── audit_*.rs          audit index/checkpoints, `audit_ops` (`audit/{list,verify}`);
+│                       the vocabulary is `vtc-audit`
+├── auth/               session, extractors; `admin_passkeys` (`auth/passkey/*`)
+├── backup/             Encrypted export / import; `ops`
+├── badges/, boards/, elections/, notifications/
+│                       Member badges, community boards, elections (feature
+│                       `voting`), notifications
 ├── ceremony/           Decision pipeline (facts → verify → decide → effect/audit);
 │                       `assemble` (one Facts builder for every purpose) +
-│                       `orchestrate` (role-change + leave spines, out of routes)
-├── community/          CommunityProfile storage
+│                       `orchestrate` (role-change + leave spines) + `listing`
+├── community/          CommunityProfile storage; `ops` (profile, branding, theme,
+│                       requested attributes, join discovery, runtime config,
+│                       the community's own DID log)
 ├── credentials/        LocalSigner + VMC/VAC/status-list builders; `exchange/`
 │                       (OID4VCI issuer + OID4VP/SD-JWT/DI/bbs verifier, split into
 │                       issue/verify/pending/jwt) + `vm_resolver` (the single shared
 │                       DID-VM → key resolver + `check_issuer_binding`)
-├── endorsement_types/  Operator-registered endorsement-type registry
-├── endorsements/       Community statement (VSC), vetter-grant and IDVC rows + status-list flip
-├── install/            Install-token state machine + claim secret
+├── directory/, groups/ The member directory and community groups
+├── endorsement_types/  Operator-registered endorsement-type registry; `ops`
+├── endorsements/       Community statement (VSC), vetter-grant and IDVC rows +
+│                       status-list flip; `ops`
+├── git_ns/             Git namespaces (`git-ns/*`)
+├── install/            Install-token state machine + claim secret; `ops` (claim,
+│                       admin bootstrap, admin invites)
 ├── join/               Join-request lifecycle + `orchestrate` (submit spine:
-│                       holder-binding → decide → auto-admit → admit audit)
-├── members/            Member storage + lifecycle helpers
-├── policy/             regorus engine, default policy bundle, evaluators
-├── recognition/        Foreign role-VAC verification (Phase 3 cross-community)
-├── registry/           Trust-registry client + syncer + audit-log tail
-├── relationships/      VRC publish/revoke
-├── routes/             Every HTTP route handler, sub-mounted by feature
+│                       holder-binding → decide → auto-admit → admit audit);
+│                       `ops` (decide, manifest, present, read, status),
+│                       `invitations` (VIC issue/list/revoke/deliver)
+├── members/            Member storage + lifecycle helpers; `ops` (read, update,
+│                       remove, renew, rotate, personhood, credentials, …)
+├── member_portal/      The member portal's sign-in and sessions
+├── policy/             regorus engine, default policy bundle, evaluators; `ops`
+├── recognition/        Foreign role-VAC verification (Phase 3 cross-community);
+│                       `recognise` (TRQP), `admin` (the recognition check)
+├── registry/           Trust-registry client + syncer + audit-log tail; `admin`
+├── relationships/      VRC publish/revoke; `ops`
+├── rooms/              Data rooms (host) and community-owned rooms
+├── routes/             The HTTP surface, and only it: the Trust Task door
+│                       (`POST /v1/trust-tasks`), the declared REST exceptions
+│                       (`REST_EXCEPTIONS`: auth refresh/sign-out, credential
+│                       exchange, OID4VP), the WebAuthn ceremonies, health, the
+│                       public reads (profile, DID QR, status lists, DID logs),
+│                       the member portal and the console's static assets
 ├── routing/            Security headers, CSRF, body cap, governor middleware
+├── schemas/            The community schema store; `ops`
 ├── setup/              `vtc setup` wizard: `wizard.rs` (interactive) +
 │                       `from_toml.rs` (`setup --from <toml>`, phase 2) +
 │                       `phase1.rs` (`setup --setup-key-out`, mint the
@@ -60,8 +86,21 @@ src/
 │                       the `apply` effect driver.
 ├── status_list/        Bitstring status list allocator + storage + serve route
 ├── store/              Re-export of vti-common's keyspace abstractions
-└── website/            Public website handler, bundle + deploy, default site
+├── trust_tasks/        The dispatch spine: `routing` (one `AsyncDispatcher` every
+│                       family registers on, keyed on its generated payload
+│                       type) and a `*_tasks.rs` handler file per family
+├── vetting/            Vetting, vetters, hidden vetting (`vetting-pcs`); `ops`
+├── website/            Public website handler, bundle + deploy, default site; `ops`
+└── wire.rs             Generated payload members read as this crate's types
 ```
+
+**Where code goes.** A Trust Task's handler (authority, payload parse, refusal
+codes) is a `register`ed handler in `trust_tasks/<family>_tasks.rs`; the
+operation it runs lives in its domain module (`members::ops`, `policy::ops`, …)
+and takes the **generated** `vti_specs` payload — never a struct of its own
+parsed beside it (`trust_tasks::payload_type_census`). A member the generated
+type folds (absent vs empty) is read from the received JSON with
+`wire::sent`. `routes/` gets a new route only as a declared REST exception.
 
 Before splitting a module out of this crate, read
 [`docs/05-design-notes/vtc-service-decomposition.md`](../docs/05-design-notes/vtc-service-decomposition.md):
@@ -666,7 +705,7 @@ When adding a flow, add it here and a line to the root index.
   crossed); the join paths carry none, so a VWC meets no criterion there. Never compare witness DIDs other than verbatim,
   never let a community list its own DID.
 - **Code**: `vtc-service/src/credentials/{trusted_witnesses,witness}.rs`,
-  `vtc-service/src/config_store.rs`, `vtc-service/src/routes/members/personhood.rs`,
+  `vtc-service/src/config_store.rs`, `vtc-service/src/members/ops/personhood.rs`,
   `vtc-service/src/join/criteria.rs`.
 - **Docs**: `docs/03-vtc/trusted-witnesses.md`.
 
@@ -807,7 +846,7 @@ When adding a flow, add it here and a line to the root index.
   store::{get,put}_rights` and `Snapshot::load` read and write the entries
   (through a `git-holder:` index in the `acl` keyspace), and the fixed rules run
   over that. Grants sit beside the administrative role, never in its ceiling;
-  `acl/*` writes keep them (`routes::acl::commit_grant` re-reads them under the
+  `acl/*` writes keep them (`acl::ops::commit_grant` re-reads them under the
   git-ns lock) and must never drop them. A grant is also bounded by the
   granter's entry (`resource_grant::granter_covers`, VTI-ACL-071). A non-member
   holding a grant (the bridge, an external signer) gets an entry of community
