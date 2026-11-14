@@ -1185,6 +1185,42 @@ pub fn served_trust_task_uris() -> Vec<&'static str> {
         .collect()
 }
 
+/// An ACL entry as the fixtures seed one: `did` holding `role` with `admin`
+/// authority, written at install time, with no label, expiry, grants or
+/// suspension.
+pub fn seeded_acl_entry(
+    did: &str,
+    role: crate::acl::VtcRole,
+    admin: crate::acl::AdminAuthority,
+) -> crate::acl::VtcAclEntry {
+    crate::acl::VtcAclEntry {
+        did: did.into(),
+        admin,
+        delegated_by: None,
+        role,
+        label: None,
+        created_at: 0,
+        created_by: "did:key:vtc-install".into(),
+        updated_at: None,
+        updated_by: None,
+        expires_at: None,
+        resource_grants: Vec::new(),
+        group_grants: Vec::new(),
+        label_set_by_subject: false,
+        suspension: None,
+    }
+}
+
+/// Seed `did` into `acl` holding `role` with the authority the role implies
+/// — the fixture every test that needs "an administrator" or "a member"
+/// starts from (#2579: one fixture, not one per test module).
+pub async fn seed_acl(acl: &crate::store::KeyspaceHandle, did: &str, role: crate::acl::VtcRole) {
+    let admin = role.implied_authority();
+    crate::acl::store_acl_entry(acl, &seeded_acl_entry(did, role, admin))
+        .await
+        .expect("seed ACL row");
+}
+
 #[cfg(all(feature = "transport-harness", feature = "tsp"))]
 pub use transport_harness::Carriage;
 #[cfg(feature = "transport-harness")]

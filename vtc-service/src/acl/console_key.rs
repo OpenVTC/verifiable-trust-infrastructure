@@ -497,7 +497,8 @@ async fn stamp_last_used(ks: &KeyspaceHandle, console_did: &str) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+    use crate::acl::VtcRole;
+    use crate::test_support::seed_acl;
     use chrono::Duration;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
@@ -528,30 +529,6 @@ mod tests {
         let console = store.keyspace("console-keys-test").expect("ks");
         let acl = store.keyspace("console-keys-acl-test").expect("ks");
         (console, acl, dir)
-    }
-
-    async fn seed_acl(acl: &KeyspaceHandle, did: &str, role: VtcRole) {
-        store_acl_entry(
-            acl,
-            &VtcAclEntry {
-                did: did.into(),
-                admin: role.implied_authority(),
-                delegated_by: None,
-                role,
-                label: None,
-                created_at: 0,
-                created_by: "did:key:vtc-install".into(),
-                updated_at: None,
-                updated_by: None,
-                expires_at: None,
-                resource_grants: Vec::new(),
-                group_grants: Vec::new(),
-                label_set_by_subject: false,
-                suspension: None,
-            },
-        )
-        .await
-        .expect("seed ACL row");
     }
 
     #[tokio::test]

@@ -168,28 +168,10 @@ struct Fixture {
     bridge_party: Party,
 }
 
+/// [`crate::test_support::seed_acl`], and the member record a git right
+/// needs beside the entry.
 async fn seed_acl(state: &AppState, did: &str, role: VtcRole) {
-    store_acl_entry(
-        &state.acl_ks,
-        &VtcAclEntry {
-            did: did.into(),
-            admin: role.implied_authority(),
-            delegated_by: None,
-            role,
-            label: None,
-            created_at: 0,
-            created_by: "test".into(),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-            resource_grants: Vec::new(),
-            group_grants: Vec::new(),
-            label_set_by_subject: false,
-            suspension: None,
-        },
-    )
-    .await
-    .unwrap();
+    crate::test_support::seed_acl(&state.acl_ks, did, role).await;
     crate::members::store_member(&state.members_ks, &crate::members::Member::fresh(did))
         .await
         .unwrap();
