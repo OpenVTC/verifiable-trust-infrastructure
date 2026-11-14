@@ -7,7 +7,15 @@
 //! room_records/v2:<len>:<roomId>:<key>           -> Record
 //! room_epoch_links/v2:<len>:<roomId>:<epoch>     -> EpochLink   (room_epoch_links keyspace)
 //! room-commit/v2:<len>:<roomId>:<epoch>          -> commit      (room_epoch_links keyspace)
+//! room_leaf/v1:<len>:<roomId>:<key>              -> leaf hash   (room_records keyspace)
+//! room_by_version/v1:<len>:<roomId>:<version>    -> record key  (room_records keyspace)
+//! room_head/v1:<len>:<roomId>                    -> tree head   (room_records keyspace)
 //! ```
+//!
+//! The last three are the record indexes (`index` module): each record's leaf hash, the
+//! room in version order, and the room's cached tree head, written in the same atomic batch
+//! as the record they describe, and built from the records the first time a room written
+//! before they existed is read or written.
 //!
 //! `<len>` is the room identifier's length in bytes, in decimal. A room identifier is a
 //! DID and contains `:` itself, so without it the key of one room's row could be the key
@@ -36,6 +44,10 @@ use vti_common::identifier::validate_did;
 use vti_common::store::KeyspaceHandle;
 
 use super::{Record, RecordStatus, Room};
+
+mod index;
+#[cfg(test)]
+mod index_tests;
 use crate::wire::EpochLink;
 
 /// `rooms:<roomId>`.
@@ -535,6 +547,7 @@ async fn move_row(
     old: Vec<u8>,
     value: Vec<u8>,
     new: String,
+    also_remove: Option<String>,
 ) -> Result<Result<(), String>, AppError> {
     let mut batch = vti_common::store::Batch::new();
     batch
@@ -542,6 +555,9 @@ async fn move_row(
         .require_absent(new.clone())
         .insert_raw(new.clone(), value)
         .remove(old.clone());
+    if let Some(k) = also_remove {
+        batch.remove(k);
+    }
     Ok(match ks.apply_batch(batch).await? {
         vti_common::store::BatchOutcome::Applied => Ok(()),
         vti_common::store::BatchOutcome::Refused { check: 0 } => {
@@ -589,7 +605,10 @@ pub async fn migrate_room_keys(
             continue;
         };
         let new = record_key(&room_id, &record.key);
-        match move_row(records, k.clone(), v, new).await? {
+        // The room's index no longer accounts for its records, so its head goes in the same
+        // batch and the next reader rebuilds the index (`index` module).
+        let head = index::head_key(&room_id);
+        match move_row(records, k.clone(), v, new, Some(head)).await? {
             Ok(()) => out.records += 1,
             Err(why) => out.left.push(format!("{}: {why}", lossy(&k))),
         }
@@ -612,7 +631,7 @@ pub async fn migrate_room_keys(
                 continue;
             };
             let new = format!("{}{epoch:010}", room_scope(current, &room_id));
-            match move_row(epoch_links, k.clone(), v, new).await? {
+            match move_row(epoch_links, k.clone(), v, new, None).await? {
                 Ok(()) => *count += 1,
                 Err(why) => out.left.push(format!("{}: {why}", lossy(&k))),
             }
@@ -665,6 +684,9 @@ pub async fn purge_room_rows(
 ) -> Result<PurgedRows, AppError> {
     let mut out = PurgedRows::default();
 
+    // The index first, head before rows: an interrupted purge leaves the room unindexed,
+    // and a read before the next attempt rebuilds it from what records remain.
+    index::purge(records, room_id).await?;
     for k in records.prefix_keys(record_prefix(room_id)).await? {
         records.remove(k).await?;
         out.records += 1;
@@ -716,6 +738,7 @@ pub async fn put_record(
     now: u64,
 ) -> Result<Record, AppError> {
     let mut room = get_room(rooms, room_id).await?;
+    index::ensure(records, room_id).await?;
 
     let existing = get_record(records, room_id, &record.key).await.ok();
 
@@ -817,11 +840,44 @@ pub async fn put_record(
     room.next_version += 1;
     room.updated_at = now;
 
-    records
-        .insert(record_key(room_id, &record.key), &record)
-        .await?;
+    write_record(records, room_id, existing.as_ref(), &record).await?;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(record)
+}
+
+/// Write `record` over `existing` (what its key held, if anything), with its index rows,
+/// in one batch. The room must be indexed ([`index::ensure`]).
+async fn write_record(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    existing: Option<&Record>,
+    record: &Record,
+) -> Result<(), AppError> {
+    let mut batch = vti_common::store::Batch::new();
+    batch.insert(record_key(room_id, &record.key), record)?;
+    index::stage(&mut batch, room_id, existing, Some(record))?;
+    index::apply(records, batch).await
+}
+
+/// Remove `existing` and its index rows, in one batch. The room must be indexed.
+async fn remove_record(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    existing: &Record,
+) -> Result<(), AppError> {
+    let mut batch = vti_common::store::Batch::new();
+    batch.remove(record_key(room_id, &existing.key));
+    index::stage(&mut batch, room_id, Some(existing), None)?;
+    index::apply(records, batch).await
+}
+
+/// Make the room's record indexes rebuild from its records on their next use.
+///
+/// For a host that wrote a record row directly through [`record_storage_key`] (a test
+/// ageing a record, say): the indexes are kept in step by this module's writes, and a
+/// row written around them leaves them describing the record it replaced.
+pub async fn reindex_room(records: &KeyspaceHandle, room_id: &str) -> Result<(), AppError> {
+    index::forget(records, room_id).await
 }
 
 /// Store a record **pulled from a primary**, exactly as the primary assigned it.
@@ -879,9 +935,9 @@ pub async fn store_mirrored_record(
     room.next_version = record.version + 1;
     room.updated_at = now;
 
-    records
-        .insert(record_key(room_id, &record.key), &record)
-        .await?;
+    index::ensure(records, room_id).await?;
+    let existing = get_record(records, room_id, &record.key).await.ok();
+    write_record(records, room_id, existing.as_ref(), &record).await?;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(record)
 }
@@ -964,23 +1020,6 @@ pub async fn list_records(
     Ok(out)
 }
 
-/// The room's data commitment — the root of its record tree.
-///
-/// Over **every** record the room holds, never the page being returned: a
-/// page-scoped root is one a host satisfies by construction and could never
-/// fail, which would let a member feel checked while checking nothing.
-///
-/// # Why this is not cached
-///
-/// It scans and hashes the room on every call, which is real work a cache would
-/// avoid. A cache would also have to be invalidated by every put, curate and
-/// prune, and **a stale root is worse than a slow one**: it is a *wrong*
-/// commitment, and the failure it produces is an honest host appearing to
-/// equivocate — the exact accusation this machinery exists to make credible.
-///
-/// So: correct first, and cache when there is a measurement saying where. The
-/// natural shape is a root kept beside the room row and updated on write, which
-/// is a different change with its own invariant to hold.
 /// The largest page a host will serve, however much a caller asks for.
 ///
 /// A listing used to be unbounded: `limit` was applied with `take` and anything
@@ -1136,14 +1175,12 @@ pub async fn list_records_page(
 /// are returned exactly as oldest first returns them (`rooms/records/list/0.7` *Order*
 /// items 2–4).
 ///
-/// # Why this reads the room rather than a version index
+/// # A seek, not a scan
 ///
-/// Records are keyed by record key, not by version, so neither order is a range scan; both
-/// sort the room's rows in memory. That is no worse than the request already is: every page
-/// carries the room's data commitment, which [`tree_head`] computes over every record on
-/// every call (and deliberately does not cache). A version index would change the cost of
-/// a page only once the commitment is kept beside the room row — the two belong in one
-/// change, with the invariant that keeps them in step.
+/// Read through the room's version index (`index` module), which every write keeps in the
+/// same batch as the record: a page reads the version rows it walks and the records it
+/// returns, so a caller polling with `since_version` pays for what changed, not for the
+/// room (#2595).
 pub async fn list_records_page_in(
     records: &KeyspaceHandle,
     room_id: &str,
@@ -1155,26 +1192,21 @@ pub async fn list_records_page_in(
 ) -> Result<Page, AppError> {
     let position = cursor.map(|c| decode_cursor(c, order)).transpose()?;
     let page = limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
-    let mut all = match order {
-        RecordOrder::OldestFirst => {
-            // A cursor and a watermark say the same kind of thing, so the later of the
-            // two wins rather than one silently overriding the other.
-            let floor = match position {
+    let (above, below) = match order {
+        // A cursor and a watermark say the same kind of thing, so the later of the two
+        // wins rather than one silently overriding the other.
+        RecordOrder::OldestFirst => (
+            match position {
                 Some(after) => Some(after.max(since_version.unwrap_or(0))),
                 None => since_version,
-            };
-            list_records(records, room_id, key_prefix, floor).await?
-        }
-        RecordOrder::NewestFirst => {
-            // The watermark bounds the listing from below, the cursor from above.
-            let mut rows = list_records(records, room_id, key_prefix, since_version).await?;
-            if let Some(below) = position {
-                rows.retain(|r| r.version < below);
-            }
-            rows.reverse();
-            rows
-        }
+            },
+            None,
+        ),
+        // The watermark bounds the listing from below, the cursor from above.
+        RecordOrder::NewestFirst => (since_version, position),
     };
+    // One more than the page, to know whether another follows.
+    let mut all = index::page(records, room_id, key_prefix, above, below, order, page + 1).await?;
 
     let more = all.len() > page;
     all.truncate(page);
@@ -1187,13 +1219,27 @@ pub async fn list_records_page_in(
     })
 }
 
+/// The room's data commitment — the root of its record tree — with its count and head
+/// version.
+///
+/// Over **every** record the room holds, never the page being returned: a
+/// page-scoped root is one a host satisfies by construction and could never
+/// fail, which would let a member feel checked while checking nothing.
+///
+/// # Cached, and never stale
+///
+/// Kept beside the records (`index` module): every leaf hash is computed once, when its
+/// record is written, and the head is cached in a row every write replaces with a stale
+/// marker in the same batch. **A stale root is worse than a slow one** — it is a *wrong*
+/// commitment, and the failure it produces is an honest host appearing to equivocate — so
+/// a head is cached only over the marker it was computed after, and a write in between
+/// leaves it uncached. The commitment is byte-for-byte [`crate::merkle::tree_head`] over
+/// the records.
 pub async fn tree_head(
     records: &KeyspaceHandle,
     room_id: &str,
 ) -> Result<crate::merkle::TreeHead, AppError> {
-    let mut all = list_records(records, room_id, None, None).await?;
-    crate::merkle::tree_head(&mut all)
-        .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))
+    Ok(index::head(records, room_id, None).await?.0)
 }
 
 /// The room's data commitment **and** the trace for one record, from one scan.
@@ -1208,7 +1254,8 @@ pub async fn tree_head(
 /// because it discredits the mechanism rather than the host.
 ///
 /// The specification requires the same snapshot for both. One function is how
-/// that requirement is held rather than remembered.
+/// that requirement is held rather than remembered: both come from one read of the
+/// room's leaf rows.
 ///
 /// `None` for the trace means the key is not in the room, which a caller that
 /// has just read the record can only see as a race with a retraction — the root
@@ -1225,26 +1272,7 @@ pub async fn tree_head_with_trace(
     ),
     AppError,
 > {
-    let mut all = list_records(records, room_id, None, None).await?;
-    // Ordering is the commitment's, so the index has to come from the sorted
-    // set — `tree_head` sorts in place, which is why this reads the position
-    // afterwards rather than before.
-    all.sort_by(|a, b| a.key.cmp(&b.key));
-    let leaves = all
-        .iter()
-        .map(|r| crate::merkle::leaf_hash(&r.committed()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))?;
-    let head = crate::merkle::TreeHead {
-        root: crate::merkle::root_of(&leaves),
-        record_count: leaves.len() as u64,
-        head_version: all.iter().map(|r| r.version).max().unwrap_or(0),
-    };
-    let trace = all
-        .iter()
-        .position(|r| r.key == key)
-        .and_then(|index| crate::merkle::inclusion_proof(&leaves, index));
-    Ok((head, trace))
+    index::head(records, room_id, Some(key)).await
 }
 
 /// What one curation changes.
@@ -1299,7 +1327,9 @@ pub async fn curate_record(
         pinned,
         expected_version,
     } = curation;
+    index::ensure(records, room_id).await?;
     let mut record = get_record(records, room_id, key).await?;
+    let before = record.clone();
 
     if let Some(expected) = expected_version
         && record.version != expected
@@ -1348,7 +1378,7 @@ pub async fn curate_record(
     room.next_version += 1;
     room.updated_at = now;
 
-    records.insert(record_key(room_id, key), &record).await?;
+    write_record(records, room_id, Some(&before), &record).await?;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(record)
 }
@@ -1363,13 +1393,9 @@ pub async fn purge_record(
     room_id: &str,
     key: &str,
 ) -> Result<(), AppError> {
-    let k = record_key(room_id, key);
-    if records.get_raw(k.clone()).await?.is_none() {
-        return Err(AppError::NotFound(format!(
-            "record `{key}` not found in `{room_id}`"
-        )));
-    }
-    records.remove(k).await
+    index::ensure(records, room_id).await?;
+    let existing = get_record(records, room_id, key).await?;
+    remove_record(records, room_id, &existing).await
 }
 
 /// The records a prune of `kinds` at `now` would remove under `retention`
@@ -1425,8 +1451,14 @@ pub async fn remove_pruned(
     room.last_prune = Some(mark);
     room.updated_at = now;
     rooms.insert(room_key(room_id), &room).await?;
+    index::ensure(records, room_id).await?;
     for key in keys {
-        records.remove(record_key(room_id, key)).await?;
+        match get_record(records, room_id, key).await {
+            Ok(existing) => remove_record(records, room_id, &existing).await?,
+            // Gone already: a prune that died part-way, finished by this one.
+            Err(AppError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(mark)
 }

@@ -24,8 +24,9 @@ pub use capability::{
 pub use entry::{Suspension, VtcAclEntry};
 pub use role::{VtcRole, as_vti_role};
 pub use storage::{
-    auth_role_for, capability_refusal, delete_acl_entry, get_acl_entry, list_acl_entries,
-    list_acl_entries_paginated, require_any_capability, require_capability, resolve_auth_role,
+    auth_role_for, capability_refusal, delete_acl_entry, get_acl_entry, holds_authority,
+    list_acl_entries, list_acl_entries_paginated, list_authority_entries, move_acl_entry,
+    rebuild_authority_index, require_any_capability, require_capability, resolve_auth_role,
     store_acl_entry,
 };
 /// The authority a test fixture written before role-based administration

@@ -140,7 +140,7 @@ pub async fn prune(
     let reason = req.reason.to_string();
     let dry_run = req.dry_run.unwrap_or(false);
 
-    let lock = files.records_lock().await;
+    let lock = files.records_lock(&room.room_id).await;
     // Re-read under the lock: the retention and the records are decided together.
     let room = storage::get_room(rooms, &room.room_id)
         .await
@@ -268,7 +268,7 @@ pub async fn retention_set(
 
     // Under the record-write lock, so a prune never decides eligibility under one retention
     // while this replaces it.
-    let _lock = files.records_lock().await;
+    let _lock = files.records_lock(&room.room_id).await;
     let current = storage::get_room(rooms, &room.room_id)
         .await
         .map_err(Refusal::App)?;

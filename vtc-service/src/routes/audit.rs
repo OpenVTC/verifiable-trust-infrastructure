@@ -24,6 +24,9 @@ use vti_common::error::AppError;
 
 use vti_common::pagination::{Cursor, MAX_LIMIT};
 
+/// Audit rows read per step of [`list_audit`]'s newest-first walk.
+const AUDIT_SCAN_CHUNK: usize = 256;
+
 use crate::server::AppState;
 use tracing::info;
 
@@ -254,69 +257,60 @@ pub(crate) async fn list_audit(
         None => None,
     };
 
-    // Walk the entire audit keyspace, then sort descending so newest
-    // entries come first. Linear scan matches `list_policies_paginated`
-    // — see `vti_common::pagination` module docs for the long-term
-    // plan to push this into the store layer.
-    let mut pairs = state.audit_ks.prefix_iter_raw(Vec::new()).await?;
-    pairs.sort_by(|(a, _), (b, _)| b.cmp(a));
-
-    // Apply cursor: skip until first key strictly less than
-    // `cursor.last_key`. Descending order means "strictly less" =
-    // "the next-oldest entry".
-    let start = match &decoded_cursor {
-        Some(c) => pairs
-            .iter()
-            .position(|(k, _)| k.as_slice() < c.last_key.as_slice())
-            .unwrap_or(pairs.len()),
-        None => 0,
-    };
+    // Newest first: a reverse seek from the cursor (or the end of the log),
+    // read one bounded chunk at a time, so a page costs what it reads — not
+    // the whole audit log, decoded and sorted on every page (#2599). The
+    // cursor is unchanged (the last key returned, read in descending order),
+    // so one issued before this resumes where it left off.
+    let mut opts = vti_common::store::ScanOpts::newest_first(Vec::new(), AUDIT_SCAN_CHUNK);
+    if let Some(c) = &decoded_cursor {
+        opts = opts.after(c.last_key.clone());
+    }
+    let mut pager = state.audit_ks.scan_pager(opts);
 
     let mut entries: Vec<AuditEntry> = Vec::with_capacity(limit);
     let mut last_seen_key: Option<Vec<u8>> = None;
-    let mut idx = start;
-    while entries.len() < limit && idx < pairs.len() {
-        let (key, value) = &pairs[idx];
-        match serde_json::from_slice::<AuditEnvelope>(value) {
-            Ok(env) => {
-                // Filter *after* deserializing: the predicates read
-                // envelope fields, and an unparseable row can't be
-                // judged either way (it is skipped below, as before).
-                if query.matches(&env) {
-                    entries.push(AuditEntry::from(&env));
-                    last_seen_key = Some(key.clone());
-                }
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    key = %String::from_utf8_lossy(key),
-                    "skipping unparseable audit envelope",
-                );
-            }
-        }
-        idx += 1;
-    }
-
     // A `nextCursor` must mean "more *matching* entries remain", not "more
-    // rows remain" — with a filter applied the tail may hold nothing
-    // that matches, and handing back a cursor for an empty next page
-    // would make a caller believe results were withheld. Scan ahead only
-    // until the first further match.
+    // rows remain" — with a filter applied the tail may hold nothing that
+    // matches, and handing back a cursor for an empty next page would make a
+    // caller believe results were withheld. So the walk reads on past a full
+    // page only until the first further match.
     let mut more_matches = false;
-    while idx < pairs.len() {
-        if let Ok(env) = serde_json::from_slice::<AuditEnvelope>(&pairs[idx].1)
-            && query.matches(&env)
-        {
-            more_matches = true;
+    'walk: loop {
+        let rows = pager.next_page().await?;
+        if rows.is_empty() {
             break;
         }
-        idx += 1;
+        for (key, value) in rows {
+            match serde_json::from_slice::<AuditEnvelope>(&value) {
+                Ok(env) => {
+                    // Filter *after* deserializing: the predicates read
+                    // envelope fields, and an unparseable row can't be
+                    // judged either way (it is skipped below, as before).
+                    if !query.matches(&env) {
+                        continue;
+                    }
+                    if entries.len() == limit {
+                        more_matches = true;
+                        break 'walk;
+                    }
+                    entries.push(AuditEntry::from(&env));
+                    last_seen_key = Some(key);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        key = %String::from_utf8_lossy(&key),
+                        "skipping unparseable audit envelope",
+                    );
+                }
+            }
+        }
     }
 
-    let snapshot_id: u64 = pairs.len() as u64;
+    // `snapshotId` is opaque; a seek never learns the log's length.
     let next_cursor = if more_matches {
-        last_seen_key.map(|k| Cursor::new(k, snapshot_id).encode_bound(&audit_key.key, &binding))
+        last_seen_key.map(|k| Cursor::new(k, 0).encode_bound(&audit_key.key, &binding))
     } else {
         None
     };
@@ -552,22 +546,18 @@ async fn verify_checkpoint_state(state: &AppState) -> CheckpointReport {
         }
     };
 
-    let (chain_state, _unparseable) =
-        match crate::audit_checkpoint::measure_chain(&state.audit_ks).await {
-            Ok(m) => m,
-            Err(e) => return broken(format!("could not measure the audit chain: {e}")),
-        };
-
-    let outcome = match crate::audit_checkpoint::audit_against_checkpoint(
+    // One walk measures the chain and finds the newest checkpoint's anchor.
+    let (chain_state, _unparseable, anchor) = match crate::audit_checkpoint::measure_chain_finding(
         &state.audit_ks,
-        newest,
-        &chain_state,
+        newest.map(|c| c.head_event_id),
     )
     .await
     {
-        Ok(o) => o,
-        Err(e) => return broken(format!("could not compare the log to its checkpoint: {e}")),
+        Ok(m) => m,
+        Err(e) => return broken(format!("could not measure the audit chain: {e}")),
     };
+
+    let outcome = crate::audit_checkpoint::judge_against_checkpoint(newest, &chain_state, anchor);
 
     let verified_checkpoints = checkpoints.len();
     match outcome {

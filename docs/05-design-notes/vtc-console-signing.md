@@ -145,8 +145,9 @@ and "DID with an admin ACL row" are the same set.
 
 That DID is real and has real key material. `vtc setup` takes it from the
 provisioning VTA (`vtc-service/src/setup/wizard.rs:277`), and the wizard
-**prints the admin private key as JSON for the operator to save by hand** — the
-comment there says a keyring write is not yet implemented. The install ceremony
+**printed the admin private key as JSON for the operator to save by hand**
+(since #2703 it writes it to an owner-only `<data_dir>/keys/admin-key.json`
+instead, and prints only the path). The install ceremony
 then attaches a passkey to that DID for browser access.
 
 So the console operator has a signing identity. The browser has never held it.

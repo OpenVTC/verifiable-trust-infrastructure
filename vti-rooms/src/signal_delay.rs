@@ -181,7 +181,7 @@ pub async fn set(
     }
     // Under the record-write lock: the room record is rewritten whole, and a write landing
     // between the read and the write must not be lost.
-    let _lock = files.records_lock().await;
+    let _lock = files.records_lock(&room.room_id).await;
     let previous = storage::set_signal_delay(rooms, &room.room_id, wanted, now)
         .await
         .map_err(Refusal::App)?;

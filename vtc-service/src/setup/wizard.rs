@@ -341,6 +341,14 @@ pub(crate) async fn persist_provisioned(
     //    to pay the partition-create cost.
     open_keyspaces(&app_config)?;
 
+    // 8b. Hand the long-term admin key over as an owner-only file in the data
+    // directory — never on a terminal (#2703). The integration key doesn't
+    // contain the admin private key; it comes from the provision result.
+    let admin_key_file = provision
+        .admin_key()
+        .map(|key| write_admin_key_file(&data_dir, key))
+        .transpose()?;
+
     // 9. Mint a one-shot install token. The operator claims the community
     //    with a passkey on the running daemon; the founder is that passkey's
     //    own `did:key`. The admin DID below — the rotated long-term DID the
@@ -365,15 +373,6 @@ pub(crate) async fn persist_provisioned(
     )
     .await?;
 
-    // Surface the long-term admin key material so the operator can
-    // save it for CLI use (the wizard doesn't yet write it to a
-    // keyring — manual handling is the MVP). The integration key
-    // doesn't contain the admin private key; we pull it from the
-    // provision result.
-    let admin_key_summary = provision
-        .admin_key()
-        .and_then(|k| serde_json::to_string_pretty(k).ok());
-
     Ok(SetupOutcome {
         vtc_did: integration_did,
         admin_did,
@@ -381,7 +380,7 @@ pub(crate) async fn persist_provisioned(
         data_dir,
         install_url,
         claim_code,
-        admin_key_json: admin_key_summary,
+        admin_key_file,
         single_admin_mode: inputs.single_admin_mode,
     })
 }
@@ -400,9 +399,8 @@ pub(crate) fn single_admin_warning(inputs: &WizardInputs) -> Option<String> {
     })
 }
 
-/// Print the rich, interactive completion summary, gating the one-shot
-/// admin-key reveal behind an explicit confirm so the private key never
-/// spills into terminal scrollback unasked.
+/// Print the rich, interactive completion summary. The admin private key is
+/// never printed, only the owner-only file holding it (#2703).
 fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppError> {
     println!();
     println!("\x1b[1;32m✅ VTC setup complete.\x1b[0m");
@@ -418,27 +416,14 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
         );
     }
     println!();
-    if let Some(key_json) = outcome.admin_key_json.as_deref() {
-        // The admin private key lands in the terminal scrollback / any
-        // session recording the moment it's printed. Make the operator
-        // consciously reveal it rather than spilling it by default.
-        // TODO(#2703): write this to the OS keyring instead of stdout.
-        let reveal = Confirm::new()
-            .with_prompt(
-                "Display the admin private key now? It's needed for CLI access and is shown only once",
-            )
-            .default(false)
-            .interact()
-            .map_err(prompt_err)?;
-        if reveal {
-            println!("\x1b[1;33mAdmin key (save this — needed for CLI access):\x1b[0m");
-            println!("{key_json}");
-        } else {
-            println!(
-                "\x1b[1;33mAdmin key not displayed.\x1b[0m Re-run setup if you need it; it is \
-                 not persisted."
-            );
-        }
+    if let Some(key_file) = outcome.admin_key_file.as_deref() {
+        // Only the path: a key printed to a terminal lands in scrollback
+        // and any session recording (#2703).
+        println!(
+            "\x1b[1;33mAdmin key:\x1b[0m     {} (owner-only; needed for CLI access as the admin \
+             DID — move it to where that client keeps its keys, then delete this copy)",
+            key_file.display()
+        );
         println!();
     }
     println!("\x1b[1mInstall URL (one-shot, 15 min TTL):\x1b[0m");
@@ -465,6 +450,54 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
     println!("  {}", offline_acl_add_command(outcome));
     println!();
     Ok(())
+}
+
+/// Write the long-term admin key the VTA returned to
+/// `<data_dir>/keys/admin-key.json` (directory `0700`, file `0600`, created
+/// new) and return the path. The file is the [`DidKeyMaterialV2`] JSON the VTA
+/// sealed to the setup key.
+///
+/// This is the hand-over the rest of setup already uses for key material
+/// that must outlive the run (`--setup-key-out`, `vtc keys request`): an
+/// owner-only file, never a terminal (#2703). An existing `admin-key.json`
+/// (a re-run against the same data directory) is never overwritten — it may
+/// be the only copy of an earlier admin key — so the new one gets a
+/// timestamped name beside it.
+///
+/// [`DidKeyMaterialV2`]: vta_sdk::sealed_transfer::DidKeyMaterialV2
+pub(crate) fn write_admin_key_file(
+    data_dir: &std::path::Path,
+    key: &vta_sdk::sealed_transfer::DidKeyMaterialV2,
+) -> Result<PathBuf, AppError> {
+    let io_err = |what: &str, path: &std::path::Path, e: std::io::Error| {
+        AppError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{what} {}: {e}", path.display()),
+        ))
+    };
+    let dir = data_dir.join("keys");
+    std::fs::create_dir_all(&dir).map_err(|e| io_err("create key dir", &dir, e))?;
+    crate::secure_file::restrict_dir_to_owner(&dir)
+        .map_err(|e| io_err("harden key dir perms", &dir, e))?;
+
+    let json = zeroize::Zeroizing::new(
+        serde_json::to_vec_pretty(key)
+            .map_err(|e| AppError::Internal(format!("serialise admin key: {e}")))?,
+    );
+    let path = dir.join("admin-key.json");
+    match vti_common::secure_file::write_secret_file(&path, &json) {
+        Ok(()) => Ok(path),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let path = dir.join(format!(
+                "admin-key.{}.json",
+                Utc::now().format("%Y%m%dT%H%M%SZ")
+            ));
+            vti_common::secure_file::write_secret_file(&path, &json)
+                .map_err(|e| io_err("write admin key", &path, e))?;
+            Ok(path)
+        }
+        Err(e) => Err(io_err("write admin key", &path, e)),
+    }
 }
 
 /// The offline command that grants the setup's admin DID without the
@@ -701,9 +734,8 @@ pub(crate) struct WizardPlan {
 
 /// The facts [`apply`] produces once the VTC is provisioned and all
 /// on-disk state is written. The caller decides how to present them
-/// (the interactive wizard prints a rich summary with a one-shot
-/// admin-key reveal; `setup --from` prints a terse, scrape-friendly
-/// block).
+/// (the interactive wizard prints a rich summary; `setup --from` prints a
+/// terse, scrape-friendly block).
 pub(crate) struct SetupOutcome {
     pub(crate) vtc_did: String,
     pub(crate) admin_did: String,
@@ -711,10 +743,10 @@ pub(crate) struct SetupOutcome {
     pub(crate) data_dir: PathBuf,
     pub(crate) install_url: String,
     pub(crate) claim_code: String,
-    /// Pretty-printed JSON of the long-term admin key, when the VTA
-    /// returned one. Sensitive — the interactive path gates its display
-    /// behind a confirm; the non-interactive path never prints it.
-    pub(crate) admin_key_json: Option<String>,
+    /// The owner-only file holding the long-term admin key, when the VTA
+    /// returned one ([`write_admin_key_file`]). Both front-ends print only
+    /// this path, never the key (#2703).
+    pub(crate) admin_key_file: Option<PathBuf>,
     /// Whether the community was set up in single-administrator mode
     /// (VTI-APV-022).
     pub(crate) single_admin_mode: bool,
@@ -2760,5 +2792,56 @@ mod tests {
             "config.toml must be 0600, got {mode:o}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn admin_key_material() -> vta_sdk::sealed_transfer::DidKeyMaterialV2 {
+        use vta_sdk::keys::KeyType;
+        use vta_sdk::sealed_transfer::{DidKeyMaterialV2, SlotKeyPair};
+        let pair = |slot: &str, key_type: KeyType| SlotKeyPair {
+            slot: slot.into(),
+            key_type,
+            key_id: format!("did:key:z6MkAdmin#{slot}"),
+            public_key_multibase: "z6MkPublic".into(),
+            private_key_multibase: "zPrivateSecretMaterial".into(),
+        };
+        DidKeyMaterialV2 {
+            did: "did:key:z6MkAdmin".into(),
+            signing_key: pair("signing", KeyType::Ed25519),
+            ka_key: pair("ka", KeyType::X25519),
+            additional_signing_keys: Vec::new(),
+        }
+    }
+
+    /// #2703: setup hands the admin key over as an owner-only file in the
+    /// data directory (never on a terminal), loadable as the material the VTA
+    /// returned, and never overwrites an earlier one.
+    #[test]
+    fn admin_key_is_written_owner_only_and_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = admin_key_material();
+
+        let first = write_admin_key_file(dir.path(), &key).expect("first write");
+        assert_eq!(first, dir.path().join("keys").join("admin-key.json"));
+        let read: vta_sdk::sealed_transfer::DidKeyMaterialV2 =
+            serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        assert_eq!(read.did, key.did);
+        assert_eq!(
+            read.signing_key.private_key_multibase,
+            key.signing_key.private_key_multibase
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&first), 0o600, "admin key file must be 0600");
+            assert_eq!(mode(first.parent().unwrap()), 0o700, "key dir must be 0700");
+        }
+
+        let before = std::fs::read(&first).unwrap();
+        let second = write_admin_key_file(dir.path(), &key).expect("second write");
+        assert_ne!(second, first, "an existing admin key is never overwritten");
+        assert_eq!(std::fs::read(&first).unwrap(), before);
+        assert!(second.exists());
     }
 }

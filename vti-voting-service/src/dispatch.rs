@@ -3,15 +3,16 @@
 //! bytes as received and, where the transport proved one, the sender, and carry back what it
 //! returns.
 
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde_json::Value;
 use trust_tasks_rs::{ErrorPayload, TrustTask, TrustTaskCode};
 use uuid::Uuid;
-use vti_voting::service::{BallotBox, Caller, ElectionVersion, Failure, VerifiedCast};
+use vti_voting::service::{Caller, ElectionVersion, Failure, VerifiedCast};
 
+use crate::boxes::{Boxes, Shard};
 use crate::config::CommunitiesConfig;
 use crate::identity::Identity;
 
@@ -25,8 +26,10 @@ fn acceptance_max_age() -> chrono::TimeDelta {
 }
 
 pub struct AppState {
-    /// Held only for what reads or changes it: a cast's costly checks run without it.
-    pub ballot_box: Mutex<BallotBox>,
+    /// Every election, each under a lock of its own ([`crate::boxes`]): held only for what
+    /// reads or changes that election, on a blocking thread, and a cast's costly checks run
+    /// without it.
+    pub ballot_boxes: Arc<Boxes>,
     pub identity: Identity,
     /// Resolves any DID method the operator configured — used only for a signer this service
     /// has a reason to know ([`resolver_for`]).
@@ -47,14 +50,14 @@ pub struct AppState {
 impl AppState {
     #[must_use]
     pub fn new(
-        ballot_box: BallotBox,
+        ballot_boxes: Boxes,
         identity: Identity,
         resolver: vti_common::auth::TrustTaskVmResolver,
         communities: CommunitiesConfig,
     ) -> Self {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         Self {
-            ballot_box: Mutex::new(ballot_box),
+            ballot_boxes: Arc::new(ballot_boxes),
             identity,
             resolver,
             local_resolver: vti_common::auth::TrustTaskVmResolver::did_key_only(),
@@ -279,7 +282,7 @@ fn named_election(task: Task, payload: &Value) -> (&str, &str) {
 /// trustees) — and then only where that election's parties are themselves vouched for
 /// ([`parties_vouched_for`]). An open box (`allow_any`) names no community, so a stranger's
 /// DID is never fetched on its HTTPS door.
-fn resolver_for<'a>(
+async fn resolver_for<'a>(
     state: &'a AppState,
     transport_sender: Option<&str>,
     task: Task,
@@ -299,10 +302,20 @@ fn resolver_for<'a>(
     if !parties_vouched_for(state, community) {
         return None;
     }
-    let named = state
-        .ballot_box
-        .lock()
-        .is_ok_and(|bb| bb.names_party(community, election_id, signer));
+    let shard = state.ballot_boxes.get(community, election_id)?;
+    let (community, election_id, signer) = (
+        community.to_string(),
+        election_id.to_string(),
+        signer.to_string(),
+    );
+    // On a blocking thread: the election's lock may be held across a journal write.
+    let named = tokio::task::spawn_blocking(move || {
+        shard
+            .lock()
+            .is_ok_and(|bb| bb.names_party(&community, &election_id, &signer))
+    })
+    .await
+    .unwrap_or(false);
     named.then_some(&state.resolver)
 }
 
@@ -523,7 +536,8 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             )
             .await;
         };
-        let Some(resolver) = resolver_for(state, transport_sender, task, issuer, &doc.payload)
+        let Some(resolver) =
+            resolver_for(state, transport_sender, task, issuer, &doc.payload).await
         else {
             return refuse(
                 state,
@@ -597,20 +611,34 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
         _ => None,
     };
 
-    // The ballot box is synchronous: hold its lock for the call and never across an await.
-    let outcome = 'locked: {
-        let Ok(mut bb) = state.ballot_box.lock() else {
-            break 'locked Err(box_unavailable());
-        };
+    // The ballot box is synchronous, and journals what it accepts before it answers: hold the
+    // election's lock for the call, on a blocking thread so a journal write never stalls the
+    // runtime, and never across an await (#2604).
+    let (community, election_id) = named_election(task, &doc.payload);
+    let (community, election_id) = (community.to_string(), election_id.to_string());
+    let boxes = Arc::clone(&state.ballot_boxes);
+    let communities = state.communities.clone();
+    let payload = doc.payload.clone();
+    let version = election_version(version);
+    let locked = tokio::task::spawn_blocking(move || {
         let caller = signer.as_deref().map_or(Caller::Anonymous, Caller::Did);
         let signer_did = signer.as_deref().unwrap_or_default();
-        let p = &doc.payload;
+        let p = &payload;
+        if task == Task::Register {
+            return boxes.register(
+                &community,
+                &election_id,
+                |held, unfinished| registration_refused(&communities, signer_did, held, unfinished),
+                |bb| bb.register_at(version, signer_did, p, now),
+            );
+        }
+        let shard: Shard = boxes.for_task(&community, &election_id);
+        let Ok(mut bb) = shard.lock() else {
+            return Err(box_unavailable());
+        };
         match task {
-            Task::Register => match registration_refused(state, &bb, signer_did, p) {
-                Some(f) => Err(f),
-                None => bb.register_at(election_version(version), signer_did, p, now),
-            },
-            Task::Show => bb.show_at(election_version(version), caller, p, now),
+            Task::Register => unreachable!("answered above"),
+            Task::Show => bb.show_at(version, caller, p, now),
             Task::Close => bb.close(signer_did, p, now),
             Task::Cancel => bb.cancel(signer_did, p, now),
             Task::Cast => match &verified {
@@ -637,7 +665,9 @@ pub async fn answer(state: &AppState, body: &[u8], transport_sender: Option<&str
             // The community's authorization goes on the board as received (CONVENTIONS §9.7).
             Task::Authorize => bb.trustees_authorize(signer_did, &received, now),
         }
-    };
+    })
+    .await;
+    let outcome = locked.unwrap_or_else(|_| Err(box_unavailable()));
 
     match outcome {
         Ok(payload) => {
@@ -695,14 +725,20 @@ async fn check_cast(
     payload: &Value,
     now: chrono::DateTime<Utc>,
 ) -> Result<Option<VerifiedCast>, Failure> {
-    let check = {
-        let mut bb = state.ballot_box.lock().map_err(|_| box_unavailable())?;
+    let (community, election_id) = named_election(task, payload);
+    let shard = state.ballot_boxes.for_task(community, election_id);
+    let payload = payload.clone();
+    // On a blocking thread: running the election's clock may journal an entry.
+    let check = tokio::task::spawn_blocking(move || {
+        let mut bb = shard.lock().map_err(|_| box_unavailable())?;
         if task == Task::Cast {
-            bb.cast_check(payload, now)?
+            bb.cast_check(&payload, now)
         } else {
-            bb.cast_encrypted_check(payload, now)?
+            bb.cast_encrypted_check(&payload, now)
         }
-    };
+    })
+    .await
+    .map_err(|_| box_unavailable())??;
     let Some(check) = check else {
         return Ok(None);
     };
@@ -722,22 +758,19 @@ async fn check_cast(
 /// (`unavailable`: it succeeds once one finishes). A repeat of a registration already held is
 /// never refused here — it answers as it did.
 fn registration_refused(
-    state: &AppState,
-    bb: &BallotBox,
+    communities: &CommunitiesConfig,
     signer: &str,
-    payload: &Value,
+    held: bool,
+    unfinished: usize,
 ) -> Option<Failure> {
-    if !state.communities.admits(signer) {
+    if !communities.admits(signer) {
         return Some(Failure {
             local: "permissionDenied",
             standard: true,
             reason: "this ballot box does not register this community's elections".into(),
         });
     }
-    let election_id = payload["manifest"]["electionId"]
-        .as_str()
-        .unwrap_or_default();
-    if !bb.holds(signer, election_id) && bb.unfinished(signer) >= state.communities.max_unfinished {
+    if !held && unfinished >= communities.max_unfinished {
         return Some(Failure {
             local: "unavailable",
             standard: true,
