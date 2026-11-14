@@ -2,7 +2,7 @@
 name = "vti-specs-vtn"
 description = "VTI's generated Trust Task wire types: the vtn/* family, at the versions trust-tasks.lock pins"
 readme = "README.md"
-version = "0.2.2"
+version = "0.2.3"
 edition.workspace = true
 # Published, because `vta-sdk` is and re-exports these types through
 # `vti-specs` (`vta_sdk::specs`): a published crate's whole closure must be.

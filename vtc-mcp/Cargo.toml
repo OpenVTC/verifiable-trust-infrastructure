@@ -14,13 +14,13 @@ publish = false
 [dependencies]
 # The community client: every tool call is one signed Trust Task it sends,
 # over the session it opened (`tsp` for the TSP leg) or signed over HTTPS.
-vtc-client = { path = "../vtc-client", version = "0.43", features = ["tsp"] }
+vtc-client = { path = "../vtc-client", version = "0.44", features = ["tsp"] }
 # `TransportChoice`, the secrets bundle, the DID resolver. `acl-setup` makes a
 # session set this bridge's mediator ACL on connect, as `cnm` and `vta-mcp` do:
 # a freshly minted `did:key` (`--mint-did-key`) has no mediator ACL, and
 # without it the mediator silently drops the message types it was not told to
 # accept, so the bridge would connect and then hear nothing.
-vta-sdk = { path = "../vta-sdk", version = "0.88", features = ["session", "tsp", "acl-setup", "crypto-provider"] }
+vta-sdk = { path = "../vta-sdk", version = "0.89", features = ["session", "tsp", "acl-setup", "crypto-provider"] }
 # The pinned Type URI index: the catalog `vtc_list_operations` is read from.
 vti-specs = { path = "../vti-specs", version = "0.13" }
 # The per-operation guard and the call recorder, shared with `vta-mcp`.
