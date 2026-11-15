@@ -2,6 +2,37 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-core-v0.5.1...vti-specs-core-v0.6.0) — 2026-11-15
+
+
+### Build & CI
+
+- **deps**: Affinidi-messaging-sdk 0.47, TDK 0.45, trust-tasks 0.39 and mediator 0.52, with delivery receipts and mediator wake ([#2741](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2741))
+
+* build(deps)!: move to affinidi-messaging-sdk 0.47, affinidi-tdk 0.45 and trust-tasks 0.39
+
+  affinidi-messaging-sdk 0.47.2 (-core 0.1.12, -delivery 0.2.0), affinidi-tdk
+  0.45 with what it carries (affinidi-crypto 0.3, data-integrity 0.8.7,
+  did-common 0.4.7, vc 0.3, sd-jwt 0.2, sd-jwt-vc 0.3, mdoc 0.6,
+  oid4vc-core 0.1.11), trust-tasks-* 0.39 (the SDK's own copy, so one
+  trust-tasks-rs across the boundary) and mediator 0.52 (test-mediator,
+  -admin, -tui).
+
+  affinidi-sd-jwt 0.2 builds the kb-jwt verifier from the credential's own
+  cnf.jwk and requires aud, nonce and a fresh iat: the VTC's OpenID4VP
+  verifier now checks the kb-jwt iat (600 s, RFC 9901 §7.3), which it did
+  not before.
+
+  SchemaValidator, so the private jsonschema 0.46 copy
+  (jsonschema-trust-tasks) is gone. CompiledSchema is removed and
+  SchemaError is trust_tasks_rs::validate::ValidationError.
+
+  cargo deny: the fancy-regex skip goes; jsonschema and jsonwebtoken stay
+  duplicated upstream (trust-tasks-rs 0.39 on jsonschema 0.49,
+  trust-tasks-https 0.39 on jsonwebtoken 10).
+
+
+
 ## [0.5.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-core-v0.5.0...vti-specs-core-v0.5.1) — 2026-11-14
 
 

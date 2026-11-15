@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.30.0"
+version = "0.31.0"
 edition.workspace = true
 # Published, so an operator can install the VTC with `cargo install
 # vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
@@ -180,7 +180,7 @@ vti-rooms = { path = "../vti-rooms", version = "0.36" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.38" }
 # The `rooms/*` handlers, shared with room-host behind one `RoomHost` trait (#2575).
 vti-rooms-host = { path = "../vti-rooms-host", version = "0.1" }
-vti-common = { path = "../vti-common", version = "0.65", features = [
+vti-common = { path = "../vti-common", version = "0.66", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -240,7 +240,7 @@ png = "0.18"
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.38" }
-vta-sdk = { path = "../vta-sdk", version = "0.89", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = [
   "didcomm",
   "session",
   "config-session",
