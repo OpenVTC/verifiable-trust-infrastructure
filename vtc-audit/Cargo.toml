@@ -2,7 +2,7 @@
 name = "vtc-audit"
 description = "The Verifiable Trust Community's audit-event vocabulary, over the shared vti-common audit envelope, hash chain and writer"
 readme = "README.md"
-version = "0.1.1"
+version = "0.2.0"
 edition.workspace = true
 # Published, because `vtc-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own

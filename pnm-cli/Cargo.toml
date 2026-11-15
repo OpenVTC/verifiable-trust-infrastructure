@@ -33,7 +33,7 @@ affinidi-crypto = { workspace = true }
 reqwest = { workspace = true }
 # `agent-names` powers the global `--resolve-agent-names` flag; without it
 # the flag parses but can never resolve anything.
-vta-cli-common = { path = "../vta-cli-common", version = "0.62", features = [
+vta-cli-common = { path = "../vta-cli-common", version = "0.63", features = [
   "agent-names",
 ] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
