@@ -914,6 +914,18 @@ pub(crate) fn tsp_configured_but_unbuilt(configured: bool, built: bool) -> Optio
     )
 }
 
+/// Whether any transport will actually serve: REST, DIDComm or TSP, each built
+/// and enabled. TSP counts on its own (#937): its receive rides the mediator
+/// socket the connect supervisor opens for `services.didcomm || services.tsp`,
+/// so a TSP-only VTA is a complete one. `tsp_configured_but_unbuilt` has
+/// already refused a TSP setting the build cannot honour, but the `TSP_BUILT`
+/// AND keeps this answer right on its own.
+pub(crate) fn any_transport_enabled(services: &vta_config::ServicesConfig) -> bool {
+    cfg!(feature = "rest") && services.rest
+        || cfg!(feature = "didcomm") && services.didcomm
+        || TSP_BUILT && services.tsp
+}
+
 // `config` is only mutated when the `webvh` feature is on (mirror of
 // runtime-state into the in-memory `config.services`). Allow the lint
 // in other feature combos so `cargo check -D warnings` stays clean.
@@ -1001,6 +1013,12 @@ pub async fn run(
                 .await?;
         config.services.didcomm =
             crate::operations::protocol::runtime_state::is_didcomm_enabled(&boot_service_state_ks)
+                .await?;
+        // TSP too: `pnm services tsp {enable,disable}` writes only the runtime
+        // state, so without this a restart forgot it, and a TSP-only VTA was
+        // judged by whatever `config.toml` last said.
+        config.services.tsp =
+            crate::operations::protocol::runtime_state::is_tsp_enabled(&boot_service_state_ks)
                 .await?;
     }
     #[cfg(not(feature = "webvh"))]
@@ -1105,9 +1123,8 @@ pub async fn run(
     // persisted runtime state, the latter set by `pnm services {kind}
     // {enable,disable}`).
     let rest_enabled = cfg!(feature = "rest") && config.services.rest;
-    let didcomm_enabled = cfg!(feature = "didcomm") && config.services.didcomm;
 
-    // `services.tsp` gets no silent `cfg!` AND like the two lines above, on
+    // `services.tsp` gets no silent `cfg!` AND like `rest_enabled` above, on
     // purpose. REST and DIDComm default to `true`, so a reduced build
     // (`--no-default-features --features rest`, which CI runs) depends on the
     // AND quietly dropping a transport it was never built with. `services.tsp`
@@ -1121,9 +1138,9 @@ pub async fn run(
         return Err(AppError::Config(reason.into()));
     }
 
-    if !rest_enabled && !didcomm_enabled {
+    if !any_transport_enabled(&config.services) {
         return Err(AppError::Config(
-            "no services enabled — enable at least one of REST or DIDComm \
+            "no services enabled — enable at least one of REST, DIDComm or TSP \
              (compile-time feature flags + `pnm services {kind} enable`)"
                 .into(),
         ));
@@ -1193,9 +1210,7 @@ pub async fn run(
         // recorder are bound once per process — so a reload that leaves nothing
         // enabled is reported rather than fatal. Killing a VTA that is already
         // serving, over an edited file, is the worse failure.
-        if !(cfg!(feature = "rest") && config.services.rest
-            || cfg!(feature = "didcomm") && config.services.didcomm)
-        {
+        if !any_transport_enabled(&config.services) {
             warn!(
                 "no services enabled — this VTA is running with no transport; \
                  enable one with `pnm services {{kind}} enable`"
@@ -2054,6 +2069,7 @@ async fn reload_config_for_restart(
         use crate::operations::protocol::runtime_state;
         reloaded.services.rest = runtime_state::is_rest_enabled(service_state_ks).await?;
         reloaded.services.didcomm = runtime_state::is_didcomm_enabled(service_state_ks).await?;
+        reloaded.services.tsp = runtime_state::is_tsp_enabled(service_state_ks).await?;
     }
 
     // Ask the generation being replaced, not the reload: the digest is
@@ -4658,7 +4674,34 @@ mod tests {
 
 #[cfg(test)]
 mod tsp_build_tests {
-    use super::tsp_configured_but_unbuilt;
+    use super::{any_transport_enabled, tsp_configured_but_unbuilt};
+    use vta_config::ServicesConfig;
+
+    fn services(rest: bool, didcomm: bool, tsp: bool) -> ServicesConfig {
+        ServicesConfig {
+            rest,
+            didcomm,
+            webauthn: false,
+            tsp,
+        }
+    }
+
+    /// #937: a TSP-only VTA is a complete one, so boot must not refuse it as
+    /// having "no services enabled".
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_tsp_only_vta_has_a_transport() {
+        assert!(any_transport_enabled(&services(false, false, true)));
+    }
+
+    /// Nothing enabled is still refused, and WebAuthn alone is not a transport.
+    #[test]
+    fn nothing_enabled_has_no_transport() {
+        assert!(!any_transport_enabled(&services(false, false, false)));
+        let mut webauthn_only = services(false, false, false);
+        webauthn_only.webauthn = true;
+        assert!(!any_transport_enabled(&webauthn_only));
+    }
 
     /// Keyring VTI-34: asked for and not built is the one combination refused.
     #[test]
