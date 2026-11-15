@@ -2,6 +2,88 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.35.0...vti-rooms-v0.36.0) — 2026-11-14
+
+
+### Added
+
+- **rooms**: Load older by version (records/list 0.8, keys/browse 0.6) and host limits in rooms/info 0.5 ([#2727](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2727))
+
+* build(vti-specs-rooms): pin rooms/records/list 0.8, rooms/keys/browse 0.6, rooms/info 0.5
+
+  trustoverip/dtgwg-trust-tasks-tf#1289, for #2294 points 3 and 4. Older versions
+  stay pinned beside them while they are still served or sent. The registry's
+  in-place refresh of rooms/records/put 0.1-0.5 and rooms/keys/list 0.2 (marking
+  them superseded) is left out: adopting put/0.6 is separate work.
+
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Changed
+
+- **rooms**: Share the rooms/* handlers between hosts and run every host receive path on Spine ([#2731](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2731))
+
+* refactor(room-host): receive every document through vti_trust_task_server::Spine
+
+  room-host re-implemented the receive pipeline inline: size, freshness,
+  validate_basic and the accepted-id claim/settle, with no spec-policy step
+  and the proof verified lazily inside each handler. It now runs the shared
+  Spine the VTC runs ([#2576](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2576)): the size gate holds each task to its declared
+  maxDocumentBytes, the spec policy comes from
+  vti_specs::schema_index::spec_policy_for, the proof is verified once over
+  the document as received and bound to its issuer, DIDComm and TSP frames
+  carry their authenticated sender so the spine binds it (VTI-OPS-021/093),
+  and the duplicate-id record is StoreAcceptedIds (VTI-OPS-025..029).
+
+  A host without a DID still refuses an expired document: the spine skips
+  the recipient binding then, so before_proof applies the expiry check.
+  A proof made by someone other than the issuer is now proofInvalid, as at
+  the VTC, rather than permissionDenied.
+
+
+
+### Performance
+
+- **rooms**: Indexed record reads, per-room locks, commits outside the host lock, per-election ballot boxes ([#2712](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2712))
+
+* perf(vti-common): per-bundle chunk lock and a progress bitmap apart from the plan
+
+  A chunked transfer's lock is striped by bundle id, so one bundle's finalize
+  (a whole-file hash) no longer stalls every other transfer ([#2596](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2596)). Progress
+  is a bitmap row beside the immutable plan, read from a per-process cache, so
+  a chunk no longer re-reads and rewrites a plan of up to 4,096 digests ([#2597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2597)).
+  A bundle opened before the bitmap row existed keeps the progress its plan
+  recorded; get_plan still returns the plan with its progress.
+
+
+
 ## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.34.0...vti-rooms-v0.35.0) — 2026-11-12
 
 

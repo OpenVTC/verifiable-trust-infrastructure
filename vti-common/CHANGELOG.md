@@ -2,6 +2,117 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.65.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.64.0...vti-common-v0.65.0) — 2026-11-14
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Changed
+
+- **vta**: Decouple vta-cli-common, split key/room modules, extract vta-test-support, share reject helpers and service plumbing ([#2730](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2730))
+
+* refactor(vta): put vta-cli-common and dialoguer behind cli-synthesis ([#2566](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2566))
+
+  Only the `vta` binary's offline CLI modules and setup wizard use them,
+  and the binary already requires `cli-synthesis`. The library — and so
+  vta-enclave — no longer compiles vtc-client, ratatui, qrcode, dialoguer
+  or crossterm: `cargo tree -p vta-enclave -e normal` drops from 981 to
+  ~935 unique lines.
+
+  The vti-rooms comment claimed `default-features = false` kept the host
+  half out of the build; feature unification through vti-rooms-dtg (which
+  verifies through `vti_rooms::authz`) turns `host` back on. Say so,
+  and why it costs nothing new.
+
+- **vtc**: Vtc-audit leaf crate, one regorus engine, typed error codes, trust_tasks split, AdminActor ([#2728](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2728))
+
+* refactor(vti-common)!: move the VTC's audit-event vocabulary to a new vtc-audit leaf crate
+
+
+
+### Performance
+
+- **vta**: Cache compiled schemas and policies, verify once, bound sweeps and list pages ([#2713](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2713))
+
+* perf(vta-sdk,vta-service): compile each Trust Task payload schema once ([#2622](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2622))
+
+  trust-tasks-rs 0.37's against_schema / validate_value parse and compile the
+  schema on every call. vta_sdk::schema_cache keeps the compiled validator by
+  the &'static schema text's address (the same technique as trust-tasks-rs
+  0.38's SchemaValidator), with the jsonschema release trust-tasks-rs 0.37 uses
+  so the check and its error text are unchanged. The dispatch spine, the SDK's
+  send-side check, room act, notifications, rooms, task consent, vetting and
+  the VTA's per-handler payload checks use it.
+
+  trust-tasks-rs 0.38 moves in lockstep with affinidi-tdk and the messaging
+  SDK, so the bump is left to that train; this module then wraps
+  SchemaValidator.
+
+- **rooms**: Indexed record reads, per-room locks, commits outside the host lock, per-election ballot boxes ([#2712](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2712))
+
+* perf(vti-common): per-bundle chunk lock and a progress bitmap apart from the plan
+
+  A chunked transfer's lock is striped by bundle id, so one bundle's finalize
+  (a whole-file hash) no longer stalls every other transfer ([#2596](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2596)). Progress
+  is a bitmap row beside the immutable plan, read from a per-process cache, so
+  a chunk no longer re-reads and rewrites a plan of up to 4,096 digests ([#2597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2597)).
+  A bundle opened before the bitmap row existed keeps the progress its plan
+  recorded; get_plan still returns the plan with its progress.
+
+
+
+### Security
+
+- Invite grants, CSRF/HSTS/cookies, x5c path checks, guarded status-list fetch, vault zeroize, consent payload types ([#2710](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2710))
+
+* security(vtc): a wallet admin invitation's entry expires with it until claimed, and goes with a revoke ([#2660](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2660))
+
+  vtc/admin/invites/create/0.2 item 3 writes a wallet invitation's administrator
+  entry when the invitation is issued, and the code wrote it permanent: revoking
+  the invitation (which create 0.2 says withdraws the authority it confers) or
+  letting it lapse left an unexpiring community administrator nobody claimed.
+
+  The entry is now written to expire with the invitation and recorded beside it
+  (install::InviteGrant, keyed by jti). vtc/install/claim/finish/0.3 makes it
+  permanent once the DID has proved itself with the token and claim code;
+  vtc/admin/invites/revoke/0.1, and the void after five wrong claim codes,
+  remove it (with its sessions and delegations) if it is still exactly what the
+  invitation wrote. A lapsed or still-provisional entry no longer blocks a new
+  invitation for the same DID. The offline `vtc admin invite --did` writes the
+  same provisional entry.
+
+  Deferring the write to the claim, as passkey invitations do, would contradict
+  create 0.2 item 3 and claim/finish 0.3 item 7, so the entry is still written
+  at mint.
+
+
+
 ## [0.64.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.63.0...vti-common-v0.64.0) — 2026-11-12
 
 

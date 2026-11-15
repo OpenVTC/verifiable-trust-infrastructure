@@ -2,6 +2,22 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.43.0...vtc-client-v0.44.0) — 2026-11-14
+
+
+### Added
+
+- **rooms**: Load older by version (records/list 0.8, keys/browse 0.6) and host limits in rooms/info 0.5 ([#2727](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2727))
+
+* build(vti-specs-rooms): pin rooms/records/list 0.8, rooms/keys/browse 0.6, rooms/info 0.5
+
+  trustoverip/dtgwg-trust-tasks-tf#1289, for #2294 points 3 and 4. Older versions
+  stay pinned beside them while they are still served or sent. The registry's
+  in-place refresh of rooms/records/put 0.1-0.5 and rooms/keys/list 0.2 (marking
+  them superseded) is left out: adopting put/0.6 is separate work.
+
+
+
 ## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.42.0...vtc-client-v0.43.0) — 2026-11-12
 
 

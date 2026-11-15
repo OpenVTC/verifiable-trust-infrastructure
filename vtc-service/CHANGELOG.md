@@ -2,6 +2,243 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.29.1...vtc-service-v0.30.0) — 2026-11-14
+
+
+### Added
+
+- **rooms**: Load older by version (records/list 0.8, keys/browse 0.6) and host limits in rooms/info 0.5 ([#2727](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2727))
+
+* build(vti-specs-rooms): pin rooms/records/list 0.8, rooms/keys/browse 0.6, rooms/info 0.5
+
+  trustoverip/dtgwg-trust-tasks-tf#1289, for #2294 points 3 and 4. Older versions
+  stay pinned beside them while they are still served or sent. The registry's
+  in-place refresh of rooms/records/put 0.1-0.5 and rooms/keys/list 0.2 (marking
+  them superseded) is left out: adopting put/0.6 is separate work.
+
+
+
+### Build & CI
+
+- Harden CI and the build: pinned toolchain, image digests, release-token checks, advisories, fuzzing, tooling lint ([#2709](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2709))
+
+* build: pin the Rust toolchain to 1.95.0 and pass clippy 1.95 ([#2658](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2658))
+
+  rust-toolchain.toml pins 1.95.0, the workspace rust-version and the Dockerfiles' Rust image. CI jobs install it with scripts/install-rust-toolchain.sh instead of a floating stable, so a new Rust release's lints can no longer turn main red with no code change; Dependabot proposes the next one as a PR. scripts/check-toolchain-pins.sh keeps the pin at or above the MSRV and the Dockerfiles in line.
+
+  Clippy 1.95 is stricter than the stable CI ran in nonminimal_bool and collapsible_match: De Morgan rewrites at eleven call sites (behaviour unchanged), Option::take().map in vta-persona, and one allow on vti_voting::audit::check_order, where a match guard would fall through to later arms.
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Changed
+
+- **vtc**: One typed routing table for every Trust Task family; routes/ is the HTTP surface only ([#2732](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2732))
+
+* refactor(vtc): route every Trust Task family through one typed AsyncDispatcher
+
+  #2728 split trust_tasks/mod.rs into handler files but left three routing
+  styles: about sixty direct arms in `dispatch_typed`, thirty-three family
+  modules each keeping a `URIS` list beside a `match` that re-matched it (one
+  `FAMILIES` table arm), and typed `AsyncDispatcher` registration for rooms and
+  git-ns. A hand-kept `DISPATCHED_URIS` (540 lines) had to agree with all of
+  it, and already did not: `auth/step-up/requests/show/0.1` was routed but not
+  listed, so discovery never advertised it.
+
+  - `trust_tasks::routing`: one `AsyncDispatcher` every family registers on,
+    keyed on the generated payload type (`on!(routes, P => handler)`). The URI a
+    handler answers is `P::TYPE_URI`; the served set is the table itself
+    (`routing::served_uris`), and `dispatched_uris()` (that plus discovery)
+    replaces `DISPATCHED_URIS` for the unsupported-version hint, discovery, the
+    size gate and the censuses.
+  - Each family exposes `register(Routes) -> Routes`; every `URIS` constant,
+    every family `dispatch` and the `FAMILIES` table are gone, and the direct
+    arms moved into their handler files' `register`. Families whose verbs share
+    an authority check before the payload is read (backup, website, the
+    administrator's passkeys) route through a small `Op` enum, not a URI match.
+  - Handlers are registered on `Received<P>`: routed and policed as `P`, but
+    handed the JSON as received, so every handler still reads it against the
+    schema before parsing it and still resolves the signer's authority before
+    reading the payload (a typed downcast in the router would reverse that
+    order and change which refusal a stranger gets).
+  - Censuses: no URI is registered twice (the dispatcher would silently keep the
+    later one), and none is also a rooms or git-ns task.
+  - The URI constants nothing but the removed lists named are deleted; the ones
+    only tests name stay behind `#[cfg(test)]`.
+
+  Behaviour is unchanged except that discovery and the version hint now list
+  `auth/step-up/requests/show/0.1`, which was always served.
+
+- **vta**: Decouple vta-cli-common, split key/room modules, extract vta-test-support, share reject helpers and service plumbing ([#2730](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2730))
+
+* refactor(vta): put vta-cli-common and dialoguer behind cli-synthesis ([#2566](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2566))
+
+  Only the `vta` binary's offline CLI modules and setup wizard use them,
+  and the binary already requires `cli-synthesis`. The library — and so
+  vta-enclave — no longer compiles vtc-client, ratatui, qrcode, dialoguer
+  or crossterm: `cargo tree -p vta-enclave -e normal` drops from 981 to
+  ~935 unique lines.
+
+  The vti-rooms comment claimed `default-features = false` kept the host
+  half out of the build; feature unification through vti-rooms-dtg (which
+  verifies through `vti_rooms::authz`) turns `host` back on. Say so,
+  and why it costs nothing new.
+
+- **rooms**: Share the rooms/* handlers between hosts and run every host receive path on Spine ([#2731](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2731))
+
+* refactor(room-host): receive every document through vti_trust_task_server::Spine
+
+  room-host re-implemented the receive pipeline inline: size, freshness,
+  validate_basic and the accepted-id claim/settle, with no spec-policy step
+  and the proof verified lazily inside each handler. It now runs the shared
+  Spine the VTC runs ([#2576](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2576)): the size gate holds each task to its declared
+  maxDocumentBytes, the spec policy comes from
+  vti_specs::schema_index::spec_policy_for, the proof is verified once over
+  the document as received and bound to its issuer, DIDComm and TSP frames
+  carry their authenticated sender so the spine binds it (VTI-OPS-021/093),
+  and the duplicate-id record is StoreAcceptedIds (VTI-OPS-025..029).
+
+  A host without a DID still refuses an expired document: the spine skips
+  the recipient binding then, so before_proof applies the expiry check.
+  A proof made by someone other than the issuer is now proofInvalid, as at
+  the VTC, rather than permissionDenied.
+
+- **vtc**: Vtc-audit leaf crate, one regorus engine, typed error codes, trust_tasks split, AdminActor ([#2728](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2728))
+
+* refactor(vti-common)!: move the VTC's audit-event vocabulary to a new vtc-audit leaf crate
+
+
+
+### Documentation
+
+- **vtc-service**: Decomposition plan and where it stops ([#2725](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2725))
+
+Measured on 6cf8ad034: 364k lines, AppState with 87 fields (52 keyspace
+  handles). Step order: compile-time baseline, vtc-keyspaces leaf, per-subsystem
+  store structs inside the crate, then policy (after #2577) and the acl core
+  (after #2580), the registry pure half, and rooms via #2575's shared crate.
+  Orders #2568, #2579, #2574 against it. Under 10% of src/ is extractable; the
+  spine stays.
+
+- Operator guides, CLI remediation strings and the crate map match the tree, checked in CI ([#2706](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2706))
+
+* fix(cli): operator-facing remediation strings name commands that parse
+
+  Every error, hint and --help string that tells an operator what to run now
+  names a command the current pnm / vta / cnm accepts ([#2631](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2631)): the retired
+  `pnm webvh …` / `vta webvh …` surface becomes `did-mgmt servers|dids …`,
+  `pnm auth login` (pnm has none) becomes `pnm setup`, `pnm acl delete`
+  takes the DID positionally, `list-domains` sits under `dids`, the backup
+  descriptor hints no longer name `pnm backup save|restore`, and stale doc
+  comments (`pnm passkey-enroll-token`, `vta export-mnemonic`, `cnm community
+  info`) are corrected. A pnm and a vta test parse each remediation command
+  through Cli::try_parse_from.
+
+  The --template help is derived from vta_sdk::did_templates::BUILTIN_NAMES
+  and no longer lists the retired did-hosting-* template names ([#2635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2635)). The
+  `rooms keys key-package` help gives the 14-day KeyPackage lifetime the code
+  holds ([#2632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2632)), and `rooms prune` no longer says a prune reaches the host
+  only: members' VTAs discard rungs at or below the epoch floor ([#2633](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2633)).
+
+
+
+### Fixed
+
+- **cli**: CLI and MCP operator UX sweep (confirmations, secrets off argv, JSON everywhere, room defaults, tool-level MCP errors) ([#2726](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2726))
+
+* fix(cli): a corrupt profile is fatal, saves are atomic, one start-up for pnm and cnm, --version and completions
+
+- **vtc-admin-ui**: Console and member portal UX sweep (error boundaries, confirmations, modals, a11y, session expiry, dates, toasts) ([#2707](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2707))
+
+* fix(vtc-admin-ui): an error boundary per screen, per portal page and at both roots ([#2605](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2605))
+
+
+
+### Performance
+
+- **rooms**: Indexed record reads, per-room locks, commits outside the host lock, per-election ballot boxes ([#2712](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2712))
+
+* perf(vti-common): per-bundle chunk lock and a progress bitmap apart from the plan
+
+  A chunked transfer's lock is striped by bundle id, so one bundle's finalize
+  (a whole-file hash) no longer stalls every other transfer ([#2596](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2596)). Progress
+  is a bitmap row beside the immutable plan, read from a per-process cache, so
+  a chunk no longer re-reads and rewrites a plan of up to 4,096 digests ([#2597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2597)).
+  A bundle opened before the bitmap row existed keeps the progress its plan
+  recorded; get_plan still returns the plan with its progress.
+
+- **vtc-service**: Index and seek the VTC's hot full-keyspace scans (ACL authority, VRC digest, audit, members, rooms fingerprints, directory) ([#2711](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2711))
+
+* perf(vtc-service): an ACL authority index for approver and administrator reads ([#2602](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2602))
+
+
+
+### Security
+
+- **vtc-service**: Setup writes the admin key to an owner-only file, never stdout ([#2724](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2724))
+
+The interactive `vtc setup` wizard offered to print the long-term admin
+  DID's private key (the DidKeyMaterialV2 JSON the VTA seals to the setup
+  key) to the terminal, where it lands in scrollback and any session
+  recording; `setup --from` dropped it altogether and told the operator to
+  "re-run interactively", which re-provisions.
+
+  Both front-ends now share one hand-over in `apply`: the key is written to
+  `<data_dir>/keys/admin-key.json` with `vti_common::secure_file::
+  write_secret_file` (created new, 0600, directory 0700) before the install
+  token is minted, and only the path is printed (`admin_key_file=` in the
+  terse block). This is the pattern setup already uses for key material
+  that must outlive the run (`--setup-key-out`, `vtc keys request`). An
+  existing admin-key.json is never overwritten; a re-run writes a
+  timestamped file beside it. Docs updated to match.
+
+- Invite grants, CSRF/HSTS/cookies, x5c path checks, guarded status-list fetch, vault zeroize, consent payload types ([#2710](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2710))
+
+* security(vtc): a wallet admin invitation's entry expires with it until claimed, and goes with a revoke ([#2660](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2660))
+
+  vtc/admin/invites/create/0.2 item 3 writes a wallet invitation's administrator
+  entry when the invitation is issued, and the code wrote it permanent: revoking
+  the invitation (which create 0.2 says withdraws the authority it confers) or
+  letting it lapse left an unexpiring community administrator nobody claimed.
+
+  The entry is now written to expire with the invitation and recorded beside it
+  (install::InviteGrant, keyed by jti). vtc/install/claim/finish/0.3 makes it
+  permanent once the DID has proved itself with the token and claim code;
+  vtc/admin/invites/revoke/0.1, and the void after five wrong claim codes,
+  remove it (with its sessions and delegations) if it is still exactly what the
+  invitation wrote. A lapsed or still-provisional entry no longer blocks a new
+  invitation for the same DID. The offline `vtc admin invite --did` writes the
+  same provisional entry.
+
+  Deferring the write to the claim, as passkey invitations do, would contradict
+  create 0.2 item 3 and claim/finish 0.3 item 7, so the entry is still written
+  at mint.
+
+
+
 ## [0.29.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.29.0...vtc-service-v0.29.1) — 2026-11-13
 
 

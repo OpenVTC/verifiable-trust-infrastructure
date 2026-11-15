@@ -14,16 +14,16 @@ readme = "README.md"
 [dependencies]
 # Storage, authorization, the shared task bodies (`blob_tasks`, `record_tasks`,
 # `signal_delay`, `watch`, `revocation_tasks`) and the wire types.
-vti-rooms = { path = "../vti-rooms", version = "0.35" }
+vti-rooms = { path = "../vti-rooms", version = "0.36" }
 # The one chain verifier, and nomination checks for `rooms/owner/claim`.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.37" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.38" }
 # `AppError`, `KeyspaceHandle` and the verification-method resolver.
-vti-common = { path = "../vti-common", version = "0.64" }
+vti-common = { path = "../vti-common", version = "0.65" }
 # The outcome every handler returns and the refusal helpers, so a host's spine
 # renders these answers exactly as it renders its own.
-vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.10" }
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.11" }
 # The generated payload types the dispatcher is keyed on.
-vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.8" }
+vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.9" }
 trust-tasks-rs = { workspace = true }
 
 async-trait = { workspace = true }

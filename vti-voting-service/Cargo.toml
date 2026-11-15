@@ -18,26 +18,26 @@ path = "src/main.rs"
 [dependencies]
 vti-voting = { path = "../vti-voting" }
 # `host_session`: the service identity's mediator session, TSP and DIDComm on it.
-vti-common = { path = "../vti-common", version = "0.64", features = ["host-session"] }
+vti-common = { path = "../vti-common", version = "0.65", features = ["host-session"] }
 async-trait = { workspace = true }
 # As vti-witness: `provision-client` for the VTA-provisioned identity
 # (`run_phase1_init`, the `ballot-box` template), `tsp` for the binding
 # envelope, `didcomm` for `did_key::secrets_from_bundle`, and (through
 # `provision-client`) `trust_task_sign` and the proof verifier.
-vta-sdk = { path = "../vta-sdk", version = "0.88", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.89", features = [
   "didcomm",
   "provision-client",
   "tsp",
   "crypto-provider",
 ] }
-vti-secrets = { path = "../vti-secrets", version = "0.37" }
+vti-secrets = { path = "../vti-secrets", version = "0.38" }
 trust-tasks-rs = { workspace = true }
 # The receive pipeline every Trust Task service shares (#2576): size, freshness, recipient, the
 # task's own published policy, proof, sender binding, the duplicate-id record, signed answers.
-vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.10" }
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.11" }
 # The pinned `voting/*` versions: the routing table names each by its generated payload type,
 # and the pipeline reads each task's policy from the index (CLAUDE.md, "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.13" }
+vti-specs = { path = "../vti-specs", version = "0.14" }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

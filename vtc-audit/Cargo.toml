@@ -22,7 +22,7 @@ openapi = ["dep:utoipa"]
 [dependencies]
 # The envelope, the hash chain, the HMAC actor hashing, the key store and the
 # writer — generic over the event vocabulary this crate supplies.
-vti-common = { path = "../vti-common", version = "0.64" }
+vti-common = { path = "../vti-common", version = "0.65" }
 chrono = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -2,6 +2,63 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vtn-v0.11.0...vti-vtn-v0.12.0) — 2026-11-14
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Security
+
+- Invite grants, CSRF/HSTS/cookies, x5c path checks, guarded status-list fetch, vault zeroize, consent payload types ([#2710](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2710))
+
+* security(vtc): a wallet admin invitation's entry expires with it until claimed, and goes with a revoke ([#2660](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2660))
+
+  vtc/admin/invites/create/0.2 item 3 writes a wallet invitation's administrator
+  entry when the invitation is issued, and the code wrote it permanent: revoking
+  the invitation (which create 0.2 says withdraws the authority it confers) or
+  letting it lapse left an unexpiring community administrator nobody claimed.
+
+  The entry is now written to expire with the invitation and recorded beside it
+  (install::InviteGrant, keyed by jti). vtc/install/claim/finish/0.3 makes it
+  permanent once the DID has proved itself with the token and claim code;
+  vtc/admin/invites/revoke/0.1, and the void after five wrong claim codes,
+  remove it (with its sessions and delegations) if it is still exactly what the
+  invitation wrote. A lapsed or still-provisional entry no longer blocks a new
+  invitation for the same DID. The offline `vtc admin invite --did` writes the
+  same provisional entry.
+
+  Deferring the write to the claim, as passkey invitations do, would contradict
+  create 0.2 item 3 and claim/finish 0.3 item 7, so the entry is still written
+  at mint.
+
+
+
 ## [0.11.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-vtn-v0.10.0...vti-vtn-v0.11.0) — 2026-11-12
 
 
