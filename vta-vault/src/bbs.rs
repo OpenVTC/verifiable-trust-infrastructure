@@ -190,7 +190,9 @@ pub async fn receive_bbs(
     const BASE_CHECK_NONCE: &[u8] = b"vta-vault-base-check";
     let full = bbs_tx::create_derived_proof(&vc, &[""], BASE_CHECK_NONCE, &pk)
         .map_err(|e| AppError::Validation(format!("BBS base proof is malformed: {e}")))?;
-    if !bbs_tx::verify_derived_proof(&full, &pk)
+    let options = bbs_tx::DerivedProofVerifyOptions::new()
+        .with_expected_presentation_header(BASE_CHECK_NONCE);
+    if !bbs_tx::verify_derived_proof_with(&full, &pk, &options)
         .map_err(|e| AppError::Validation(format!("BBS base proof verification failed: {e}")))?
     {
         return Err(AppError::Validation(
@@ -309,9 +311,13 @@ pub async fn receive_bbs_pseudonym(
         BASE_CHECK_VERIFIER,
     )
     .map_err(|e| AppError::Validation(format!("BBS pseudonym base proof is malformed: {e}")))?;
-    if !bbs_tx::verify_pseudonym_derived_proof(&full, &pk, BASE_CHECK_VERIFIER).map_err(|e| {
-        AppError::Validation(format!("BBS pseudonym base proof verification failed: {e}"))
-    })? {
+    let options = bbs_tx::DerivedProofVerifyOptions::new()
+        .with_expected_presentation_header(BASE_CHECK_NONCE);
+    if !bbs_tx::verify_pseudonym_derived_proof_with(&full, &pk, BASE_CHECK_VERIFIER, &options)
+        .map_err(|e| {
+            AppError::Validation(format!("BBS pseudonym base proof verification failed: {e}"))
+        })?
+    {
         return Err(AppError::Validation(
             "BBS issuer pseudonym base proof did not verify".to_string(),
         ));
@@ -673,7 +679,7 @@ mod tests {
         let honest =
             bbs_tx::create_derived_proof(&base, &["/credentialSubject/memberLevel"], b"n", &pk)
                 .unwrap();
-        assert!(bbs_tx::verify_derived_proof(&honest, &pk).unwrap());
+        assert!(bbs_tx::verify_derived_proof_with(&honest, &pk, &Default::default()).unwrap());
         // Tamper the base, re-derive disclosing the forged value → verify REJECTS.
         let mut tampered = base.clone();
         tampered["credentialSubject"]["memberLevel"] = json!("platinum");
@@ -681,7 +687,7 @@ mod tests {
             bbs_tx::create_derived_proof(&tampered, &["/credentialSubject/memberLevel"], b"n", &pk)
                 .expect("derive (defined terms)");
         assert!(
-            !bbs_tx::verify_derived_proof(&forged, &pk).unwrap_or(false),
+            !bbs_tx::verify_derived_proof_with(&forged, &pk, &Default::default()).unwrap_or(false),
             "REGRESSION (affinidi-tdk-rs#381): bbs_2023_transform accepted a forged disclosed value"
         );
 

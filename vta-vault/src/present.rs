@@ -668,7 +668,7 @@ mod tests {
         use crate::bbs::{present_bbs, receive_bbs};
         use affinidi_bbs as bbs;
         use affinidi_data_integrity::bbs_2023_transform::{
-            sign_base_document, verify_derived_proof,
+            DerivedProofVerifyOptions, sign_base_document, verify_derived_proof_with,
         };
 
         let (_dir, _store, vault) = fresh_vault();
@@ -759,7 +759,8 @@ mod tests {
         // verifier binds that header to its own challenge — covered in the VTC
         // join verifier tests, not here.)
         assert!(
-            verify_derived_proof(&derived, &pk).unwrap(),
+            verify_derived_proof_with(&derived, &pk, &DerivedProofVerifyOptions::default())
+                .unwrap(),
             "BBS derived presentation must verify"
         );
     }
@@ -769,7 +770,17 @@ mod tests {
     async fn present_bbs_holder_bound_is_per_verifier_pseudonymous() {
         use crate::bbs::{issue_bbs_pseudonym_for_test, present_bbs, receive_bbs_pseudonym};
         use affinidi_bbs as bbs;
-        use affinidi_data_integrity::bbs_2023_transform::verify_pseudonym_derived_proof;
+        use affinidi_data_integrity::bbs_2023_transform::{
+            DerivedProofVerifyOptions, verify_pseudonym_derived_proof_with,
+        };
+        let verify_pseudonym_derived_proof = |doc: &Value, pk: &bbs::PublicKey, verifier: &str| {
+            verify_pseudonym_derived_proof_with(
+                doc,
+                pk,
+                verifier,
+                &DerivedProofVerifyOptions::default(),
+            )
+        };
 
         let (_dir, _store, vault) = fresh_vault();
         let (holder_did, _kb, consent_key, _vk) = holder(9);

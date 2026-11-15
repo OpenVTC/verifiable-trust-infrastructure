@@ -851,11 +851,15 @@ async fn verify_bbs_presentation(
             "bbs-2023 presentation header does not match the expected challenge".into(),
         ));
     }
+    // The header is checked by the library too (affinidi-data-integrity 0.8.7),
+    // before any BBS work.
+    let options = bbs_2023_transform::DerivedProofVerifyOptions::new()
+        .with_expected_presentation_header(expected_nonce.as_bytes());
     let verified = if holder_bound {
         // Pseudonym proof: verify the per-verifier holder binding against `aud`.
-        bbs_2023_transform::verify_pseudonym_derived_proof(vc, &pk, expected_aud)
+        bbs_2023_transform::verify_pseudonym_derived_proof_with(vc, &pk, expected_aud, &options)
     } else {
-        bbs_2023_transform::verify_derived_proof(vc, &pk)
+        bbs_2023_transform::verify_derived_proof_with(vc, &pk, &options)
     }
     .map_err(|e| AppError::Validation(format!("bbs-2023 presentation did not verify: {e}")))?;
     if !verified {
