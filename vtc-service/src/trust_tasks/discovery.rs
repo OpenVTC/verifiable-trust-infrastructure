@@ -176,9 +176,10 @@ mod tests {
         assert!(window.get("expiryHorizonSeconds").is_none(), "{body}");
     }
 
-    /// The same property measured the way a producer meets it: a document at
-    /// the advertised edge is accepted by the spine's policy, and one a second
-    /// past it is refused.
+    /// The same property measured the way a producer meets it: a document a
+    /// second inside the advertised edge is accepted by the spine's policy, and
+    /// one at the edge is refused — the window is half-open (trust-tasks-rs
+    /// 0.39).
     #[test]
     fn vti_trn_047_a_document_at_the_advertised_edge_is_accepted_and_one_past_it_refused() {
         let body = answer(handle(&identified(), query(serde_json::json!({}))));
@@ -189,9 +190,9 @@ mod tests {
         let now = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 0);
         let edge = now - w.max_age - w.clock_skew;
         let mut doc = query(serde_json::json!({}));
-        doc.issued_at = Some(edge);
+        doc.issued_at = Some(edge + chrono::TimeDelta::seconds(1));
         assert!(doc.validate_freshness(now, &policy).is_ok());
-        doc.issued_at = Some(edge - chrono::TimeDelta::seconds(1));
+        doc.issued_at = Some(edge);
         assert!(doc.validate_freshness(now, &policy).is_err());
     }
 

@@ -236,11 +236,12 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
 /// # The proof configuration
 ///
 /// `affinidi-data-integrity` hashes a proof configuration rebuilt from its
-/// typed `DataIntegrityProof` (`type`, `cryptosuite`, `created`,
-/// `verificationMethod`, `proofPurpose`, `nonce`, `@context`), not the proof
-/// object as received. A proof member outside that set (`challenge`, `domain`,
-/// `expires`, `id`, `previousProof`), or a `null` on one of its optional
-/// members, would be dropped from what is hashed. Such a proof is refused here
+/// typed `DataIntegrityProof` (since 0.8.7 every VC Data Integrity §2.1 member:
+/// `type`, `cryptosuite`, `created`, `verificationMethod`, `proofPurpose`,
+/// `nonce`, `id`, `expires`, `domain`, `challenge`, `previousProof`,
+/// `@context`), not the proof object as received. A proof member outside that
+/// set, or a `null` on one of its optional members, would be dropped from what
+/// is hashed. Such a proof is refused here
 /// as [`DiProofError::VerifyFailed`], with the members named in
 /// [`DiProofError::cause`]: either the producer signed them, and the signature
 /// cannot verify without them, or it did not, and a proof member the signature

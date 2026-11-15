@@ -149,13 +149,13 @@ pub(crate) fn register_transports(
 ) {
     #[cfg(feature = "tsp")]
     if let Some(primary) = service.primary_transport() {
-        let tsp: Arc<dyn MessageTransport> = Arc::new(trust_task_push::TspPushTransport {
-            atm: atm.clone(),
-            profile: profile.clone(),
-            mediator_did: mediator_did.to_string(),
-            pushes: pushes.clone(),
-            conn: primary.connection_state(),
-        });
+        let tsp: Arc<dyn MessageTransport> = Arc::new(trust_task_push::TspPushTransport::new(
+            atm.clone(),
+            profile.clone(),
+            mediator_did.to_string(),
+            pushes.clone(),
+            primary.connection_state(),
+        ));
         service.add_transport(trust_task_push::TSP_TRANSPORT_ID.into(), tsp.clone());
         tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
             outbox.clone(),

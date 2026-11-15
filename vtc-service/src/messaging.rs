@@ -274,10 +274,19 @@ async fn build_messaging(
         }
     };
     let outbox: Arc<dyn OutboxStore> = Arc::new(VtiOutboxStore::new(outbox_ks));
-    // P1a uses `new` (not `with_receipts`) — no layer-receipt emission yet.
-    // Clone transport + outbox before `new` consumes them: the background
-    // loops need their own handles.
-    let service = Arc::new(MessagingService::new(transport.clone(), outbox.clone()));
+    // Receipts are emitted for every message that asks for one, as the VTC's
+    // own DID (VTI-TRN-061); consumed ones settle the VTC's sends, only from
+    // the party each was addressed to (VTI-TRN-062). Clone transport + outbox
+    // before the constructor consumes them: the background loops need their
+    // own handles.
+    let service = Arc::new(MessagingService::with_receipts(
+        transport.clone(),
+        outbox.clone(),
+        Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+            (*atm).clone(),
+            profile.clone(),
+        )),
+    ));
     // Durable outbox: drain sends due entries + retries; outbox-drain confirms
     // Delivered on recipient pickup; confirmation sweep settles expired entries.
     tokio::spawn(affinidi_messaging_delivery::drain_loop(
@@ -290,9 +299,12 @@ async fn build_messaging(
         outbox.clone(),
         std::time::Duration::from_secs(10),
     ));
-    tokio::spawn(affinidi_messaging_delivery::confirmation_loop(
+    // With the service's receipt reach: a relayed entry to a recipient not
+    // known to send receipts settles unconfirmable, not lost (VTI-TRN-064).
+    tokio::spawn(vti_common::outbox_store::confirmation_loop(
         outbox.clone(),
         std::time::Duration::from_secs(30),
+        service.receipt_reach(),
     ));
     // Settled entries are removed a week after their delivery window closed
     // (`VtiOutboxStore::terminal_before`), so the outbox holds what is in
@@ -570,13 +582,14 @@ pub async fn run_didcomm_service(
         ));
         #[cfg(feature = "tsp")]
         if let Some(primary) = service.primary_transport() {
-            let tsp: Arc<dyn MessageTransport> = Arc::new(crate::member_push::TspPushTransport {
-                atm: atm.clone(),
-                profile: profile.clone(),
-                mediator_did: mediator_did.clone(),
-                pushes: state.member_pushes_ks.clone(),
-                conn: primary.connection_state(),
-            });
+            let tsp: Arc<dyn MessageTransport> =
+                Arc::new(crate::member_push::TspPushTransport::new(
+                    atm.clone(),
+                    profile.clone(),
+                    mediator_did.clone(),
+                    state.member_pushes_ks.clone(),
+                    primary.connection_state(),
+                ));
             service.add_transport(crate::member_push::TSP_TRANSPORT_ID.into(), tsp.clone());
             tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
                 outbox.clone(),

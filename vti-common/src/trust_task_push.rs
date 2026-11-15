@@ -47,6 +47,19 @@
 //! - **Failed or unconfirmed** at the attempt's window — no evidence — re-resolves
 //!   the recipient and queues the next transport it offers. With none left, the
 //!   push is marked failed and logged for the operator.
+//! - **Receipted** — the recipient's delivery layer sent a
+//!   `messaging/receipt/0.1` for the attempt (class 1). Every DIDComm and TSP
+//!   attempt asks for one, under its outbox key (`delivery_id` header, TSP
+//!   envelope `deliveryId`; VTI-TRN-060), and the delivery layer settles the
+//!   entry `Delivered` only from the addressed party (VTI-TRN-062).
+//! - **Unconfirmable** — the attempt was relayed to the recipient's own
+//!   mediator, which this node's mediator cannot answer for, and the recipient
+//!   is not known to send receipts (`ReceiptReach`). No evidence class was ever
+//!   available on that path, so the push records `unconfirmable` and is not
+//!   escalated: re-sending over another transport would hand the recipient a
+//!   second copy of something it may have had for an hour (VTI-TRN-042 as
+//!   amended, VTI-TRN-064). A recipient known to send receipts is escalated as
+//!   below — for it, silence means something.
 //! - **Refused** — the attempt's hand-off has failed
 //!   [`FAILED_SENDS_BEFORE_ESCALATION`] times inside its window — moves to the
 //!   next transport the recipient offers at once. The window is for silence
@@ -151,10 +164,11 @@ use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_messaging_core::{
-    ConnState, Inbound, InboundAck, MessageTransport, MessagingError, SendReceipt, TransportKind,
+    ConnState, DeliveryScope, Inbound, InboundAck, MessageTransport, MessagingError, SendReceipt,
+    TransportKind,
 };
 use affinidi_messaging_delivery::MessagingService;
-use affinidi_messaging_delivery::{Delivery, OutboxState};
+use affinidi_messaging_delivery::{Delivery, OutboxEntry, OutboxState, UnconfirmedReason};
 use affinidi_tdk::messaging::ATM;
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::stream::BoxStream;
@@ -326,8 +340,11 @@ struct PushOutcome {
     delivered: bool,
     via: Protocol,
     /// The class of evidence a delivery rests on (VTI-TRN-041): `collected`
-    /// (transport evidence the recipient collected it) or `reply` (the
-    /// recipient's own server acknowledged it). `none` for a failure.
+    /// (transport evidence the recipient collected it, or its delivery
+    /// layer's receipt) or `reply` (the recipient's own server acknowledged
+    /// it). `none` for a failure, and `unconfirmable` for an attempt relayed
+    /// where no evidence class was available at all (VTI-TRN-042 as amended):
+    /// not delivered as far as this node can know, and not a failure either.
     evidence: String,
     at_ms: u64,
 }
@@ -384,13 +401,14 @@ fn past_acceptance(doc: &Value, now: DateTime<Utc>) -> bool {
     acceptance_end(doc).is_some_and(|end| now >= end)
 }
 
-/// Whether the recipient refuses `doc` at `now`, skew tolerance included: past
-/// its latest acceptable instant (VTI-TRN-044). A copy collected past this
-/// point was refused, whatever the collection evidence says.
+/// Whether the recipient refuses `doc` at `now`, skew tolerance included: at
+/// or past the end of its acceptance window (VTI-TRN-044), which is half-open
+/// as `trust-tasks-rs` applies it. A copy collected from this point was
+/// refused, whatever the collection evidence says.
 fn refused_when_collected(doc: &Value, now: DateTime<Utc>) -> bool {
     acceptance_end(doc)
         .and_then(|end| end.checked_add_signed(VTI_ACCEPTANCE_WINDOW.clock_skew))
-        .is_some_and(|latest| now > latest)
+        .is_some_and(|edge| now >= edge)
 }
 
 /// State the push's deadline on an **unsigned** document as its `expiresAt`
@@ -891,6 +909,13 @@ async fn queue_attempt(
             .from(messaging.own_did.to_string())
             .to(record.recipient.clone())
             .finalize();
+            // Ask the recipient's delivery layer for a receipt under the
+            // attempt's own outbox key, so the receipt settles this entry and
+            // no other (VTI-TRN-060). Not derived from the content, and every
+            // retry of the attempt carries the same id.
+            let envelope =
+                affinidi_tdk::messaging::delivery::request_receipt(envelope, &record.attempt_key)
+                    .map_err(|e| AppError::Internal(format!("ask for a receipt: {e}")))?;
             let (packed, _) = messaging
                 .atm
                 .pack_encrypted(
@@ -949,6 +974,7 @@ pub async fn sweep(ctx: &PushContext<'_>) -> Result<(), AppError> {
         return Ok(());
     };
     let outbox = crate::outbox_store::VtiOutboxStore::new(ctx.outbox.clone());
+    let receipt_reach = messaging.service.receipt_reach();
     let now = now_ms();
     for (_, bytes) in ctx
         .records
@@ -975,6 +1001,9 @@ pub async fn sweep(ctx: &PushContext<'_>) -> Result<(), AppError> {
         let observed = entry.as_ref().is_some_and(|e| e.outbox_observed);
         let window_end_ms = entry.as_ref().map(|e| e.deliver_by_ms);
         let failed_sends = entry.as_ref().map_or(0, |e| e.attempts);
+        let no_evidence_path = entry
+            .as_ref()
+            .is_some_and(|e| no_evidence_path(e, &receipt_reach, now));
         let entry_state = entry.map(|e| e.state);
         let clock = Utc::now();
         match entry_state {
@@ -1066,6 +1095,13 @@ pub async fn sweep(ctx: &PushContext<'_>) -> Result<(), AppError> {
                     warn!(push = %record.id, error = %e, "could not re-queue the push");
                     escalate(ctx, &mut record).await?;
                 }
+            }
+            // Handed off, relayed to the recipient's own mediator, and the
+            // recipient is not known to send receipts: its window passed with
+            // no evidence class ever available. Recorded, not escalated
+            // (VTI-TRN-042 as amended, VTI-TRN-064).
+            Some(OutboxState::Sent | OutboxState::Unconfirmed) if no_evidence_path => {
+                finish(ctx, &mut record, false, UNCONFIRMABLE).await?;
             }
             Some(OutboxState::Queued | OutboxState::Sent)
             | Some(OutboxState::Failed | OutboxState::Unconfirmed) => {
@@ -1206,6 +1242,49 @@ async fn abandon_attempt(outbox: &crate::outbox_store::VtiOutboxStore, attempt_k
     }
 }
 
+/// The [`PushOutcome::evidence`] of an attempt that had no evidence path.
+pub const UNCONFIRMABLE: &str = "unconfirmable";
+
+/// Whether `entry` had no class of delivery evidence available: relayed to its
+/// recipient's own mediator (which this node's mediator cannot answer for),
+/// and the recipient not known to send receipts — or already settled so by
+/// the delivery layer's own sweep.
+fn no_evidence_path(
+    entry: &OutboxEntry,
+    reach: &affinidi_messaging_delivery::ReceiptReach,
+    now_ms: u64,
+) -> bool {
+    entry.unconfirmed_reason == Some(UnconfirmedReason::NoEvidencePath)
+        || (entry.scope == DeliveryScope::Relayed && !reach.sends_receipts(&entry.dest_did, now_ms))
+}
+
+/// The id the recipient's mediator stores push `id`'s attempt in flight under,
+/// once that attempt has been handed off and the transport reported one — the
+/// hop id the delivery layer records. A sender asking the recipient's mediator
+/// to wake it names the queued message by this id (`messaging/wake/request`,
+/// VTI-TRN-070). `None` while the attempt is still queued, for a transport that
+/// reports no id (cross-mediator TSP, REST), or once the push is finished.
+pub async fn stored_message_id(
+    records: &KeyspaceHandle,
+    outbox: &KeyspaceHandle,
+    id: &str,
+) -> Result<Option<String>, AppError> {
+    use affinidi_messaging_delivery::OutboxStore as _;
+    let Some(record) = load_record(records, id).await? else {
+        return Ok(None);
+    };
+    if record.outcome.is_some() {
+        return Ok(None);
+    }
+    let entry = crate::outbox_store::VtiOutboxStore::new(outbox.clone())
+        .get(&record.attempt_key)
+        .await
+        .map_err(|e| AppError::Internal(format!("read push delivery state: {e}")))?;
+    Ok(entry
+        .filter(|e| e.state == OutboxState::Sent)
+        .and_then(|e| e.hop_id))
+}
+
 async fn finish(
     ctx: &PushContext<'_>,
     record: &mut PushRecord,
@@ -1224,6 +1303,14 @@ async fn finish(
             via = %record.current,
             evidence,
             "trust-task push delivered"
+        );
+    } else if evidence == UNCONFIRMABLE {
+        // Not a loss: the path offered no evidence to wait for.
+        info!(
+            recipient = %record.recipient,
+            via = %record.current,
+            "push unconfirmable: relayed to the recipient's own mediator, and the recipient \
+             is not known to send receipts; not escalated"
         );
     } else {
         // Surfaced to the operator: every transport the recipient offers has
@@ -1259,20 +1346,54 @@ async fn document_for(ks: &KeyspaceHandle, packed: &[u8]) -> Result<PushRecord, 
 /// inner message — so the delivery layer's existing outbox poll sees it
 /// collected. A recipient on another mediator is sent nested, for metadata
 /// privacy; no mediator reports collection for that, so it carries no
-/// `hop_id` and settles by escalation.
+/// `hop_id` and its entry is scoped [`DeliveryScope::Relayed`]: only the
+/// recipient's receipt is evidence for it.
+///
+/// Every send asks for a receipt: the TSP binding envelope carries the
+/// attempt's outbox key as `deliveryId` (VTI-TRN-060).
 #[cfg(feature = "tsp")]
 pub struct TspPushTransport {
-    /// The node's ATM.
-    pub atm: Arc<affinidi_tdk::messaging::ATM>,
-    /// The node's profile on its mediator.
-    pub profile: Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
-    /// The node's mediator.
-    pub mediator_did: String,
-    /// Where push records live ([`PushContext::records`]).
-    pub pushes: KeyspaceHandle,
-    /// The DIDComm socket's state: TSP sends go to the same mediator, so it is
+    atm: Arc<affinidi_tdk::messaging::ATM>,
+    profile: Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    mediator_did: String,
+    pushes: KeyspaceHandle,
+    conn: watch::Receiver<ConnState>,
+    /// The scope of the last send to each recipient, taken by
+    /// [`MessageTransport::delivery_scope`], which the delivery layer asks right
+    /// after the send it describes. Only this transport knows it: it chose the
+    /// route from the push record.
+    scopes: std::sync::Mutex<std::collections::HashMap<String, DeliveryScope>>,
+}
+
+#[cfg(feature = "tsp")]
+impl TspPushTransport {
+    /// A transport sending pushes as `profile` through `mediator_did`, reading
+    /// each document from `pushes` ([`PushContext::records`]). `conn` is the
+    /// DIDComm socket's state: TSP sends go to the same mediator, so it is
     /// reachable exactly when that socket is.
-    pub conn: watch::Receiver<ConnState>,
+    pub fn new(
+        atm: Arc<affinidi_tdk::messaging::ATM>,
+        profile: Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+        mediator_did: String,
+        pushes: KeyspaceHandle,
+        conn: watch::Receiver<ConnState>,
+    ) -> Self {
+        Self {
+            atm,
+            profile,
+            mediator_did,
+            pushes,
+            conn,
+            scopes: Default::default(),
+        }
+    }
+
+    fn remember_scope(&self, dest: &str, scope: DeliveryScope) {
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(dest.to_string(), scope);
+    }
 }
 
 #[cfg(feature = "tsp")]
@@ -1286,9 +1407,13 @@ impl MessageTransport for TspPushTransport {
         use affinidi_tdk::messaging::protocols::tsp::{SendReadiness, invite_refusal_is_benign};
 
         let record = document_for(&self.pushes, &packed).await?;
-        let doc = serde_json::to_vec(&record.document)
-            .map_err(|e| MessagingError::Transport(format!("serialise push document: {e}")))?;
-        let body = vta_sdk::tsp_binding::wrap_envelope(&doc);
+        // The binding envelope, asking for a receipt under the attempt's outbox
+        // key (TSP binding 0.2 §2.1, VTI-TRN-060).
+        let body = affinidi_tdk::messaging::delivery::tsp_envelope(
+            &record.document,
+            Some(&record.attempt_key),
+        )
+        .map_err(|e| MessagingError::Transport(format!("TSP envelope: {e}")))?;
         let tsp = self.atm.tsp();
         let err = |e: affinidi_tdk::messaging::errors::ATMError| {
             MessagingError::Transport(format!("TSP send to {dest}: {e}"))
@@ -1319,6 +1444,10 @@ impl MessageTransport for TspPushTransport {
                 )
                 .await
                 .map_err(err)?;
+                // Relayed to the peer's own mediator: this node's mediator can
+                // never report on it, so the status poll is not asked
+                // (VTI-TRN-064 item 3) and only a receipt is evidence.
+                self.remember_scope(dest, DeliveryScope::Relayed);
                 Ok(SendReceipt {
                     via: TransportKind::Tsp,
                     hop_id: None,
@@ -1333,12 +1462,21 @@ impl MessageTransport for TspPushTransport {
                 )
                 .await
                 .map_err(err)?;
+                self.remember_scope(dest, DeliveryScope::Local);
                 Ok(SendReceipt {
                     via: TransportKind::Tsp,
                     hop_id: Some(sha256_hex(tsp.encode(&inner).as_bytes())),
                 })
             }
         }
+    }
+
+    async fn delivery_scope(&self, dest: &str) -> DeliveryScope {
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(dest)
+            .unwrap_or_default()
     }
 
     fn connection_state(&self) -> watch::Receiver<ConnState> {
@@ -1603,11 +1741,11 @@ mod tests {
             at_window - chrono::TimeDelta::seconds(1)
         ));
         assert!(past_acceptance(&doc, at_window));
-        assert!(!refused_when_collected(&doc, at_window + window.clock_skew));
-        assert!(refused_when_collected(
+        assert!(!refused_when_collected(
             &doc,
-            at_window + window.clock_skew + chrono::TimeDelta::seconds(1)
+            at_window + window.clock_skew - chrono::TimeDelta::seconds(1)
         ));
+        assert!(refused_when_collected(&doc, at_window + window.clock_skew));
     }
 
     /// **VTI-TRN-048 / VTI-OPS-028.** A document stating an expiry is
@@ -1622,11 +1760,11 @@ mod tests {
         doc["expiresAt"] = json!(day.to_rfc3339_opts(SecondsFormat::Secs, true));
         assert!(!past_acceptance(&doc, issued + chrono::TimeDelta::hours(1)));
         assert!(past_acceptance(&doc, day));
-        assert!(!refused_when_collected(&doc, day + window.clock_skew));
-        assert!(refused_when_collected(
+        assert!(!refused_when_collected(
             &doc,
-            day + window.clock_skew + chrono::TimeDelta::seconds(1)
+            day + window.clock_skew - chrono::TimeDelta::seconds(1)
         ));
+        assert!(refused_when_collected(&doc, day + window.clock_skew));
 
         let year = issued + chrono::TimeDelta::days(365);
         doc["expiresAt"] = json!(year.to_rfc3339_opts(SecondsFormat::Secs, true));
@@ -1873,5 +2011,359 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, MessagingError::Transport(_)), "{err:?}");
+    }
+}
+
+/// Receipts, delivery scope and the `unconfirmable` outcome (#2553;
+/// VTI-TRN-042 as amended, VTI-TRN-060 – 064).
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use affinidi_messaging_core::{OutboxStatus, ReceivedMessage};
+    use affinidi_messaging_delivery::{OutboxEntry, OutboxStore as _, RECEIPT_TASK_TYPE};
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use tokio::sync::mpsc;
+
+    const ALICE: &str = "did:example:alice";
+    const MALLORY: &str = "did:example:mallory";
+    const OWN: &str = "did:example:node";
+
+    /// A transport fed by the test: inbound from a channel, and a scripted
+    /// status answer for each hop id it is asked about.
+    struct Scripted {
+        conn: watch::Receiver<ConnState>,
+        inbound: Mutex<Option<mpsc::UnboundedReceiver<Inbound>>>,
+        status: HashMap<String, OutboxStatus>,
+        asked: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl MessageTransport for Scripted {
+        fn kind(&self) -> TransportKind {
+            TransportKind::Didcomm
+        }
+        async fn send(&self, _dest: &str, _packed: Vec<u8>) -> Result<SendReceipt, MessagingError> {
+            Err(MessagingError::Transport("not in this test".into()))
+        }
+        fn connection_state(&self) -> watch::Receiver<ConnState> {
+            self.conn.clone()
+        }
+        fn inbound(&self) -> BoxStream<'static, Inbound> {
+            let rx = self.inbound.lock().unwrap().take();
+            match rx {
+                Some(rx) => Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {
+                    rx.recv().await.map(|item| (item, rx))
+                })),
+                None => Box::pin(futures_util::stream::empty()),
+            }
+        }
+        async fn ack(&self, _ack: InboundAck) -> Result<(), MessagingError> {
+            Ok(())
+        }
+        async fn outbox_status(
+            &self,
+            hop_ids: &[String],
+        ) -> Result<Option<HashMap<String, OutboxStatus>>, MessagingError> {
+            self.asked.lock().unwrap().extend(hop_ids.iter().cloned());
+            Ok(Some(
+                hop_ids
+                    .iter()
+                    .filter_map(|id| self.status.get(id).map(|s| (id.clone(), *s)))
+                    .collect(),
+            ))
+        }
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        records: KeyspaceHandle,
+        outbox_ks: KeyspaceHandle,
+        outbox: Arc<crate::outbox_store::VtiOutboxStore>,
+        service: MessagingService,
+        transport: Arc<Scripted>,
+        inbound: mpsc::UnboundedSender<Inbound>,
+        atm: ATM,
+        _conn: watch::Sender<ConnState>,
+    }
+
+    async fn fixture(status: HashMap<String, OutboxStatus>) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            crate::store::test_fixture::open_with_keyspaces(dir.path(), &["pushes", "outbox"])
+                .unwrap();
+        let records = store.keyspace("pushes").unwrap();
+        let outbox_ks = store.keyspace("outbox").unwrap();
+        let outbox = Arc::new(crate::outbox_store::VtiOutboxStore::new(outbox_ks.clone()));
+        let (conn_tx, conn) = watch::channel(ConnState::Connected);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let transport = Arc::new(Scripted {
+            conn,
+            inbound: Mutex::new(Some(rx)),
+            status,
+            asked: Arc::default(),
+        });
+        let service = MessagingService::new(transport.clone(), outbox.clone());
+        let tdk = affinidi_tdk::common::TDKSharedState::new(
+            affinidi_tdk::common::config::TDKConfig::builder()
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let atm = ATM::new(
+            affinidi_tdk::messaging::config::ATMConfig::builder()
+                .build()
+                .unwrap(),
+            Arc::new(tdk),
+        )
+        .await
+        .unwrap();
+        Fixture {
+            _dir: dir,
+            records,
+            outbox_ks,
+            outbox,
+            service,
+            transport,
+            inbound: tx,
+            atm,
+            _conn: conn_tx,
+        }
+    }
+
+    impl Fixture {
+        fn ctx(&self) -> PushContext<'_> {
+            PushContext {
+                records: &self.records,
+                outbox: &self.outbox_ks,
+                resolver: None,
+                messaging: Some(PushMessaging {
+                    service: &self.service,
+                    atm: &self.atm,
+                    own_did: OWN,
+                }),
+                tsp: false,
+                learned_tsp: None,
+                reissuer: None,
+            }
+        }
+
+        /// A DIDComm push to `ALICE` whose one attempt `p1:0:didcomm` was
+        /// handed off, with `scope`, and whose window `expired` or not.
+        async fn sent_push(&self, scope: DeliveryScope, expired: bool) {
+            let key = "p1:0:didcomm";
+            let record = PushRecord {
+                id: "p1".into(),
+                recipient: ALICE.into(),
+                document: json!({ "id": "urn:uuid:doc", "type": "x" }),
+                reissues: 0,
+                remaining: Vec::new(),
+                current: Protocol::Didcomm,
+                attempt_key: key.into(),
+                attempt: 0,
+                peer_tsp_mediator: None,
+                rest_base: None,
+                deadline_ms: now_ms() + 3_600_000,
+                queued_at_ms: now_ms(),
+                outcome: None,
+            };
+            self.records
+                .insert(record_key(&record.id), &record)
+                .await
+                .unwrap();
+            let deliver_by = if expired {
+                now_ms() - 1_000
+            } else {
+                now_ms() + 600_000
+            };
+            let mut entry = OutboxEntry::new(key, ALICE, b"sealed".to_vec(), now_ms(), deliver_by)
+                .with_scope(scope);
+            entry.state = OutboxState::Sent;
+            entry.hop_id = Some("hop-1".into());
+            self.outbox.put(entry).await.unwrap();
+        }
+
+        async fn state(&self) -> OutboxState {
+            self.outbox
+                .get("p1:0:didcomm")
+                .await
+                .unwrap()
+                .unwrap()
+                .state
+        }
+
+        async fn outcome(&self) -> Option<(bool, Protocol, String)> {
+            outcome(&self.records, "p1").await.unwrap()
+        }
+
+        /// A `messaging/receipt/0.1` for `confirms`, from `sender`, as the
+        /// transport delivers it: sender authenticated.
+        fn receipt_from(&self, sender: &str, confirms: &str) {
+            let payload = serde_json::to_vec(&json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": RECEIPT_TASK_TYPE,
+                "payload": { "confirms": confirms },
+            }))
+            .unwrap();
+            let message = ReceivedMessage {
+                id: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                sender: Some(sender.into()),
+                recipient: OWN.into(),
+                payload,
+                protocol: affinidi_messaging_core::Protocol::DIDComm,
+                verified: true,
+                encrypted: true,
+            };
+            self.inbound
+                .send(Inbound::new(message, None, InboundAck(sender.into())))
+                .unwrap();
+        }
+    }
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    /// VTI-TRN-062: a receipt settles a push's attempt `Delivered` only when
+    /// its authenticated sender is the party the attempt was addressed to.
+    #[tokio::test]
+    async fn vti_trn_062_a_receipt_settles_only_from_the_addressed_party() {
+        let f = fixture(HashMap::new()).await;
+        f.sent_push(DeliveryScope::Relayed, false).await;
+
+        f.receipt_from(MALLORY, "p1:0:didcomm");
+        settle().await;
+        assert_eq!(
+            f.state().await,
+            OutboxState::Sent,
+            "a stranger's receipt settles nothing"
+        );
+        assert!(!f.service.receipt_reach().sends_receipts(MALLORY, now_ms()));
+
+        f.receipt_from(ALICE, "p1:0:didcomm");
+        settle().await;
+        assert_eq!(f.state().await, OutboxState::Delivered);
+        assert!(
+            f.service.receipt_reach().sends_receipts(ALICE, now_ms()),
+            "the recipient is now known to send receipts"
+        );
+
+        sweep(&f.ctx()).await.unwrap();
+        let (delivered, via, _) = f.outcome().await.expect("finished");
+        assert!(delivered);
+        assert_eq!(via, Protocol::Didcomm);
+    }
+
+    /// VTI-TRN-042 as amended / VTI-TRN-064: relayed to the recipient's own
+    /// mediator, no receipt, and the recipient not known to send any: the
+    /// window passes with no evidence class ever available. Recorded
+    /// `unconfirmable`, and not escalated.
+    #[tokio::test]
+    async fn a_relayed_attempt_without_a_receipt_is_unconfirmable_not_escalated() {
+        let f = fixture(HashMap::new()).await;
+        f.sent_push(DeliveryScope::Relayed, true).await;
+        sweep(&f.ctx()).await.unwrap();
+        let (delivered, via, evidence) = f.outcome().await.expect("finished");
+        assert!(!delivered);
+        assert_eq!(via, Protocol::Didcomm, "never moved to another transport");
+        assert_eq!(evidence, UNCONFIRMABLE);
+    }
+
+    /// For a recipient known to send receipts, silence is silence: the expired
+    /// relayed attempt is escalated (here to nothing, so the push fails) as
+    /// VTI-TRN-042 requires.
+    #[tokio::test]
+    async fn a_relayed_attempt_to_a_known_receipt_sender_still_escalates() {
+        let f = fixture(HashMap::new()).await;
+        f.sent_push(DeliveryScope::Relayed, true).await;
+        f.service.receipt_reach().record(ALICE, now_ms());
+        sweep(&f.ctx()).await.unwrap();
+        let (delivered, _, evidence) = f.outcome().await.expect("finished");
+        assert!(!delivered);
+        assert_eq!(evidence, "none", "escalated, and nothing left to try");
+    }
+
+    /// The same-mediator path is unchanged: a `Local` attempt is asked about by
+    /// the status poll and settles on its mediator's `collected`; a `Relayed`
+    /// one is never asked (VTI-TRN-064 item 3).
+    #[tokio::test]
+    async fn a_local_attempt_is_still_confirmed_by_the_status_poll() {
+        let f = fixture(HashMap::from([(
+            "hop-1".to_string(),
+            OutboxStatus::Collected,
+        )]))
+        .await;
+        f.sent_push(DeliveryScope::Local, false).await;
+        affinidi_messaging_delivery::poll_outbox_drain(f.transport.as_ref(), f.outbox.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(f.state().await, OutboxState::Delivered);
+        sweep(&f.ctx()).await.unwrap();
+        assert_eq!(
+            f.outcome().await.map(|(d, _, e)| (d, e)),
+            Some((true, "collected".to_string()))
+        );
+
+        let g = fixture(HashMap::from([(
+            "hop-1".to_string(),
+            OutboxStatus::Collected,
+        )]))
+        .await;
+        g.sent_push(DeliveryScope::Relayed, false).await;
+        affinidi_messaging_delivery::poll_outbox_drain(g.transport.as_ref(), g.outbox.as_ref())
+            .await
+            .unwrap();
+        assert!(g.transport.asked.lock().unwrap().is_empty());
+        assert_eq!(g.state().await, OutboxState::Sent);
+    }
+
+    /// The stored id a wake request names is the handed-off attempt's hop id,
+    /// and only while the push is in flight.
+    #[tokio::test]
+    async fn the_stored_message_id_is_the_handed_off_attempts_hop_id() {
+        let f = fixture(HashMap::new()).await;
+        assert_eq!(
+            stored_message_id(&f.records, &f.outbox_ks, "p1")
+                .await
+                .unwrap(),
+            None
+        );
+        f.sent_push(DeliveryScope::Local, false).await;
+        assert_eq!(
+            stored_message_id(&f.records, &f.outbox_ks, "p1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("hop-1")
+        );
+    }
+
+    /// VTI-TRN-060: a DIDComm attempt asks for its receipt under its own outbox
+    /// key, and a TSP one under the same id in the binding envelope.
+    #[test]
+    fn an_attempt_asks_for_a_receipt_under_its_outbox_key() {
+        let message = affinidi_tdk::didcomm::Message::build(
+            "urn:uuid:m".to_string(),
+            TRUST_TASK_ENVELOPE_TYPE.to_string(),
+            json!({}),
+        )
+        .finalize();
+        let message =
+            affinidi_tdk::messaging::delivery::request_receipt(message, "p1:0:didcomm").unwrap();
+        assert_eq!(
+            affinidi_tdk::messaging::delivery::didcomm_delivery_id(&message).as_deref(),
+            Some("p1:0:didcomm")
+        );
+        let body = affinidi_tdk::messaging::delivery::tsp_envelope(
+            &json!({ "id": "x" }),
+            Some("p1:0:tsp"),
+        )
+        .unwrap();
+        assert_eq!(
+            affinidi_tdk::messaging::delivery::tsp_delivery_id(&body).as_deref(),
+            Some("p1:0:tsp")
+        );
     }
 }

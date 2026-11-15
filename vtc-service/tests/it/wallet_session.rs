@@ -252,7 +252,7 @@ fn p256(seed: u8) -> (Vec<u8>, Value, String) {
     let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
     jwk.as_object_mut().unwrap().remove("d");
     let did = vta_sdk::jws::JwsKey::from_jwk(&jwk).unwrap().did_key();
-    (kp.private_bytes, jwk, did)
+    (kp.private_bytes.clone(), jwk, did)
 }
 
 /// An SD-JWT VC of type `vct` from a P-256 `did:key` issuer, bound to a P-256

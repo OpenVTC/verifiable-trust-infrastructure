@@ -1083,6 +1083,24 @@ type_uri = "https://trusttasks.org/spec/messaging/ping/0.2"
 digest = "sha256:9414c5c59bdf9f8c143fd90a1c7ac4e54fd30903596cf70628a084a47f2ce9db"
 
 [[task]]
+slug = "messaging/receipt"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/messaging/receipt/0.1"
+digest = "sha256:baafcda30e527b819ec7807702433394b4619d68f9621c241526ac0a1305a4d6"
+
+[[task]]
+slug = "messaging/wake/request"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/messaging/wake/request/0.1"
+digest = "sha256:a8dd02c3f927e56a06dbecdbc745e61787ca583b782003435e34cdf012ada5e9"
+
+[[task]]
+slug = "messaging/wake/set"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/messaging/wake/set/0.1"
+digest = "sha256:30043f291722ed1099d38fa1c633485bfb8b1141530414b716905927ed193c27"
+
+[[task]]
 slug = "notifications/notify"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/notifications/notify/0.1"

@@ -252,7 +252,14 @@ async fn prove_on(
     );
     let outbox: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());
     // Single transport → it is the primary; `send` (the pong) routes through it.
-    let service = Arc::new(MessagingService::new(transport, outbox));
+    let service = Arc::new(MessagingService::with_receipts(
+        transport,
+        outbox,
+        Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+            (**atm).clone(),
+            profile.clone(),
+        )),
+    ));
 
     // Minimal trust-ping answerer (there is no handler set at first-enable).
     let answerer_shutdown = CancellationToken::new();

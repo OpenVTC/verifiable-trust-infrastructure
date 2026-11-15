@@ -420,6 +420,29 @@ fn host_failure(room_id: &str, e: room_host::RoomTaskError) -> Value {
 /// Arm, re-arm or renew one room's watch — `live` arms it with `rooms/watch/0.2` live — or
 /// switch it between one-shot and live (Recipient item 5).
 #[allow(clippy::too_many_arguments)]
+/// How long an arming waits for a fresh address's connection to open.
+const ADDRESS_CONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Wait, while the address supervisor runs, until `address`'s connection is open. Past
+/// [`ADDRESS_CONNECT_WAIT`] the watch is armed anyway: the supervisor keeps trying, and
+/// a signal that arrives once the address has connected is received.
+async fn connected_before_arming(watches: &RoomKeyWatches, address: &str) {
+    if !watches.supervised() {
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + ADDRESS_CONNECT_WAIT;
+    while !watches.is_receiving(address) {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(
+                "a room watch's address did not connect before arming; a signal before it \
+                 does is refused by the mediator"
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 async fn arm_one(
     state: &AppState,
     auth: &AuthClaims,
@@ -490,6 +513,15 @@ async fn arm_one(
             }
         }
     };
+
+    // A fresh address must be able to receive before the host is told about it: a
+    // mediator refuses a forward to a DID with no account there, and an address gets
+    // its account by authenticating when its connection opens (affinidi-messaging-mediator
+    // 0.52). So the host is armed once the supervisor, woken by the record, has opened
+    // the connection — or a signal sent before it does is refused and lost.
+    if fresh {
+        connected_before_arming(watches, &record.address).await;
+    }
 
     let mut payload = json!({ "roomId": room_id, "address": record.address });
     if let Some(v) = since_version {

@@ -33,8 +33,11 @@
 //! scanning read, and the marker key `outbox-index:v1` records that it was.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use affinidi_messaging_delivery::{OutboxEntry, OutboxError, OutboxState, OutboxStore};
+use affinidi_messaging_delivery::{
+    OutboxEntry, OutboxError, OutboxState, OutboxStore, UnconfirmedReason,
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
@@ -207,7 +210,11 @@ impl OutboxStore for VtiOutboxStore {
         //
         // Terminal states are `warn` when they mean loss, `info` otherwise —
         // an operator scanning for trouble should not have to know the state
-        // machine to spot a message that never arrived.
+        // machine to spot a message that never arrived. A relayed send that
+        // settled `Unconfirmed` because no evidence class was ever available on
+        // its path (`NoEvidencePath`: its mediator relayed it away and the
+        // recipient is not known to send receipts) is not a loss, and logs at
+        // `info` (VTI-TRN-042 as amended, VTI-TRN-064).
         let dest_hash = {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
@@ -215,6 +222,18 @@ impl OutboxStore for VtiOutboxStore {
             hex::encode(h.finalize())
         };
         match entry.state {
+            OutboxState::Unconfirmed
+                if entry.unconfirmed_reason == Some(UnconfirmedReason::NoEvidencePath) =>
+            {
+                tracing::info!(
+                    key = %entry.idempotency_key,
+                    dest = %entry.dest_did,
+                    dest_hash = %dest_hash,
+                    attempts = entry.attempts,
+                    deliver_by_ms = entry.deliver_by_ms,
+                    "outbox: relayed send unconfirmable — no evidence path to its recipient"
+                )
+            }
             OutboxState::Unconfirmed | OutboxState::Failed => tracing::warn!(
                 key = %entry.idempotency_key,
                 dest = %entry.dest_did,
@@ -382,6 +401,43 @@ impl OutboxStore for VtiOutboxStore {
             .await
             .map_err(backend)?
             .is_applied())
+    }
+}
+
+/// The delivery layer's confirmation sweep for a node's outbox, every
+/// `interval`, for the life of the task.
+///
+/// `reach` is the [`MessagingService::receipt_reach`] of the service whose
+/// dispatcher sees this outbox's receipts. With it, an expired entry relayed to
+/// a recipient's own mediator settles `Unconfirmed` with
+/// [`UnconfirmedReason::NoEvidencePath`] unless that recipient is known to send
+/// receipts (VTI-TRN-042 as amended, VTI-TRN-064). Every other expired entry
+/// settles `Unconfirmed` as before: re-sending over another binding is the push
+/// engine's (`trust_task_push`), which acts before the window this sweep reads.
+///
+/// [`MessagingService::receipt_reach`]: affinidi_messaging_delivery::MessagingService::receipt_reach
+pub async fn confirmation_loop(
+    store: Arc<dyn OutboxStore>,
+    interval: std::time::Duration,
+    reach: Arc<affinidi_messaging_delivery::ReceiptReach>,
+) {
+    affinidi_messaging_delivery::confirmation_loop_with_reach(
+        store,
+        interval,
+        Arc::new(SettleUnconfirmed),
+        reach,
+    )
+    .await
+}
+
+/// Settle every expired entry `Unconfirmed`: the delivery layer's own default,
+/// which it does not export.
+struct SettleUnconfirmed;
+
+#[async_trait]
+impl affinidi_messaging_delivery::ExpiryEscalator for SettleUnconfirmed {
+    async fn escalate(&self, _entry: &OutboxEntry) -> affinidi_messaging_delivery::Escalation {
+        affinidi_messaging_delivery::Escalation::Unconfirmed
     }
 }
 

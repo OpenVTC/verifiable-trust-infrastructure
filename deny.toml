@@ -304,22 +304,21 @@ skip = [
   { crate = "r-efi:<6", reason = "via getrandom" },
   { crate = "wit-bindgen:<0.57", reason = "via wasip3" },
 
-  # trust-tasks-rs 0.37 is on jsonschema 0.46 (the workspace is on 0.60), and
+  # trust-tasks-rs 0.39 is on jsonschema 0.49 (the workspace is on 0.60), and
   # trust-tasks-build / typify on schemars 0.8 and regress 0.11. Fixed upstream
-  # in trust-tasks-rs (a jsonschema bump is in progress there), not here.
-  # `vta_sdk::schema_cache` names the same 0.46 (`jsonschema-trust-tasks`) so
-  # its cached check is the check trust-tasks-rs makes; it goes with the bump.
-  { crate = "jsonschema:<0.60", reason = "via trust-tasks-rs, and vta-sdk's schema_cache matching it" },
+  # in trust-tasks-rs, not here. `vta_sdk::schema_cache` no longer names a
+  # jsonschema of its own (#2622): it wraps `trust_tasks_rs::validate::SchemaValidator`.
+  { crate = "jsonschema:<0.60", reason = "via trust-tasks-rs" },
   { crate = "jsonschema-regex:<0.60", reason = "via jsonschema" },
+  { crate = "jsonschema-value:<0.60", reason = "via jsonschema" },
   { crate = "referencing:<0.60", reason = "via jsonschema" },
-  { crate = "fancy-regex:<0.19", reason = "via jsonschema" },
   { crate = "fraction:<0.17", reason = "via jsonschema" },
   { crate = "regress:<0.12", reason = "via trust-tasks-rs, typify-impl" },
   { crate = "schemars:<1", reason = "via trust-tasks-build, typify-impl, typify-macro" },
   { crate = "schemars_derive:<1", reason = "via schemars" },
   { crate = "serde_derive_internals:<0.30", reason = "via schemars_derive" },
 
-  # trust-tasks-https 0.37 is on jsonwebtoken 10 (the workspace is on 11).
+  # trust-tasks-https 0.39 is on jsonwebtoken 10 (the workspace is on 11).
   # Fixed upstream in trust-tasks-https (a bump is in progress there).
   { crate = "jsonwebtoken:<11", reason = "via trust-tasks-https" },
 

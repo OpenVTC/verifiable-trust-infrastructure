@@ -235,7 +235,9 @@ async fn vti_45_tampering_is_still_refused() {
 }
 
 /// A proof member the verifier cannot carry into the configuration it hashes
-/// is refused, and the operator's cause names it.
+/// is refused, and the operator's cause names it. Since affinidi-data-integrity
+/// 0.8.7 every VC Data Integrity §2.1 member (`challenge`, `domain`, `expires`,
+/// `id`, `previousProof`) is carried, so the case is a member outside §2.1.
 #[tokio::test]
 async fn vti_45_an_uncarried_proof_member_is_refused_by_name() {
     let (did, vm) = holder();
@@ -248,12 +250,12 @@ async fn vti_45_an_uncarried_proof_member_is_refused_by_name() {
         "2026-09-25T12:37:33.000Z",
         None,
     );
-    doc["proof"]["challenge"] = json!("c-1");
+    doc["proof"]["unrecognised"] = json!("c-1");
     let err = verify_trust_task_proof_value(&doc, &resolver())
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, DiProofError::VerifyFailed(c) if c.contains("challenge")),
+        matches!(&err, DiProofError::VerifyFailed(c) if c.contains("unrecognised")),
         "{err:?}"
     );
     assert_eq!(err.to_string(), "proof verification failed");
