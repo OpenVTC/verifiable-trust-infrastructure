@@ -65,7 +65,12 @@ pub async fn get_logo(State(state): State<AppState>, headers: HeaderMap) -> Resp
     let matches = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
+        .is_some_and(|v| {
+            v.split(',').map(str::trim).any(|t| {
+                // A weak validator (`W/"…"`) names the same bytes here.
+                t == "*" || t.strip_prefix("W/").unwrap_or(t) == etag
+            })
+        });
     if matches {
         return (
             StatusCode::NOT_MODIFIED,
@@ -85,7 +90,7 @@ pub async fn get_logo(State(state): State<AppState>, headers: HeaderMap) -> Resp
                 HeaderValue::from_static("inline; filename=\"logo\""),
             ),
         ],
-        bytes.to_vec(),
+        bytes,
     )
         .into_response()
 }

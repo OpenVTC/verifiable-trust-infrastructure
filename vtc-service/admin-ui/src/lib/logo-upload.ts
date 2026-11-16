@@ -2,7 +2,7 @@
 //
 // Everything is drawn onto a canvas and sent as PNG, at most 512 pixels on the
 // longer side: what the community keeps (update item 4), and lossless, which a
-// logo's flat colour and sharp edges need. The community re-encodes whatever
+// logo's flat color and sharp edges need. The community re-encodes whatever
 // arrives anyway; scaling here only keeps the document small.
 //
 // An SVG is rasterized here, never sent (client item 2): the community stores

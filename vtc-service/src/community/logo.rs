@@ -26,9 +26,10 @@
 //! outside [`MEDIA_TYPES`], are never served.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -192,16 +193,16 @@ pub fn digest(bytes: &[u8]) -> String {
 }
 
 /// What the service holds in memory for the logo: the bytes last served, the
-/// per-signer update counts, and the one-at-a-time re-encoding permit.
+/// per-signer update counts, and the one-at-a-time update permit.
 pub struct LogoState {
     /// The bytes of the digest last served, so a request reads only the record.
-    served: Mutex<Option<(String, Arc<[u8]>)>>,
+    served: Mutex<Option<(String, Bytes)>>,
     /// Updates per signer in the last hour. In memory: a restart forgives,
     /// which a rate limit may.
     updates: Mutex<HashMap<String, VecDeque<Instant>>>,
-    /// Re-encoding is CPU-bound; one at a time keeps a burst of updates from
-    /// tying up the blocking pool.
-    pub encode: tokio::sync::Semaphore,
+    /// One update at a time, from its first read to its write: re-encoding is
+    /// CPU-bound, and two updates must not interleave their check and write.
+    pub update: tokio::sync::Semaphore,
 }
 
 impl Default for LogoState {
@@ -209,7 +210,7 @@ impl Default for LogoState {
         Self {
             served: Mutex::new(None),
             updates: Mutex::new(HashMap::new()),
-            encode: tokio::sync::Semaphore::new(1),
+            update: tokio::sync::Semaphore::new(1),
         }
     }
 }
@@ -233,7 +234,7 @@ impl LogoState {
 
     /// The logo to serve: its record and bytes, or `None` when there is none
     /// or what is stored does not match its record.
-    pub async fn served(&self, ks: &KeyspaceHandle) -> Option<(LogoMeta, Arc<[u8]>)> {
+    pub async fn served(&self, ks: &KeyspaceHandle) -> Option<(LogoMeta, Bytes)> {
         let meta = current(ks).await?;
         if let Some((sha, bytes)) = self
             .served
@@ -242,7 +243,7 @@ impl LogoState {
             .as_ref()
             && *sha == meta.sha256
         {
-            return Some((meta, Arc::clone(bytes)));
+            return Some((meta, bytes.clone()));
         }
         let bytes = match ks.get_raw(LOGO_BYTES_KEY).await {
             Ok(Some(b)) => b,
@@ -259,9 +260,10 @@ impl LogoState {
             tracing::warn!("stored community logo does not match its record; serving none");
             return None;
         }
-        let bytes: Arc<[u8]> = bytes.into();
+        // `Bytes` is reference-counted: a response shares it, never copies.
+        let bytes = Bytes::from(bytes);
         *self.served.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some((meta.sha256.clone(), Arc::clone(&bytes)));
+            Some((meta.sha256.clone(), bytes.clone()));
         Some((meta, bytes))
     }
 }

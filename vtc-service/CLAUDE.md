@@ -44,7 +44,7 @@ src/
 │                       `assemble` (one Facts builder for every purpose) +
 │                       `orchestrate` (role-change + leave spines) + `listing`
 ├── community/          CommunityProfile storage; `ops` (profile, branding, theme,
-│                       requested attributes, join discovery, runtime config,
+│                       logo, requested attributes, join discovery, runtime config,
 │                       the community's own DID log)
 ├── credentials/        LocalSigner + VMC/VAC/status-list builders; `exchange/`
 │                       (OID4VCI issuer + OID4VP/SD-JWT/DI/bbs verifier, split into

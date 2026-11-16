@@ -47,7 +47,7 @@ The community stores the image itself and serves it from its own origin.
    decodes, and a dry run would be unaudited decoding on demand. The public GET
    is the read.
 3. **Stored as PNG, always.** `directory::images::reencode` writes JPEG for an
-   opaque image, which suits a photograph and smears a logo's flat colour and
+   opaque image, which suits a photograph and smears a logo's flat color and
    sharp edges. `reencode_logo` shares the decoding and its bounds and always
    encodes PNG, stepping the size down until it fits 256 KiB.
 4. **No SVG, anywhere.** An SVG served from the community's origin is a document
@@ -65,7 +65,9 @@ The community stores the image itself and serves it from its own origin.
 | Bytes bounded before decoding; pixels and decode memory bounded while decoding | `directory::images::decode` (256 KiB, 8192 px, 128 MiB) |
 | Decoded strictly as the declared type, never sniffed | `directory::images::decode` (`ImageReader::with_format`) |
 | No received byte stored: metadata, text chunks and trailing polyglot payloads gone | `reencode_logo`; `a_logo_keeps_no_text_chunk_metadata_or_trailing_bytes` |
-| Per-signer rate limit (20 an hour), one re-encoding at a time | `community::logo::LogoState` |
+| Per-signer rate limit (20 an hour); one update at a time, from its first read to its write | `community::logo::LogoState` |
+| A store an administrator can always repair: an unreadable record is replaced, and the same image sent again restores bytes that no longer match | `community::ops::logo::update_logo` |
+| A payload without `image` is refused, never read as a removal | schema check in `parse_spec_payload`; `a_payload_without_image_is_refused_and_removes_nothing` |
 | Audited by digest, never the image; no change without its record | `community::ops::logo`, `CommunityLogoUpdated` |
 | Served as an image only: fixed `Content-Type`, `nosniff`, `default-src 'none'; sandbox` | `routes::community::logo` |
 | A record that does not match its bytes, or names another type, is never served | `LogoState::served`, `LogoMeta::well_formed` |

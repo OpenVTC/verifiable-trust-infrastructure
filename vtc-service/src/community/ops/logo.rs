@@ -53,8 +53,38 @@ pub(crate) async fn update_logo(
     if !state.community_logo.admit_update(actor) {
         return Err(LogoUpdateError::RateLimited);
     }
-    let current = load_record(&state.community_ks).await?;
-    let held = current.as_ref().and_then(|r| r.logo.clone());
+    // One update at a time, from the first read to the write: re-encoding is
+    // CPU-bound, and two updates must not interleave their check and write.
+    let _permit = state
+        .community_logo
+        .update
+        .acquire()
+        .await
+        .map_err(|e| AppError::Internal(format!("logo update permit: {e}")))?;
+
+    // What is stored, read leniently: a record nothing here can read must
+    // never stop an administrator replacing or removing it.
+    let record = match load_record(&state.community_ks).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "stored community logo record unreadable; it will be replaced");
+            None
+        }
+    };
+    let unreadable = record.is_none()
+        && state
+            .community_ks
+            .get_raw(crate::community::logo::LOGO_RECORD_KEY)
+            .await?
+            .is_some();
+    // The logo actually servable now: its record well-formed and its bytes
+    // matching. Only that counts as "already stored" below, so sending the
+    // same image again repairs a store whose bytes were lost or altered.
+    let held = state
+        .community_logo
+        .served(&state.community_ks)
+        .await
+        .map(|(meta, _)| meta);
 
     let next = match image {
         None => None,
@@ -66,14 +96,8 @@ pub(crate) async fn update_logo(
             if bytes.len() > MAX_IMAGE_BYTES {
                 return Err(LogoUpdateError::TooLarge);
             }
-            // Items 3 and 4, off the runtime and one at a time.
+            // Items 3 and 4, off the runtime.
             let media_type = image.media_type.to_string();
-            let _permit = state
-                .community_logo
-                .encode
-                .acquire()
-                .await
-                .map_err(|e| AppError::Internal(format!("logo re-encoding permit: {e}")))?;
             let encoded =
                 match tokio::task::spawn_blocking(move || reencode_logo(&bytes, &media_type)).await
                 {
@@ -98,16 +122,18 @@ pub(crate) async fn update_logo(
 
     // Item 6: storing what is already stored, or removing what is not held,
     // changes nothing and is not audited.
+    // A removal is a no-op only when the record itself says nothing is held:
+    // a record naming a logo that cannot be served is still removed.
     let unchanged = match (&next, &held) {
-        (None, None) => true,
+        (None, _) => !unreadable && record.as_ref().is_none_or(|r| r.logo.is_none()),
         (Some((meta, _)), Some(h)) => meta.sha256 == h.sha256,
-        _ => false,
+        (Some(_), None) => false,
     };
     if unchanged {
         return Ok(LogoUpdate {
             logo: held,
             stored: false,
-            updated_at: current.map(|r| r.updated_at),
+            updated_at: record.map(|r| r.updated_at),
         });
     }
 

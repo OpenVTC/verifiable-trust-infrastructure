@@ -282,3 +282,119 @@ async fn no_change_lands_without_its_audit_record() {
     assert!(!status.is_success(), "{status} {doc}");
     assert_eq!(get_logo(&vtc, None).await.0, StatusCode::NOT_FOUND);
 }
+
+/// A PNG of noise: incompressible, so the document that carries it is far
+/// over the 64 KiB a Trust Task document is held to by default.
+fn noisy_png(side: u32) -> Vec<u8> {
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let img = image::RgbaImage::from_fn(side, side, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let b = seed.to_le_bytes();
+        image::Rgba([b[0], b[1], b[2], 255])
+    });
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    out
+}
+
+/// The door admits a logo of realistic size: the task declares its own
+/// `maxDocumentBytes` (360448), and the route's body cap follows it.
+#[tokio::test]
+async fn a_logo_larger_than_the_default_document_bound_is_accepted() {
+    let vtc = vtc().await;
+    let admin = admin(&vtc).await;
+    let sent = noisy_png(200);
+    assert!(
+        sent.len() > 100_000 && sent.len() <= 262_144,
+        "fixture is {} bytes",
+        sent.len()
+    );
+    let (status, doc) = call(&vtc, &admin, UPDATE, image_payload(&sent)).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["stored"], true, "{doc}");
+    let (status, _, body) = get_logo(&vtc, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.len() <= 262_144);
+}
+
+/// A payload with no `image` is outside the schema. It must never be read as
+/// `image: null`, which would remove the logo.
+#[tokio::test]
+async fn a_payload_without_image_is_refused_and_removes_nothing() {
+    let vtc = vtc().await;
+    let admin = admin(&vtc).await;
+    let (_, doc) = call(&vtc, &admin, UPDATE, image_payload(&png(8, 8))).await;
+    assert_eq!(payload(&doc)["stored"], true, "{doc}");
+    for bad in [
+        json!({}),
+        json!({ "image": null, "logoUrl": "https://example.com/l.png" }),
+    ] {
+        let (status, doc) = call(&vtc, &admin, UPDATE, bad).await;
+        assert!(status.is_client_error(), "{status} {doc}");
+    }
+    assert_eq!(get_logo(&vtc, None).await.0, StatusCode::OK, "still held");
+}
+
+/// Stored bytes that no longer match their record are not served, and sending
+/// the same image again is then a change that repairs them — not a no-op.
+#[tokio::test]
+async fn sending_the_logo_again_repairs_a_store_that_no_longer_matches() {
+    use vtc_service::community::logo::{LOGO_BYTES_KEY, LOGO_RECORD_KEY};
+    let vtc = vtc().await;
+    let admin = admin(&vtc).await;
+    let logo = image_payload(&png(8, 8));
+    call(&vtc, &admin, UPDATE, logo.clone()).await;
+
+    vtc.state
+        .community_ks
+        .insert_raw(
+            LOGO_BYTES_KEY.to_vec(),
+            b"<script>alert(1)</script>".to_vec(),
+        )
+        .await
+        .unwrap();
+    vtc.state.community_logo.invalidate();
+    assert_eq!(get_logo(&vtc, None).await.0, StatusCode::NOT_FOUND);
+    let (_, doc) = call(&vtc, &admin, UPDATE, logo.clone()).await;
+    assert_eq!(payload(&doc)["stored"], true, "a repair is a change: {doc}");
+    assert_eq!(get_logo(&vtc, None).await.0, StatusCode::OK);
+
+    // A record nothing can read does not stop an administrator replacing it,
+    // or removing it.
+    for fix in [logo, json!({ "image": null })] {
+        vtc.state
+            .community_ks
+            .insert_raw(LOGO_RECORD_KEY.to_vec(), b"not json".to_vec())
+            .await
+            .unwrap();
+        vtc.state.community_logo.invalidate();
+        assert_eq!(get_logo(&vtc, None).await.0, StatusCode::NOT_FOUND);
+        let (status, doc) = call(&vtc, &admin, UPDATE, fix).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        assert_eq!(payload(&doc)["stored"], true, "{doc}");
+    }
+    assert_eq!(
+        get_logo(&vtc, None).await.0,
+        StatusCode::NOT_FOUND,
+        "removed"
+    );
+}
+
+#[tokio::test]
+async fn a_weak_validator_also_answers_not_modified() {
+    let vtc = vtc().await;
+    let admin = admin(&vtc).await;
+    let (_, doc) = call(&vtc, &admin, UPDATE, image_payload(&png(8, 8))).await;
+    let sha = payload(&doc)["logo"]["sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _, _) = get_logo(&vtc, Some(&format!("\"other\", W/\"{sha}\""))).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    let (status, _, _) = get_logo(&vtc, Some("\"other\"")).await;
+    assert_eq!(status, StatusCode::OK);
+}
