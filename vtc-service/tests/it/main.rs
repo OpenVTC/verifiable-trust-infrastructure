@@ -49,6 +49,7 @@ mod ceremonies_list;
 mod ceremony_execute;
 mod cnm_vtc_admin_live;
 mod community_authority_renewal;
+mod community_logo;
 mod community_profile;
 mod community_rooms;
 mod community_theme;

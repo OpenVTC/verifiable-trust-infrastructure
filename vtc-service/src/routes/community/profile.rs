@@ -28,6 +28,12 @@ pub struct PublicCommunityProfile {
     pub name: String,
     pub description: String,
     pub logo_url: Option<String>,
+    /// The logo the community stored and serves from its own origin
+    /// (`vtc/community/logo/update/0.1`), if any. A page that admits images
+    /// only from its own origin draws this in preference to `logoUrl`; absent
+    /// when the community holds none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<crate::community::logo::PublicLogo>,
     pub public_url: Option<String>,
     pub contact_email: Option<String>,
     pub language: String,
@@ -129,6 +135,7 @@ pub async fn get_public_profile(
         name: profile.name,
         description: profile.description,
         logo_url: profile.logo_url,
+        logo: crate::community::logo::public_logo(&state.community_ks).await,
         public_url: profile.public_url,
         contact_email: profile.contact_email,
         language: profile.language,

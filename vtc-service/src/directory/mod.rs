@@ -56,7 +56,7 @@ pub struct Directory {
 }
 
 /// Count one request by `key` in `window`; `false` once `limit` are in it.
-fn admit(
+pub(crate) fn admit(
     map: &Mutex<HashMap<String, VecDeque<Instant>>>,
     key: &str,
     window: Duration,

@@ -122,7 +122,13 @@ export interface MemberMe {
   role: string;
   personhood: boolean;
   canManagePasskeys: boolean;
-  community: { name?: string | null; logoUrl?: string | null; did?: string | null };
+  community: {
+    name?: string | null;
+    logoUrl?: string | null;
+    /** The logo the community stored, drawn in preference to `logoUrl`. */
+    logo?: { url: string } | null;
+    did?: string | null;
+  };
 }
 
 export interface MemberPasskey {

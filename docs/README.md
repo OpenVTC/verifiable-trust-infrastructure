@@ -393,6 +393,10 @@ Others:
   the transitional allowance made for the one shipping client that did not sign
   and how its stated removal condition was met, and sets out the migration path
   for the 49 tasks still served on a bearer token.
+- **[A community logo the VTC stores and serves](05-design-notes/vtc-community-logo.md)** —
+  implemented: why the logo is stored and served from the VTC's own origin,
+  why `logoUrl` is left alone, PNG only and no SVG, and where each security
+  property is held.
 - **[Signing from the admin console](05-design-notes/vtc-console-signing.md)** —
   the successor to the note above. The admin SPA holds no key, so every bearer
   route the migration would retire has to stay. Establishes the exact

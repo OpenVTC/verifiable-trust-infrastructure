@@ -327,8 +327,15 @@ async function refresh() {
       if (profile.description) {
         setText("community-description", profile.description);
       }
-      if (profile.logoUrl) {
-        showLogo(profile.logoUrl, profile.name);
+      // The logo the community stored and serves itself
+      // (`vtc/community/logo/update/0.1`) first: it is on this origin, which
+      // this page's CSP (`img-src 'self' data:`) requires. Else `logoUrl`.
+      const logo =
+        profile.logo && typeof profile.logo.url === "string" && profile.logo.url
+          ? profile.logo.url
+          : profile.logoUrl;
+      if (logo) {
+        showLogo(logo, profile.name);
       }
       // The public-profile endpoint also surfaces the mediator DID
       // so a single fetch is enough; `/health` is a fallback for

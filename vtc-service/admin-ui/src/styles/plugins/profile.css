@@ -55,3 +55,25 @@
   tab-size: 2;
   resize: vertical;
 }
+
+/* Logo card: the stored logo, or the one chosen, drawn on a checkerboard so
+   transparency reads. The image keeps its aspect ratio inside a fixed box. */
+.logo-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  margin-block: var(--space-3, 12px);
+}
+.logo-preview .brand-logo {
+  max-width: 256px;
+  max-height: 96px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  align-self: flex-start;
+  padding: 8px;
+  border: 1px solid var(--border, currentColor);
+  border-radius: var(--radius-md, 8px);
+  background:
+    repeating-conic-gradient(rgb(128 128 128 / 0.18) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+}

@@ -382,6 +382,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
                 .unwrap(),
             vtc_service::directory::model::Settings::default(),
         )),
+        community_logo: std::sync::Arc::new(vtc_service::community::logo::LogoState::default()),
         elections: std::sync::Arc::new(vtc_service::elections::Elections::new(
             store
                 .keyspace(vtc_service::store::keyspaces::ELECTIONS)

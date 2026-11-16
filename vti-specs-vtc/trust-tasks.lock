@@ -405,6 +405,12 @@ type_uri = "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1"
 digest = "sha256:6d431d36340836f5c7c0f468bbd9b0ee31d3138af5d1ece6170996848866f78e"
 
 [[task]]
+slug = "vtc/community/logo/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/logo/update/0.1"
+digest = "sha256:899887323079ad947ed5e30bf783e7e5f72a2450a6b58817a0c6c7654f258878"
+
+[[task]]
 slug = "vtc/community/profile/show"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/community/profile/show/0.1"

@@ -289,6 +289,35 @@ Actions, Join requests, Members and Repos pages, and in the portal the
 wallet sign-in number and identity choice. While a theme is drawn, the
 console's top bar says **Custom theme**, out of the theme's reach too.
 
+### Community logo
+
+The same page has a **Logo** card. **Choose image** takes a PNG, JPEG,
+WebP or SVG; the console draws it as a PNG at most 512 pixels on the
+longer side and shows it, and **Save logo** sends it
+(`vtc/community/logo/update/0.1`, `vtc.surface.admin`). An SVG is turned
+into a PNG in the browser first; the community never stores or serves
+one.
+
+The community re-encodes what arrives (dropping every metadata block
+and anything after the image data), stores it in the `community`
+keyspace and serves it itself at `GET /v1/community/logo`: public, with
+`Content-Type` from a fixed list, `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'; sandbox`, an `ETag` from
+its digest and `Cache-Control: public, max-age=300`. Each change is
+audited as `CommunityLogoUpdated` with the stored digest, never the
+image, and one administrator may make 20 changes an hour.
+
+The public profile and the portal's `/v1/member/me` name it as `logo`
+(`url`, `sha256`, `mediaType`, `width`, `height`), and every page — the
+console, the portal, both sign-in pages and the default landing page —
+draws it in place of the **Logo URL** field. That field stays as it is:
+an address in the public profile for readers elsewhere. The pages are
+served with `img-src 'self' data:`, so they draw a Logo URL only when it
+is on the VTC's own origin, and the form says so under the field when it
+is not. **Remove logo** goes back to the Logo URL, or to the standard
+mark. Why it works this way:
+[A community logo the VTC stores and serves](../05-design-notes/vtc-community-logo.md).
+
 ### Community DID as a QR code
 
 The default landing page shows the community DID as a QR code beside

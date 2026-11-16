@@ -42,6 +42,7 @@ use uuid::Uuid;
 use vti_specs::vtc::community::{
     branding::{show::v0_1 as branding_show, update::v0_1 as branding_update},
     join_discovery::{show::v0_1 as join_discovery_show, update::v0_1 as join_discovery_update},
+    logo::update::v0_1 as logo_update,
     requested_attributes::{show::v0_1 as requested_show, update::v0_1 as requested_update},
     theme::{show::v0_1 as theme_show, update::v0_1 as theme_update},
 };
@@ -122,6 +123,9 @@ pub(crate) const ACCEPTS_DELETE_TYPE: &str = <accepts_delete::Payload as Payload
 
 pub(crate) const THEME_UPDATE_ERR_OUTSIDE_PROFILE: &str =
     theme_update::error_codes::OUTSIDE_PROFILE.code;
+pub(crate) const LOGO_UPDATE_ERR_TOO_LARGE: &str = logo_update::error_codes::TOO_LARGE.code;
+pub(crate) const LOGO_UPDATE_ERR_NOT_AN_IMAGE: &str = logo_update::error_codes::NOT_AN_IMAGE.code;
+pub(crate) const LOGO_UPDATE_ERR_RATE_LIMITED: &str = logo_update::error_codes::RATE_LIMITED.code;
 pub(crate) const REQUESTED_ERR_DUPLICATE_TYPE: &str =
     requested_update::error_codes::DUPLICATE_TYPE.code;
 pub(crate) const SCHEMAS_REGISTER_ERR_INVALID_CREDENTIAL_SCHEMA: &str =
@@ -160,6 +164,8 @@ pub(super) fn register(routes: Routes) -> Routes {
     let routes = on!(routes, branding_update::Payload => |state, ctx, doc| handle_branding_update(state, ctx, doc));
     let routes = on!(routes, theme_show::Payload => |state, _, doc| handle_theme_show(state, doc));
     let routes = on!(routes, theme_update::Payload => |state, ctx, doc| handle_theme_update(state, ctx, doc));
+    let routes =
+        on!(routes, logo_update::Payload => |state, ctx, doc| handle_logo_update(state, ctx, doc));
     let routes = on!(routes, requested_show::Payload => |state, ctx, doc| handle_requested_show(state, ctx, doc));
     let routes = on!(routes, requested_update::Payload => |state, ctx, doc| handle_requested_update(state, ctx, doc));
     let routes = on!(routes, join_discovery_show::Payload => |state, ctx, doc| handle_join_discovery_show(state, ctx, doc));
@@ -491,6 +497,61 @@ async fn handle_theme_update(
         // Item 2's byte bound arrives here as a validation error, so it is
         // `malformedRequest`, not `outsideProfile`.
         Err(ThemeUpdateError::App(e)) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/community/logo/update/0.1` — administrator standing, as for the theme,
+/// checked before `data` is decoded (item 1).
+async fn handle_logo_update(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::community::ops::logo::{LogoUpdateError, update_logo};
+
+    let actor = match as_capable::<logo_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<logo_update::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    match update_logo(state, &actor, payload.image.as_ref()).await {
+        Ok(u) => {
+            let mut body = json!({ "logo": u.logo, "stored": u.stored });
+            if let Some(at) = u.updated_at {
+                body["updatedAt"] = json!(at);
+            }
+            success_response(&doc, body)
+        }
+        Err(LogoUpdateError::TooLarge) => reject_with_code(
+            &doc,
+            extended_code(LOGO_UPDATE_ERR_TOO_LARGE),
+            "the logo is larger than the community stores or decodes; nothing was stored",
+            None,
+        ),
+        Err(LogoUpdateError::NotAnImage) => reject_with_code(
+            &doc,
+            extended_code(LOGO_UPDATE_ERR_NOT_AN_IMAGE),
+            "`data` is not an image of its `mediaType` this community can read; \
+             nothing was stored",
+            None,
+        ),
+        Err(LogoUpdateError::RateLimited) => reject_with_code(
+            &doc,
+            extended_code(LOGO_UPDATE_ERR_RATE_LIMITED),
+            "too many logo updates in the last hour; try again later",
+            None,
+        ),
+        Err(LogoUpdateError::App(e)) => app_error_to_reject(&doc, &e),
     }
 }
 

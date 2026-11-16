@@ -3,7 +3,8 @@
 //
 // - Name and logo come from the unauthenticated public profile
 //   (`GET /v1/community/public-profile`), the same read the home page and the
-//   member portal make.
+//   member portal make. The logo is the one the community stored (`logo`)
+//   when it holds one, else `logoUrl` (`chosenLogo`).
 // - The accent comes from the community's branding (the Vetting screen's
 //   Branding card, `vtc/community/branding/show/0.1`), a signed read, so it is
 //   asked for only once this browser can sign. It shares the card's query key,
@@ -18,7 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { fetchBranding, vettingKeys } from "@/plugins/vetting/api";
 
-import { displayableLogo } from "./display-logo";
+import { chosenLogo, displayableLogo } from "./display-logo";
 
 export interface PublicProfileView {
   readonly name: string | null;
@@ -35,10 +36,11 @@ async function fetchPublicProfile(): Promise<PublicProfileView> {
     headers: { Accept: "application/json" },
   });
   if (!res.ok) throw new Error(`public profile: HTTP ${res.status}`);
-  const body = (await res.json()) as { name?: unknown; logoUrl?: unknown };
+  const body = (await res.json()) as { name?: unknown; logoUrl?: unknown; logo?: { url?: unknown } | null };
   return {
     name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : null,
-    logoUrl: typeof body.logoUrl === "string" && body.logoUrl ? body.logoUrl : null,
+    // The stored logo first: it is served from this origin, so it is drawn.
+    logoUrl: chosenLogo(body),
   };
 }
 

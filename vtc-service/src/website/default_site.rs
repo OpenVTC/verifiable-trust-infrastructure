@@ -170,6 +170,17 @@ mod tests {
         );
     }
 
+    /// The home page draws the logo the community stored before `logoUrl`, as
+    /// the console and the member portal do (`chosenLogo`): only the stored one
+    /// is on this origin, which the page's CSP requires.
+    #[test]
+    fn site_prefers_the_stored_logo_over_the_logo_url() {
+        let js = std::str::from_utf8(lookup("/site.js").expect("site.js embedded")).unwrap();
+        let stored = js.find("profile.logo.url").expect("reads the stored logo");
+        let url = js.find(": profile.logoUrl").expect("falls back to logoUrl");
+        assert!(stored < url, "the stored logo is tried first");
+    }
+
     #[test]
     fn lookup_misses_on_unknown_path() {
         assert!(lookup("/no-such-file").is_none());
