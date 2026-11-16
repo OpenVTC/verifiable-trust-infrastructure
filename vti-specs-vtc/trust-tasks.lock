@@ -408,7 +408,7 @@ digest = "sha256:6d431d36340836f5c7c0f468bbd9b0ee31d3138af5d1ece6170996848866f78
 slug = "vtc/community/logo/update"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/community/logo/update/0.1"
-digest = "sha256:899887323079ad947ed5e30bf783e7e5f72a2450a6b58817a0c6c7654f258878"
+digest = "sha256:344dc73d9c5f11bc53f0010679c41eb3c6c8d64ed5c10b1d01f46b2f4ec5b042"
 
 [[task]]
 slug = "vtc/community/profile/show"
