@@ -152,6 +152,10 @@ pub enum RoomOperation {
     PruneRecords,
     /// `rooms/records/retention/set`: replace the room's record retention.
     SetRecordRetention,
+    /// `rooms/signal-delay/set`: change whether the host waits a randomised interval
+    /// before the room's watch signals. The audit row keeps the setting replaced, the one
+    /// recorded and the reason.
+    SetSignalDelay,
     /// The owner hands the room to another member.
     TransferOwner,
     /// A nominated successor takes a dormant room.
@@ -174,6 +178,7 @@ impl RoomOperation {
             RoomOperation::PruneEpoch => "room.epoch.prune",
             RoomOperation::PruneRecords => "room.records.prune",
             RoomOperation::SetRecordRetention => "room.records.retention.set",
+            RoomOperation::SetSignalDelay => "room.signal-delay.set",
             RoomOperation::TransferOwner => "room.owner.transfer",
             RoomOperation::ClaimOwner => "room.owner.claim",
             RoomOperation::PutRevocations => "room.revocations.put",
@@ -199,6 +204,7 @@ impl RoomOperation {
             | RoomOperation::PruneEpoch
             | RoomOperation::PruneRecords
             | RoomOperation::SetRecordRetention
+            | RoomOperation::SetSignalDelay
             | RoomOperation::TransferOwner
             | RoomOperation::PutRevocations
             | RoomOperation::GetRevocations => Action::Admin,
@@ -234,6 +240,7 @@ mod tests {
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
                 valid_until: None,
+                purposes: Default::default(),
             })
         }
     }
@@ -254,6 +261,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         };

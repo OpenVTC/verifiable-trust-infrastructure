@@ -9,7 +9,7 @@
 //! Every handler is the same shape: authority from the **verified signer's ACL
 //! row**, read now ([`super::admin_signer`]); the payload held to its
 //! published schema ([`super::parse_spec_payload`]); then the one shared
-//! operation in [`crate::routes::acl`]. Writing an entry takes
+//! operation in [`crate::acl::ops`]. Writing an entry takes
 //! `vtc.roles.assign` and is bounded by the writer's own entry
 //! ([`crate::acl::granting`], §6.3). Reading the ACL takes any administrative
 //! role. The ACL has no REST route: this is the only door, on every transport.
@@ -19,9 +19,15 @@
 //! authority-conferring capability also parks for its other holders' consent
 //! (**VTI-APV-018**).
 
+// The community serves `acl/*` at 0.2 (`acl/list` at 0.3), now superseded by
+// the 0.3 family's `purposes`. Purposes bind a node that serves a purpose-bound
+// operation (VTI-ACL-102: reads of a principal's agent memory, a VTA opening a
+// room record for its principal); a community serves none, so it stays on the
+// versions it speaks until it moves for another reason.
+#![allow(deprecated)]
+
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 use vti_specs::acl::{
     change_role::v0_2 as acl_change_role, grant::v0_2 as acl_grant, list::v0_3 as acl_list,
     revoke::v0_2 as acl_revoke, show::v0_2 as acl_show, update::v0_2 as acl_update,
@@ -31,12 +37,25 @@ use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
     success_response, task_error_to_reject,
 };
+use super::routing::{Routes, on};
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::capability::CeilingError;
 use crate::acl::granting::GrantRefusal;
+use crate::acl::ops::{self as ops, EntryParseError, WriteError};
 use crate::error::{AppError, TaskError};
-use crate::routes::acl::{self as ops, EntryParseError, WriteError};
 use crate::server::AppState;
+
+/// Register every task this family serves (#2579).
+#[allow(deprecated)] // the community serves acl/* 0.2 (list 0.3)
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::acl::grant::v0_2::Payload => handle_grant);
+    let routes = on!(routes, vti_specs::acl::change_role::v0_2::Payload => handle_change_role);
+    let routes = on!(routes, vti_specs::acl::show::v0_2::Payload => handle_show);
+    let routes = on!(routes, vti_specs::acl::list::v0_3::Payload => handle_list);
+    let routes = on!(routes, vti_specs::acl::update::v0_2::Payload => handle_update);
+    let routes = on!(routes, vti_specs::acl::revoke::v0_2::Payload => handle_revoke);
+    on!(routes, vti_specs::acl::swap_key::v0_1::Payload => handle_swap_key)
+}
 
 // ─── reading ─────────────────────────────────────────────────────────────
 
@@ -347,8 +366,8 @@ pub(super) async fn handle_update(
     };
     let plan = match ops::plan_update_v0_2(state, &actor.did, &doc.payload).await {
         Ok(p) => p,
-        Err(ops::UpdateV02Error::Parse(e)) => return refuse_parse(&doc, e, UPDATE_V0_2),
-        Err(ops::UpdateV02Error::NarrowingNotPermitted) => {
+        Err(ops::UpdateV03Error::Parse(e)) => return refuse_parse(&doc, e, UPDATE_V0_2),
+        Err(ops::UpdateV03Error::NarrowingNotPermitted) => {
             return task_error_to_reject(
                 &doc,
                 &TaskError::declared(
@@ -361,7 +380,7 @@ pub(super) async fn handle_update(
                 ),
             );
         }
-        Err(ops::UpdateV02Error::Write(e)) => {
+        Err(ops::UpdateV03Error::Write(e)) => {
             let role = doc.payload["subject"]
                 .as_str()
                 .unwrap_or_default()
@@ -410,7 +429,7 @@ pub(super) async fn handle_change_role(
     .await
     {
         Ok(p) => p,
-        Err(ops::ChangeRoleV02Error::StateMismatch(current)) => {
+        Err(ops::ChangeRoleV03Error::StateMismatch(current)) => {
             return reject_with_code(
                 &doc,
                 extended_code(error_codes::STATE_MISMATCH.code),
@@ -422,7 +441,7 @@ pub(super) async fn handle_change_role(
                 Some(json!({ "currentRole": current })),
             );
         }
-        Err(ops::ChangeRoleV02Error::Write(e)) => {
+        Err(ops::ChangeRoleV03Error::Write(e)) => {
             return refuse_write(&doc, e, CHANGE_ROLE_V0_2, checked.to_role.as_str());
         }
     };
@@ -629,7 +648,7 @@ pub(super) async fn handle_swap_key(
 /// `Critical` ([`crate::acl::admin_consent::after_reduction`]).
 pub(super) async fn settle_signed_gate(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     plan: &ops::GrantPlan,
 ) -> Result<
@@ -753,7 +772,7 @@ pub(super) async fn settle_signed_gate(
 /// The consent is spent here, so call it last before the write.
 pub(super) async fn settle_consent_gate(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     act: crate::acl::admin_consent::Act,
     subject: &str,
@@ -801,7 +820,7 @@ pub(super) async fn settle_consent_gate(
 /// two to send apart.
 pub(super) async fn settle_witness_list_gate(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     overrides: &std::collections::HashMap<String, Value>,
     how: &str,
@@ -812,7 +831,7 @@ pub(super) async fn settle_witness_list_gate(
         Ok(Some(change)) => change,
         Err(e) => return Err(app_error_to_reject(doc, &e)),
     };
-    match crate::routes::admin::config::lowered_threshold(state, overrides).await {
+    match crate::community::ops::config::lowered_threshold(state, overrides).await {
         Ok(None) => {}
         Ok(Some(_)) => {
             return Err(app_error_to_reject(
@@ -857,7 +876,7 @@ enum Render {
 /// landed.
 async fn commit_settled(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     plan: ops::GrantPlan,
     reduced: Option<(
@@ -917,9 +936,6 @@ mod tests {
     use serde_json::{Value, json};
     use vti_rooms_dtg::test_support::Party;
 
-    use super::super::members_admin_tests::{
-        assert_conforms, error_code, payload_of, signed, unsigned,
-    };
     use super::super::{
         ACL_GRANT_TYPE, ACL_LIST_TYPE, ACL_REVOKE_TYPE, ACL_SHOW_TYPE, ACL_UPDATE_TYPE,
         JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core,
@@ -930,6 +946,9 @@ mod tests {
     };
     use crate::join::JoinTransport;
     use crate::test_support::TestVtc;
+    use crate::trust_tasks::test_fixtures::{
+        assert_conforms, error_code, payload_of, signed, unsigned,
+    };
     use trust_tasks_rs::TrustTask;
 
     const TRANSPORTS: [JoinTransport; 3] = [

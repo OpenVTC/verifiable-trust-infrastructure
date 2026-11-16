@@ -32,7 +32,8 @@ pub async fn sweep_expired(
     let mut pruned = 0usize;
 
     // Expired pending requests (raised but never answered).
-    for (key, value) in consent_ks.prefix_iter_raw("consent_pending:").await? {
+    let mut rows = crate::rows::rows(consent_ks, "consent_pending:");
+    while let Some((key, value)) = rows.next().await? {
         let pending: PendingConsent = match serde_json::from_slice(&value) {
             Ok(p) => p,
             Err(e) => {
@@ -48,7 +49,8 @@ pub async fn sweep_expired(
     }
 
     // Grants whose optional TTL has lapsed.
-    for (key, value) in consent_ks.prefix_iter_raw("grant:").await? {
+    let mut rows = crate::rows::rows(consent_ks, "grant:");
+    while let Some((key, value)) = rows.next().await? {
         let grant: ConsentGrant = match serde_json::from_slice(&value) {
             Ok(g) => g,
             Err(e) => {

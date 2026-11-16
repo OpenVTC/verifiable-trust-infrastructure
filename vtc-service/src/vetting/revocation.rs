@@ -31,7 +31,7 @@ use vta_sdk::protocols::vetting::CheckShape;
 use vta_sdk::protocols::vetting::revoke_statement::v0_1::{
     Payload as RevokeStatement, PayloadReason as RevocationReason,
 };
-use vti_common::audit::{AuditEvent, VettingStatementRevokedData};
+use vtc_audit::{AuditEvent, VettingStatementRevokedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 

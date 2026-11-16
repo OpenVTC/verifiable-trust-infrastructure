@@ -358,7 +358,7 @@ pub struct RollbackResponse {
     pub draining_mediator: Option<String>,
     /// The VTA's own DID — the subject of the LogEntry this
     /// rollback wrote. Carried so the CLI can print follow-up
-    /// commands like `pnm webvh did-log <vta_did>` for serverless
+    /// commands like `pnm did-mgmt dids get-log <vta_did>` for serverless
     /// deployments without forcing the operator to look it up.
     /// Empty string in `no_op` responses where no LogEntry was
     /// written. Serialized as `vta_did` on the wire; elided when
@@ -463,7 +463,7 @@ pub struct ServiceMutationResponse {
     pub drain_until: Option<String>,
     /// The VTA's own DID — subject of the LogEntry this mutation
     /// wrote. Carried so the CLI can print follow-up commands like
-    /// `pnm webvh did-log <vta_did>` for serverless deployments
+    /// `pnm did-mgmt dids get-log <vta_did>` for serverless deployments
     /// without forcing the operator to look it up.
     /// `#[serde(default)]` + `skip_serializing_if = "String::is_empty"`
     /// keep the wire compact and back-compat with older servers.

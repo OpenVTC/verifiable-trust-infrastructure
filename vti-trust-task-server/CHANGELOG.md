@@ -2,6 +2,185 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-trust-task-server-v0.11.0...vti-trust-task-server-v0.12.0) — 2026-11-15
+
+
+## [0.11.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-trust-task-server-v0.10.0...vti-trust-task-server-v0.11.0) — 2026-11-14
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Changed
+
+- **vta**: Decouple vta-cli-common, split key/room modules, extract vta-test-support, share reject helpers and service plumbing ([#2730](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2730))
+
+* refactor(vta): put vta-cli-common and dialoguer behind cli-synthesis ([#2566](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2566))
+
+  Only the `vta` binary's offline CLI modules and setup wizard use them,
+  and the binary already requires `cli-synthesis`. The library — and so
+  vta-enclave — no longer compiles vtc-client, ratatui, qrcode, dialoguer
+  or crossterm: `cargo tree -p vta-enclave -e normal` drops from 981 to
+  ~935 unique lines.
+
+  The vti-rooms comment claimed `default-features = false` kept the host
+  half out of the build; feature unification through vti-rooms-dtg (which
+  verifies through `vti_rooms::authz`) turns `host` back on. Say so,
+  and why it costs nothing new.
+
+- **rooms**: Share the rooms/* handlers between hosts and run every host receive path on Spine ([#2731](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2731))
+
+* refactor(room-host): receive every document through vti_trust_task_server::Spine
+
+  room-host re-implemented the receive pipeline inline: size, freshness,
+  validate_basic and the accepted-id claim/settle, with no spec-policy step
+  and the proof verified lazily inside each handler. It now runs the shared
+  Spine the VTC runs ([#2576](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2576)): the size gate holds each task to its declared
+  maxDocumentBytes, the spec policy comes from
+  vti_specs::schema_index::spec_policy_for, the proof is verified once over
+  the document as received and bound to its issuer, DIDComm and TSP frames
+  carry their authenticated sender so the spine binds it (VTI-OPS-021/093),
+  and the duplicate-id record is StoreAcceptedIds (VTI-OPS-025..029).
+
+  A host without a DID still refuses an expired document: the spine skips
+  the recipient binding then, so before_proof applies the expiry check.
+  A proof made by someone other than the issuer is now proofInvalid, as at
+  the VTC, rather than permissionDenied.
+
+
+
+### Performance
+
+- **vta**: Cache compiled schemas and policies, verify once, bound sweeps and list pages ([#2713](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2713))
+
+* perf(vta-sdk,vta-service): compile each Trust Task payload schema once ([#2622](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2622))
+
+  trust-tasks-rs 0.37's against_schema / validate_value parse and compile the
+  schema on every call. vta_sdk::schema_cache keeps the compiled validator by
+  the &'static schema text's address (the same technique as trust-tasks-rs
+  0.38's SchemaValidator), with the jsonschema release trust-tasks-rs 0.37 uses
+  so the check and its error text are unchanged. The dispatch spine, the SDK's
+  send-side check, room act, notifications, rooms, task consent, vetting and
+  the VTA's per-handler payload checks use it.
+
+  trust-tasks-rs 0.38 moves in lockstep with affinidi-tdk and the messaging
+  SDK, so the bump is left to that train; this module then wraps
+  SchemaValidator.
+
+
+
+## [0.10.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-trust-task-server-v0.9.0...vti-trust-task-server-v0.10.0) — 2026-11-12
+
+
+### Added
+
+- **vta-sdk**: ResolvedMethods declarations and the VTI-KEY-009 refusals ([#2672](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2672))
+
+* feat(vta-sdk): resolvedMethods declarations and the VTI-KEY-009 refusals
+
+  The VTI specification now admits did:webs as an optional, alpha method
+  for a node's durable identity (dtgwg-vti-spec#121). A node acts as an
+  identity of an optional method only toward a peer whose verified current
+  DID document declares it resolves that method, in a top-level
+  resolvedMethods member (VTI-KEY-008); otherwise it sends nothing and
+  fails with methodNotDeclared. A party that cannot rely on material
+  without resolving a method it does not resolve refuses it with
+  unsupportedDidMethod (VTI-KEY-009).
+
+  - vta_sdk::resolved_methods: the required methods, what this build
+    resolves and declares, the lenient reader of a peer's declaration,
+    require_declared (the sending-side rule) and declare (with the JSON-LD
+    term VTI-KEY-008 fixes).
+  - The VTA declares did:webs in every document it mints, and so do the
+    built-in templates for the nodes this workspace runs (vtc-host,
+    room-host, dtg-witness, ballot-box). Templates for software outside it
+    declare nothing.
+  - Receive side: a proof by a DID of a method this party does not resolve
+    is refused as DiProofError::UnsupportedDidMethod before any resolver is
+    asked, and answered proofInvalid with details.reason
+    unsupportedDidMethod and the method (the VTA, the shared Trust Task
+    spine, the VTC).
+  - Typed errors end to end: AppError::{MethodNotDeclared,
+    UnsupportedDidMethod}, VtaError::{MethodNotDeclared,
+    UnsupportedDidMethod}, read back from a Trust Task rejection and a REST
+    body. The spine's app_error_to_reject also gains the NoMatchingProtocol
+    arm it lacked (it answered internalError).
+
+  Not breaking: DiProofError, AppError and VtaError are non_exhaustive.
+  The documents the VTA mints and the four templates gain resolvedMethods
+  and a further @context entry, which a DID-document consumer ignores.
+
+  The sending-side check at the outbound seams follows separately; no
+  node's own identity can be did:webs yet.
+
+
+
+### Fixed
+
+- **vta**: A did:webs node acts toward any peer; withdraw the resolvedMethods gate (VTI-KEY-003, VTI-KEY-008) ([#2697](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2697))
+
+* fix(vta,vtc)!: a did:webs node acts toward any peer; withdraw the resolvedMethods gate (VTI-KEY-003, VTI-KEY-008)
+
+  Each party chooses its own identity method and still works with every
+  other: a did:webs client talks to a did:webvh service, and a did:webs
+  node reaches any peer. dtgwg-vti-spec#123 makes did:webs a required
+  method every node resolves, with the key-role designation extension
+  (VTI-KEY-003); a node never requires a peer to use a particular durable
+  method (VTI-KEY-001); VTI-KEY-008, the resolvedMethods declaration gate,
+  is withdrawn with its methodNotDeclared refusal; VTI-KEY-009 keeps only
+  the receiving side.
+
+- **vtc-service**: Keep no copy of a token-bearing response for redelivery ([#2677](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2677))
+
+The Trust Task spine records each successful response so that a redelivery
+  of the same document `id` gets the first result back. Responses carrying a
+  bearer secret are left out of that record. That list had invite claim codes,
+  invitations and the event-stream grant, but not session tokens. So a
+  redelivered `auth/authenticate/0.3` or `auth/refresh/0.2` got the recorded
+  tokens back without the handler running: no single-use challenge check, no
+  refresh rotation or reuse detection, no audit row. The tokens also stayed in
+  the record for the acceptance window.
+
+  Now also unrecorded (a redelivery is answered `204`):
+  - `auth/authenticate/0.3`, `auth/refresh/0.2` (access and refresh tokens)
+  - `vtc/install/claim/finish/0.3`, `vtc/install/claim/passkey/finish/0.1`
+    (setup session token)
+  - `vtc/auth/recognise/0.3` (cross-community access token)
+  - `backup/initiate-export/0.1`, `backup/initiate-import/0.1` (transport token)
+
+
+
+## [0.9.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-trust-task-server-v0.8.0...vti-trust-task-server-v0.9.0) — 2026-11-10
+
+
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-trust-task-server-v0.7.0...vti-trust-task-server-v0.8.0) — 2026-11-09
+
+
 ## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-trust-task-server-v0.6.0...vti-trust-task-server-v0.7.0) — 2026-11-05
 
 

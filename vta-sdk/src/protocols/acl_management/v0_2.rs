@@ -412,6 +412,19 @@ where
     Deserialize::deserialize(de).map(Some)
 }
 
+/// Write `purposes` onto the `entry` of a grant payload built here, making it
+/// an `acl/grant/0.3` payload: AclEntry 0.3 is 0.2's members plus `purposes`
+/// (`acl/_shared/0.3` CONVENTIONS §8a).
+pub fn state_purposes(
+    payload: &mut Value,
+    purposes: &crate::acl::PurposeScope,
+) -> Result<(), serde_json::Error> {
+    if let Some(entry) = payload.get_mut("entry").and_then(Value::as_object_mut) {
+        entry.insert("purposes".into(), serde_json::to_value(purposes)?);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,19 +522,30 @@ mod tests {
             approver: Some("did:key:z6MkApprover".into()),
             require: None,
         });
+        // An `acl/grant/0.3` payload is this one with `purposes` stated.
+        let granted = |p: Value, purposes: &crate::acl::PurposeScope| {
+            let mut p = p;
+            state_purposes(&mut p, purposes).unwrap();
+            p
+        };
+        let any = crate::acl::PurposeScope::Any;
+        let listed = crate::acl::PurposeScope::listed(["taskExecution"]).unwrap();
         check(
-            TASK_ACL_GRANT_0_2,
-            grant_payload(&e, Some("onboarding"), false),
+            TASK_ACL_GRANT_0_3,
+            granted(grant_payload(&e, Some("onboarding"), false), &any),
         );
-        check(TASK_ACL_GRANT_0_2, grant_payload(&e, None, true));
-        check(TASK_ACL_SHOW_0_2, show_payload("did:key:zA"));
         check(
-            TASK_ACL_LIST_0_3,
+            TASK_ACL_GRANT_0_3,
+            granted(grant_payload(&e, None, true), &listed),
+        );
+        check(TASK_ACL_SHOW_0_3, show_payload("did:key:zA"));
+        check(
+            TASK_ACL_LIST_0_4,
             list_payload(Some(("ctx-a", ListDirection::Subtree)), Some("c"), Some(10)),
         );
-        check(TASK_ACL_LIST_0_3, list_payload(None, None, None));
+        check(TASK_ACL_LIST_0_4, list_payload(None, None, None));
         check(
-            TASK_ACL_UPDATE_0_2,
+            TASK_ACL_UPDATE_0_3,
             json!({
                 "subject": "did:key:zA",
                 "act": AuthorityScope::All,
@@ -532,11 +556,11 @@ mod tests {
             }),
         );
         check(
-            TASK_ACL_REVOKE_0_2,
+            TASK_ACL_REVOKE_0_3,
             revoke_payload("did:key:zA", &Revocation::Entry, None),
         );
         check(
-            TASK_ACL_REVOKE_0_2,
+            TASK_ACL_REVOKE_0_3,
             revoke_payload(
                 "did:key:zA",
                 &Revocation::Act {

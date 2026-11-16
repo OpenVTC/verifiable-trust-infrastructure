@@ -398,6 +398,62 @@ pub fn extract_status_ref(cred: &StoredCredential) -> Result<Option<StatusListRe
     Ok(None)
 }
 
+/// The largest status list decoded, in entries: 32 times the W3C minimum of
+/// 131,072. W3C Bitstring Status List v1.0 sets no maximum (§1.1: the bitstring
+/// "can be made larger"), so a reader chooses its own; this one matches
+/// `vta_sdk::vetting::status::MAX_STATUS_LIST_BITS`.
+pub const MAX_STATUS_LIST_ENTRIES: usize = 1 << 22;
+
+/// Longest `encodedList` decoded, in characters. Matches
+/// `vta_sdk::vetting::status::MAX_ENCODED_LIST_CHARS`.
+pub const MAX_ENCODED_LIST_CHARS: usize = 1 << 22;
+
+/// Refuse a resolved list whose declared size, or encoded length, is outside
+/// what this reader decodes, or that cannot hold `index` — before anything is
+/// allocated from those sizes.
+///
+/// §3.2 step 10: "If the credentialIndex multiplied by the size is a value
+/// outside of the range of the bitstring, a RANGE_ERROR MUST be raised."
+fn check_resolved_bounds(resolved: &ResolvedStatusList, index: usize) -> Result<(), AppError> {
+    if resolved.size == 0 || resolved.size > MAX_STATUS_LIST_ENTRIES {
+        return Err(AppError::Validation(format!(
+            "status list size {} is outside 1..={MAX_STATUS_LIST_ENTRIES} entries",
+            resolved.size
+        )));
+    }
+    if index >= resolved.size {
+        return Err(AppError::Validation(format!(
+            "statusListIndex {index} is out of bounds for the resolved list of {} entries",
+            resolved.size
+        )));
+    }
+    if resolved.encoded_list.is_empty() || resolved.encoded_list.len() > MAX_ENCODED_LIST_CHARS {
+        return Err(AppError::Validation(format!(
+            "status list encodedList is empty or longer than {MAX_ENCODED_LIST_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// W3C Bitstring Status List v1.0 §2.1: "If statusSize is not present as a
+/// property of the credentialStatus, then statusSize MUST be processed as 1",
+/// and "If present, statusSize MUST be an integer greater than zero." §1.3:
+/// "Conforming processors MAY choose to only support bitstring entry sizes of
+/// 1." Only 1 is read here; a wider entry is refused rather than read as one
+/// bit.
+fn check_status_size(value: Option<&serde_json::Value>) -> Result<(), AppError> {
+    match value {
+        None => Ok(()),
+        Some(v) if v.as_u64() == Some(1) => Ok(()),
+        Some(v) if v.as_u64().is_some_and(|n| n > 1) => Err(AppError::Validation(format!(
+            "credentialStatus statusSize {v} is not supported: only 1-bit entries are read"
+        ))),
+        Some(v) => Err(AppError::Validation(format!(
+            "credentialStatus statusSize {v} is not an integer greater than zero"
+        ))),
+    }
+}
+
 /// Parse a W3C `BitstringStatusListEntry` object into a [`StatusListRef`].
 fn parse_w3c_entry(entry: &serde_json::Value) -> Result<StatusListRef, AppError> {
     let status_list_credential = entry
@@ -414,6 +470,7 @@ fn parse_w3c_entry(entry: &serde_json::Value) -> Result<StatusListRef, AppError>
     // `statusListIndex` is a string per the W3C spec; tolerate a JSON number
     // too. Either way it must be a non-negative integer.
     let status_list_index = parse_index(entry.get("statusListIndex"))?;
+    check_status_size(entry.get("statusSize"))?;
 
     let status_purpose = entry
         .get("statusPurpose")
@@ -617,8 +674,10 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
     }
 
     // Decode the bitstring and read the single bit. The decoder is
-    // size-parameterised; the resolver supplies the authoritative size and
-    // purpose for the list it fetched.
+    // size-parameterised; the resolver supplies the size and purpose for the
+    // list it fetched. The size is bounded first: the decoder allocates in
+    // proportion to it.
+    check_resolved_bounds(&resolved, status_ref.status_list_index)?;
     let list = BitstringStatusList::decode(
         &resolved.encoded_list,
         resolved.size,
@@ -1025,6 +1084,64 @@ mod tests {
 
         let stored = storage::get(&vault, "cred-oob").await.unwrap().unwrap();
         assert_eq!(stored.status, CredentialStatus::Valid);
+    }
+
+    #[tokio::test]
+    async fn a_resolved_size_past_the_ceiling_is_refused_before_decoding() {
+        let (_dir, _store, vault) = fresh_vault();
+        let cred = cred_with_status("cred-big", 3, "revocation");
+        put(&vault, &cred).await.unwrap();
+
+        for size in [0, MAX_STATUS_LIST_ENTRIES + 1, usize::MAX] {
+            let mut resolver = MockResolver::new(None, StatusPurpose::Revocation);
+            resolver.list.size = size;
+            let err = refresh_status(&vault, "cred-big", &resolver)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppError::Validation(_)), "{size}: {err:?}");
+        }
+        let stored = storage::get(&vault, "cred-big").await.unwrap().unwrap();
+        assert_eq!(stored.status, CredentialStatus::Valid);
+    }
+
+    #[tokio::test]
+    async fn an_over_long_encoded_list_is_refused_before_decoding() {
+        let (_dir, _store, vault) = fresh_vault();
+        let cred = cred_with_status("cred-long", 3, "revocation");
+        put(&vault, &cred).await.unwrap();
+
+        let mut resolver = MockResolver::new(None, StatusPurpose::Revocation);
+        resolver.list.encoded_list = "A".repeat(MAX_ENCODED_LIST_CHARS + 1);
+        let err = refresh_status(&vault, "cred-long", &resolver)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn a_status_size_other_than_one_is_refused() {
+        for size in [
+            serde_json::json!(2),
+            serde_json::json!(u64::MAX),
+            serde_json::json!(0),
+            serde_json::json!("1"),
+        ] {
+            let mut c = cred_with_status("c", 0, "revocation");
+            let mut body: serde_json::Value = serde_json::from_slice(&c.body).unwrap();
+            body["credentialStatus"]["statusSize"] = size.clone();
+            c.body = serde_json::to_vec(&body).unwrap();
+            let err = extract_status_ref(&c).unwrap_err();
+            assert!(matches!(err, AppError::Validation(_)), "{size}");
+        }
+
+        let mut c = cred_with_status("c", 5, "revocation");
+        let mut body: serde_json::Value = serde_json::from_slice(&c.body).unwrap();
+        body["credentialStatus"]["statusSize"] = serde_json::json!(1);
+        c.body = serde_json::to_vec(&body).unwrap();
+        assert_eq!(
+            extract_status_ref(&c).unwrap().unwrap().status_list_index,
+            5
+        );
     }
 
     #[tokio::test]

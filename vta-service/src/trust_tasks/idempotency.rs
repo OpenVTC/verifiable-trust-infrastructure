@@ -116,7 +116,11 @@ fn payload_hash(doc: &TrustTask<serde_json::Value>) -> [u8; 32] {
     // reused across two different operations that happen to share a body.
     h.update(doc.type_uri.to_string().as_bytes());
     h.update([0u8]);
-    h.update(serde_json::to_vec(&doc.payload).unwrap_or_default());
+    // Canonical JSON (RFC 8785), not `serde_json::to_vec`: the same payload
+    // with its members in another order is the same request, and serde_json
+    // keeps insertion order whenever any crate in the build enables its
+    // `preserve_order` feature.
+    h.update(serde_json_canonicalizer::to_vec(&doc.payload).unwrap_or_default());
     h.finalize().into()
 }
 

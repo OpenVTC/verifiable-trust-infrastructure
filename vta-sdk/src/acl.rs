@@ -12,6 +12,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod purpose;
+pub use purpose::{PurposeDecision, PurposeScope, PurposeScopeError};
+
 /// A DID's authority to **act** — the contexts in which it may make a change.
 /// The sibling axis to [`ApproveScope`], with deliberately identical variants,
 /// an identical [`covers`](ActScope::covers) predicate, and the same

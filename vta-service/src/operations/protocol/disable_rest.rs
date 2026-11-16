@@ -94,7 +94,7 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
         match value {
             E::VtaDidNotConfigured => Self::VtaDidNotConfigured,
             E::VtaDidRecordMissing(s) => Self::VtaDidRecordMissing(s),
-            E::VtaDidLogMissing(s) => Self::VtaDidLogMissing(s),
+            E::VtaDidLogMissing(s) | E::VtaDidNotPublished(s) => Self::VtaDidLogMissing(s),
             E::EmptyLog => Self::EmptyLog,
             E::Storage(s) | E::DocumentParse(s) => Self::Storage(s),
         }
@@ -133,9 +133,12 @@ pub async fn disable_rest(
     let _guard = PROTOCOL_LOCK.lock().await;
 
     // Brick-prevention (§3.2) + preconditions, capturing the prior URL.
-    let (state, prior_url) =
-        check_disable_preconditions::<RestService, DisableRestError>(deps.config, deps.webvh_ks)
-            .await?;
+    let (state, prior_url) = check_disable_preconditions::<RestService, DisableRestError>(
+        deps.config,
+        deps.webvh_ks,
+        deps.webs_ks,
+    )
+    .await?;
 
     // Snapshot BEFORE the mutation (spec §3.5a): pre-state is the prior URL.
     snapshot::write(
@@ -149,7 +152,7 @@ pub async fn disable_rest(
     let update_result = publish_patch::<DisableRestError>(
         deps,
         auth,
-        &state.scid,
+        &state.backing,
         &state.vta_did,
         patched,
         channel,
@@ -222,6 +225,9 @@ mod tests {
         fn webvh_ks(&self) -> KeyspaceHandle {
             self.store.keyspace(crate::keyspaces::WEBVH).unwrap()
         }
+        fn webs_ks(&self) -> KeyspaceHandle {
+            self.store.keyspace(crate::keyspaces::WEBS).unwrap()
+        }
     }
 
     fn build_fixture(rest_initially: bool, didcomm_initially: bool) -> TestFixture {
@@ -252,6 +258,7 @@ mod tests {
         let err = check_disable_preconditions::<RestService, DisableRestError>(
             &fx.config,
             &fx.webvh_ks(),
+            &fx.webs_ks(),
         )
         .await
         .unwrap_err();
@@ -266,6 +273,7 @@ mod tests {
         let err = check_disable_preconditions::<RestService, DisableRestError>(
             &fx.config,
             &fx.webvh_ks(),
+            &fx.webs_ks(),
         )
         .await
         .unwrap_err();
@@ -279,6 +287,7 @@ mod tests {
         let err = check_disable_preconditions::<RestService, DisableRestError>(
             &fx.config,
             &fx.webvh_ks(),
+            &fx.webs_ks(),
         )
         .await
         .unwrap_err();

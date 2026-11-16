@@ -15,6 +15,10 @@
 //!   Phase 1's approve writes ACL + Member only.
 
 pub mod criteria;
+/// Invitation credentials (VIC): issue, list, revoke, deliver.
+pub(crate) mod invitations;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub mod ops;
 pub mod orchestrate;
 pub mod retention;
 pub mod storage;

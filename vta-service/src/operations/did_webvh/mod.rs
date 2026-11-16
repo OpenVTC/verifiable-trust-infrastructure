@@ -7,7 +7,7 @@
 //! - `servers` — webvh hosting-server CRUD + DID validation
 
 mod concurrency;
-mod document;
+pub(crate) mod document;
 pub(crate) mod host;
 mod lifecycle;
 pub(crate) mod presentation;
@@ -546,7 +546,7 @@ fn plan_key_slots(
     Ok(plan)
 }
 
-async fn resolve_template_for_render(
+pub(crate) async fn resolve_template_for_render(
     did_templates_ks: &KeyspaceHandle,
     name: &str,
     template_context: Option<&str>,
@@ -884,7 +884,7 @@ async fn create_path_host_client<'a>(
 /// removes `KeyMint` stops the next call — the rule every capability gate
 /// follows. `None` is for offline callers only; see
 /// [`CreateDidWebvhDeps::acl_ks`].
-async fn ensure_may_mint(
+pub(crate) async fn ensure_may_mint(
     acl_ks: Option<&KeyspaceHandle>,
     auth: &AuthClaims,
 ) -> Result<(), AppError> {

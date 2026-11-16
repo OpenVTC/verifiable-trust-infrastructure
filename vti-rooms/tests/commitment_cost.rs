@@ -1,13 +1,14 @@
 //! What the record commitment actually costs, measured rather than assumed.
 //!
-//! `storage::tree_head` is deliberately uncached: a cache would have to be
-//! invalidated by every put, curate and prune, and **a stale root is worse than
-//! a slow one** — it is a *wrong* commitment, and the failure it produces is an
-//! honest host appearing to equivocate, which is the exact accusation the
-//! machinery exists to make credible.
+//! This is the cost of committing a room from its records: canonicalising and
+//! hashing every one. It is what every read paid until #2595, which keeps each
+//! record's leaf hash beside it and caches the head (`storage` module docs), so
+//! a host now pays it once per room, when a room written before then is first
+//! indexed. **A stale root is worse than a slow one** — it is a *wrong*
+//! commitment — which is why the cache is invalidated in the same batch as
+//! every write rather than on a timer.
 //!
-//! The standing decision is therefore "correct first, and cache when there is a
-//! measurement saying where". This is that measurement. It is a test rather than
+//! This measures the full computation. It is a test rather than
 //! a benchmark because its job is to be *run* and read, not to gate anything: it
 //! asserts only an order of magnitude, so it fails if the cost changes by 10x
 //! and not if a laptop is busy.

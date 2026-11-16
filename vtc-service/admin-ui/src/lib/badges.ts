@@ -19,6 +19,9 @@ import type {
   BadgeAwardsOfferResponse,
   BadgeAwardsRevokeResponse,
   BadgeAwardsWithdrawResponse,
+  BadgeClaimsCreateResponse,
+  BadgeClaimsListResponse,
+  BadgeClaimsWithdrawResponse,
   BadgeCreatePayload,
   BadgeCreateResponse,
   BadgeHoldersListResponse,
@@ -51,6 +54,9 @@ export const AWARDS_OFFER = "https://trusttasks.org/spec/vtc/badges/awards/offer
 export const AWARDS_WITHDRAW = "https://trusttasks.org/spec/vtc/badges/awards/withdraw/0.1";
 export const AWARDS_REVOKE = "https://trusttasks.org/spec/vtc/badges/awards/revoke/0.1";
 export const AWARDS_LIST = "https://trusttasks.org/spec/vtc/badges/awards/list/0.1";
+export const CLAIMS_CREATE = "https://trusttasks.org/spec/vtc/badges/claims/create/0.1";
+export const CLAIMS_LIST = "https://trusttasks.org/spec/vtc/badges/claims/list/0.1";
+export const CLAIMS_WITHDRAW = "https://trusttasks.org/spec/vtc/badges/claims/withdraw/0.1";
 export const HOLDERS_LIST = "https://trusttasks.org/spec/vtc/badges/holders/list/0.1";
 export const KUDOS_LIST = "https://trusttasks.org/spec/vtc/badges/kudos/list/0.1";
 
@@ -225,6 +231,35 @@ export async function listKudosGivings(badgeId: string): Promise<KudosRow[]> {
     const page = await postSignedRead<BadgeKudosListResponse>(KUDOS_LIST, {
       badgeId,
       all: true,
+      limit: PAGE,
+      ...(cursor ? { cursor } : {}),
+    });
+    out.push(...page.items);
+    if (typeof page.nextCursor !== "string") break;
+    cursor = page.nextCursor;
+  }
+  return out;
+}
+
+// ── Claim codes (VTI-BDG-025 – 027) ─────────────────────────────────────
+
+export type ClaimCode = BadgeClaimsListResponse["items"][number];
+
+/** Issue a claim code for an event: the record, and the code itself — answered this once;
+ *  the community keeps only its digest. */
+export const createClaim = (badgeId: string, label: string, validUntil: string, admits: number) =>
+  postSignedTrustTask<BadgeClaimsCreateResponse>(CLAIMS_CREATE, { badgeId, label, validUntil, limit: admits });
+
+export const withdrawClaim = (claimId: string) =>
+  postSignedTrustTask<BadgeClaimsWithdrawResponse>(CLAIMS_WITHDRAW, { claimId }).then((r) => r.claim);
+
+/** A badge's claim codes, every page — never a code. */
+export async function listClaims(badgeId: string): Promise<ClaimCode[]> {
+  const out: ClaimCode[] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const page = await postSignedRead<BadgeClaimsListResponse>(CLAIMS_LIST, {
+      badgeId,
       limit: PAGE,
       ...(cursor ? { cursor } : {}),
     });

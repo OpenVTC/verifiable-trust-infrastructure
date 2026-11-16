@@ -141,6 +141,16 @@ pub mod trust_task_reject_reasons {
     ///
     /// [`VtaError::NoMatchingProtocol`]: crate::error::VtaError::NoMatchingProtocol
     pub const NO_MATCHING_PROTOCOL: &str = "no_matching_protocol";
+    /// The document can be relied on only by resolving an identifier of a
+    /// method the receiver does not resolve, so it was refused unprocessed
+    /// (VTI-KEY-009). Carried on a `proofInvalid` rejection, with `method`
+    /// in `details`. Recovers [`VtaError::UnsupportedDidMethod`].
+    ///
+    /// Spelled as VTI-KEY-009 names it, not in this module's snake_case:
+    /// the specification fixes the discriminator.
+    ///
+    /// [`VtaError::UnsupportedDidMethod`]: crate::error::VtaError::UnsupportedDidMethod
+    pub const UNSUPPORTED_DID_METHOD: &str = "unsupportedDidMethod";
 }
 
 /// Machine-readable `details` members the VTA puts on an

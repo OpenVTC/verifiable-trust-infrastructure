@@ -511,3 +511,141 @@ async fn claim_finish_v0_3_refuses_a_founder_did_that_does_not_resolve() {
         Some(vtc_service::install::InstallTokenState::Issued { .. })
     ));
 }
+
+// ── #2660: a wallet invitation's entry is provisional until it is claimed ──
+
+const REVOKE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1";
+
+/// A wallet invitation for `admin_did` as `vtc/admin/invites/create/0.2`
+/// issues one — token, claim code and the administrator entry it writes —
+/// expiring `ttl` seconds from now (negative: already lapsed).
+async fn wallet_invitation(fix: &Fixture, admin_did: &str, ttl: i64) -> (String, String, String) {
+    let minted = mint_install_token(&fix.signer, &fix.audience, admin_did, 600).unwrap();
+    let code = vtc_service::install::claim_secret::generate();
+    let hash = vtc_service::install::claim_secret::hash(&code).unwrap();
+    let exp = Utc::now() + ChronoDuration::seconds(ttl);
+    let mut entry = vtc_service::acl::VtcAclEntry::new(
+        admin_did.to_string(),
+        VtcRole::Admin,
+        vtc_service::acl::AdminAuthority::community_admin(),
+        "did:key:z6MkInviter".to_string(),
+    );
+    entry.created_at = vtc_service::auth::session::now_epoch();
+    vtc_service::install::write_invite_entry(
+        &fix.vtc.state.acl_ks,
+        &fix.vtc.state.install_store,
+        &minted.jti,
+        entry,
+        exp,
+        None,
+    )
+    .await
+    .unwrap();
+    fix.vtc
+        .state
+        .install_store
+        .record_issued(
+            &minted.jti,
+            minted.cnonce_bytes,
+            *minted.ephemeral_signing_key,
+            exp,
+            Some(hash),
+            Some(admin_did.into()),
+        )
+        .await
+        .unwrap();
+    (minted.jwt, code, minted.jti.to_string())
+}
+
+async fn entry_of(fix: &Fixture, did: &str) -> Option<vtc_service::acl::VtcAclEntry> {
+    vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, did)
+        .await
+        .unwrap()
+}
+
+/// The entry a wallet invitation writes expires with it, and the claim makes
+/// it the administrator's own: permanent, and acting.
+#[tokio::test]
+async fn issue_2660_claiming_a_wallet_invitation_makes_its_entry_permanent() {
+    let fix = fixture().await;
+    let _existing = admin(&fix.vtc).await;
+    let invitee = Party::new();
+    let approver = Party::new();
+    let (token, code, _) = wallet_invitation(&fix, &invitee.did, 600).await;
+    let before = entry_of(&fix, &invitee.did).await.expect("written at mint");
+    assert!(before.expires_at.is_some(), "provisional until claimed");
+
+    let (status, opened) = start(&fix, &token, &code).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let opened = payload(&opened).clone();
+    let st = enrol_statement(&fix, &approver, &invitee.did, &opened).await;
+    let (status, done) = finish(&fix, &invitee, &opened, &approver.did, st).await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+
+    let after = entry_of(&fix, &invitee.did).await.expect("kept");
+    assert_eq!(after.expires_at, None, "the claim makes it permanent");
+    assert!(after.is_community_admin());
+}
+
+/// Revoking a wallet invitation before it is claimed withdraws the authority
+/// it conferred: no administrator is left behind.
+#[tokio::test]
+async fn issue_2660_revoking_an_unclaimed_wallet_invitation_leaves_no_admin() {
+    let fix = fixture().await;
+    let existing = admin(&fix.vtc).await;
+    let invitee = Party::new();
+    let (_, _, jti) = wallet_invitation(&fix, &invitee.did, 600).await;
+    assert!(
+        entry_of(&fix, &invitee.did)
+            .await
+            .is_some_and(|e| e.is_community_admin())
+    );
+
+    let (status, doc) = call(&fix.vtc, &existing, REVOKE_INVITE, json!({ "jti": jti })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(
+        entry_of(&fix, &invitee.did).await.is_none(),
+        "revoking the invitation removes the entry it wrote"
+    );
+}
+
+/// An entry someone rewrote after the invitation wrote it is theirs: revoking
+/// the invitation leaves it.
+#[tokio::test]
+async fn issue_2660_revoking_leaves_an_entry_rewritten_since() {
+    let fix = fixture().await;
+    let existing = admin(&fix.vtc).await;
+    let invitee = Party::new();
+    let (_, _, jti) = wallet_invitation(&fix, &invitee.did, 600).await;
+    let mut rewritten = entry_of(&fix, &invitee.did).await.unwrap();
+    rewritten.expires_at = None;
+    rewritten.updated_at = Some(vtc_service::auth::session::now_epoch());
+    vtc_service::acl::store_acl_entry(&fix.vtc.state.acl_ks, &rewritten)
+        .await
+        .unwrap();
+
+    let (status, doc) = call(&fix.vtc, &existing, REVOKE_INVITE, json!({ "jti": jti })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(entry_of(&fix, &invitee.did).await.is_some());
+}
+
+/// An invitation nobody claims lapses, and its entry with it: the DID holds
+/// no authority, and the token can no longer be claimed to restore it.
+#[tokio::test]
+async fn issue_2660_a_lapsed_wallet_invitation_leaves_no_admin() {
+    let fix = fixture().await;
+    let _existing = admin(&fix.vtc).await;
+    let invitee = Party::new();
+    let (token, code, _) = wallet_invitation(&fix, &invitee.did, -1).await;
+
+    let entry = entry_of(&fix, &invitee.did).await.unwrap();
+    assert!(!entry.is_administrator());
+    assert!(!entry.is_community_admin());
+
+    let (_, opened) = start(&fix, &token, &code).await;
+    assert_eq!(
+        tt_error_code(&opened),
+        Some(START_V0_3_ERR_INVALID_TOKEN),
+        "{opened}"
+    );
+}

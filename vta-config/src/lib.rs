@@ -614,6 +614,23 @@ pub struct DidsConfig {
     /// always lists it, whatever this says.
     #[serde(default = "default_true")]
     pub scid_also_known_as: bool,
+    /// Whether this VTA creates `did:webs` persona, relationship and
+    /// integration DIDs. Default `false`: the integration is alpha
+    /// (`docs/05-design-notes/did-webs-in-the-vta.md`). Off stops creation
+    /// only; a `did:webs` this VTA already holds keeps working, so turning it
+    /// off never strands one.
+    #[serde(default)]
+    pub webs_enabled: bool,
+    /// Whether `vta/webs/dids/create/0.2` creates a `did:webs` **service** DID
+    /// — the durable identity of a node or a service, at key assurance level 1.
+    /// Default `false`: a service `did:webs` is optional and alpha, peers that
+    /// have not declared `did:webs` resolution may not verify one, and the
+    /// specification has it enabled separately from `webs_enabled`
+    /// (`vta/webs/_shared/0.2` CONVENTIONS.md §1.1). Needs `webs_enabled` as
+    /// well; off refuses only new ones (`serviceDidNotPermitted`), never a
+    /// service DID already created.
+    #[serde(default)]
+    pub webs_service_dids: bool,
 }
 
 impl Default for DidsConfig {
@@ -621,6 +638,8 @@ impl Default for DidsConfig {
         Self {
             default_did_method: vta_sdk::did_scid::DidMethod::default(),
             scid_also_known_as: true,
+            webs_enabled: false,
+            webs_service_dids: false,
         }
     }
 }
@@ -946,6 +965,19 @@ pub struct TeeKmsConfig {
     /// Ignored if `vta_did` is already set in config or the store.
     #[serde(default)]
     pub vta_did_template: Option<String>,
+    /// Mint a key-role `did:webs` as this VTA's identity on first boot instead
+    /// of a `did:webvh` (alpha; VTI-KEY-001, design note did-webs-in-the-vta
+    /// §4, S8). The enclave derives the identity from its bootstrapped seed —
+    /// the same create `vta setup`'s `create_webs` runs — records it
+    /// unpublished, and registers it at its host on its own authority before
+    /// messaging starts. Needs `[dids] webs_enabled = true` and an enclave
+    /// built with the `webs` feature; exclusive with `vta_did_template`.
+    ///
+    /// Absent (the default) leaves first boot as it was. Ignored, like the
+    /// template, once the store holds an identity or config sets `vta_did`.
+    /// Not overlay-settable: a fleet tenant overlay cannot ask for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vta_did_webs: Option<TeeWebsIdentityConfig>,
     /// Context ID used for the auto-bootstrapped admin (default: "default").
     ///
     /// On first boot, the VTA auto-creates this context and grants the
@@ -1049,6 +1081,31 @@ pub struct TeeKmsConfig {
     /// is no channel for the parent to set it.
     #[serde(default)]
     pub allow_unanchored: bool,
+}
+
+/// The `did:webs` a TEE VTA mints as its identity on first boot
+/// ([`TeeKmsConfig::vta_did_webs`]): the same inputs as `vta setup`'s
+/// `vta_did` kind `create_webs`. The DID is
+/// `did:webs:{domain}[:{path}]:{AID}`.
+#[cfg(feature = "tee")]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct TeeWebsIdentityConfig {
+    /// The did-hosting server's DID (`did:webvh:…`). Its operator must allow
+    /// self-registration on `domain` (`[[hosting.webs_self_register]]`). The
+    /// enclave's egress must reach its Trust-Task HTTPS endpoint.
+    pub server_did: String,
+    /// The domain the host serves the DID on, e.g. `did.example.com`
+    /// (`host:port` for a non-default port).
+    pub domain: String,
+    /// Slot path before the AID, `/`-separated (`nodes`); absent puts it at
+    /// the top of the domain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The id the VTA registers the server under. Default `vta-host`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
 }
 
 /// External anti-rollback anchor configuration (P0.2b counter + P0.2c writer).
@@ -1199,8 +1256,9 @@ pub enum TeeMode {
 impl AppConfig {
     /// Compute the SHA-384 digest of the **effective** config for attestation.
     ///
-    /// Serializes a canonical, secret-free view of this config (JSON, in struct
-    /// field order) and hashes it. Call once **after all effective-config
+    /// Serializes a canonical, secret-free view of this config (RFC 8785
+    /// canonical JSON: members sorted, so the same configuration is the same
+    /// bytes in every process) and hashes it. Call once **after all effective-config
     /// mutations** for this boot (tenant overlay applied, KMS-injected JWT signing
     /// key, DID reconciliation/generation, webvh backfill, admin bootstrap), then
     /// store the result in [`Self::effective_config_digest`]; both the boot
@@ -1266,7 +1324,11 @@ impl AppConfig {
         view.secrets = SecretsConfig::default();
         view.effective_config_digest = None;
         view.effective_config_view = None;
-        serde_json::to_vec(&view).map_err(|e| {
+        // RFC 8785 canonical JSON, not `serde_json::to_vec`: the config holds
+        // maps (`policy.approver_sets` is a `HashMap`) whose iteration order is
+        // seeded per process, so serializing them as they iterate gave one
+        // configuration a different view and digest in every process.
+        serde_json_canonicalizer::to_vec(&view).map_err(|e| {
             AppError::Internal(format!("config attestation view serialization failed: {e}"))
         })
     }
@@ -1408,6 +1470,7 @@ impl AppConfig {
                 "VTA_STORE_DATA_DIR",
                 "VTA_DIDS_DEFAULT_DID_METHOD",
                 "VTA_DIDS_SCID_ALSO_KNOWN_AS",
+                "VTA_DIDS_WEBS_ENABLED",
                 "VTA_MESSAGING_MEDIATOR_URL",
                 "VTA_MESSAGING_MEDIATOR_DID",
                 "VTA_SECRETS_SEED",
@@ -1496,6 +1559,28 @@ impl AppConfig {
                 other => {
                     return Err(AppError::Config(format!(
                         "invalid VTA_DIDS_SCID_ALSO_KNOWN_AS '{other}', expected 'true' or 'false'"
+                    )));
+                }
+            };
+        }
+        if let Ok(enabled) = std::env::var("VTA_DIDS_WEBS_ENABLED") {
+            config.dids.webs_enabled = match enabled.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                other => {
+                    return Err(AppError::Config(format!(
+                        "invalid VTA_DIDS_WEBS_ENABLED '{other}', expected 'true' or 'false'"
+                    )));
+                }
+            };
+        }
+        if let Ok(enabled) = std::env::var("VTA_DIDS_WEBS_SERVICE_DIDS") {
+            config.dids.webs_service_dids = match enabled.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => true,
+                "false" | "0" | "no" => false,
+                other => {
+                    return Err(AppError::Config(format!(
+                        "invalid VTA_DIDS_WEBS_SERVICE_DIDS '{other}', expected 'true' or 'false'"
                     )));
                 }
             };
@@ -2072,6 +2157,34 @@ mod validate_tests {
         );
         assert!(view.get("effective_config_digest").is_none());
         assert!(view.get("effective_config_view").is_none());
+    }
+
+    /// The view is the same bytes for the same configuration in any process.
+    ///
+    /// `policy.approver_sets` is a `HashMap`, whose iteration order is seeded
+    /// per map, so serializing it as it iterates gave two processes with one
+    /// configuration two different views and digests. Each parse below builds
+    /// its map with a fresh seed, and the sets are written in different orders.
+    #[test]
+    fn config_attestation_view_is_the_same_bytes_for_the_same_config() {
+        let sets: Vec<String> = (0..8)
+            .map(|i| format!("set-{i} = [\"did:key:z{i}a\", \"did:key:z{i}b\"]"))
+            .collect();
+        let views: Vec<(Vec<u8>, Vec<u8>)> = (0..6)
+            .map(|rotate| {
+                let mut ordered = sets.clone();
+                ordered.rotate_left(rotate);
+                let config = cfg(&format!("[policy.approver_sets]\n{}\n", ordered.join("\n")));
+                (
+                    config.compute_config_attestation_view().expect("view"),
+                    config.compute_config_attestation_digest().expect("digest"),
+                )
+            })
+            .collect();
+        for (view, digest) in &views[1..] {
+            assert_eq!(view, &views[0].0, "the view differs between equal configs");
+            assert_eq!(digest, &views[0].1);
+        }
     }
 
     /// Write `contents` to a `config.toml` in a fresh tempdir and run it

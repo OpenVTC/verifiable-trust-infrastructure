@@ -111,6 +111,7 @@ pub mod members;
 pub mod rooms;
 mod send;
 pub mod signin;
+pub mod step_up;
 
 pub use connect::SessionIdentity;
 pub use send::{VtcTransport, supported_type_uris};

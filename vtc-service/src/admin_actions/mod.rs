@@ -132,7 +132,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tracing::{debug, info, warn};
-use vti_common::audit::{AuditEvent, TaskConsentData};
+use vtc_audit::{AuditEvent, TaskConsentData};
 use vti_common::error::AppError;
 use vti_common::task_consent::{self, effects::Effect, effects::StatePin};
 
@@ -713,7 +713,7 @@ pub const IMMEDIATE_EXT: &str = "immediate";
 pub(crate) fn immediate_request(payload: &Value) -> Result<Option<ImmediateRequest>, AppError> {
     let Some(v) = payload
         .get("ext")
-        .and_then(|e| e.get(crate::routes::acl::EXT_NS))
+        .and_then(|e| e.get(crate::acl::ops::EXT_NS))
         .and_then(|o| o.get(IMMEDIATE_EXT))
     else {
         return Ok(None);
@@ -752,12 +752,12 @@ pub(crate) fn without_immediate(payload: &Value) -> Value {
         return out;
     };
     if let Some(ours) = ext
-        .get_mut(crate::routes::acl::EXT_NS)
+        .get_mut(crate::acl::ops::EXT_NS)
         .and_then(Value::as_object_mut)
     {
         ours.remove(IMMEDIATE_EXT);
         if ours.is_empty() {
-            ext.remove(crate::routes::acl::EXT_NS);
+            ext.remove(crate::acl::ops::EXT_NS);
         }
     }
     if ext.is_empty()
@@ -871,7 +871,7 @@ pub(crate) async fn spend_immediate(state: &AppState, imm: Immediate) -> Result<
             .write(
                 &imm.requester,
                 Some(imm.subject.as_str()),
-                AuditEvent::SingleAdminMode(vti_common::audit::SingleAdminModeData {
+                AuditEvent::SingleAdminMode(vtc_audit::SingleAdminModeData {
                     event: "reductionImmediate".into(),
                     requirement: Some(Act::ReduceUnrestricted.requirement().into()),
                     task: Some(imm.type_uri.clone()),
@@ -1072,7 +1072,7 @@ pub(crate) async fn spend_waiver(state: &AppState, waiver: Waiver) -> Result<(),
             .write(
                 &waiver.requester,
                 (!waiver.subject.is_empty()).then_some(waiver.subject.as_str()),
-                AuditEvent::SingleAdminMode(vti_common::audit::SingleAdminModeData {
+                AuditEvent::SingleAdminMode(vtc_audit::SingleAdminModeData {
                     event: "consentWaived".into(),
                     requirement: Some(waiver.act.requirement().into()),
                     task: Some(waiver.type_uri.clone()),
@@ -1273,7 +1273,7 @@ pub(crate) async fn record_effect(state: &AppState) {
             .write(
                 &exec.requester,
                 None,
-                AuditEvent::AdminActionEffect(vti_common::audit::AdminActionEffectData {
+                AuditEvent::AdminActionEffect(vtc_audit::AdminActionEffectData {
                     action_id: exec.action_id.clone(),
                     execution_id: exec.execution_id.clone(),
                     task: exec.type_uri.clone(),
@@ -1542,7 +1542,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
                 .write(
                     &rec.requester,
                     None,
-                    AuditEvent::AdminActionBurst(vti_common::audit::AdminActionBurstData {
+                    AuditEvent::AdminActionBurst(vtc_audit::AdminActionBurstData {
                         action_id: rec.id.clone(),
                         kind: rec.kind.clone(),
                         raised: recent as u32,
@@ -1566,7 +1566,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
     notify_cooling_off_subject(state, &rec).await;
     if suspends(&rec) {
         // The subject is suspended now. A reduction binds the subject's
-        // sessions at once (`routes::acl`), and so does this: its live
+        // sessions at once (`acl::ops`), and so does this: its live
         // sessions go, and every request after is answered from the entry,
         // which refuses. It may sign in again to see why.
         match crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, &rec.subject).await {
@@ -1851,6 +1851,18 @@ pub(crate) async fn recheck_cooling_off(
 /// Apply expiry, invalidation and acknowledgement completion to one record.
 /// `true` if it changed. An `executing` record is [`reconcile`]'s, never this.
 async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bool, AppError> {
+    settle_with(state, rec, now, &mut None).await
+}
+
+/// [`settle`], with the live administrators read at most once for every
+/// record a pass settles (`admins`, filled on first need) rather than once per
+/// acknowledge item (#2602).
+async fn settle_with(
+    state: &AppState,
+    rec: &mut ActionRecord,
+    now: u64,
+    admins: &mut Option<Vec<String>>,
+) -> Result<bool, AppError> {
     if rec.status != Status::Open {
         return Ok(false);
     }
@@ -1862,8 +1874,11 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
     if rec.category == Category::Acknowledge {
         // VTI-VTC-023: complete once every remaining administrator expected to
         // acknowledge it has. Never expires; never invalidated.
-        let admins = live_admins(state, now).await?;
-        let expected = expected_acknowledgers(rec, &admins);
+        let admins = match admins {
+            Some(a) => a,
+            None => admins.insert(live_admins(state, now).await?),
+        };
+        let expected = expected_acknowledgers(rec, admins);
         if !rec.approvals.is_empty() && expected.iter().all(|d| rec.approved_by(d)) {
             rec.close(Status::Completed, ClosedReason::Acknowledged, None, now);
             return Ok(true);
@@ -1951,9 +1966,9 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
 }
 
 /// Every live administrator, scoped or not — who an acknowledge item can be
-/// for (VTI-VTC-023).
+/// for (VTI-VTC-023). Read through the authority index, not the whole ACL.
 async fn live_admins(state: &AppState, now: u64) -> Result<Vec<String>, AppError> {
-    Ok(crate::acl::list_acl_entries(&state.acl_ks)
+    Ok(crate::acl::list_authority_entries(&state.acl_ks)
         .await?
         .into_iter()
         // A suspended administrator acknowledges nothing while its reduction
@@ -1990,6 +2005,7 @@ pub(crate) async fn refresh_all(state: &AppState) -> Result<(), AppError> {
 
 async fn refresh_locked(state: &AppState) -> Result<(), AppError> {
     let now = now_epoch();
+    let mut admins = None;
     for mut rec in all(state).await? {
         if rec
             .closed_at
@@ -2026,7 +2042,9 @@ async fn refresh_locked(state: &AppState) -> Result<(), AppError> {
             }
             continue;
         }
-        if settle(state, &mut rec, now).await? {
+        // Settling closes records and writes no ACL entry, so the live
+        // administrators read for the first acknowledge item stand for the pass.
+        if settle_with(state, &mut rec, now, &mut admins).await? {
             save(state, &rec).await?;
             let stage = closing_stage(&rec);
             audit(state, &rec, &rec.requester.clone(), stage, Vec::new()).await;
@@ -2073,7 +2091,7 @@ pub(crate) async fn reconcile(
         .is_some_and(|v| exec_id.is_empty() || v == exec_id.as_bytes());
     let recorded = marked
         || revision_written(state, rec, &exec_id).await?
-        || effect_audited(state, &rec.id, &exec_id).await?;
+        || effect_audited(state, &rec.id, &exec_id, rec.created_at).await?;
     let pin_moved = !recorded
         && rec.category == Category::Approval
         && admin_consent::pin_for(state, rec.act, &rec.subject).await? != rec.state_pin;
@@ -2155,14 +2173,32 @@ async fn revision_written(
     )
 }
 
+/// How far before an action's creation [`effect_audited`] starts reading the
+/// audit log — a margin for the clock having been stepped back between the
+/// record's `created_at` and the audit row's timestamp.
+const EFFECT_SEEK_MARGIN_SECS: u64 = 3600;
+
 /// Whether an `AdminActionEffect` row names this action and execution.
+///
+/// The row is written while the action executes, so after the action was
+/// created: the walk seeks to `created_at` (less a margin) instead of reading
+/// the whole audit log, which only grows (#2599). Audit keys are
+/// `<rfc3339-ts>:<event_id>` and sort chronologically, as the registry tail
+/// relies on.
 async fn effect_audited(
     state: &AppState,
     action_id: &str,
     exec_id: &str,
+    created_at: u64,
 ) -> Result<bool, AppError> {
-    for (_, value) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&value) else {
+    let from = chrono::DateTime::<chrono::Utc>::from_timestamp(
+        created_at.saturating_sub(EFFECT_SEEK_MARGIN_SECS) as i64,
+        0,
+    )
+    .map(|t| format!("{}:", t.to_rfc3339()).into_bytes())
+    .unwrap_or_default();
+    for (_, value) in state.audit_ks.range_from_raw(from).await? {
+        let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&value) else {
             continue;
         };
         if let AuditEvent::AdminActionEffect(d) = &env.event
@@ -3127,7 +3163,8 @@ struct ViewCtx<'a> {
     records: &'a [ActionRecord],
     now: u64,
     threshold: u64,
-    /// Every ACL entry, read once: eligibility is per action, by its stake.
+    /// Every entry holding authority (the authority index), read once:
+    /// eligibility is per action, by its stake.
     entries: Vec<crate::acl::VtcAclEntry>,
     /// Every live administrator, of any role — who acknowledges (VTI-VTC-023).
     admins: Vec<String>,
@@ -3143,7 +3180,8 @@ impl<'a> ViewCtx<'a> {
             records,
             now,
             threshold: admin_consent::threshold(state).await?,
-            entries: crate::acl::list_acl_entries(&state.acl_ks).await?,
+            // Only an entry holding authority can decide anything.
+            entries: crate::acl::list_authority_entries(&state.acl_ks).await?,
             admins: live_admins(state, now).await?,
         })
     }

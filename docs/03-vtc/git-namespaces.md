@@ -938,7 +938,7 @@ is refused `malformedRequest` rather than silently reinterpreted.
 
 `view/0.5`, `namespace/list/0.1` and `repo/list/0.1` (trustoverip/dtgwg-trust-tasks-tf#659,
 trust-tasks-rs 0.23.4) and the other six (trustoverip/dtgwg-trust-tasks-tf#686,
-trust-tasks-rs 0.24.7) are all generated `trust_tasks_rs::specs::git_ns::*`
+trust-tasks-rs 0.24.7) are all generated `vti_specs::git_ns::*`
 modules, which declare the proof REQUIRED; the dispatch spine refuses an
 unsigned document before a handler runs.
 

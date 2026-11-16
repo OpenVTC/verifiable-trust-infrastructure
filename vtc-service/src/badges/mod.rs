@@ -26,8 +26,11 @@
 //! sent. The badge group, its DID, its authority credential and its memberships are the
 //! groups subsystem's.
 
+pub mod claims;
 pub mod credential;
 pub mod public;
+pub mod registry;
+pub mod share;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +39,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use vti_common::error::AppError;
 use vti_common::store::{Batch, KeyspaceHandle};
+
+/// The path segment, under the badge artefacts, of the locations a holder's share
+/// answers at (`vtc/badges/awards/share`): `/badges/shared/<token>`.
+pub const BADGE_SHARED_PATH: &str = "badges/shared";
 
 /// Every write to the `badges` keyspace that reads before it writes takes this lock,
 /// so two offers of one badge to one member, or two accepts of one award, never race.
@@ -264,11 +271,6 @@ pub struct Badge {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<DateTime<Utc>>,
-    /// The community's Open Badges `EndorsementCredential` of the badge's Achievement,
-    /// signed as the community and embedded in every holder's credential (VTI-BDG-060).
-    /// Signed on first need and kept; never answered on the wire by itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endorsement: Option<Value>,
 }
 
 fn yes() -> bool {
@@ -436,6 +438,10 @@ pub struct Award {
     /// holder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoke_reason: Option<String>,
+    /// Where the holder shows this award outside the community, while they do
+    /// (`vtc/badges/awards/share`, VTI-BDG-070).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<share::Shared>,
 }
 
 impl Award {
@@ -471,6 +477,9 @@ impl Award {
         }
         if let Some(c) = &self.credential_id {
             out["credentialId"] = json!(c);
+        }
+        if let Some(s) = &self.shared {
+            out["shared"] = s.wire();
         }
         out
     }
@@ -830,10 +839,152 @@ pub async fn holder_slots_of_entry(
     Ok(out)
 }
 
+// ─── the badge group's own paths ─────────────────────────────────────────
+
+/// Audit a badge change by reference (VTI-BDG-091). Refused rather than made unaudited.
+pub(crate) async fn audit(
+    state: &crate::server::AppState,
+    actor: &str,
+    data: vtc_audit::BadgeChangedData,
+) -> Result<(), AppError> {
+    let writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::ServiceError {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            message: "audit writer not configured: badge changes are refused rather than made \
+                      unaudited"
+                .into(),
+        })?;
+    writer
+        .write(actor, None, vtc_audit::AuditEvent::BadgeChanged(data))
+        .await
+        .map(drop)
+}
+
+/// How a membership of a badge group ended other than through a badge task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupExit {
+    /// The holder left, or opted out of an automatic badge: declining the badge
+    /// (VTI-BDG-013).
+    Left,
+    /// An owner removed them, or the rule no longer admits them: the badge taken back.
+    Removed,
+}
+
+/// A membership of `group` ended through the groups' own paths (`vtc/groups/leave`, an
+/// owner's `members/remove`, the rule): the holding ends with it. Every accepted award of
+/// the badge to `entry_id` is closed — declined where the holder left, taken back where
+/// they were removed — any share of it stops, and their credential is revoked where it
+/// carries a status (VTI-BDG-063). Nothing for a group that backs no badge.
+pub async fn on_group_exit(
+    state: &crate::server::AppState,
+    group: &crate::groups::Group,
+    entry_id: &str,
+    actor: &str,
+    how: GroupExit,
+) -> Result<usize, AppError> {
+    let Some(badge_id) = &group.badge_id else {
+        return Ok(0);
+    };
+    let ks = &state.badges_ks;
+    let closed = {
+        let _guard = WRITE_LOCK.lock().await;
+        let now = Utc::now();
+        let mut closed = Vec::new();
+        for mut a in accepted_of(ks, badge_id, entry_id).await? {
+            share::forget(ks, &mut a).await?;
+            a.decided_at = Some(now);
+            match how {
+                GroupExit::Left => a.state = AwardState::Declined,
+                GroupExit::Removed => {
+                    a.state = AwardState::Revoked;
+                    a.revoke_reason = Some("removed from the badge group".into());
+                }
+            }
+            put_award(ks, &a).await?;
+            closed.push(a);
+        }
+        closed
+    };
+    for a in &closed {
+        audit(
+            state,
+            actor,
+            vtc_audit::BadgeChangedData {
+                badge_id: a.badge_id.clone(),
+                award_id: Some(a.award_id.clone()),
+                entry_id: Some(a.entry_id.clone()),
+                change: match how {
+                    GroupExit::Left => "declined",
+                    GroupExit::Removed => "revoked",
+                }
+                .to_string(),
+                fields: Vec::new(),
+                group_id: Some(group.group_id.clone()),
+            },
+        )
+        .await?;
+    }
+    credential::revoke_holder(state, badge_id, entry_id).await?;
+    Ok(closed.len())
+}
+
+// ─── the counts an automatic badge's rule reads ─────────────────────────
+
+/// Each subject's counts for an automatic badge's rule (VTI-BDG-015), from the community's
+/// own records, keyed by entry: kudos awards they accepted, ideas of theirs a board
+/// selected, and elections in which the community issued them a ticket — counted against
+/// the member's current DID. Never whether a ballot was cast: the community never knows.
+pub async fn rule_counts(
+    state: &crate::server::AppState,
+    subjects: &[crate::directory::project::Subject],
+) -> Result<std::collections::HashMap<String, crate::groups::dynamic::Counts>, AppError> {
+    use std::collections::HashMap;
+    let kudos: BTreeSet<String> = all_badges(&state.badges_ks)
+        .await?
+        .into_iter()
+        .filter(|b| b.kind == BadgeKind::Kudos)
+        .map(|b| b.badge_id)
+        .collect();
+    let mut ideas: HashMap<String, u64> = HashMap::new();
+    for idea in crate::boards::all_ideas(&state.boards_ks).await? {
+        if idea.state == crate::boards::StoredIdeaState::Selected {
+            *ideas.entry(idea.proposer).or_default() += 1;
+        }
+    }
+    let mut tickets: HashMap<String, u64> = HashMap::new();
+    let eks = state.elections.ks();
+    for rec in crate::elections::store::all(eks).await? {
+        for t in crate::elections::store::tickets(eks, &rec.election_id).await? {
+            *tickets.entry(t.signer).or_default() += 1;
+        }
+    }
+    let mut out = HashMap::new();
+    for s in subjects {
+        let entry = &s.card.entry_id;
+        let kudos_received = awards_to(&state.badges_ks, entry)
+            .await?
+            .iter()
+            .filter(|a| a.is_accepted() && kudos.contains(&a.badge_id))
+            .count() as u64;
+        out.insert(
+            entry.clone(),
+            crate::groups::dynamic::Counts {
+                kudos_received,
+                ideas_selected: ideas.get(entry).copied().unwrap_or_default(),
+                election_tickets: tickets.get(&s.card.did).copied().unwrap_or_default(),
+            },
+        );
+    }
+    Ok(out)
+}
+
 // ─── departure ───────────────────────────────────────────────────────────
 
-/// A member's departure (VTI-BDG-090): their open offers are withdrawn, their preferences
-/// go, and the awards they gave stand by entry reference. Their badge-group memberships
+/// A member's departure (VTI-BDG-090): their open offers are withdrawn, their shares stop
+/// (`vtc/badges/awards/share` item 9), their preferences go, and the awards they gave
+/// stand by entry reference. Their badge-group memberships
 /// end with the groups' own departure handling. Returns how many offers were withdrawn.
 pub async fn on_departure(ks: &KeyspaceHandle, entry_id: &str) -> Result<usize, AppError> {
     let _guard = WRITE_LOCK.lock().await;
@@ -845,6 +996,8 @@ pub async fn on_departure(ks: &KeyspaceHandle, entry_id: &str) -> Result<usize, 
             a.decided_at = Some(now);
             put_award(ks, &a).await?;
             n += 1;
+        } else {
+            share::stop(ks, &mut a).await?;
         }
     }
     ks.remove(prefs_key(entry_id)).await?;

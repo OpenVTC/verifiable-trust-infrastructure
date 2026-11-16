@@ -6,6 +6,8 @@ import type { ReactNode } from "react";
 
 import { Field } from "@/components/Field";
 import type { Explained, Tone } from "@/lib/vetting";
+import { formatDate } from "@/lib/format";
+import { messageOf } from "@/lib/messages";
 
 /** Where the vetting plugin is mounted (`src/plugins/index.ts`). */
 export const VETTING_PATH = "/vetting";
@@ -16,16 +18,11 @@ export const joinRequestPath = (id: string) =>
 
 /** A date without its time, for validity windows and profile updates. */
 export function formatDay(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+  return formatDate(iso);
 }
 
 export function errorMessage(err: unknown): string {
-  if (err && typeof err === "object" && "message" in err) {
-    const message = (err as { message: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return String(err);
+  return messageOf(err);
 }
 
 export function errorStatus(err: unknown): number | undefined {

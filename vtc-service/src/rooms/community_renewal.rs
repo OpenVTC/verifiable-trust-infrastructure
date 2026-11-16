@@ -72,7 +72,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
+use vtc_audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
 use vti_specs::rooms::owner::{
     issue_authority::v0_2 as owner_authority, issue_membership::v0_1 as owner_membership,
@@ -101,6 +101,7 @@ const RETRY_CAP: Duration = Duration::from_secs(6 * 60 * 60);
 const OWNER_ACTIONS: [&str; 4] = ["read", "write", "curate", "admin"];
 
 const OWNER_MEMBERSHIP: &str = <owner_membership::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // a community's own grant states no purposes, which 0.2 issues
 const OWNER_AUTHORITY: &str = <owner_authority::Payload as Payload>::TYPE_URI;
 const VAULT_RECEIVE: &str = <vault_receive::Payload as Payload>::TYPE_URI;
 const VAULT_QUERY: &str = <vault_query::Payload as Payload>::TYPE_URI;
@@ -509,6 +510,7 @@ async fn ask(holder: &KeyHolder, task: &str, name: &str, payload: Value) -> Resu
 
 /// Issue and store a fresh membership and authority for the community in `room`, each
 /// replacing the one it renews. Records each handle in `rec` as soon as it is known.
+#[allow(deprecated)] // a community's own grant states no purposes, which 0.2 issues
 async fn renew(
     holder: &KeyHolder,
     community: &CommunityRoomsConfig,
@@ -617,7 +619,7 @@ async fn held(
         .ask(VAULT_QUERY, query, SIGN_TIMEOUT)
         .await
         .map_err(|e| match e {
-            HolderError::Refused { code, message } if code.contains("ermission") || code.contains("orbidden") => format!(
+            HolderError::Refused { code, message } if code == trust_tasks_rs::StandardCode::PermissionDenied.as_str() => format!(
                 "vault/credentials/query: the community's VTA refused ({code} {message}). A room \
                  created before this release has no record of where the VTA keeps the \
                  community's credentials for it, and finding them takes `vault-read` on this \

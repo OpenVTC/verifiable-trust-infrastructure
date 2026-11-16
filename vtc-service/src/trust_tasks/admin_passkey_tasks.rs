@@ -1,6 +1,6 @@
 //! An administrator's own login passkeys on the signed-document spine —
 //! `auth/passkey/list/0.1` and `auth/passkey/enroll/{start,finish}/0.2`. The
-//! operations are [`crate::routes::admin::passkeys`]'s; this file decides only
+//! operations are [`crate::auth::admin_passkeys`]'s; this file decides only
 //! who is asking. Revoking one is `auth/passkey/revoke/{start,finish}/0.2`,
 //! one Type URI for both purposes, routed in [`super::step_up_passkey_tasks`].
 //!
@@ -25,54 +25,62 @@
 //!
 //! Members' step-up passkeys are a different store; `revoke/{start,finish}/0.2`
 //! covers both purposes and is dispatched by [`super::step_up_passkey_tasks`],
-//! which hands a session credential back to [`crate::routes::admin::passkeys`].
+//! which hands a session credential back to [`crate::auth::admin_passkeys`].
 
+use super::routing::{Routes, on};
 use serde_json::Value;
-use trust_tasks_rs::{Payload, TrustTask};
+use trust_tasks_rs::TrustTask;
 use vti_specs::auth::passkey::{
     enroll::finish::v0_2 as enroll_finish, enroll::start::v0_2 as enroll_start, list::v0_1 as list,
 };
 
 use super::helpers::{TrustTaskOutcome, success_response, task_error_to_reject};
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
-use crate::routes::admin::passkeys;
+use crate::auth::admin_passkeys as passkeys;
 use crate::server::AppState;
 
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const ENROLL_START_TYPE: &str = <enroll_start::Payload as Payload>::TYPE_URI;
-pub(crate) const ENROLL_FINISH_TYPE: &str = <enroll_finish::Payload as Payload>::TYPE_URI;
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, list::Payload => |state, ctx, doc| run(state, ctx, doc, Op::List));
+    let routes = on!(routes, enroll_start::Payload => |state, ctx, doc| run(state, ctx, doc, Op::EnrollStart));
+    on!(routes, enroll_finish::Payload => |state, ctx, doc| run(state, ctx, doc, Op::EnrollFinish))
+}
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[LIST_TYPE, ENROLL_START_TYPE, ENROLL_FINISH_TYPE];
+/// Which of the family's tasks a document is.
+#[derive(Clone, Copy)]
+enum Op {
+    List,
+    EnrollStart,
+    EnrollFinish,
+}
 
-pub(super) async fn dispatch(
+async fn run(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
+    op: Op,
+) -> TrustTaskOutcome {
     // Authority first, before the payload is read: an unknown or
     // non-administrator signer learns nothing about the shape it sent.
     let actor = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
-        Err(reject) => return Some(reject),
+        Err(reject) => return reject,
     };
     let did = actor.did.as_str();
-    Some(match type_uri {
-        LIST_TYPE => match parse_spec_payload::<list::Payload>(&doc) {
+    match op {
+        Op::List => match parse_spec_payload::<list::Payload>(&doc) {
             Err(reject) => reject,
             Ok(_) => answer(&doc, passkeys::list(state, did).await),
         },
-        ENROLL_START_TYPE => match parse_spec_payload::<enroll_start::Payload>(&doc) {
+        Op::EnrollStart => match parse_spec_payload::<enroll_start::Payload>(&doc) {
             Err(reject) => reject,
             Ok(p) => answer(&doc, passkeys::register_start(state, did, &p).await),
         },
-        ENROLL_FINISH_TYPE => match parse_spec_payload::<enroll_finish::Payload>(&doc) {
+        Op::EnrollFinish => match parse_spec_payload::<enroll_finish::Payload>(&doc) {
             Err(reject) => reject,
             Ok(p) => answer(&doc, passkeys::register_finish(state, did, &p).await),
         },
-        _ => return None,
-    })
+    }
 }
 
 fn answer<R: serde::Serialize>(

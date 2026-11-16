@@ -28,12 +28,12 @@
 //! `credentials/set`, `assign` and `migrate` name `vtc/admin/actions/show/0.3` in their
 //! `expects`, the version that names an approval's instant `decidedAt`.
 
+use super::routing::{Routes, on};
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, RoomStorageChangedData};
-use vti_common::auth::extractor::AuthClaims;
+use vtc_audit::{AuditEvent, RoomStorageChangedData};
 use vti_common::blob_store::{BlobKey, PROBE_PREFIX};
 use vti_rooms::blobs::{
     ConfigHoldings, Migration, MigrationRequest, MigrationStart, MigrationState,
@@ -52,33 +52,26 @@ use super::helpers::{
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
 use crate::acl::admin_consent::Act;
+use crate::acl::ops::conform;
 use crate::rooms::storage_configs::{SettingsError, kind_of, mode_of, state_of};
 use crate::rooms::storage_credentials::SealedRefusal;
-use crate::routes::acl::conform;
 use crate::server::AppState;
 
+#[cfg(test)]
+pub(crate) const PROBE_TYPE: &str = <probe::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
+
 pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
 pub(crate) const UPDATE_TYPE: &str = <update::Payload as Payload>::TYPE_URI;
 pub(crate) const RETIRE_TYPE: &str = <retire::Payload as Payload>::TYPE_URI;
-pub(crate) const PROBE_TYPE: &str = <probe::Payload as Payload>::TYPE_URI;
 pub(crate) const ASSIGN_TYPE: &str = <assign::Payload as Payload>::TYPE_URI;
 pub(crate) const MIGRATE_TYPE: &str = <migrate::Payload as Payload>::TYPE_URI;
 pub(crate) const CREDENTIALS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
-
-/// Every URI this module routes.
-pub(crate) const URIS: &[&str] = &[
-    LIST_TYPE,
-    GET_TYPE,
-    CREATE_TYPE,
-    UPDATE_TYPE,
-    CREDENTIALS_SET_TYPE,
-    RETIRE_TYPE,
-    PROBE_TYPE,
-    ASSIGN_TYPE,
-    MIGRATE_TYPE,
-];
 
 /// At most this many room identifiers in a `get` (`vtc/storage/configs/get` item 2).
 const ASSIGNED_ROOMS_SHOWN: usize = 100;
@@ -89,24 +82,18 @@ const CURSOR_PREFIX: &str = "storage-configs:";
 /// A probe's backend error, truncated to this (`vtc/storage/configs/probe` item 4).
 const PROBE_ERROR_MAX: usize = 2048;
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        GET_TYPE => handle_get(state, ctx, doc).await,
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        CREDENTIALS_SET_TYPE => handle_credentials_set(state, ctx, doc).await,
-        RETIRE_TYPE => handle_retire(state, ctx, doc).await,
-        PROBE_TYPE => handle_probe(state, ctx, doc).await,
-        ASSIGN_TYPE => handle_assign(state, ctx, doc).await,
-        MIGRATE_TYPE => handle_migrate(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, get::Payload => |state, ctx, doc| handle_get(state, ctx, doc));
+    let routes = on!(routes, create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes = on!(routes, update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes =
+        on!(routes, set::Payload => |state, ctx, doc| handle_credentials_set(state, ctx, doc));
+    let routes = on!(routes, retire::Payload => |state, ctx, doc| handle_retire(state, ctx, doc));
+    let routes = on!(routes, probe::Payload => |state, ctx, doc| handle_probe(state, ctx, doc));
+    let routes = on!(routes, assign::Payload => |state, ctx, doc| handle_assign(state, ctx, doc));
+    on!(routes, migrate::Payload => |state, ctx, doc| handle_migrate(state, ctx, doc))
 }
 
 pub(super) fn refuse(
@@ -142,7 +129,7 @@ pub(super) async fn rooms_admin(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
-) -> Result<AuthClaims, TrustTaskOutcome> {
+) -> Result<crate::acl::AdminActor, TrustTaskOutcome> {
     let actor = admin_signer(state, ctx, doc).await?;
     crate::acl::require_capability(&state.acl_ks, &actor.did, Capability::RoomsAdmin, None)
         .await

@@ -109,6 +109,17 @@ impl PendingReplies {
         self.lock().remove(thread);
     }
 
+    /// Whether anyone is waiting on the thread `document` names. A cheap
+    /// pre-check so the caller verifies a document's proof for
+    /// [`Self::complete`] only when it could release a waiter (#2624); a
+    /// waiter registered or dropped in between is decided by `complete` itself.
+    pub fn is_waiting(&self, document: &Value) -> bool {
+        document
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_some_and(|thread_id| self.lock().contains_key(thread_id))
+    }
+
     /// Hand `document` — the JSON an inbound document's bytes parsed to,
     /// unmodified — to whoever is waiting for it, if anyone is — and only
     /// when `verified_signer` (the DID the document's own proof verifies as,

@@ -1,11 +1,11 @@
 //! ACL slice trust-task handlers: `acl/{grant,show,update,change-role,
-//! revoke}/0.2`, `acl/list/0.3` and `acl/swap-key/0.1`.
+//! revoke}/0.2`, `acl/list/0.4` and `acl/swap-key/0.1`.
 //!
 //! AclEntry 0.2 states every authority axis explicitly; how the VTA's stored
 //! entry maps onto it, and which 0.2 values it refuses because it cannot hold
-//! them, is [`operations::acl_v0_2`]. These handlers parse the payload, call
+//! them, is [`operations::acl_v0_3`]. These handlers parse the payload, call
 //! it, and answer each refusal with the code the task being answered declares
-//! (`acl/_shared/0.2` CONVENTIONS §3: never another slug's).
+//! (`acl/_shared/0.3` CONVENTIONS §3: never another slug's).
 //!
 //! Auth: Admin or Initiator for list/grant/show/revoke; Admin-only for update
 //! and change-role (enforced in the operations).
@@ -13,18 +13,19 @@
 use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
 use trust_tasks_rs::{DeclaredErrorCode, RejectReason, TrustTask, TrustTaskCode};
+use vta_sdk::acl::PurposeScope;
 use vta_sdk::protocols::acl_management::change_role::ChangeRoleBody;
 use vta_sdk::protocols::acl_management::swap::SwapKeyBody;
 use vta_sdk::protocols::acl_management::v0_2::{AclEntry as WireEntry, Revocation};
 use vti_specs::acl::{
-    change_role::v0_2 as change_role_spec, grant::v0_2 as grant_spec, list::v0_3 as list_spec,
-    revoke::v0_2 as revoke_spec, show::v0_2 as show_spec, update::v0_2 as update_spec,
+    change_role::v0_3 as change_role_spec, grant::v0_3 as grant_spec, list::v0_4 as list_spec,
+    revoke::v0_3 as revoke_spec, show::v0_3 as show_spec, update::v0_3 as update_spec,
 };
 
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::operations;
-use crate::operations::acl_v0_2::{KNOWN_ROLES, ListQuery, UpdateBody, V02Error};
+use crate::operations::acl_v0_3::{KNOWN_ROLES, ListQuery, UpdateBody, V03Error};
 use crate::server::AppState;
 
 use super::helpers::{
@@ -46,6 +47,7 @@ struct Codes {
     not_narrowing: Option<DeclaredErrorCode>,
     state_mismatch: Option<DeclaredErrorCode>,
     cursor_mismatch: Option<DeclaredErrorCode>,
+    purpose_outside_delegator: Option<DeclaredErrorCode>,
 }
 
 fn grant_codes() -> Codes {
@@ -56,6 +58,7 @@ fn grant_codes() -> Codes {
         unknown_capability: Some(c::UNKNOWN_CAPABILITY),
         capability_outside_ceiling: Some(c::CAPABILITY_OUTSIDE_CEILING),
         additive_within_ceiling: Some(c::ADDITIVE_WITHIN_CEILING),
+        purpose_outside_delegator: Some(c::PURPOSE_OUTSIDE_DELEGATOR),
         ..Codes::default()
     }
 }
@@ -69,6 +72,7 @@ fn update_codes() -> Codes {
         additive_within_ceiling: Some(c::ADDITIVE_WITHIN_CEILING),
         not_found: Some(c::NOT_FOUND),
         narrowing_not_permitted: Some(c::NARROWING_NOT_PERMITTED),
+        purpose_outside_delegator: Some(c::PURPOSE_OUTSIDE_DELEGATOR),
         ..Codes::default()
     }
 }
@@ -122,23 +126,23 @@ fn coded(
     }
 }
 
-fn refuse(doc: &TrustTask<Value>, e: V02Error, codes: Codes) -> TrustTaskOutcome {
+fn refuse(doc: &TrustTask<Value>, e: V03Error, codes: Codes) -> TrustTaskOutcome {
     match e {
-        V02Error::RoleNotRecognized(r) => coded(
+        V03Error::RoleNotRecognized(r) => coded(
             doc,
             codes.role_not_recognized,
             format!("'{r}' is not a role this VTA recognises"),
             Some(json!({ "offendingRole": r, "knownRoles": KNOWN_ROLES })),
             AppError::Validation(format!("role not recognized: {r}")),
         ),
-        V02Error::InvalidActScope { member, reason } => coded(
+        V03Error::InvalidActScope { member, reason } => coded(
             doc,
             codes.invalid_act_scope,
             reason.clone(),
             Some(json!({ "member": member })),
             AppError::Validation(reason),
         ),
-        V02Error::UnknownCapability(caps) => {
+        V03Error::UnknownCapability(caps) => {
             let m = format!(
                 "{} {} not in this VTA's capability registry",
                 caps.join(", "),
@@ -152,7 +156,7 @@ fn refuse(doc: &TrustTask<Value>, e: V02Error, codes: Codes) -> TrustTaskOutcome
                 AppError::Validation(m),
             )
         }
-        V02Error::CapabilityOutsideCeiling { role, caps } => {
+        V03Error::CapabilityOutsideCeiling { role, caps } => {
             let m = format!(
                 "role {role} does not carry {}; an entry's capabilities narrow its role, and \
                  an additive capability is marked `additive: true`",
@@ -166,7 +170,7 @@ fn refuse(doc: &TrustTask<Value>, e: V02Error, codes: Codes) -> TrustTaskOutcome
                 AppError::Validation(m),
             )
         }
-        V02Error::AdditiveWithinCeiling(caps) => {
+        V03Error::AdditiveWithinCeiling(caps) => {
             let m = format!(
                 "{} {} already in the role's ceiling and cannot be marked additive",
                 caps.join(", "),
@@ -180,39 +184,54 @@ fn refuse(doc: &TrustTask<Value>, e: V02Error, codes: Codes) -> TrustTaskOutcome
                 AppError::Validation(m),
             )
         }
-        V02Error::Unsupported(m) => app_error_to_reject(doc, AppError::Validation(m)),
-        V02Error::NarrowingNotPermitted => coded(
+        V03Error::Unsupported(m) => app_error_to_reject(doc, AppError::Validation(m)),
+        V03Error::NarrowingNotPermitted => coded(
             doc,
             codes.narrowing_not_permitted,
-            "acl/update never narrows act; narrow it with acl/revoke/0.2 {kind: act}".into(),
+            "acl/update never narrows act; narrow it with acl/revoke/0.3 {kind: act}".into(),
             None,
-            AppError::Validation("narrowing act is acl/revoke/0.2's".into()),
+            AppError::Validation("narrowing act is acl/revoke/0.3's".into()),
         ),
-        V02Error::NotNarrowing => coded(
+        V03Error::NotNarrowing => coded(
             doc,
             codes.not_narrowing,
             "the stated act scope is not strictly narrower than the stored one".into(),
             None,
             AppError::Validation("not narrowing".into()),
         ),
-        V02Error::NotFound(s) => coded(
+        V03Error::NotFound(s) => coded(
             doc,
             codes.not_found,
             format!("no ACL entry for {s}"),
             None,
             AppError::NotFound(format!("ACL entry not found for DID: {s}")),
         ),
-        V02Error::StateMismatch(m) => coded(doc, codes.state_mismatch, m.clone(), None, {
+        V03Error::StateMismatch(m) => coded(doc, codes.state_mismatch, m.clone(), None, {
             AppError::Conflict(m)
         }),
-        V02Error::CursorMismatch => coded(
+        V03Error::CursorMismatch => coded(
             doc,
             codes.cursor_mismatch,
             "the cursor was minted under other filters, or not by this VTA".into(),
             None,
             AppError::InvalidCursor,
         ),
-        V02Error::App(e) => app_error_to_reject(doc, e),
+        V03Error::PurposeOutsideDelegator(purposes) => {
+            let m = format!(
+                "{} {} wider than your own purposes; an entry you write may state only purposes \
+                 your entry grants, and `any` never grants modelTraining (VTI-ACL-107)",
+                purposes.join(", "),
+                if purposes.len() == 1 { "is" } else { "are" }
+            );
+            coded(
+                doc,
+                codes.purpose_outside_delegator,
+                m.clone(),
+                Some(json!({ "purposes": purposes })),
+                AppError::Forbidden(m),
+            )
+        }
+        V03Error::App(e) => app_error_to_reject(doc, e),
     }
 }
 
@@ -221,7 +240,7 @@ fn refuse(doc: &TrustTask<Value>, e: V02Error, codes: Codes) -> TrustTaskOutcome
 /// rather than a malformed answer on the wire.
 fn typed_response<R: serde::de::DeserializeOwned + serde::Serialize>(
     doc: &TrustTask<Value>,
-    body: Result<Value, V02Error>,
+    body: Result<Value, V03Error>,
     codes: Codes,
 ) -> TrustTaskOutcome {
     match body {
@@ -254,7 +273,25 @@ fn member<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Handler for `acl/list/0.3`.
+/// A grant's `entry`, split into its 0.2 members and its `purposes`
+/// (`acl/_shared/0.3` CONVENTIONS §8a). The dispatcher has already held the
+/// payload to the published schema, so `purposes` is present and well formed;
+/// it is checked again where it is written.
+fn split_entry(doc: &TrustTask<Value>) -> Result<(WireEntry, PurposeScope), TrustTaskOutcome> {
+    let malformed = |reason: String| reject_with(doc, RejectReason::MalformedRequest { reason });
+    let mut raw = doc.payload.get("entry").cloned().unwrap_or(Value::Null);
+    let purposes = raw
+        .as_object_mut()
+        .and_then(|m| m.remove("purposes"))
+        .ok_or_else(|| malformed("`entry.purposes` is required".into()))?;
+    let purposes: PurposeScope = serde_json::from_value(purposes)
+        .map_err(|e| malformed(format!("`entry.purposes`: {e}")))?;
+    let entry: WireEntry =
+        serde_json::from_value(raw).map_err(|e| malformed(format!("`entry`: {e}")))?;
+    Ok((entry, purposes))
+}
+
+/// Handler for `acl/list/0.4`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -267,11 +304,11 @@ pub(super) async fn handle_list(
         Ok(q) => q,
         Err(e) => return refuse(&doc, e, list_codes()),
     };
-    let body = operations::acl_v0_2::list(&state.acl_ks, auth, &q, TRANSPORT_TRUST_TASK).await;
+    let body = operations::acl_v0_3::list(&state.acl_ks, auth, &q, TRANSPORT_TRUST_TASK).await;
     typed_response::<list_spec::Response>(&doc, body, list_codes())
 }
 
-/// Handler for `acl/grant/0.2`.
+/// Handler for `acl/grant/0.3`.
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
@@ -284,8 +321,10 @@ pub(super) async fn handle_create(
     if let Err(resp) = parse_payload::<grant_spec::Payload>(&doc) {
         return resp;
     }
-    let entry: WireEntry = match member(&doc, "entry") {
-        Ok(e) => e,
+    // AclEntry 0.3 is 0.2's members plus `purposes` (CONVENTIONS §8a): take
+    // `purposes` off, and read the rest as the 0.2 entry.
+    let (entry, purposes) = match split_entry(&doc) {
+        Ok(v) => v,
         Err(resp) => return resp,
     };
     // A hand-off rollover rides `acl/grant` (VTI-CLT-017: the long-term entry
@@ -299,22 +338,24 @@ pub(super) async fn handle_create(
     };
     let successor = entry.subject.clone();
     let result = if rollover {
-        operations::acl_v0_2::rollover(
+        operations::acl_v0_3::rollover(
             &state.acl_ks,
             &state.audit_sink,
             &state.contexts_ks,
             auth,
             entry,
+            purposes,
             TRANSPORT_TRUST_TASK,
         )
         .await
     } else {
-        operations::acl_v0_2::grant(
+        operations::acl_v0_3::grant(
             &state.acl_ks,
             &state.audit_sink,
             &state.contexts_ks,
             auth,
             entry,
+            purposes,
             TRANSPORT_TRUST_TASK,
         )
         .await
@@ -332,7 +373,7 @@ pub(super) async fn handle_create(
     typed_response::<grant_spec::Response>(&doc, result, grant_codes())
 }
 
-/// Handler for `acl/show/0.2`.
+/// Handler for `acl/show/0.3`.
 pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -342,7 +383,7 @@ pub(super) async fn handle_get(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let body = operations::acl_v0_2::show(
+    let body = operations::acl_v0_3::show(
         &state.acl_ks,
         auth,
         req.subject.as_str(),
@@ -352,7 +393,7 @@ pub(super) async fn handle_get(
     typed_response::<show_spec::Response>(&doc, body, Codes::default())
 }
 
-/// Handler for `acl/update/0.2`. Admin-only.
+/// Handler for `acl/update/0.3`. Admin-only.
 pub(super) async fn handle_update(
     state: &AppState,
     auth: &AuthClaims,
@@ -367,7 +408,7 @@ pub(super) async fn handle_update(
         return reject_with_code(
             &doc,
             extended(update_spec::error_codes::ROLE_CHANGE_NOT_PERMITTED),
-            "acl/update does not change a role — use acl/change-role/0.2, which takes the \
+            "acl/update does not change a role — use acl/change-role/0.3, which takes the \
              current role as a compare-and-swap",
             None,
         );
@@ -379,7 +420,7 @@ pub(super) async fn handle_update(
         Ok(r) => r,
         Err(e) => return refuse(&doc, e, update_codes()),
     };
-    let body = operations::acl_v0_2::update(
+    let body = operations::acl_v0_3::update(
         &state.acl_ks,
         &state.audit_sink,
         &state.contexts_ks,
@@ -391,7 +432,7 @@ pub(super) async fn handle_update(
     typed_response::<update_spec::Response>(&doc, body, update_codes())
 }
 
-/// Handler for `acl/change-role/0.2`. Admin-only.
+/// Handler for `acl/change-role/0.3`. Admin-only.
 ///
 /// Separate task from `acl/update` because the transition is
 /// compare-and-swapped against `fromRole`.
@@ -410,7 +451,7 @@ pub(super) async fn handle_change_role(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let body = operations::acl_v0_2::change_role(
+    let body = operations::acl_v0_3::change_role(
         &state.acl_ks,
         &state.audit_sink,
         auth,
@@ -424,7 +465,7 @@ pub(super) async fn handle_change_role(
     typed_response::<change_role_spec::Response>(&doc, body, change_role_codes())
 }
 
-/// Handler for `acl/revoke/0.2`.
+/// Handler for `acl/revoke/0.3`.
 pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
@@ -442,7 +483,7 @@ pub(super) async fn handle_delete(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let body = operations::acl_v0_2::revoke(
+    let body = operations::acl_v0_3::revoke(
         &state.acl_ks,
         &state.audit_sink,
         &state.contexts_ks,
@@ -607,8 +648,8 @@ mod tests {
         AuthorityScope, CapabilityGrant, CapabilityScope, KeyScope,
     };
 
-    use vti_specs::acl::change_role::v0_2 as canonical_change_role;
-    use vti_specs::acl::update::v0_2 as canonical_update;
+    use vti_specs::acl::change_role::v0_3 as canonical_change_role;
+    use vti_specs::acl::update::v0_3 as canonical_update;
 
     /// Our wire shapes must be the canonical ones, not merely bound to the
     /// canonical URIs: the generated types carry `deny_unknown_fields` and the
@@ -623,7 +664,7 @@ mod tests {
         };
         let json = serde_json::to_value(&change).expect("serialize");
         serde_json::from_value::<canonical_change_role::Payload>(json.clone())
-            .unwrap_or_else(|e| panic!("not canonical `acl/change-role/0.2`: {e}\n{json:#}"));
+            .unwrap_or_else(|e| panic!("not canonical `acl/change-role/0.3`: {e}\n{json:#}"));
     }
 
     /// An amendment spelled with the shared components is canonical, reads
@@ -644,7 +685,7 @@ mod tests {
             "reason": "quarterly access review",
         });
         serde_json::from_value::<canonical_update::Payload>(payload.clone())
-            .unwrap_or_else(|e| panic!("not canonical `acl/update/0.2`: {e}\n{payload:#}"));
+            .unwrap_or_else(|e| panic!("not canonical `acl/update/0.3`: {e}\n{payload:#}"));
 
         let mut drifted = payload.clone();
         drifted
@@ -653,12 +694,26 @@ mod tests {
             .insert("scopes".into(), json!(["ctx-a"]));
         assert!(
             serde_json::from_value::<canonical_update::Payload>(drifted).is_err(),
-            "the 0.1 `scopes` member must be rejected by the 0.2 schema"
+            "the 0.1 `scopes` member must be rejected by the 0.3 schema"
         );
 
         let body = super::UpdateBody::from_payload(&payload).expect("reads back");
         assert_eq!(body.label, Some(None), "null clears");
         assert!(body.expires_at.is_some_and(|e| e.is_some()));
         assert!(body.step_up.is_none(), "absent leaves unchanged");
+        assert!(
+            body.purposes.is_none(),
+            "absent leaves the purposes unchanged"
+        );
+
+        let mut narrowing = payload.clone();
+        narrowing["purposes"] = json!({"scope": "listed", "purposes": ["personalisation"]});
+        serde_json::from_value::<canonical_update::Payload>(narrowing.clone())
+            .unwrap_or_else(|e| panic!("a purposes replacement is canonical: {e}"));
+        let body = super::UpdateBody::from_payload(&narrowing).expect("reads back");
+        assert_eq!(
+            body.purposes,
+            Some(vta_sdk::acl::PurposeScope::listed(["personalisation"]).unwrap())
+        );
     }
 }

@@ -105,8 +105,8 @@ mod tests {
     }
 
     /// The same property for a document that states an `expiresAt` beyond the
-    /// horizon: accepted up to the advertised horizon (and skew), and refused a
-    /// second past it.
+    /// horizon: accepted until the advertised horizon (and skew), and refused
+    /// at it — the window is half-open.
     #[test]
     fn vti_trn_047_a_stated_expiry_is_honoured_to_the_advertised_horizon() {
         let w = advertised();
@@ -116,24 +116,25 @@ mod tests {
         let issued = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 0);
         let mut doc = trust_tasks_rs::TrustTask::new(
             "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
-            "https://trusttasks.org/spec/acl/list/0.3".parse().unwrap(),
+            "https://trusttasks.org/spec/acl/list/0.4".parse().unwrap(),
             serde_json::json!({}),
         );
         doc.issued_at = Some(issued);
         doc.expires_at = Some(issued + chrono::TimeDelta::days(365));
         let policy = super::super::freshness_policy();
         let edge = issued + horizon + w.clock_skew;
-        assert!(doc.validate_freshness(edge, &policy).is_ok());
         assert!(
-            doc.validate_freshness(edge + chrono::TimeDelta::seconds(1), &policy)
-                .is_err()
+            doc.validate_freshness(edge - chrono::TimeDelta::seconds(1), &policy)
+                .is_ok()
         );
+        assert!(doc.validate_freshness(edge, &policy).is_err());
     }
 
     /// The same property, measured the way a producer meets it: a document
-    /// issued exactly the advertised window ago is still accepted, and one a
-    /// second older is refused. An advertisement wider than the policy fails
-    /// the second assertion; a narrower one fails the first.
+    /// issued a second less than the advertised window ago is still accepted,
+    /// and one issued exactly the window ago is refused (half-open). An
+    /// advertisement wider than the policy fails the second assertion; a
+    /// narrower one fails the first.
     #[test]
     fn vti_trn_047_a_document_at_the_advertised_edge_is_accepted_and_one_past_it_refused() {
         let w = advertised();
@@ -141,7 +142,7 @@ mod tests {
         let doc = |issued| {
             let mut d = trust_tasks_rs::TrustTask::new(
                 "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
-                "https://trusttasks.org/spec/acl/list/0.3".parse().unwrap(),
+                "https://trusttasks.org/spec/acl/list/0.4".parse().unwrap(),
                 serde_json::json!({}),
             );
             d.issued_at = Some(issued);
@@ -149,12 +150,12 @@ mod tests {
         };
         let policy = super::super::freshness_policy();
         let edge = now - w.max_age - w.clock_skew;
-        assert!(doc(edge).validate_freshness(now, &policy).is_ok());
         assert!(
-            doc(edge - chrono::TimeDelta::seconds(1))
+            doc(edge + chrono::TimeDelta::seconds(1))
                 .validate_freshness(now, &policy)
-                .is_err()
+                .is_ok()
         );
+        assert!(doc(edge).validate_freshness(now, &policy).is_err());
     }
 
     /// Discovery answers from the dispatch table, and that table is non-trivial.

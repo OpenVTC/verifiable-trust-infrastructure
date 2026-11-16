@@ -115,7 +115,7 @@ async fn fixture_built_with(
     let stored = vtc_service::schemas::accepts::store_accepts(&vtc.state.schemas_ks, &criterion)
         .await
         .expect("store the criterion");
-    let digest = vtc_service::routes::join_requests::manifest::manifest_criterion(stored)
+    let digest = vtc_service::join::ops::manifest::manifest_criterion(stored)
         .expect("served criterion")
         .digest;
     Fixture { vtc, digest }
@@ -252,7 +252,7 @@ fn p256(seed: u8) -> (Vec<u8>, Value, String) {
     let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
     jwk.as_object_mut().unwrap().remove("d");
     let did = vta_sdk::jws::JwsKey::from_jwk(&jwk).unwrap().did_key();
-    (kp.private_bytes, jwk, did)
+    (kp.private_bytes.clone(), jwk, did)
 }
 
 /// An SD-JWT VC of type `vct` from a P-256 `did:key` issuer, bound to a P-256
@@ -837,7 +837,7 @@ async fn the_start_task_answers_with_the_codes_its_spec_declares() {
     )
     .await
     .unwrap();
-    let plain = vtc_service::routes::join_requests::manifest::manifest_criterion(stored)
+    let plain = vtc_service::join::ops::manifest::manifest_criterion(stored)
         .unwrap()
         .digest;
     let (_, body) = start_session(&f, &APPLICANT_SEED, json!({ "criterion": plain })).await;

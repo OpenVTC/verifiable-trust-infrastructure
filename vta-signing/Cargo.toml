@@ -25,3 +25,6 @@ zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 hex = { workspace = true }
+
+[lints]
+workspace = true

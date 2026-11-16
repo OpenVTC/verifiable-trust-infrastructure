@@ -124,6 +124,17 @@ enum Commands {
         #[command(subcommand)]
         command: Oid4vpCommands,
     },
+    /// This VTC's own keys (offline — run on a **stopped** daemon).
+    ///
+    /// When the VTA rotates a did:webs VTC's key (`pnm webs rotate`), the VTC
+    /// takes over the new keys by a sealed hand-off: `request` writes a
+    /// request, `pnm keys bundle <context> --recipient <request>` seals the
+    /// keys to it, `refresh` checks them against the VTC's resolved document
+    /// and stores them.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommands,
+    },
     /// The admin console's files (offline).
     ///
     /// To customise the console's look and feel, export it to a directory,
@@ -148,6 +159,28 @@ enum AdminUiCommands {
         /// console; serve it with `admin_ui.members_dir`.
         #[arg(long)]
         members: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommands {
+    /// Write a sealed-transfer request for this VTC's current keys, and keep
+    /// its private half here until `refresh`.
+    Request {
+        /// Write the request here instead of to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Open the bundle `pnm keys bundle <context>` sealed to the request,
+    /// check its keys against this VTC's resolved did:webs document, and
+    /// store them in place of the keys the VTA rotated out.
+    Refresh {
+        /// The armored bundle file.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The digest `pnm keys bundle` printed, carried here separately.
+        #[arg(long)]
+        digest: String,
     },
 }
 
@@ -570,6 +603,19 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Keys { command }) => {
+            use vtc_service::keys_cli;
+            let result = match command {
+                KeysCommands::Request { out } => keys_cli::run_request(cli.config, out).await,
+                KeysCommands::Refresh { bundle, digest } => {
+                    keys_cli::run_refresh(cli.config, bundle, digest).await
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Oid4vp { command }) => {
             use vtc_service::oid4vp_cli;
             let result = match command {
@@ -792,7 +838,7 @@ async fn run_invite_cli(
     ttl_seconds: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use chrono::{Duration as ChronoDuration, Utc};
-    use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+    use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry};
     use vtc_service::auth::session::now_epoch;
     use vtc_service::install::{
         InstallTokenSigner, InstallTokenStore, InvitedAuthority, mint_install_token,
@@ -824,8 +870,10 @@ async fn run_invite_cli(
         .ok_or("secret store has no VTC bundle — has setup completed?")?;
     let bundle = VtcKeyBundle::from_secret_store_bytes(&bundle_bytes)?;
 
-    let ed25519 = bundle.ed25519_private_bytes()?;
-    let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
+    // The daemon derives the install-token key from the derivation root
+    // (`server::init_auth`); a token minted under anything else never verifies.
+    let root = bundle.derivation_root()?;
+    let signer = InstallTokenSigner::from_master_seed(&*root)?;
 
     // Open the install + ACL keyspaces directly, which fjall allows only while
     // the daemon is stopped. Unlike most offline commands this one has an
@@ -900,7 +948,11 @@ async fn run_invite_cli(
         Some(admin_did) => {
             // A wallet invitation. Ensure the ACL entry exists with Admin role:
             // the post-login flow gates on it.
+            //
+            // The entry expires with the invitation until it is claimed
+            // (#2660): the claim makes it permanent, a revocation removes it.
             let acl_already_present = get_acl_entry(&acl_ks, admin_did).await?.is_some();
+            let minted = mint_install_token(&signer, &vtc_did, admin_did, ttl_seconds)?;
             if !acl_already_present {
                 let entry = VtcAclEntry {
                     did: admin_did.to_string(),
@@ -920,7 +972,15 @@ async fn run_invite_cli(
                     label_set_by_subject: false,
                     suspension: None,
                 };
-                store_acl_entry(&acl_ks, &entry).await?;
+                vtc_service::install::write_invite_entry(
+                    &acl_ks,
+                    &install_store,
+                    &minted.jti,
+                    entry.clone(),
+                    exp,
+                    None,
+                )
+                .await?;
                 // An unrestricted admin made offline, without the consent the
                 // daemon requires (VTI-APV-014) — audited as the break-glass on
                 // the next boot.
@@ -934,7 +994,6 @@ async fn run_invite_cli(
                 )
                 .await?;
             }
-            let minted = mint_install_token(&signer, &vtc_did, admin_did, ttl_seconds)?;
             install_store
                 .record_issued(
                     &minted.jti,
@@ -948,7 +1007,7 @@ async fn run_invite_cli(
             acl_line = if acl_already_present {
                 "pre-existing (left untouched)".to_string()
             } else {
-                "created (role=admin)".to_string()
+                "created (role=admin), expiring with the invitation until it is claimed".to_string()
             };
             minted
         }
@@ -1048,6 +1107,9 @@ async fn run_enrol_approver_cli(
     eprintln!("The subject opens the URL, types the code, and signs the redemption with");
     eprintln!("their own DID through their wallet; their approver device signs the");
     eprintln!("enrolment statement. Five wrong codes void the invite.");
+    eprintln!();
+    eprintln!("Use an approver key this subject uses at no other community: two communities");
+    eprintln!("holding the same approver DID can tell the same person stands behind both.");
     eprintln!();
     eprintln!("Restart the daemon (`vtc`) first — it records this invite in the audit log");
     eprintln!("as an offline (break-glass) action when it starts.");

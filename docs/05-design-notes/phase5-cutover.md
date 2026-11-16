@@ -1,6 +1,8 @@
 # Phase 5 Cutover: Removing Plaintext Bundle Encode/Decode
 
-Status: **Design — not yet implemented**
+Status: **implemented** — the deprecated `.encode()` / `.decode()` methods on
+`CredentialBundle`, `ContextProvisionBundle` and `DidSecretsBundle` are gone
+(`vta-sdk`); sealed transfer is the only secret-bearing wire format.
 Scope: workspace-wide (`verifiable-trust-infrastructure`)
 Companion to: [`sealed-bootstrap.md`](sealed-bootstrap.md)
 

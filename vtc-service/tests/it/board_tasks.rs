@@ -2204,3 +2204,38 @@ async fn vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed
         entry.resource_grants
     );
 }
+
+/// VTI-BRD-003: a board list cursor is the community's own, for one caller:
+/// edited, or presented by another member, it is refused.
+#[tokio::test]
+async fn vti_brd_003_a_list_cursor_is_honoured_only_as_the_community_minted_it() {
+    let tv = community(InProcessBox::new()).await;
+    let chair = admin(&tv).await;
+    let alice = member(&tv).await;
+    let bob = member(&tv).await;
+    create_board(&tv, &chair, board_body()).await;
+    create_board(&tv, &chair, board_body()).await;
+
+    let (status, doc) = call(&tv, &alice, &uri("list"), json!({ "limit": 1 })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let next = payload(&doc)["nextCursor"]
+        .as_str()
+        .expect("two boards, one per page")
+        .to_string();
+    let (status, doc) = call(
+        &tv,
+        &alice,
+        &uri("list"),
+        json!({ "limit": 1, "cursor": next }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(payload(&doc).get("nextCursor").is_none(), "{doc}");
+
+    let (_, tag) = next.split_once('.').unwrap();
+    let edited = format!("{}.{tag}", usize::MAX);
+    let (_, doc) = call(&tv, &alice, &uri("list"), json!({ "cursor": edited })).await;
+    assert_eq!(tt_error_code(&doc), LIST_ERR_CURSOR_INVALID, "{doc}");
+    let (_, doc) = call(&tv, &bob, &uri("list"), json!({ "cursor": next })).await;
+    assert_eq!(tt_error_code(&doc), LIST_ERR_CURSOR_INVALID, "{doc}");
+}

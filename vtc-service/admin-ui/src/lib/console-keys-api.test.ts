@@ -26,6 +26,8 @@ import {
   TASK_SIGNING_KEY_AUTHORIZE,
   TASK_SIGNING_KEY_ENROLL,
   TooManyKeysError,
+  AUTHORIZATION_VALID_MS,
+  authorizeAnotherKey,
   TASK_SIGNING_KEY_LIST,
   TASK_SIGNING_KEY_REVOKE,
   enrolThisBrowser,
@@ -186,6 +188,65 @@ describe("enrolment authorized by the wallet (enroll/0.2)", () => {
       /different identity/,
     );
     expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("authorizing another key (what `cnm access authorize-key` writes)", () => {
+  const OTHER = "did:key:z6MkBridgeKey";
+  function wallet(signedAs = ADMIN_DID) {
+    const signTrustTask = vi.fn(async ({ envelope }: { envelope: Record<string, unknown>; asDid?: string }) => ({
+      signedEnvelope: { ...envelope, proof: { verificationMethod: `${signedAs}#key-0`, proofValue: "z1" } },
+      holderDid: "did:key:z6MkHolder",
+    }));
+    (window as { vtaWallet?: unknown }).vtaWallet = { login: vi.fn(), signTrustTask };
+    vi.mocked(addressedDocument).mockImplementation(async (typeUri, payload, issuer) => ({
+      id: "urn:uuid:b",
+      type: typeUri,
+      issuer,
+      recipient: "did:web:community.example",
+      issuedAt: new Date().toISOString().slice(0, 19) + "Z",
+      payload,
+    }));
+    return signTrustTask;
+  }
+  afterEach(() => {
+    delete (window as { vtaWallet?: unknown }).vtaWallet;
+  });
+
+  it("signs the named key's terms as the identity, usable for an hour, and sends nothing", async () => {
+    const signTrustTask = wallet();
+    const before = Date.now();
+    const { document, usableUntil } = await authorizeAnotherKey({ signingKeyDid: ` ${OTHER} `, label: "vtc-mcp", days: 7 });
+
+    expect(document.type).toBe(TASK_SIGNING_KEY_AUTHORIZE);
+    expect(document.issuer).toBe(ADMIN_DID);
+    const terms = document.payload as Record<string, unknown>;
+    expect(terms).toMatchObject({ signingKeyDid: OTHER, identityDid: ADMIN_DID, scope: "console", deviceLabel: "vtc-mcp" });
+    const lasts = Date.parse(terms.expiresAt as string) - before;
+    expect(lasts).toBeGreaterThan(7 * 86_400_000 - 2000);
+    expect(lasts).toBeLessThanOrEqual(7 * 86_400_000 + 1000);
+    // The document itself lapses an hour on, so its holder has time to send it.
+    expect(Date.parse(document.expiresAt as string)).toBe(Math.floor(usableUntil.getTime() / 1000) * 1000);
+    expect(usableUntil.getTime() - before).toBeGreaterThanOrEqual(AUTHORIZATION_VALID_MS - 1000);
+    expect(signTrustTask.mock.calls[0]![0].asDid).toBe(ADMIN_DID);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+    expect(postSignedWithStepUp).not.toHaveBeenCalled();
+  });
+
+  it("refuses what the VTC would refuse, before the wallet is asked", async () => {
+    const signTrustTask = wallet();
+    await expect(authorizeAnotherKey({ signingKeyDid: "did:web:x", days: 7 })).rejects.toThrow(/did:key/);
+    await expect(authorizeAnotherKey({ signingKeyDid: OTHER, days: 31 })).rejects.toThrow(/30 days/);
+    await expect(authorizeAnotherKey({ signingKeyDid: OTHER, days: 0 })).rejects.toThrow(/30 days/);
+    const mine = await generateConsoleKey();
+    // This browser's own key is renewed, not authorized.
+    await expect(authorizeAnotherKey({ signingKeyDid: mine.consoleDid, days: 7 })).rejects.toThrow(/this browser/);
+    expect(signTrustTask).not.toHaveBeenCalled();
+  });
+
+  it("refuses a wallet signature made as somebody else", async () => {
+    wallet("did:key:z6MkHolder");
+    await expect(authorizeAnotherKey({ signingKeyDid: OTHER, days: 7 })).rejects.toThrow(/different identity/);
   });
 });
 

@@ -25,6 +25,12 @@
  * Brand: indigo by default. A community accent, when one is configured
  * (the Branding card's accent colour), is set as `--community-accent` on
  * <html> and overrides `--brand` below; nothing else needs to change.
+ *
+ * Breakpoints: custom properties cannot be read in a media query, so they
+ * are named here and written as numbers. The console's one layout breakpoint
+ * is 720px (`max-width: 720px` / `min-width: 721px`): the sidebar becomes a
+ * slide-over and tables scroll sideways in place. Prefer it for new rules;
+ * a few screens still re-flow their own content at widths of their own.
  */
 
 :root {

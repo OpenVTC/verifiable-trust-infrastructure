@@ -43,6 +43,7 @@
 //! profile — the refusal comes from `vti-rooms-dtg`, which is also what a VTC uses, so the
 //! two cannot disagree about what is safe to serve.
 
+pub mod creation;
 pub mod mirror;
 
 /// Room files: `rooms/blobs/*`, `rooms/records/put` 0.2 and `rooms/info`.
@@ -64,38 +65,14 @@ use axum::http::StatusCode;
 
 use axum::routing::post;
 use axum::{Json, Router};
-use serde_json::{Value, json};
-use trust_tasks_https::status_for_code;
+use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
-use uuid::Uuid;
 use vti_common::config::StoreConfig;
 use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
-use vti_rooms::audit::{self as rooms_audit, RoomOperation};
-use vti_rooms::wire::{
-    ChainBody, ChainResponse, ClaimOwnerBody, CommitsBody, CommitsResponse, CreateRoomBody,
-    CreateRoomResponse, CurateRecordBody, CurateRecordResponse, GetRecordBody, GetRecordResponse,
-    ListRecordsBody, ListRecordsResponse, MintEpochBody, MintEpochResponse, OwnerResponse,
-    PruneBody, PruneResponse, PutRecordBody, PutRecordResponse, ROOMS_EPOCH_COMMITS_TYPE,
-    ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE,
-    ROOMS_RECORDS_CURATE_TYPE, TransferOwnerBody,
-};
-use vti_rooms::{
-    ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room,
-    authz::{self, Action},
-    storage,
-};
-use vti_rooms_dtg::{DataIntegrityKeys, DtgChainVerifier, nomination};
-use vti_trust_task_server::Acceptance;
-
-/// Default retention after a room's epoch lapses without renewal.
-const DEFAULT_RETENTION_DAYS: u32 = 90;
-
-/// One epoch lifetime in seconds — how long a newly created room is live before it needs
-/// renewing. Not a per-room parameter yet: `rooms/create/0.2` has no member for it, and
-/// inventing one locally would put this host's rooms out of conformance with the schema.
-const EPOCH_LIFETIME_DAYS_SECS: u64 =
-    vti_rooms::lifecycle::DEFAULT_EPOCH_LIFETIME_DAYS as u64 * 24 * 60 * 60;
+use vti_rooms::audit as rooms_audit;
+use vti_rooms::{ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Room, storage};
+use vti_trust_task_server::ArrivalCtx;
 
 /// Everything this host holds. Two keyspaces and a verifier — and note what is not here.
 #[derive(Clone)]
@@ -141,9 +118,40 @@ pub struct HostState {
     /// it addressed (SPEC §7.3 item 7, VTI-KEY-106), so without this every success this
     /// host returned was refused at the caller as unsigned.
     answer_signer: Arc<std::sync::OnceLock<Arc<dyn vti_trust_task_server::ResponseSigner>>>,
+    /// Who may register a room here, and how many ([`HostState::set_room_creation`]).
+    creation: Arc<std::sync::RwLock<creation::RoomCreation>>,
+    /// The room counts registration is held to, kept rather than recounted per create
+    /// ([`RoomCounts`]). The lock is held across a registration's check and its write,
+    /// so two concurrent creates cannot both pass a ceiling that has room for one.
+    room_counts: Arc<tokio::sync::Mutex<Option<RoomCounts>>>,
+    /// Bumped whenever rooms may have been added, removed or moved between owners other
+    /// than by a registration here ([`HostState::rooms_changed`]). Kept counts taken at
+    /// an older value are recounted before they are relied on.
+    rooms_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// When a refused registration was last logged, and how many were refused since
+    /// ([`HostState::log_refused_registration`]).
+    refusal_log: Arc<std::sync::Mutex<RefusalLog>>,
 }
 
 impl HostState {
+    /// Set who may register rooms on this host and how many each may hold
+    /// ([`creation::RoomCreation`]). Applies to registrations from here on; rooms already
+    /// registered are kept and served.
+    pub fn set_room_creation(&self, policy: creation::RoomCreation) {
+        *self
+            .creation
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+    }
+
+    /// See [`Self::set_room_creation`].
+    pub fn room_creation(&self) -> creation::RoomCreation {
+        self.creation
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Sign every answer from here on with `signer`, which signs as this host's DID. First
     /// call wins, as [`Self::set_host_did`]'s does: a host answers as one identity.
     ///
@@ -214,6 +222,30 @@ impl HostState {
         self.watches.set_signal_delay_ms(from, to);
     }
 
+    /// Space a live watch's signals `spacing` apart rather than the default second
+    /// (`rooms/watch/0.2` Host item 5). For a test; a host serving members keeps at least a
+    /// second.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_live_watch_spacing(&self, spacing: std::time::Duration) {
+        self.watches.set_live_spacing(spacing);
+    }
+
+    /// Set `room_id`'s signal delay directly, as `rooms/signal-delay/set` records it — and,
+    /// back to `randomised`, end its live watches as that task does. For a test that needs a
+    /// room's setting without an `admin` chain.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn set_room_signal_delay(
+        &self,
+        room_id: &str,
+        delay: vti_rooms::signal_delay::SignalDelay,
+    ) -> Result<(), AppError> {
+        storage::set_signal_delay(&self.rooms, room_id, delay, 0).await?;
+        if delay.is_randomised() {
+            self.watches.end_live_watches(room_id).await;
+        }
+        Ok(())
+    }
+
     /// Forget the watches whose lease ran out, returning how many. Run on a timer beside
     /// [`Self::sweep_accepted_ids`]; a room's own watches are also swept when it moves.
     pub async fn sweep_watches(&self) -> Result<usize, AppError> {
@@ -236,8 +268,21 @@ impl HostState {
     /// It is deliberately the *rooms* keyspace and not the records one: seeding rooms is a
     /// legitimate administrative act, and handing out the record store would let an embedder
     /// write records around every authorization check in this file.
+    ///
+    /// Handing it out counts as a change to the rooms ([`Self::rooms_changed`]): whatever
+    /// the caller adds or removes, registration recounts before it next relies on the
+    /// rooms it holds, so a removed room never holds a slot it no longer fills.
     pub fn rooms(&self) -> &KeyspaceHandle {
+        self.rooms_changed();
         &self.rooms
+    }
+
+    /// Say the rooms may have changed other than by a registration here — added,
+    /// removed, or moved between owners — so the counts registration is held to are
+    /// recounted before they are next relied on.
+    pub fn rooms_changed(&self) {
+        self.rooms_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The record keyspace, for the mirror puller.
@@ -251,120 +296,137 @@ impl HostState {
     pub fn records(&self) -> &KeyspaceHandle {
         &self.records
     }
+}
 
-    /// The presenter — proven by the document's own proof, never claimed in its payload.
-    ///
-    /// Split out from [`Self::presenter_and_verifier`] because `rooms/create` needs this half
-    /// and only this half: a room that does not exist yet has issued no credentials, so there
-    /// is no chain to judge and nothing for a verifier to do.
-    ///
-    /// Verified over the document as received when [`dispatch`] recorded it — `doc` is then
-    /// that JSON's parse — and never over a re-serialisation of `doc`, which rewrites the
-    /// timestamps a producer signed (VTI-45). A `doc` that is not the recorded document (a
-    /// direct call in a test) is verified in its typed form, which can only refuse more.
-    async fn presenter(&self, doc: &TrustTask<Value>) -> Result<String, AppError> {
-        let received = RECEIVED.try_with(Arc::clone).ok().filter(|received| {
-            serde_json::from_value::<TrustTask<Value>>((**received).clone())
-                .is_ok_and(|parsed| &parsed == doc)
-        });
-        let signer = match received {
-            Some(received) => {
-                vti_common::auth::verify_trust_task_proof_value(&received, &self.resolver).await
-            }
-            None => vti_common::auth::verify_trust_task_proof_with(doc, &self.resolver).await,
-        }
-        .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))?;
-
-        // The proof must be the document's **issuer**'s (framework SPEC §4.7). A proof
-        // that verifies under some other DID's key is a valid signature by somebody else,
-        // and the issuer the document names — which a reply is addressed to — is then a
-        // claim nobody proved. The same refusal the VTC's spine makes.
-        if doc.issuer.as_deref() != Some(signer.as_str()) {
-            tracing::warn!(
-                security_alert = true,
-                issuer = ?doc.issuer,
-                %signer,
-                "request proof verifies under a key the document's issuer does not control"
-            );
-            return Err(AppError::Forbidden(
-                "request proof: the proof's verificationMethod does not belong to the \
-                 document's issuer (SPEC §4.7)"
-                    .into(),
-            ));
-        }
-        Ok(signer)
+/// This host's half of the shared `rooms/*` handlers ([`vti_rooms_host`]): its keyspaces and
+/// verifier, its creator rules and ceilings, and a log line for an audit trail.
+#[async_trait::async_trait]
+impl vti_rooms_host::RoomHost for HostState {
+    fn rooms(&self) -> &KeyspaceHandle {
+        &self.rooms
     }
 
-    /// The presenter — proven, not claimed — and the verifier to judge their chain with.
-    async fn presenter_and_verifier(
+    fn records(&self) -> &KeyspaceHandle {
+        &self.records
+    }
+
+    fn epoch_links(&self) -> &KeyspaceHandle {
+        &self.epoch_links
+    }
+
+    fn revocations(&self) -> &KeyspaceHandle {
+        &self.revocations
+    }
+
+    fn files(&self) -> &vti_rooms::blobs::BlobHost {
+        &self.files
+    }
+
+    fn watches(&self) -> &vti_rooms::watch::RoomWatches {
+        &self.watches
+    }
+
+    fn resolver(&self) -> vti_common::auth::TrustTaskVmResolver {
+        self.resolver.clone()
+    }
+
+    fn host_limits(&self) -> vti_rooms::signal_delay::HostLimits {
+        files::HOST_LIMITS
+    }
+
+    async fn refuses_rewrites_by_others(&self) -> bool {
+        HostState::refuses_rewrites_by_others(self)
+    }
+
+    /// The host's own bound on registration (`authorize_create` leaves it to whoever hosts):
+    /// who may register, and how many rooms one owner and the host may hold. Checked and
+    /// written under one lock, so concurrent creates cannot overshoot.
+    async fn register(
         &self,
-        doc: &TrustTask<Value>,
-    ) -> Result<(String, DtgChainVerifier), AppError> {
-        let presenter = self.presenter(doc).await?;
+        registration: vti_rooms_host::Registration<'_>,
+    ) -> Result<(), vti_rooms_host::RegisterRefused> {
+        let (presenter, room) = (registration.presenter, registration.room);
+        let mut counts = self.room_counts.lock().await;
+        if let Err(refusal) = admit_registration(self, &mut counts, presenter, room).await {
+            if let RegistrationRefused::Policy(why) = &refusal {
+                self.log_refused_registration(presenter, why);
+            }
+            return Err(refusal_reason(refusal));
+        }
+        storage::create_room(&self.rooms, room).await?;
+        if let Some(c) = counts.as_mut() {
+            c.add(&room.owner_did);
+        }
+        Ok(())
+    }
 
-        Ok((
-            presenter,
-            // `without_zk`: no zero-knowledge profile, so private rooms are refused rather
-            // than served on a pooling defence nobody checked.
-            DtgChainVerifier::without_zk(Box::new(DataIntegrityKeys(self.resolver.clone()))),
-        ))
+    /// Ownership moved: the counts registration is held to are recounted before they are
+    /// next relied on.
+    fn owner_changed(&self, _room_id: &str) {
+        self.rooms_changed();
+    }
+
+    /// Record a room operation — §8, with the tier decision made by `vti_rooms::audit`.
+    ///
+    /// This host has no audit chain: it is a delivery service, and standing up an HMAC key
+    /// store and a hash chain here would be most of a community service again, which is the
+    /// thing it exists not to be. So the trail goes to `tracing`, where an operator's own log
+    /// pipeline collects it.
+    ///
+    /// What is **not** different from a VTC is *what may be recorded*. The actor comes from
+    /// [`vti_rooms::audit::for_operation`], so a `private` room logs that a member acted and
+    /// never who — a host that logged the DID because its own logging happened to be simpler
+    /// would have handed itself the membership by the back door.
+    async fn audit(
+        &self,
+        room: &Room,
+        authorized: &vti_rooms::authz::AuthorizedAction,
+        event: vti_rooms_host::RoomAudit<'_>,
+    ) {
+        use vti_rooms_host::RoomAudit;
+        let operation = event.operation();
+        #[cfg(test)]
+        AUDITED.with(|audited| audited.borrow_mut().push(operation.action_name()));
+        match event {
+            RoomAudit::Operation {
+                record_key,
+                purpose,
+                ..
+            } => {
+                let entry = rooms_audit::for_operation(room.visibility, authorized, record_key);
+                tracing::info!(
+                    action = operation.action_name(),
+                    room = %entry.room_id,
+                    actor = %entry.actor.as_str(),
+                    record = entry.record_key.as_deref().unwrap_or("-"),
+                    visibility = ?room.visibility,
+                    purpose = purpose.unwrap_or("-"),
+                    "room operation"
+                );
+            }
+            // A retention act or a signal-delay change, with what the specification asks a
+            // host to keep — never anything a removed record said.
+            other => {
+                let detail = match other {
+                    RoomAudit::Retention { detail, .. } => detail.detail(),
+                    RoomAudit::SignalDelay(audit) => audit.detail(),
+                    _ => Value::Null,
+                };
+                let entry = rooms_audit::for_operation(room.visibility, authorized, None);
+                tracing::info!(
+                    action = operation.action_name(),
+                    room = %entry.room_id,
+                    actor = %entry.actor.as_str(),
+                    visibility = ?room.visibility,
+                    detail = %detail,
+                    "room operation"
+                );
+            }
+        }
     }
 }
 
-/// Record a room operation — §8, with the tier decision made by `vti_rooms::audit`.
-///
-/// This host has no audit chain: it is a delivery service, and standing up an HMAC key
-/// store and a hash chain here would be most of a community service again, which is the
-/// thing it exists not to be. So the trail goes to `tracing`, where an operator's own log
-/// pipeline collects it.
-///
-/// What is **not** different from a VTC is *what may be recorded*. The actor comes from
-/// [`vti_rooms::audit::for_operation`], so a `private` room logs that a member acted and
-/// never who — a host that logged the DID because its own logging happened to be simpler
-/// would have handed itself the membership by the back door.
-fn audit_room(
-    room: &Room,
-    authorized: &authz::AuthorizedAction,
-    operation: RoomOperation,
-    record_key: Option<&str>,
-) {
-    let entry = rooms_audit::for_operation(room.visibility, authorized, record_key);
-    #[cfg(test)]
-    AUDITED.with(|audited| audited.borrow_mut().push(operation.action_name()));
-    tracing::info!(
-        action = operation.action_name(),
-        room = %entry.room_id,
-        actor = %entry.actor.as_str(),
-        record = entry.record_key.as_deref().unwrap_or("-"),
-        visibility = ?room.visibility,
-        "room operation"
-    );
-}
-
-/// [`audit_room`] for a retention act — a prune or a change to the rule — with what the
-/// specification asks a host to keep: the mark, the reason, the retention applied and the
-/// kinds asked, and never anything a removed record said (`rooms/records/prune/0.2` *The
-/// audit trail*). The requester is the tier's to disclose, as for every operation.
-fn audit_room_detail(
-    room: &Room,
-    authorized: &authz::AuthorizedAction,
-    operation: RoomOperation,
-    detail: &vti_rooms::record_tasks::RetentionAudit,
-) {
-    let entry = rooms_audit::for_operation(room.visibility, authorized, None);
-    #[cfg(test)]
-    AUDITED.with(|audited| audited.borrow_mut().push(operation.action_name()));
-    tracing::info!(
-        action = operation.action_name(),
-        room = %entry.room_id,
-        actor = %entry.actor.as_str(),
-        visibility = ?room.visibility,
-        detail = %detail.detail(),
-        "room operation"
-    );
-}
-
-// What `audit_room` recorded on this thread, so a test can assert on the trail without
+// What `audit` recorded on this thread, so a test can assert on the trail without
 // capturing log output. A thread-local `tracing` subscriber is not reliable for that when
 // other tests share the process (`cargo test`): a callsite's cached interest can be settled
 // by another thread before the subscriber exists, and the event is then never delivered.
@@ -373,14 +435,16 @@ thread_local! {
     static AUDITED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// What `audit_room` and `audit_room_detail` recorded on this thread, for a test in any
+/// What `audit` recorded on this thread, for a test in any
 /// module of this crate.
 #[cfg(test)]
 pub(crate) fn tests_audited() -> Vec<&'static str> {
     AUDITED.with(|audited| audited.borrow().clone())
 }
 
-fn now() -> u64 {
+/// Seconds since the Unix epoch, for a test placing a room in time.
+#[cfg(test)]
+pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -415,97 +479,70 @@ impl axum::response::IntoResponse for Answer {
     }
 }
 
-/// Refuse a request, as a routed `trust-task-error` document.
-///
-/// A room host and a VTC serve the same protocol, so they must refuse it the same way: a
-/// bare `{"error": …}` is not a Trust Task document, and a client that parses one host's
-/// reply cannot parse the other's. The `data_room` example found exactly that — every call
-/// in it failed on `missing field \`id\`` before this existed.
-///
-/// The reason text distinguishes the cases for an operator reading logs; the framework code
-/// is what a caller switches on.
-fn reject(doc: &TrustTask<Value>, reason: RejectReason) -> Answer {
-    let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
-    Answer {
-        status: status_for_code(&routed.payload.code),
-        document: serde_json::to_value(&routed).unwrap_or(Value::Null),
-    }
-}
-
-/// Answer a request, as a routed `#response` document.
-fn respond<R: serde::Serialize>(doc: &TrustTask<Value>, payload: R) -> Answer {
-    let response = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    Answer {
-        status: 200,
-        document: serde_json::to_value(&response).unwrap_or(Value::Null),
-    }
-}
-
-/// An `AppError` from the storage or authorization layer, as a rejection.
-///
-/// One mapping, so this host and the VTC classify the same failure identically. Both
-/// services reach these from shared code in `vti-rooms`; disagreeing here would mean the
-/// same refusal read as a different kind of problem depending on who was hosting.
-fn from_app_error(doc: &TrustTask<Value>, e: &AppError) -> Answer {
-    let reason = e.to_string();
-    reject(
-        doc,
-        match e {
-            AppError::Forbidden(_) => RejectReason::PermissionDenied { reason },
-            AppError::Validation(_) => RejectReason::MalformedRequest { reason },
-            // `TaskFailed` for both, following the VTC: a room that does not exist and a
-            // version precondition that lost a race are caller-visible outcomes, not server
-            // faults, and `InternalError` would tell the caller to retry.
-            AppError::NotFound(_) | AppError::Conflict(_) => RejectReason::TaskFailed {
-                reason,
-                details: None,
-            },
-            _ => RejectReason::InternalError { reason },
-        },
-    )
-}
-
 /// The HTTP mount. Everything it does is [`dispatch`]; this only says which carrier asked.
 async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> Answer {
     dispatch(&state, &body).await
 }
 
-// The inbound document as received, for the duration of its dispatch: the request proof is
-// verified over this JSON, never over a re-serialised `TrustTask` (VTI-45). A task-local
-// rather than a parameter so the eleven handlers keep one signature.
-tokio::task_local! {
-    static RECEIVED: Arc<Value>;
-}
-
-/// **The one entry point**: a `rooms/*` document, routed by its own `type`, whatever carried
-/// it here.
+/// **The one entry point** for a document that arrived over HTTP: a `rooms/*` document,
+/// routed by its own `type`.
 ///
 /// One mount rather than five routes, because the document's `type` is its identity — the
-/// same shape the VTC's holder-facing surface uses. And one function rather than one per
-/// carrier, because a host that routed or authorized differently depending on how a request
-/// arrived would have as many authorization models as it has wires. HTTP, DIDComm and TSP
-/// all land here with the same bytes.
+/// same shape the VTC's holder-facing surface uses. And one pipeline for every carrier
+/// ([`dispatch_from`]), because a host that routed or authorized differently depending on
+/// how a request arrived would have as many authorization models as it has wires.
 ///
 /// Nothing about *who* is asking comes from the carrier. The presenter is taken from the
 /// document's own `eddsa-jcs-2022` proof and the authority from the chain it carries, so a
-/// request is exactly as authorized over a socket as over a POST — and a transport that
-/// authenticated its sender confers nothing extra, which is the property that lets this be
-/// one function at all.
+/// request is exactly as authorized over a socket as over a POST.
 pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
-    // It parsed as a Trust Task below, so it parses as JSON; `Null` only if it did not, in
-    // which case the typed parse refuses it first.
-    let received = Arc::new(serde_json::from_slice::<Value>(body).unwrap_or(Value::Null));
-    let mut answer = RECEIVED
-        .scope(received, dispatch_received(state, body))
-        .await;
-    // Signed here, once, so no handler and no carrier can forget to: HTTP, DIDComm and TSP
-    // all answer with what this returns. Refusals too, so a caller can attribute one.
-    sign_answer(state, &mut answer.document).await;
-    answer
+    dispatch_from(state, &ArrivalCtx::rest(), body).await
+}
+
+/// [`dispatch`], for a document a carrier delivered: `ctx` says which, and over DIDComm and
+/// TSP the sender it authenticated, which the spine requires the document's proof to bind
+/// (VTI-OPS-021/093).
+///
+/// This is the workspace's receive pipeline ([`vti_trust_task_server::Spine`]), the one the
+/// VTC runs, in its order: size, freshness and the acceptance window, expiry and the
+/// recipient binding, the task's own specification policy, the proof bound to `issuer`, the
+/// sender binding, the duplicate-id record, dispatch, and every answer signed — refusals too.
+pub async fn dispatch_from(state: &Arc<HostState>, ctx: &ArrivalCtx, body: &[u8]) -> Answer {
+    let size = DeclaredSizes;
+    let policy = vti_specs::schema_index::spec_policy_for;
+    let verifier =
+        vti_trust_task_server::ResolverProofVerifier::operational(state.resolver.clone());
+    let hooks = Hooks(state);
+    let accepted = vti_trust_task_server::StoreAcceptedIds::new(state.accepted_ids.clone());
+    let dispatcher = RoomDispatcher(Arc::clone(state));
+    let signer = state
+        .answer_signer
+        .get()
+        .map(|s| &**s as &dyn vti_trust_task_server::ResponseSigner);
+    let outcome =
+        vti_trust_task_server::Spine::new(&policy, &verifier, &hooks, &accepted, &dispatcher)
+            .with_size_gate(&size)
+            .with_signer(signer)
+            .receive(ctx, body)
+            .await;
+    Answer::from(outcome)
+}
+
+impl From<vti_trust_task_server::TrustTaskOutcome> for Answer {
+    fn from(outcome: vti_trust_task_server::TrustTaskOutcome) -> Self {
+        Self {
+            status: outcome.status.as_u16(),
+            // An empty body is an answer with no document: a duplicate still in flight
+            // (`202`) or one completed without a kept answer (`204`).
+            document: serde_json::from_slice(&outcome.body).unwrap_or(Value::Null),
+        }
+    }
 }
 
 /// Sign `doc` as this host, when it has a signer ([`HostState::set_answer_signer`]) and the
-/// document carries no proof yet. A signing failure leaves it unsigned and logs.
+/// document carries no proof yet. A signing failure leaves it unsigned and logs. For an
+/// answer produced outside [`dispatch`] (a carrier's own refusal).
+#[cfg(feature = "didcomm")]
 pub(crate) async fn sign_answer(state: &HostState, doc: &mut Value) {
     if let Some(signer) = state.answer_signer.get()
         && doc.is_object()
@@ -516,242 +553,104 @@ pub(crate) async fn sign_answer(state: &HostState, doc: &mut Value) {
     }
 }
 
-/// [`dispatch`], inside the scope that records the received document.
-async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
-    // A body that is not a Trust Task document cannot be *routed* — there is no issuer to
-    // address a rejection to and no thread to correlate it with — so this one case answers
-    // with an unrouted error, exactly as the VTC's `body_parse_error_response` does.
-    let doc: TrustTask<Value> = match serde_json::from_slice(body) {
-        Ok(d) => d,
-        Err(e) => {
-            return Answer {
-                status: 400,
-                document: json!({
-                    "error": format!("body is not a Trust Task document: {e}"),
-                }),
-            };
-        }
-    };
+/// The size gate: SPEC §12.4 and each task's `maxDocumentBytes`. A document larger than its
+/// specification declares is refused, measured over the document as received, before it is
+/// parsed. Tasks that declare no bound keep the transport's own limit, so the large-document
+/// tasks are exactly the ones that may be large — a chunk document is admitted at its bound,
+/// and nothing else is.
+struct DeclaredSizes;
 
-    // SPEC §12.4 and each task's `maxDocumentBytes`: a document larger than
-    // its specification declares is refused. Measured over the document as
-    // received. Tasks that declare no bound keep the transport's own limit, so
-    // the large-document tasks are exactly the ones that may be large — a chunk
-    // document is admitted at its bound, and nothing else is.
-    let type_uri = doc.type_uri.to_string();
-    let bare = type_uri.split('#').next().unwrap_or(&type_uri);
-    if let Some(max) = vti_specs::schema_index::max_document_bytes_for(bare)
-        && body.len() > max
+#[async_trait::async_trait]
+impl vti_trust_task_server::SizeGate for DeclaredSizes {
+    async fn admit(
+        &self,
+        body: &[u8],
+    ) -> Result<Option<vti_trust_task_server::SizeCharge>, vti_trust_task_server::TrustTaskOutcome>
     {
-        return reject(
-            &doc,
-            RejectReason::MalformedRequest {
-                reason: format!(
-                    "a `{bare}` document is {} bytes; its specification bounds it at {max}",
-                    body.len()
-                ),
-            },
-        );
-    }
-
-    // One instant for every temporal decision in this dispatch: the acceptance window and
-    // the replay record's retention are the same bound (SPEC §7.2, *Bounding the record*).
-    let now = chrono::Utc::now();
-
-    // SPEC §7.2 item 13 — the timestamp bounds and the acceptance window, the VTC's own
-    // (`VTI_ACCEPTANCE_WINDOW`, `issuedAt` required). Decided from the document alone, so
-    // before any resolution or verification work. Without it a captured request was good
-    // forever: the replay record below only remembers a document for its window.
-    if let Err(reason) = doc.validate_freshness(now, &freshness_policy()) {
-        return reject(&doc, reason);
-    }
-
-    // SPEC §7.2 items 4 + 5 — expiry, and the recipient binding: a document addressed to
-    // another host is not this host's to execute. A host with no DID yet has nothing to
-    // compare a `recipient` against, so only the expiry half applies — expressed as the
-    // same check against the document's own recipient, which it trivially matches.
-    let my_vid = state
-        .host_did()
-        .map(str::to_string)
-        .or_else(|| doc.recipient.clone())
-        .unwrap_or_default();
-    if let Err(reason) = doc.validate_basic(now, &my_vid) {
-        return reject(&doc, reason);
-    }
-
-    // SPEC §7.2 item 11 — the duplicate-execution record.
-    //
-    // Every carrier that reaches here is at-least-once. The mediator re-pushes a
-    // recipient's whole undelivered inbox when a socket enables live delivery and when a
-    // duplicate socket displaces an existing session, so a frame this host has already
-    // answered arrives again as routine traffic. Without a record, `put`, `mint` and
-    // `transfer` run a second time.
-    //
-    // The document's proof does not close this: a redelivered copy carries the same valid
-    // proof the first did. It *is* the first document.
-    //
-    // Every document is recorded, reads included. A read changes nothing, but a captured
-    // read replayed inside its window would otherwise be answered afresh — with whatever
-    // the room holds *now*, to whoever replays it. What differs for a read is only what is
-    // kept: its answer is not retained (a chunk download is large, and a replay is owed
-    // nothing), so a duplicate read is answered `204` with no body.
-    let keep_response = is_consequential(&doc.type_uri.to_string());
-
-    let retain_until = retain_until(&doc, now);
-    let claim = match vti_trust_task_server::StoreAcceptedIds::new(state.accepted_ids.clone())
-        .claim(&doc, retain_until, now)
-        .await
-    {
-        Ok(Acceptance::Fresh(claim)) => claim,
-        Ok(Acceptance::Duplicate {
-            prior_response,
-            in_flight,
-        }) => {
-            // §7.2 (*Disposition of a duplicate*): never `taskFailed` — the task did not
-            // fail, it already happened. Answering with the original result is what keeps
-            // a member whose reply was lost from retrying a write forever.
-            return match prior_response {
-                Some(document) => Answer {
-                    status: 200,
-                    document,
-                },
-                // Still running. `202` is the only honest code: `200` claims a result that
-                // does not exist yet, `409` a conflict that does not exist — it is the
-                // same document.
-                None if in_flight => Answer {
-                    status: 202,
-                    document: Value::Null,
-                },
-                None => Answer {
-                    status: 204,
-                    document: Value::Null,
-                },
-            };
+        let Some(type_uri) = vti_trust_task_server::size::peek_type(body) else {
+            // Not a document of any readable type: the parse refuses it next.
+            return Ok(None);
+        };
+        let bare = type_uri.split('#').next().unwrap_or(&type_uri);
+        if let Some(max) = vti_specs::schema_index::max_document_bytes_for(bare) {
+            vti_trust_task_server::size::check_size(body, max, |_| max)?;
         }
-        // A *different* document under an already-spent id. Digest-keyed precisely so this
-        // is refused rather than absorbed as a retry of the original.
-        Ok(Acceptance::Conflict) => {
-            return reject(&doc, RejectReason::IdConflict);
-        }
-        // Fail closed: a host that cannot establish whether a document is a duplicate has
-        // not satisfied item 11, so it must not execute. `unavailable` is retryable, which
-        // is the truthful signal; an undigestible document is the document's fault.
-        Err(e) => {
-            tracing::error!(error = ?e, id = %doc.id, "accepted-id record unavailable");
-            return reject(&doc, e.reject_reason());
-        }
-    };
-
-    let moved_room = doc.payload["roomId"].as_str().map(str::to_string);
-    let answer = route(state, doc).await;
-
-    // Whatever moved the room — a put of any kind, a curation, a retraction, a prune, a
-    // profile written — fires the watches it put past their watermark, alike
-    // (`rooms/watch/0.1` Host item 6). Only after the task committed, and never failing it.
-    if (200..300).contains(&answer.status)
-        && let Some(room_id) = &moved_room
-    {
-        state.room_moved(room_id).await;
-    }
-
-    // Close out the claim. A success records its response so the redelivery this exists to
-    // absorb is answered with the result; a failure releases, or a document refused
-    // downstream of the claim would burn its id and a corrected resend under the same id
-    // would come back `202` (still in flight) until the record expired.
-    if (200..300).contains(&answer.status) {
-        claim
-            .completed(keep_response.then_some(&answer.document))
-            .await;
-    } else {
-        claim.release().await;
-    }
-
-    answer
-}
-
-/// Route a document to its handler. Split out of [`dispatch`] so the replay record can be
-/// taken around the whole routing step, rather than in each of eleven handlers.
-async fn route(state: &Arc<HostState>, doc: TrustTask<Value>) -> Answer {
-    let payload = doc.payload.clone();
-    match doc.type_uri.to_string().as_str() {
-        vti_rooms::record_tasks::CREATE_V2_TYPE => create(state, &doc, payload).await,
-        vti_rooms::record_tasks::INFO_V3_TYPE => files::info_v3(state, &doc, payload).await,
-        vti_rooms::record_tasks::LIST_V5_TYPE => files::list_v5(state, &doc, payload).await,
-        vti_rooms::record_tasks::LIST_V6_TYPE => files::list_v6(state, &doc, payload).await,
-        vti_rooms::record_tasks::PRUNE_TYPE => files::records_prune(state, &doc, payload).await,
-        vti_rooms::record_tasks::RETENTION_SET_TYPE => {
-            files::retention_set(state, &doc, payload).await
-        }
-        ROOMS_RECORDS_CURATE_TYPE => curate(state, &doc, payload).await,
-        ROOMS_EPOCH_MINT_TYPE => mint(state, &doc, payload).await,
-        vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE => {
-            match files::checked_v0_1::<vti_specs::rooms::epoch::chain::v0_2::Payload>(
-                &doc, payload,
-            ) {
-                Ok(p) => epoch_chain(state, &doc, p).await,
-                Err(a) => a,
-            }
-        }
-        vti_rooms::wire::ROOMS_EPOCH_PRUNE_V2_TYPE => {
-            match files::checked_v0_1::<vti_specs::rooms::epoch::prune::v0_2::Payload>(
-                &doc, payload,
-            ) {
-                Ok(p) => epoch_prune(state, &doc, p).await,
-                Err(a) => a,
-            }
-        }
-        ROOMS_EPOCH_COMMITS_TYPE => epoch_commits(state, &doc, payload).await,
-        ROOMS_OWNER_TRANSFER_TYPE => transfer_owner(state, &doc, payload).await,
-        ROOMS_OWNER_CLAIM_TYPE => claim_owner(state, &doc, payload).await,
-        vti_rooms::revocation_tasks::PUT_TYPE => files::revocations_put(state, &doc, payload).await,
-        vti_rooms::revocation_tasks::GET_TYPE => files::revocations_get(state, &doc, payload).await,
-        files::PUT_V3_TYPE => files::put_v3(state, &doc, payload).await,
-        files::PUT_V4_TYPE => files::put_v4(state, &doc, payload).await,
-        files::PUT_V5_TYPE => files::put_v5(state, &doc, payload).await,
-        files::GET_V2_TYPE => files::get_v2(state, &doc, payload).await,
-        files::GET_V3_TYPE => files::get_v3(state, &doc, payload).await,
-        files::DOWNLOAD_CHUNK_TYPE => files::download_chunk(state, &doc, payload).await,
-        files::USAGE_TYPE => files::usage(state, &doc, payload).await,
-        files::UPLOAD_BEGIN_V2_TYPE => files::begin_v2(state, &doc, payload).await,
-        files::UPLOAD_CHUNK_V2_TYPE => files::upload_chunk_v2(state, &doc, payload).await,
-        files::UPLOAD_COMMIT_V2_TYPE => files::commit_v2(state, &doc, payload).await,
-        files::UPLOAD_ABORT_V2_TYPE => files::abort_v2(state, &doc, payload).await,
-        files::BLOB_GET_V2_TYPE => files::get_blob_v2(state, &doc, payload).await,
-        vti_rooms::watch::WATCH_TYPE => files::watch(state, &doc, payload).await,
-        other => reject(
-            &doc,
-            // The framework's own code for this: a host that does not implement a task
-            // says so by naming the type, and a client can tell that from a task it
-            // implements but refused.
-            RejectReason::UnsupportedType {
-                type_uri: other.to_string(),
-            },
-        ),
+        Ok(None)
     }
 }
 
-/// Whether a task changes room state, and so has its answer kept in the duplicate-execution
-/// record — a redelivered write is answered with the result it already had.
-///
-/// Every document is *recorded*; this decides only whether the answer is retained. Listed
-/// positively, by type, rather than derived from a naming convention: a new task whose URI
-/// nobody thought about lands on the side that keeps its answer, so a retried write is never
-/// told `204` when it should have been told what happened.
-fn is_consequential(type_uri: &str) -> bool {
-    !matches!(
-        type_uri,
-        vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE
-            | ROOMS_EPOCH_COMMITS_TYPE
-            | files::BLOB_GET_V2_TYPE
-            | files::DOWNLOAD_CHUNK_TYPE
-            | files::USAGE_TYPE
-            | files::GET_V2_TYPE
-            | files::GET_V3_TYPE
-            | vti_rooms::record_tasks::LIST_V5_TYPE
-            | vti_rooms::record_tasks::LIST_V6_TYPE
-            | vti_rooms::record_tasks::INFO_V3_TYPE
-            | vti_rooms::revocation_tasks::GET_TYPE
-    )
+/// This host's points in the pipeline: its DID, once it has one.
+struct Hooks<'a>(&'a HostState);
+
+#[async_trait::async_trait]
+impl vti_trust_task_server::SpineHooks for Hooks<'_> {
+    async fn recipient(&self) -> Option<String> {
+        self.0.host_did().map(str::to_string)
+    }
+
+    /// A host with no DID yet has nothing to compare a `recipient` against, so the spine
+    /// skips the binding — and with it the expiry half of SPEC §7.2 item 4. Applied here
+    /// instead, as the same check against the document's own recipient, which it trivially
+    /// matches: an expired document is refused by a host with or without an identity.
+    async fn before_proof(
+        &self,
+        doc: &TrustTask<Value>,
+        _type_uri: &str,
+    ) -> Option<vti_trust_task_server::TrustTaskOutcome> {
+        if self.0.host_did().is_some() {
+            return None;
+        }
+        let own = doc.recipient.clone().unwrap_or_default();
+        doc.validate_basic(chrono::Utc::now(), &own)
+            .err()
+            .map(|reason| vti_trust_task_server::reject::reject_with(doc, reason))
+    }
+}
+
+/// The routing table behind the spine.
+struct RoomDispatcher(Arc<HostState>);
+
+impl vti_trust_task_server::Dispatcher for RoomDispatcher {
+    fn dispatch<'a>(
+        &'a self,
+        ctx: &'a ArrivalCtx,
+        doc: TrustTask<Value>,
+        type_uri: &'a str,
+        _received: Arc<Value>,
+    ) -> vti_trust_task_server::BoxFuture<'a, vti_trust_task_server::TrustTaskOutcome> {
+        Box::pin(async move {
+            if !vti_rooms_host::serves(type_uri) {
+                // The framework's own codes for this: a host that does not implement a task
+                // says so by naming the type — or the versions it serves of one it does — and
+                // a client can tell that from a task it implements but refused.
+                return vti_trust_task_server::reject::unsupported_type_or_version(
+                    &doc,
+                    type_uri,
+                    vti_rooms_host::served_uris(),
+                    "room host",
+                );
+            }
+            // A room operation is authorized against the DID that signed the request, so an
+            // unsigned one has nothing to authorize. Every `rooms/*` specification declares
+            // the proof REQUIRED, so the spine has normally refused this already.
+            let Some(presenter) = ctx.verified_signer.as_deref() else {
+                return vti_trust_task_server::reject::reject_with(
+                    &doc,
+                    trust_tasks_rs::RejectReason::ProofRequired,
+                );
+            };
+            let host: Arc<dyn vti_rooms_host::RoomHost> = self.0.clone();
+            vti_rooms_host::dispatch(host, doc, presenter).await
+        })
+    }
+
+    /// A read's answer is not kept in the duplicate-execution record (a chunk download is
+    /// large, and a replay is owed nothing), so a duplicate read is answered `204`; a write's
+    /// is, so a redelivered write is answered with the result it already had. Read off the
+    /// shared registrations ([`vti_rooms_host::is_consequential`]).
+    fn records_response(&self, type_uri: &str) -> bool {
+        vti_rooms_host::is_consequential(type_uri)
+    }
 }
 
 /// The keyspace the accepted-document-id record lives in (SPEC §7.2 item 11).
@@ -763,1023 +662,178 @@ fn is_consequential(type_uri: &str) -> bool {
 /// replicated host would still need the record shared between replicas.
 pub const ACCEPTED_IDS_KEYSPACE: &str = "accepted_ids";
 
-/// The acceptance window: the VTC's (`VTI_ACCEPTANCE_WINDOW`, `issuedAt` required), so a
-/// document a VTC host would accept is accepted here and one it would refuse is refused.
-fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
-    vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
-        .freshness_policy()
-        .requiring_issued_at()
+/// Why a registration was refused before the room was written.
+enum RegistrationRefused {
+    Policy(creation::CreationRefused),
+    Store(AppError),
 }
 
-/// How long the duplicate-execution record for `doc` is kept: until this host would stop
-/// accepting it, plus the skew (VTI-OPS-029). Without an `expiresAt` that is `issuedAt +
-/// max_age`; with one, the `expiresAt`, up to thirty days after `issuedAt` (VTI-OPS-028).
-/// Never earlier, or a replay arriving while still acceptable executes twice; the horizon
-/// is what stops a producer stamping a distant `expiresAt` pinning its id for that long.
-fn retain_until(
-    doc: &TrustTask<Value>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    vti_common::trust_task::acceptance::retain_until(&freshness_policy(), doc, now)
+/// How long kept room counts are trusted before they are recounted. Registration keeps
+/// them current itself; this catches what changes rooms without it — an ownership
+/// transfer, a mirror, an embedder writing the rooms keyspace, a removal — so a count is
+/// at most this stale.
+const ROOM_COUNTS_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Rooms held, in total and per owner, as of `counted_at`.
+struct RoomCounts {
+    total: u64,
+    per_owner: std::collections::HashMap<String, u64>,
+    counted_at: std::time::Instant,
+    /// [`HostState::rooms_generation`] when counted.
+    generation: u64,
 }
 
-/// `rooms/create/0.2`, which also records the room's record retention.
-async fn create(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let (record_retention, payload) = match vti_rooms::record_tasks::create_v2_parts(&payload) {
-        Ok(parts) => parts,
-        Err(r) => return files::record_refused(doc, r),
-    };
-    let req: CreateRoomBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
+impl RoomCounts {
+    async fn count(rooms: &KeyspaceHandle, generation: u64) -> Result<Self, AppError> {
+        let all = storage::list_rooms(rooms).await?;
+        let mut per_owner = std::collections::HashMap::new();
+        for r in &all {
+            *per_owner
+                .entry(creation::bare_did(&r.owner_did).to_string())
+                .or_insert(0) += 1;
         }
-    };
-    // The one operation no chain can authorize, and therefore the one that needs its own
-    // check: the room has issued nothing yet, so all this host has is who signed the
-    // request. `authorize_create` lives in `vti-rooms` so this host and a VTC cannot come to
-    // different conclusions about who may register a room.
-    let presenter = match state.presenter(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let terms = match vti_rooms::wire::CreateRoomTerms::from_request(&req) {
-        Ok(t) => t,
-        Err(reason) => return reject(doc, RejectReason::MalformedRequest { reason }),
-    };
-    let authorized = match authz::authorize_create(&req.room_id, &req.owner_did, &presenter) {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
+        Ok(Self {
+            total: all.len() as u64,
+            per_owner,
+            counted_at: std::time::Instant::now(),
+            generation,
+        })
+    }
 
-    let room = Room {
-        room_id: authorized.room_id().to_string(),
-        // From the authorization, not the payload. They are equal — that is what was just
-        // checked — and reading it from here is what keeps them equal if this ever grows a
-        // second way to be authorized.
-        owner_did: authorized.owner_did().to_string(),
-        visibility: terms.visibility,
-        // The owner's choice, `chained` when unstated: joining a room means being able to
-        // read it, and the alternative loses the room's contents at each membership change.
-        retention_policy: terms.retention_policy,
-        // What the caller asked for, or the default that draws no expectation.
-        anchor_cadence: terms.anchor_cadence,
-        epoch: 1,
-        next_version: 1,
-        retention_days: terms.retention_days.unwrap_or(DEFAULT_RETENTION_DAYS),
-        // A room is live from creation for one epoch lifetime; minting the next epoch
-        // renews it. Nothing else moves this clock — see `vti_rooms::lifecycle`.
-        epoch_expires_at: Some(now() + EPOCH_LIFETIME_DAYS_SECS),
-        created_at: now(),
-        updated_at: now(),
-        mirror_of: None,
-        // As given (create 0.2): never shortened, and `{}` records none.
-        record_retention: record_retention.filter(|r| !r.is_empty() || r.ext.is_some()),
-        last_prune: None,
-        epoch_floor: None,
-        frozen_at: None,
-    };
-    match storage::create_room(&state.rooms, &room).await {
-        Ok(()) => {
-            let response = CreateRoomResponse {
-                room_id: req.room_id,
-                epoch: 1,
-                // What was recorded, never what was asked: the two differ on a
-                // host that predates this member, and echoing the request would
-                // tell a caller their choice took effect when it did not.
-                anchor_cadence: Some(room.anchor_cadence),
-            };
-            files::create_v2_response(doc, response, room.record_retention.as_ref())
-        }
-        Err(e) => from_app_error(doc, &e),
+    fn owned_by(&self, owner: &str) -> u64 {
+        self.per_owner
+            .get(creation::bare_did(owner))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    fn add(&mut self, owner: &str) {
+        self.total += 1;
+        *self
+            .per_owner
+            .entry(creation::bare_did(owner).to_string())
+            .or_insert(0) += 1;
     }
 }
 
-/// Write a record: `rooms/records/put` 0.3 or 0.4, read as [`PutRecordBody`] with its
-/// `blobs`. A write that names no blobs releases any the record's previous version named.
-///
-/// `cleartext_as_received` is the write's `cleartext`, provenance, expiry and file
-/// included, which is stored in place of the body's — exactly as the writer sent it
-/// (consumer item 11). [`PutRecordBody`] still decides the shape checks. `open_files` is
-/// 0.4's: an open room's `blobs` must be the file its cleartext describes.
-async fn put_with_blobs(
+/// Hold a registration of `room` by `presenter` to the host's
+/// [`creation::RoomCreation`], recounting `counts` when absent or stale. The caller
+/// holds the `room_counts` lock.
+async fn admit_registration(
     state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-    blobs: Option<Vec<String>>,
-    cleartext_as_received: Option<Value>,
-    open_files: bool,
-) -> Answer {
-    let req: PutRecordBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Write,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // The declared `epochMismatch`, so a writer can tell "you missed a commit" from the code.
-    if let Some(refusal) =
-        vti_rooms::blob_tasks::record_epoch_refused(&room, req.sealed.as_ref().map(|s| s.epoch))
-    {
-        return files::record_refused(doc, refusal);
+    counts: &mut Option<RoomCounts>,
+    presenter: &str,
+    room: &Room,
+) -> Result<(), RegistrationRefused> {
+    let policy = state.room_creation();
+    // Refuse a party this host does not register for before reading anything.
+    if !policy.admits(presenter) {
+        return Err(RegistrationRefused::Policy(
+            creation::CreationRefused::NotACreator,
+        ));
     }
-
-    let blobs = blobs.unwrap_or_default();
-    // Before `blobNotFound`, and before anything changes (put 0.4 Host item 12).
-    if open_files
-        && let Some(refusal) =
-            vti_rooms::blob_tasks::open_file_refused(&room, &blobs, cleartext_as_received.as_ref())
+    // A repeat of a registration that already happened is answered as that, not as a
+    // ceiling the room already counts toward.
+    if storage::get_room(&state.rooms, &room.room_id).await.is_ok() {
+        return Err(RegistrationRefused::Store(AppError::Conflict(format!(
+            "room `{}` is already registered here",
+            room.room_id
+        ))));
+    }
+    let generation = state
+        .rooms_generation
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if counts
+        .as_ref()
+        .is_none_or(|c| c.generation != generation || c.counted_at.elapsed() > ROOM_COUNTS_MAX_AGE)
     {
-        return files::record_refused(doc, refusal);
-    }
-    // Held across the write: the blobs it names cannot be collected, and their
-    // limits cannot change, between this check and the references it records.
-    let references = match state
-        .files
-        .prepare_record(&room, authorized.member(), &req.key, &blobs)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return files::record_blobs_refused(doc, e),
-    };
-    // Put/0.5 Host item 15, under the lock `references` holds, so the record it judges is
-    // the one this write replaces — and before anything changes. Applied whichever put
-    // version carries the write: a 0.4 rewrite of another member's message is the same
-    // rewrite, and would otherwise be the way round the refusal.
-    if state.refuses_rewrites_by_others() && room.visibility.stores_cleartext() {
-        let current = match storage::get_record(&state.records, &req.room_id, &req.key).await {
-            Ok(r) => Some(r),
-            Err(AppError::NotFound(_)) => None,
-            Err(e) => return from_app_error(doc, &e),
-        };
-        if let Some(refusal) = vti_rooms::blob_tasks::rewrite_by_other_refused(
-            &room,
-            current.as_ref(),
-            authorized.subject(),
-        ) {
-            return files::record_refused(doc, refusal);
-        }
-    }
-
-    let record = Record {
-        key: req.key.clone(),
-        version: 0,
-        epoch: req.sealed.as_ref().map(|s| s.epoch),
-        status: RecordStatus::Active,
-        pinned: false,
-        sealed: req.sealed.as_ref().map(|s| s.ciphertext.clone()),
-        nonce: req.sealed.as_ref().map(|s| s.nonce.clone()),
-        sealed_version: None,
-        cleartext: req.cleartext.as_ref().map(|c| {
-            cleartext_as_received
-                .clone()
-                .unwrap_or_else(|| serde_json::to_value(c).unwrap_or(Value::Null))
-        }),
-        // The verified subject where the tier discloses an actor — who the chain says is
-        // acting, not the room's owner. On a private room authorship lives inside the
-        // sealed body, and the storage layer refuses it here.
-        author: room
-            .visibility
-            .discloses_actor()
-            .then(|| authorized.subject().to_string()),
-        updated_at: 0,
-        created_at: None,
-        created_by: None,
-        body_stored_at: None,
-    };
-
-    match storage::put_record(
-        &state.rooms,
-        &state.records,
-        &req.room_id,
-        record,
-        req.expected_version,
-        now(),
-    )
-    .await
-    {
-        Ok(stored) => {
-            if let Err(e) = references.apply().await {
-                // The record is written; only its blob references are not. Said
-                // loudly, because usage now disagrees with the room by one file.
-                tracing::error!(error = %e, room = %req.room_id, record = %stored.key,
-                    "record stored but its blob references were not updated");
-            }
-            audit_room(
-                &room,
-                &authorized,
-                RoomOperation::PutRecord,
-                Some(&stored.key),
-            );
-            respond(
-                doc,
-                PutRecordResponse {
-                    key: stored.key,
-                    version: stored.version,
-                    epoch: stored.epoch,
-                },
-            )
-        }
-        Err(e) => from_app_error(doc, &e),
-    }
-}
-
-/// `rooms/records/get/0.2`, read as its 0.1 members: the answer also names the record's
-/// blobs — and at 0.3 (`v3`) the host's `createdAt`, `createdBy` and `bodyStoredAt`.
-async fn get_versioned(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-    v3: bool,
-) -> Answer {
-    let req: GetRecordBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Read,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // Read under the lock every record write holds — and every prune: a 0.2 read names the
-    // blobs of the version it returns, and every read's head must be one snapshot with its
-    // root, which a prune moves both of (`HeadVersion`).
-    let snapshot = state.files.read_snapshot().await;
-    match storage::get_record(&state.records, &req.room_id, &req.key).await {
-        Ok(record) => {
-            audit_room(&room, &authorized, RoomOperation::GetRecord, Some(&req.key));
-            // Answered through the response type for the same reason the VTC is:
-            // `respond(doc, record)` put the *storage* record on the wire.
-            let (commitment, trace) = record_verification(state, &req.room_id, &req.key).await;
-            let response = GetRecordResponse::of(&record, commitment.as_ref(), trace);
-            if v3 {
-                files::get_v3_response(&snapshot, doc, &room, &record, response).await
-            } else {
-                files::get_v2_response(&snapshot, doc, &req.room_id, &req.key, response).await
-            }
-        }
-        Err(e) => from_app_error(doc, &e),
-    }
-}
-
-/// `rooms/records/list/0.5`, read as [`ListRecordsBody`]: rows name their blobs, every page
-/// carries the room's `lastPrune`, and the continuation token is `nextCursor`. At 0.6
-/// (`v6`) the rows are `RecordMetadataV3`.
-async fn list_records(
-    state: &HostState,
-    doc: &TrustTask<Value>,
-    payload: Value,
-    v6: bool,
-) -> Answer {
-    let req: ListRecordsBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Read,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // Paginated honestly: the page the caller asked for, and a cursor when more
-    // remain. This used to `take(limit)` and drop the rest without a word, so a
-    // short page and a complete room were indistinguishable.
-    // Under the record-write lock, which a prune also holds: the page, the head and the
-    // room's `lastPrune` are one snapshot.
-    let snapshot = state.files.read_snapshot().await;
-    match storage::list_records_page(
-        &state.records,
-        &req.room_id,
-        req.prefix.as_deref(),
-        req.since_version,
-        req.cursor.as_deref(),
-        req.limit,
-    )
-    .await
-    {
-        Ok(page) => {
-            // Metadata, never bodies — the same rule the VTC serves under, because it is a
-            // property of the task rather than of any one host.
-            // A listing names no single record; the event is that the room was surveyed.
-            audit_room(&room, &authorized, RoomOperation::ListRecords, None);
-            let head = room_head(state, &req.room_id).await;
-            let response = ListRecordsResponse {
-                records: page
-                    .records
-                    .iter()
-                    .map(|r| {
-                        if v6 {
-                            r.metadata_v3(room.visibility)
-                        } else {
-                            r.metadata()
-                        }
-                    })
-                    .collect(),
-                cursor: page.cursor,
-                // The reference host commits too. A host that served
-                // listings without one would be a working example of the
-                // thing the commitment exists to make detectable.
-                // One head, so the three values a reader compares cannot come
-                // from three moments.
-                data_commitment: head
-                    .as_ref()
-                    .map(|h| vti_rooms::merkle::to_multibase(&h.root)),
-                record_count: head.as_ref().map(|h| h.record_count),
-                head_version: head.as_ref().map(|h| h.head_version),
-            };
-            // The room as it stands under the lock: its `lastPrune` is the one the page and
-            // head were taken with.
-            match storage::get_room(&state.rooms, &req.room_id).await {
-                Ok(now_room) if v6 => {
-                    files::list_v6_response(&snapshot, doc, &now_room, response).await
-                }
-                Ok(now_room) => files::list_v5_response(&snapshot, doc, &now_room, response).await,
-                Err(e) => from_app_error(doc, &e),
-            }
-        }
-        Err(e) => from_app_error(doc, &e),
-    }
-}
-
-/// The room's commitment and this record's trace, from one snapshot.
-///
-/// Both or neither. A trace with no commitment is a path to a root the reader
-/// was not given — the specification forbids it with `dependentRequired`, and
-/// serving one would be a host offering evidence it withheld the subject of.
-///
-/// A failure is answered with neither rather than with an error: these are
-/// additional guarantees the specification makes OPTIONAL precisely so a host
-/// that cannot assert one says nothing instead of something false. A member who
-/// asked for a record and got an error because the *tree* was unhappy has lost
-/// a working operation to an advisory one.
-async fn record_verification(
-    state: &HostState,
-    room_id: &str,
-    key: &str,
-) -> (
-    Option<vti_rooms::merkle::TreeHead>,
-    Option<vti_rooms::merkle::InclusionProof>,
-) {
-    match storage::room_tree_head_with_trace(&state.rooms, &state.records, room_id, key).await {
-        Ok((head, trace)) => (Some(head), trace),
-        Err(e) => {
-            tracing::error!(
-                room = %room_id,
-                error = %e,
-                "could not commit the room; answering the read without a commitment or a trace"
-            );
-            (None, None)
-        }
-    }
-}
-
-/// The room's data commitment, or `None` if it could not be computed.
-///
-/// **A failure here must not fail the read.** The commitment is an additional
-/// guarantee and the specification makes it OPTIONAL precisely so a host that
-/// cannot assert one says nothing rather than something false — a member who
-/// asked for records and got an error because the *tree* was unhappy has lost a
-/// working operation to an advisory one.
-///
-/// Logged rather than swallowed: a host that has quietly stopped committing
-/// looks, to a member, exactly like one that never did.
-///
-/// One function for both reads, mirroring the VTC's, because a listing and a
-/// read that disagreed about the room's root would be this host equivocating
-/// with itself.
-async fn room_head(state: &HostState, room_id: &str) -> Option<vti_rooms::merkle::TreeHead> {
-    match storage::room_tree_head(&state.rooms, &state.records, room_id).await {
-        Ok(head) => Some(head),
-        Err(e) => {
-            tracing::error!(
-                room = %room_id,
-                error = %e,
-                "could not compute the room's data commitment; answering without one"
-            );
-            None
-        }
-    }
-}
-
-/// `rooms/epoch/chain` 0.1, or 0.2 (`v2`) — serve the room's epoch key chain.
-///
-/// At either version no rung at or below the room's epoch floor is served; 0.2 also carries
-/// the floor itself on every response once the chain has been pruned (trust-tasks-tf #869).
-///
-/// Gated on `read`: reading the room and reading what was written before you joined are the
-/// same act. What leaves is ciphertext — the key that opens a rung is a storage key this
-/// host never holds — so a party with the whole chain and no epoch key learns only how many
-/// epochs the room has had, which its epoch number already told them.
-async fn epoch_chain(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let req: ChainBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Read,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-
-    let mut links = match storage::servable_epoch_links(&state.epoch_links, &room).await {
-        Ok(l) => l,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // Highest epoch first: the chain is walked downwards, so a member reads it in the order
-    // they will use it.
-    links.reverse();
-    if let Some(from) = req.from_epoch {
-        links.retain(|l| l.epoch <= from);
-    }
-    if let Some(limit) = req.limit {
-        links.truncate(limit as usize);
-    }
-
-    audit_room(&room, &authorized, RoomOperation::ListRecords, None);
-    let response = ChainResponse {
-        room_id: req.room_id,
-        links,
-    };
-    files::record_refused_or(
-        doc,
-        vti_rooms::record_tasks::epoch_chain_v2_response(response, &room),
-    )
-}
-
-async fn mint(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let req: MintEpochBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // `admin`, not `write`: if any key-holder could mint an epoch, any member could evict
-    // any other by declining to seal them the new key — and this host, which cannot see the
-    // membership, would have no way to notice.
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Admin,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // The room's policy governs whether it has a chain at all, so a rung for a room that
-    // does not chain is refused rather than dropped. Storing it would give the room a chain
-    // it declared it would not have; dropping it silently would let a client believe the
-    // room's history was being retained when it was not.
-    if req.link.is_some() && !room.retention_policy.links_epochs() {
-        return from_app_error(
-            doc,
-            &vti_common::error::AppError::Validation(format!(
-                "room `{}` does not keep an epoch key chain, so it accepts no epoch link",
-                req.room_id
-            )),
+        *counts = Some(
+            RoomCounts::count(&state.rooms, generation)
+                .await
+                .map_err(RegistrationRefused::Store)?,
         );
     }
+    let c = counts.as_ref().expect("counted above");
+    policy
+        .check(presenter, c.total, c.owned_by(&room.owner_did))
+        .map_err(RegistrationRefused::Policy)
+}
 
-    // A rung that does not describe *this* advance is refused rather than stored beside it:
-    // accepting a mismatched one would launder someone else's key material into this room's
-    // history, and the members who walked the original would never see the difference.
-    if let Some(link) = &req.link
-        && link.epoch != req.epoch
-    {
-        return from_app_error(
-            doc,
-            &vti_common::error::AppError::Validation(format!(
-                "the epoch link is for epoch {} but this mint advances to {}",
-                link.epoch, req.epoch
-            )),
-        );
-    }
+/// The refused-registration log's state: when one was last written, and how many were
+/// refused without a line since.
+#[derive(Default)]
+struct RefusalLog {
+    last: Option<std::time::Instant>,
+    unlogged: u64,
+}
 
-    match storage::advance_epoch(&state.rooms, &req.room_id, req.epoch, now()).await {
-        Ok(updated) => {
-            // After the advance, so a rejected advance leaves no orphan rung.
-            if let Some(link) = &req.link
-                && let Err(e) =
-                    storage::put_epoch_link_above_floor(&state.epoch_links, &updated, link).await
-            {
-                return from_app_error(doc, &e);
-            }
-            // And the commit, on the same terms: this is the moment the
-            // committer holds it, and a room that advances without leaving it
-            // somewhere fetchable forks every member who was not online.
-            if let Some(commit) = &req.commit
-                && let Err(e) =
-                    storage::put_commit(&state.epoch_links, &req.room_id, req.epoch, commit).await
-            {
-                return from_app_error(doc, &e);
-            }
-            audit_room(&room, &authorized, RoomOperation::MintEpoch, None);
-            respond(
-                doc,
-                MintEpochResponse {
-                    room_id: updated.room_id,
-                    epoch: updated.epoch,
-                },
-            )
+/// At most one refused-registration line per this long; the line counts the rest.
+const REFUSAL_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl HostState {
+    /// Log a refused registration for the operator, at most once per
+    /// [`REFUSAL_LOG_INTERVAL`], counting those not logged in between. A refusal is
+    /// usually a creator the operator has not named yet, or a limit reached; either is
+    /// something they act on, and an unbounded line per refusal is not.
+    fn log_refused_registration(&self, presenter: &str, refusal: &creation::CreationRefused) {
+        let mut log = self
+            .refusal_log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let due = log.last.is_none_or(|t| t.elapsed() >= REFUSAL_LOG_INTERVAL);
+        if !due {
+            log.unlogged += 1;
+            return;
         }
-        Err(e) => from_app_error(doc, &e),
+        let also = std::mem::take(&mut log.unlogged);
+        log.last = Some(std::time::Instant::now());
+        drop(log);
+        match refusal {
+            creation::CreationRefused::NotACreator => tracing::warn!(
+                presenter,
+                also_refused_since_last_line = also,
+                "refused rooms/create: the signer is not a creator this host was given \
+                 (--room-creator)"
+            ),
+            creation::CreationRefused::OwnerAtLimit { max } => tracing::warn!(
+                presenter,
+                max_rooms_per_owner = max,
+                also_refused_since_last_line = also,
+                "refused rooms/create: the owner holds its limit of rooms on this host"
+            ),
+            creation::CreationRefused::HostAtLimit { max } => tracing::warn!(
+                presenter,
+                max_rooms = max,
+                also_refused_since_last_line = also,
+                "refused rooms/create: this host holds its limit of rooms (--max-rooms)"
+            ),
+        }
     }
 }
 
-/// `rooms/epoch/prune/0.2` — drop the chain below an epoch, and raise the room's epoch
-/// floor to `beforeEpoch − 1` (trust-tasks-tf #869), which the answer returns.
-///
-/// The **rungs** go, not the records. A pruned room still holds every record and
-/// this host still serves them; what is gone is the ability to derive the keys
-/// they were sealed under, for anyone who has not already derived them.
-async fn epoch_prune(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let req: PruneBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
+/// A refused registration, worded as this host words it.
+fn refusal_reason(refusal: RegistrationRefused) -> vti_rooms_host::RegisterRefused {
+    use creation::CreationRefused as R;
+    use vti_rooms_host::RegisterRefused as Out;
+    match refusal {
+        RegistrationRefused::Store(e) => Out::App(e),
+        RegistrationRefused::Policy(R::NotACreator) => {
+            Out::Reject(RejectReason::PermissionDenied {
+                reason: "this host registers rooms only for the parties its operator named".into(),
+            })
         }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // `admin`, not `curate`: pruning makes no statement about any record, and
-    // every member who can write can curate.
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Admin,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // The declared `notAhead`, with the room's current epoch in `details.epoch`.
-    if let Some(refusal) = vti_rooms::blob_tasks::prune_floor_refused(&room, req.before_epoch) {
-        return files::record_refused(doc, refusal);
-    }
-    match storage::prune_chain_to_floor(
-        &state.rooms,
-        &state.epoch_links,
-        &req.room_id,
-        req.before_epoch,
-        now(),
-    )
-    .await
-    {
-        Ok((pruned, earliest_rung, floor)) => {
-            audit_room(&room, &authorized, RoomOperation::PruneEpoch, None);
-            let response = PruneResponse {
-                room_id: req.room_id,
-                pruned: pruned as u32,
-                earliest_rung,
-            };
-            files::record_refused_or(
-                doc,
-                vti_rooms::record_tasks::epoch_prune_v2_response(response, floor),
-            )
+        RegistrationRefused::Policy(R::OwnerAtLimit { max }) => {
+            Out::Reject(RejectReason::TaskFailed {
+                reason: format!("the owner already holds {max} rooms on this host, its limit"),
+                details: Some(serde_json::json!({ "limit": "roomsPerOwner", "max": max })),
+            })
         }
-        Err(e) => from_app_error(doc, &e),
-    }
-}
-
-/// `rooms/epoch/commits/0.1` — serve the commits a member missed.
-///
-/// Safe on every tier: a commit is ciphertext plus a leaf index and **names
-/// nobody**, which is the difference from a Welcome and why the host is
-/// deliberately off that path and on this one.
-async fn epoch_commits(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let req: CommitsBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
+        RegistrationRefused::Policy(R::HostAtLimit { max }) => {
+            Out::Reject(RejectReason::TaskFailed {
+                reason: format!("this host already holds {max} rooms, its limit"),
+                details: Some(serde_json::json!({ "limit": "rooms", "max": max })),
+            })
         }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Read,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    match storage::commits_since(
-        &state.epoch_links,
-        &req.room_id,
-        req.since_epoch,
-        req.limit.unwrap_or(100).clamp(1, 100) as usize,
-    )
-    .await
-    {
-        Ok(commits) => {
-            audit_room(&room, &authorized, RoomOperation::ListRecords, None);
-            respond(
-                doc,
-                CommitsResponse {
-                    room_id: req.room_id,
-                    commits,
-                    // Read from the room, never computed from the answer.
-                    room_epoch: room.epoch,
-                },
-            )
-        }
-        Err(e) => from_app_error(doc, &e),
-    }
-}
-
-/// `rooms/owner/transfer/0.1`.
-///
-/// The owner hands the room to another member while still present. Gated on `admin`, the
-/// same grant that mints epochs.
-///
-/// **This host cannot check that the incoming owner is a member** — it holds no roster and
-/// no group state, and a delivery service never will. The spec's `notAMember` is for a host
-/// that "could independently establish" it; inventing a check here would refuse every
-/// correct transfer, which is a worse failure than the one it imagines it is preventing.
-async fn transfer_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let req: TransferOwnerBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let operation = RoomOperation::TransferOwner;
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        operation.required_action(),
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    match storage::set_owner(&state.rooms, &req.room_id, &req.new_owner_did, now()).await {
-        Ok(updated) => {
-            audit_room(&room, &authorized, operation, None);
-            respond(
-                doc,
-                OwnerResponse {
-                    room_id: updated.room_id,
-                    owner_did: updated.owner_did,
-                },
-            )
-        }
-        Err(e) => from_app_error(doc, &e),
-    }
-}
-
-/// `rooms/owner/claim/0.1`.
-///
-/// A nominated successor takes a room whose owner stopped renewing it. Three conditions,
-/// all required: a nomination the room issued to this claimant, a room that has gone
-/// dormant, and membership.
-///
-/// Checked nomination-first, because a bad nomination is the answer a claimant can act on
-/// and "the room is still live" would send them back in a month to hear the real one.
-///
-/// The claim does not renew the room — see [`storage::set_owner`].
-async fn claim_owner(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let req: ClaimOwnerBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-
-    // Against the party who signed the request, never a DID from the payload.
-    let keys = DataIntegrityKeys(state.resolver.clone());
-    let nominated =
-        match nomination::verify(&req.nomination, &room.room_id, &presenter, &keys).await {
-            Ok(n) => n,
-            Err(e) => return from_app_error(doc, &e),
-        };
-
-    let lifecycle = room.lifecycle(now());
-    if !lifecycle.admits_a_claim() {
-        return from_app_error(
-            doc,
-            &AppError::Forbidden(format!(
-                "room `{}` is {} — a room becomes claimable only once its epoch has \
-                 lapsed and the grace window after it has also passed without a renewal",
-                room.room_id,
-                lifecycle.as_str()
-            )),
-        );
-    }
-
-    let operation = RoomOperation::ClaimOwner;
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        operation.required_action(),
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    // A nomination is a credential the room issued, and a list governs succession like
-    // every other task (`rooms/revocations/put`, *Enforcement* item 2).
-    if let Err(e) = authorized.also_unrevoked(nominated.facts()) {
-        return from_app_error(doc, &e);
-    }
-    match storage::set_owner(&state.rooms, &req.room_id, &presenter, now()).await {
-        Ok(updated) => {
-            audit_room(&room, &authorized, operation, None);
-            respond(
-                doc,
-                OwnerResponse {
-                    room_id: updated.room_id,
-                    owner_did: updated.owner_did,
-                },
-            )
-        }
-        Err(e) => from_app_error(doc, &e),
-    }
-}
-
-/// `rooms/records/curate/0.1`.
-///
-/// Gated on `Action::Curate` — not implied by `write`, because deciding what a room's shared
-/// knowledge is worth is a different grant from being able to add to it.
-async fn curate(state: &HostState, doc: &TrustTask<Value>, payload: Value) -> Answer {
-    let req: CurateRecordBody = match serde_json::from_value(payload) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject(
-                doc,
-                RejectReason::MalformedRequest {
-                    reason: e.to_string(),
-                },
-            );
-        }
-    };
-    if req.status.is_none() && req.pinned.is_none() {
-        return reject(
-            doc,
-            RejectReason::MalformedRequest {
-                reason: "a curation must change something: supply `status`, `pinned`, or both"
-                    .into(),
-            },
-        );
-    }
-
-    let room = match storage::get_room(&state.rooms, &req.room_id).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let (presenter, verifier) = match state.presenter_and_verifier(doc).await {
-        Ok(p) => p,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    let authorized = match authz::authorize(
-        &room,
-        &req.presentation,
-        Action::Curate,
-        &presenter,
-        now(),
-        &verifier,
-        &state.revocations,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(e) => return from_app_error(doc, &e),
-    };
-
-    // Held across the curation, so a 0.2 read never sees a retracted record
-    // still naming the blobs the retraction released.
-    let release = match state.files.prepare_release(&req.room_id, &req.key).await {
-        Ok(r) => r,
-        Err(e) => return from_app_error(doc, &e),
-    };
-    match storage::curate_record(
-        &state.rooms,
-        &state.records,
-        &req.room_id,
-        &req.key,
-        storage::Curation {
-            status: req.status,
-            pinned: req.pinned,
-            expected_version: req.expected_version,
-        },
-        now(),
-    )
-    .await
-    {
-        Ok(curated) => {
-            // A retraction keeps no body, so it keeps no file: every blob the
-            // record named is released, and orphaned if nothing else names it.
-            if curated.status == RecordStatus::Retracted
-                && let Err(e) = release.apply().await
-            {
-                tracing::error!(error = %e, room = %req.room_id, record = %curated.key,
-                    "record retracted but its blobs were not released");
-            }
-            audit_room(
-                &room,
-                &authorized,
-                RoomOperation::CurateRecord,
-                Some(&curated.key),
-            );
-            respond(
-                doc,
-                CurateRecordResponse {
-                    key: curated.key,
-                    version: curated.version,
-                    status: curated.status,
-                    pinned: curated.pinned,
-                },
-            )
-        }
-        Err(e) => from_app_error(doc, &e),
     }
 }
 
@@ -1849,6 +903,11 @@ fn cors_layer(allowed_origins: &[String]) -> Option<tower_http::cors::CorsLayer>
             .allow_headers([HeaderName::from_static("content-type")])
             .max_age(std::time::Duration::from_secs(60)),
     )
+}
+
+/// How many rooms `state` holds, mirrors included.
+pub async fn rooms_held(state: &HostState) -> Result<usize, AppError> {
+    Ok(storage::list_rooms(&state.rooms).await?.len())
 }
 
 /// Open the store with a `did:key`-only verifier.
@@ -1922,6 +981,10 @@ pub fn open_state_with_files(
         host_did: Arc::new(std::sync::OnceLock::new()),
         refuse_rewrites_by_others: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         answer_signer: Arc::new(std::sync::OnceLock::new()),
+        creation: Arc::new(std::sync::RwLock::new(creation::RoomCreation::default())),
+        room_counts: Arc::new(tokio::sync::Mutex::new(None)),
+        rooms_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        refusal_log: Arc::new(std::sync::Mutex::new(RefusalLog::default())),
     }))
 }
 
@@ -1961,8 +1024,12 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use serde_json::json;
     use tower::ServiceExt;
     use vti_rooms::Visibility;
+    use vti_rooms::wire::{
+        ROOMS_EPOCH_MINT_TYPE, ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE,
+    };
     use vti_rooms_dtg::test_support::{Party, RoomFixture};
 
     /// A host over a temporary store.
@@ -1974,6 +1041,8 @@ mod tests {
     fn state() -> (tempfile::TempDir, Arc<HostState>) {
         let dir = tempfile::tempdir().unwrap();
         let state = open_state(dir.path()).expect("open store");
+        // These tests register rooms as whoever they mint.
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         (dir, state)
     }
 
@@ -2037,17 +1106,23 @@ mod tests {
         let last = proof.proof_value.pop().expect("non-empty proofValue");
         proof.proof_value.push(if last == '1' { '2' } else { '1' });
 
-        let resolver_failure = state.presenter(&resolver_fail_doc).await;
-        let bad_signature = state.presenter(&bad_sig_doc).await;
+        // The spine's proof step, as this host runs it: verified over the document as
+        // received, through this host's resolver.
+        use vti_trust_task_server::ProofVerifier as _;
+        let verifier =
+            vti_trust_task_server::ResolverProofVerifier::operational(state.resolver.clone());
+        let as_received = |d: &TrustTask<Value>| serde_json::to_value(d).expect("a document");
+        let resolver_failure = verifier.verify(&as_received(&resolver_fail_doc), "x").await;
+        let bad_signature = verifier.verify(&as_received(&bad_sig_doc), "x").await;
 
         match (resolver_failure, bad_signature) {
-            (Err(AppError::Forbidden(a)), Err(AppError::Forbidden(b))) => {
+            (Err(AppError::Unauthorized(a)), Err(AppError::Unauthorized(b))) => {
                 assert_eq!(
                     a, b,
                     "a resolver failure must render exactly as a bad signature does"
                 );
             }
-            other => panic!("expected both to be Forbidden errors, got {other:?}"),
+            other => panic!("expected both to be Unauthorized errors, got {other:?}"),
         }
     }
 
@@ -2144,6 +1219,7 @@ mod tests {
                 mirror_of: Some(primary_url.clone()),
                 record_retention: None,
                 last_prune: None,
+                signal_delay: Default::default(),
                 epoch_floor: None,
                 frozen_at: None,
                 next_version: 1,
@@ -2237,6 +1313,7 @@ mod tests {
                 mirror_of: Some("https://primary.example.org".into()),
                 record_retention: None,
                 last_prune: None,
+                signal_delay: Default::default(),
                 epoch_floor: None,
                 frozen_at: None,
                 ..f.room.clone()
@@ -2484,6 +1561,209 @@ mod tests {
         register(&app, &f).await;
     }
 
+    /// Register `room_id` for `owner`, signed by `owner`.
+    async fn create_as(app: &Router, room_id: &str, owner: &Party) -> (StatusCode, Value) {
+        call(
+            app,
+            vti_rooms::wire::ROOMS_CREATE_V2_TYPE,
+            serde_json::json!({
+                "roomId": room_id,
+                "ownerDid": owner.did,
+                "visibility": "open",
+            }),
+            owner,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_host_that_names_no_creator_registers_no_room() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::None,
+            ..Default::default()
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &f.room.room_id, &f.owner).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            vti_rooms::storage::get_room(st.rooms(), &f.room.room_id)
+                .await
+                .is_err(),
+            "a refused registration must not create the room"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_named_creator_registers_rooms() {
+        let (_d, st) = state();
+        let f = RoomFixture::new(Visibility::Open).await;
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Only([f.owner.did.clone()].into_iter().collect()),
+            ..Default::default()
+        });
+        let app = router(st.clone());
+        register(&app, &f).await;
+
+        let other = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &other.room.room_id, &other.owner).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    #[tokio::test]
+    async fn an_owner_holds_at_most_its_ceiling_of_rooms() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 1,
+            max_rooms: 100,
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let second = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &second.room.room_id, &f.owner).await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(body.to_string().contains("roomsPerOwner"), "{body}");
+        assert!(
+            vti_rooms::storage::get_room(st.rooms(), &second.room.room_id)
+                .await
+                .is_err()
+        );
+
+        // Another owner is not held to the first one's count.
+        register(&app, &second).await;
+    }
+
+    #[tokio::test]
+    async fn the_host_holds_at_most_its_ceiling_of_rooms() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 10,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+
+        let second = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &second.room.room_id, &second.owner).await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(body.to_string().contains("\"rooms\""), "{body}");
+    }
+
+    /// A repeat of a registration is answered as already registered, not as a
+    /// ceiling the room already counts toward.
+    #[tokio::test]
+    async fn a_repeat_registration_is_already_registered_even_at_the_ceiling() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 1,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+        let (status, body) = create_as(&app, &f.room.room_id, &f.owner).await;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(body.to_string().contains("already registered"), "{body}");
+    }
+
+    /// Two registrations racing for the last slot: exactly one gets it.
+    #[tokio::test]
+    async fn concurrent_registrations_never_overshoot_the_ceiling() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 10,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let (a, b) = (
+            RoomFixture::new(Visibility::Open).await,
+            RoomFixture::new(Visibility::Open).await,
+        );
+        let ((sa, _), (sb, _)) = tokio::join!(
+            create_as(&app, &a.room.room_id, &a.owner),
+            create_as(&app, &b.room.room_id, &b.owner)
+        );
+        assert_eq!(
+            [sa, sb].iter().filter(|s| **s == StatusCode::OK).count(),
+            1,
+            "{sa} {sb}"
+        );
+        assert_eq!(
+            vti_rooms::storage::list_rooms(st.rooms())
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// A room removed through [`HostState::rooms`] frees its slot at once: the kept
+    /// counts are not relied on past a change made there.
+    #[tokio::test]
+    async fn a_room_removed_by_the_embedder_frees_its_slot_at_once() {
+        let (_d, st) = state();
+        st.set_room_creation(creation::RoomCreation {
+            creators: creation::Creators::Any,
+            max_rooms_per_owner: 10,
+            max_rooms: 1,
+        });
+        let app = router(st.clone());
+        let (a, b) = (
+            RoomFixture::new(Visibility::Open).await,
+            RoomFixture::new(Visibility::Open).await,
+        );
+        register(&app, &a).await;
+        let (status, body) = create_as(&app, &b.room.room_id, &b.owner).await;
+        assert_ne!(status, StatusCode::OK, "at the ceiling: {body}");
+
+        vti_rooms::storage::purge_room_rows(
+            st.rooms(),
+            &st.records,
+            &st.epoch_links,
+            &st.revocations,
+            &a.room.room_id,
+        )
+        .await
+        .unwrap();
+        register(&app, &b).await;
+    }
+
+    /// Refused registrations are logged at most once a minute, the rest counted.
+    #[test]
+    fn refused_registrations_are_logged_at_a_bounded_rate() {
+        let (_d, st) = state();
+        let refused = creation::CreationRefused::NotACreator;
+        st.log_refused_registration("did:key:zA", &refused);
+        st.log_refused_registration("did:key:zB", &refused);
+        st.log_refused_registration("did:key:zC", &refused);
+        let log = st.refusal_log.lock().unwrap();
+        assert!(log.last.is_some());
+        assert_eq!(log.unlogged, 2);
+    }
+
+    /// `open_state` registers nothing until its embedder says who may (R5.1).
+    #[tokio::test]
+    async fn a_host_registers_no_room_until_told_who_may() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = open_state(dir.path()).expect("open store");
+        let app = router(st.clone());
+        let f = RoomFixture::new(Visibility::Open).await;
+        let (status, body) = create_as(&app, &f.room.room_id, &f.owner).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "the default is closed: {body}"
+        );
+    }
+
     /// A document with no proof has no presenter, and a registration nobody signed
     /// records an owner nobody proved.
     #[tokio::test]
@@ -2670,6 +1950,7 @@ mod tests {
 
         let first = {
             let st = open_state(dir.path()).expect("open store");
+            st.set_room_creation(crate::creation::RoomCreation::any_creator());
             let app = router(st.clone());
             register(&app, &f).await;
             let (status, first) = post_raw(&app, doc.as_bytes()).await;
@@ -2898,12 +2179,10 @@ mod tests {
         })
         .await;
         let (status, body) = post_raw(&app, &doc).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert!(
-            body.to_string()
-                .contains("does not belong to the document's issuer"),
-            "{body}"
-        );
+        // The spine's refusal, as the VTC gives it: the proof is not the issuer's, so it
+        // proves nothing about the document (`proofInvalid`).
+        assert!(status.is_client_error(), "{status}: {body}");
+        assert_eq!(body["code"], "proofInvalid", "{body}");
     }
 
     /// The arrangement the whole design exists for, end to end through a host.
@@ -2952,6 +2231,97 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    /// VTI-ACL-110: a chain stating purposes is held to them on every read. get/0.4 names
+    /// the purpose; a purpose the chain does not grant is `purposeNotGranted`, and an earlier
+    /// version — which cannot name one — is refused where the chain lists more than one.
+    #[tokio::test]
+    async fn vti_acl_110_a_read_is_held_to_the_purposes_its_chain_grants() {
+        use dtg_credentials::purposes::PurposeScope;
+        let (_d, st) = state();
+        let app = router(st);
+        let f = RoomFixture::new(Visibility::Open).await;
+        register(&app, &f).await;
+        call(
+            &app,
+            vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+            serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": f.as_owner(),
+                "cleartext": { "body": "for one purpose only" },
+            }),
+            &f.owner,
+        )
+        .await;
+        let get = |uri: &'static str,
+                   presentation: vti_rooms::wire::AuthorityPresentation,
+                   purpose: Option<&str>| {
+            let mut payload = serde_json::json!({
+                "roomId": f.room.room_id,
+                "key": "k",
+                "presentation": presentation,
+            });
+            if let Some(p) = purpose {
+                payload["purpose"] = serde_json::json!(p);
+            }
+            let app = app.clone();
+            let agent = &f.agent;
+            async move { call(&app, uri, payload, agent).await }
+        };
+        const V4: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE;
+        const V3: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE;
+
+        let one = f
+            .as_agent_for(PurposeScope::listed(["taskExecution"]))
+            .await;
+        let (status, body) = get(V4, one.clone(), Some("taskExecution")).await;
+        assert_eq!(status, StatusCode::OK, "the granted purpose: {body}");
+        let (status, body) = get(V4, one.clone(), None).await;
+        assert_eq!(status, StatusCode::OK, "the only purpose applies: {body}");
+        let (status, body) = get(V3, one.clone(), None).await;
+        assert_eq!(status, StatusCode::OK, "so it does to get/0.3: {body}");
+        let (_, body) = get(V4, one, Some("analytics")).await;
+        assert_eq!(
+            body["code"], "rooms/records/get:purposeNotGranted",
+            "{body}"
+        );
+        assert_eq!(
+            body["details"],
+            serde_json::json!({ "purposeNamed": true, "purpose": "analytics" }),
+            "{body}"
+        );
+        assert!(body.get("cleartext").is_none(), "no content: {body}");
+
+        let two = f
+            .as_agent_for(PurposeScope::listed(["taskExecution", "personalisation"]))
+            .await;
+        let (_, body) = get(V4, two.clone(), None).await;
+        assert_eq!(
+            body["code"], "rooms/records/get:purposeNotGranted",
+            "{body}"
+        );
+        assert_eq!(
+            body["details"],
+            serde_json::json!({ "purposeNamed": false })
+        );
+        let (_, body) = get(V3, two.clone(), None).await;
+        assert_eq!(
+            body["code"], "permissionDenied",
+            "get/0.3 cannot name one: {body}"
+        );
+        let (status, body) = get(V4, two, Some("personalisation")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // A chain stating none grants `any`, which never grants model training.
+        let (status, body) = get(V4, f.as_agent(), Some("analytics")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, body) = get(V4, f.as_agent(), Some("modelTraining")).await;
+        assert_eq!(
+            body["code"], "rooms/records/get:purposeNotGranted",
+            "{body}"
+        );
     }
 
     /// A presentation is not a bearer token: the agent's chain, presented by its human.

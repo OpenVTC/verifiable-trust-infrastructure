@@ -16,7 +16,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable, useSortedRows, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { NamedDid } from "@/components/NamedDid";
-import { formatIso, shortenDid } from "@/lib/format";
+import { formatDate, formatIso, shortenDid } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { useToast } from "@/lib/toast";
 import {
@@ -593,7 +593,7 @@ function GrantForm({
     if (memberError || daysError) return;
     const n = Number(days);
     const name = book.nameOrDid(memberDid);
-    const until = new Date(Date.now() + n * DAY_SECONDS * 1000).toLocaleDateString();
+    const until = formatDate(Date.now() + n * DAY_SECONDS * 1000);
     const ok = await confirm({
       title: `Name ${name} a vetter?`,
       message: `${name} receives a vetter role credential valid until ${until}. While it is live, the identity-vetting statements they sign count toward applicants' admissions. You can revoke it at any time.`,

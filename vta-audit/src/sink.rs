@@ -37,11 +37,10 @@
 
 use std::sync::Arc;
 
+use crate::event::{VtaAuditEvent, VtaAuditWriter, VtaOperationData};
 use async_trait::async_trait;
 use vta_sdk::protocols::audit_management::list::AuditLogEntry;
-use vti_common::audit::event::{AuditEvent, VtaOperationData};
 use vti_common::audit::key_store::AuditKeyStore;
-use vti_common::audit::writer::AuditWriter;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -62,6 +61,18 @@ pub trait AuditSink: Send + Sync {
     /// either; it should assume only that returning `Err` is honest and
     /// swallowing internally is not.
     async fn record(&self, entry: &AuditLogEntry) -> Result<(), AppError>;
+
+    /// A keyed commitment to `value`, for a record that must refer to personal
+    /// data without embedding it (VTI-AUD-005): a memory item's key, which
+    /// names what the agent remembered and is often personal itself.
+    ///
+    /// `None` when this sink keeps no key to commit under. The caller then
+    /// records **no** reference, never the value: an unkeyed digest of a
+    /// low-entropy name is a dictionary lookup away from the name.
+    async fn commit(&self, value: &str) -> Option<String> {
+        let _ = value;
+        None
+    }
 }
 
 /// The shared handle every call site holds.
@@ -133,7 +144,7 @@ pub const AUDIT_KEY_CREATED: &str = "audit.key.created";
 pub struct ChainedKeyspaceAuditSink {
     keyspace: KeyspaceHandle,
     key_store: AuditKeyStore,
-    writer: AuditWriter,
+    writer: VtaAuditWriter,
     /// Runs the establish-key-then-open-the-chain sequence once per process,
     /// so concurrent first writes cannot both open it.
     opened: Arc<tokio::sync::OnceCell<()>>,
@@ -142,7 +153,7 @@ pub struct ChainedKeyspaceAuditSink {
 impl ChainedKeyspaceAuditSink {
     pub fn new(keyspace: KeyspaceHandle, key_keyspace: KeyspaceHandle) -> Self {
         let key_store = AuditKeyStore::new(key_keyspace);
-        let writer = AuditWriter::new(keyspace.clone(), key_store.clone())
+        let writer = VtaAuditWriter::new(keyspace.clone(), key_store.clone())
             // The keyspace already has an ordering and rows that use it, so
             // the seconds stay the leading field: the retention sweep compares
             // keys against `log:{cutoff:020}:` and stops at the first row past
@@ -192,7 +203,7 @@ impl ChainedKeyspaceAuditSink {
             .write(
                 SYSTEM_ACTOR,
                 None,
-                AuditEvent::VtaOperation(VtaOperationData {
+                VtaAuditEvent::VtaOperation(VtaOperationData {
                     action: AUDIT_KEY_CREATED.to_string(),
                     resource: Some(key.key_id.as_uuid().to_string()),
                     outcome: "success".to_string(),
@@ -226,7 +237,7 @@ impl AuditSink for ChainedKeyspaceAuditSink {
             .write(
                 &entry.actor,
                 target,
-                AuditEvent::VtaOperation(VtaOperationData {
+                VtaAuditEvent::VtaOperation(VtaOperationData {
                     action: entry.action.clone(),
                     resource: resource.map(str::to_string),
                     outcome: entry.outcome.clone(),
@@ -237,6 +248,16 @@ impl AuditSink for ChainedKeyspaceAuditSink {
             )
             .await
             .map(|_| ())
+    }
+
+    async fn commit(&self, value: &str) -> Option<String> {
+        // The key is established when the chain opens.
+        self.opened
+            .get_or_try_init(|| self.ensure_open())
+            .await
+            .ok()?;
+        let key = self.writer.active_key().await.ok()?;
+        Some(vti_common::audit::commit_reference(&key, value))
     }
 }
 
@@ -445,7 +466,7 @@ mod chained_sink_tests {
         }
     }
 
-    async fn envelopes(ks: &KeyspaceHandle) -> Vec<vti_common::audit::AuditEnvelope> {
+    async fn envelopes(ks: &KeyspaceHandle) -> Vec<crate::VtaAuditEnvelope> {
         let pairs = ks.prefix_iter_raw("log:").await.expect("scan");
         pairs
             .iter()
@@ -474,7 +495,7 @@ mod chained_sink_tests {
 
         let opening = &found[0];
         match &opening.event {
-            vti_common::audit::event::AuditEvent::VtaOperation(op) => {
+            crate::VtaAuditEvent::VtaOperation(op) => {
                 assert_eq!(op.action, AUDIT_KEY_CREATED);
                 assert_eq!(
                     op.resource.as_deref(),
@@ -482,7 +503,6 @@ mod chained_sink_tests {
                     "the opening entry names the key it is hashed under"
                 );
             }
-            other => panic!("unexpected opening event: {other:?}"),
         }
         assert_eq!(opening.actor_did_plain.as_deref(), Some(SYSTEM_ACTOR));
     }
@@ -523,6 +543,42 @@ mod chained_sink_tests {
         verify_chain(&found).expect("the chain survives the restart");
     }
 
+    /// A reference to personal data (VTI-AUD-005) is a keyed commitment: the
+    /// same value commits the same way, a different value differently, the
+    /// value never appears, and the key id says which audit key it is under.
+    #[tokio::test]
+    async fn a_chained_sink_commits_under_its_audit_key() {
+        let (audit_ks, key_ks, _dir) = keyspaces();
+        let sink = ChainedKeyspaceAuditSink::new(audit_ks, key_ks);
+        let a = sink
+            .commit("vta/memory\0ctx\0contact/billing")
+            .await
+            .expect("keyed");
+        assert!(a.starts_with("hmac-sha256:"), "{a}");
+        assert!(!a.contains("billing"));
+        assert_eq!(
+            a,
+            sink.commit("vta/memory\0ctx\0contact/billing")
+                .await
+                .unwrap(),
+            "deterministic, so the VTA can recompute it for a candidate"
+        );
+        assert_ne!(
+            a,
+            sink.commit("vta/memory\0other\0contact/billing")
+                .await
+                .unwrap()
+        );
+    }
+
+    /// A sink with no key offers no commitment, so its caller records no
+    /// reference — never the value, and never an unkeyed digest of it.
+    #[tokio::test]
+    async fn a_flat_sink_has_nothing_to_commit_under() {
+        let (audit_ks, _key_ks, _dir) = keyspaces();
+        assert_eq!(KeyspaceAuditSink::new(audit_ks).commit("x").await, None);
+    }
+
     /// A DID-shaped resource travels in the hashed members, where an erasure
     /// can reach it. Anything else is not personal data and stays put.
     #[tokio::test]
@@ -555,10 +611,9 @@ mod chained_sink_tests {
             "a key id is not an identifier to commit to"
         );
         match &key_row.event {
-            vti_common::audit::event::AuditEvent::VtaOperation(op) => {
+            crate::VtaAuditEvent::VtaOperation(op) => {
                 assert_eq!(op.resource.as_deref(), Some("key-3f2a"));
             }
-            other => panic!("unexpected event: {other:?}"),
         }
     }
 }
@@ -568,7 +623,8 @@ mod verify_support_tests {
     //! The sink's half of what verification depends on. The verifier itself
     //! lives in `vta-service`, where the keyspace read path is.
     use super::*;
-    use vti_common::audit::{AuditEnvelope, verify_chain};
+    use crate::VtaAuditEnvelope as AuditEnvelope;
+    use vti_common::audit::verify_chain;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -650,9 +706,8 @@ mod verify_support_tests {
 
         // Rewrite what an entry says happened, leaving its hashes alone —
         // the edit an operator covering their tracks would make.
-        if let vti_common::audit::event::AuditEvent::VtaOperation(op) = &mut envelopes[2].event {
-            op.outcome = "failure".to_string();
-        }
+        let crate::VtaAuditEvent::VtaOperation(op) = &mut envelopes[2].event;
+        op.outcome = "failure".to_string();
         assert!(
             verify_chain(&envelopes).is_err(),
             "an altered entry must not verify"

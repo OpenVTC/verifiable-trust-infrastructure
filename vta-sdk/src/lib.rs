@@ -135,10 +135,13 @@ pub mod did_templates;
 /// Compact-JWS verification over a resolved key — EdDSA, ES256, ES256K.
 #[cfg(feature = "proof-verify")]
 pub mod jws;
+pub mod node_keys;
 /// Notifications (`notifications/*`, VTI-NTF-001 – 063): verifying a delivered notification
 /// and every relay around it.
 #[cfg(feature = "proof-verify")]
 pub mod notifications;
+/// Which identifier methods a party resolves (VTI-KEY-003, VTI-KEY-009).
+pub mod resolved_methods;
 /// Reading an IETF Token Status List for a credential, signed by its issuer.
 #[cfg(feature = "proof-verify")]
 pub mod token_status_list;
@@ -162,7 +165,7 @@ pub mod display_name;
 // Pins rustls to the aws-lc-rs backend; every binary calls this at startup.
 #[cfg(feature = "crypto-provider")]
 pub mod crypto_init;
-#[cfg(feature = "client")]
+#[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "keyring")]
 pub mod keyring_init;
@@ -232,6 +235,8 @@ pub mod tee_bootstrap;
 // One TDK + one ATM per process, with a session per identity on it. Every
 // session type in this SDK runs on a hub; the legacy constructors just build a
 // private one (#830).
+/// Trust Task payload schemas compiled once per process, not per call (#2622).
+pub mod schema_cache;
 #[cfg(feature = "session")]
 pub mod session_hub;
 /// The approver's side of task consent: the match code, request verification,

@@ -398,7 +398,7 @@ const CURSOR_PREFIX: &str = "offset:";
 /// A short digest of `filters`, stable across calls with the same JSON.
 fn filter_tag(filters: &Value) -> String {
     use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    let bytes = serde_json_canonicalizer::to_vec(filters).unwrap_or_default();
     hex::encode(&Sha256::digest(&bytes)[..8])
 }
 
@@ -1348,11 +1348,12 @@ pub(crate) async fn activity_list(
         activity_list::error_codes::NOT_ADMINISTRATOR.code,
     )?;
     let mut items: Vec<(chrono::DateTime<chrono::Utc>, GitNsActivityItem)> = Vec::new();
-    for (_, v) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
-            continue;
-        };
-        let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event else {
+    // Only the git-namespace rows, through the audit index — never a decode of
+    // the whole audit log per read (#2599).
+    for env in
+        crate::audit_index::git_ns_operations(&state.audit_ks, &state.audit_index_ks, None).await?
+    {
+        let vtc_audit::AuditEvent::GitNsOperation(d) = env.event else {
             continue;
         };
         // A row for a namespace since unbound is still the history of a

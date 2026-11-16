@@ -19,7 +19,7 @@ autobins = false
 
 [dev-dependencies]
 # Embedded mediator fixture from affinidi-tdk-rs.
-affinidi-messaging-test-mediator = { version = "0.50", features = ["tsp"] }
+affinidi-messaging-test-mediator = { workspace = true }
 
 # VTA: enable the `test-support` feature so we can stand up complete VTA
 # state (in-memory keyspaces, default `AppConfig`, bootstrap helpers)
@@ -28,6 +28,8 @@ affinidi-messaging-test-mediator = { version = "0.50", features = ["tsp"] }
 # `MockVta::start_with_transports` — a whole VTA on a real mediator socket,
 # which is what `tsp_vta_trust_task` drives a Trust Task through.
 vta-service = { path = "../../vta-service", features = ["test-support", "transport-harness", "didcomm", "tsp", "webvh", "rest"] }
+# `MockVta` (#2570 moved it out of `vta_service::test_support`).
+vta-test-support = { path = "../../vta-test-support", features = ["transport-harness"] }
 vta-sdk = { path = "../../vta-sdk", features = ["client", "didcomm", "session", "tsp", "sealed-transfer", "provision-integration", "provision-client"] }
 vti-common = { path = "../../vti-common" }
 # Community voting: the voting service and its core, and the `pnm elections trustee` code,
@@ -47,16 +49,15 @@ serde_json_canonicalizer = { workspace = true }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../../vti-specs", version = "0.10" }
+vti-specs = { path = "../../vti-specs", version = "0.15" }
 
 affinidi-tdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 affinidi-messaging-sdk = { workspace = true, features = ["default"] }
-affinidi-messaging-didcomm = "0.15.9"
 
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
-tempfile = "3"
+tempfile = { workspace = true }
 reqwest = { workspace = true }
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
@@ -68,7 +69,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-url = "2"
 chrono = { workspace = true }
 
 [lints]

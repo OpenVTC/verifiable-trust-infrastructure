@@ -33,17 +33,17 @@ k8s-secrets = ["vti-secrets/k8s-secrets"]
 # window the VTA and VTC answer with — `seed_store::SeedStore`, and (`tsp`)
 # `host_session`, the mediator session and its supervisor, which routes a TSP
 # reply to a peer on another mediator (`tsp_route`).
-vti-common = { path = "../vti-common", version = "0.61", features = ["host-session"] }
+vti-common = { path = "../vti-common", version = "0.66", features = ["host-session"] }
 # The `[secrets]` table and `create_seed_store`: the witness keeps its key
 # material behind the same backends the VTA and VTC use, never in its config.
-vti-secrets = { path = "../vti-secrets", version = "0.34" }
+vti-secrets = { path = "../vti-secrets", version = "0.39" }
 # `provision-client`: the two-phase, VTA-provisioned setup (`run_phase1_init`,
 # `run_connection_test`, `ProvisionAsk::witness`). `tsp`: the TSP leg of that
 # setup against a VTA that advertises TSP, and the binding envelope. `didcomm`:
 # `did_key::secrets_from_bundle`. `proof-verify` arrives with `client` (through
 # `provision-client`): `trust_task_proof` verifies an inbound document's proof,
 # `trust_task_sign` signs every reply.
-vta-sdk = { path = "../vta-sdk", version = "0.85", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = [
   "didcomm",
   "provision-client",
   "tsp",
@@ -55,7 +55,6 @@ vta-sdk = { path = "../vta-sdk", version = "0.85", features = [
 # the shared socket; without it a TSP frame is handed to the DIDComm unpacker.
 affinidi-tdk = { workspace = true, features = ["tsp"] }
 affinidi-messaging-sdk = { workspace = true, features = ["tsp"] }
-affinidi-messaging-core = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 
@@ -63,9 +62,12 @@ affinidi-secrets-resolver = { workspace = true }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.10" }
-# `ENVELOPE_TYPE`, from the crate that defines the DIDComm binding.
-trust-tasks-didcomm = { workspace = true }
+vti-specs = { path = "../vti-specs", version = "0.15" }
+# The receive pipeline every Trust Task service shares, and its store-backed
+# duplicate-execution record (#2576).
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.12" }
+# `StatusCode`, the pipeline's outcome status.
+axum = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -75,11 +77,9 @@ clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-futures-util = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-rand = { workspace = true }
-anyhow = "1"
+anyhow = { workspace = true }
 
 # The witnessing itself (P2). `dtg-credentials` builds the VWC
 # (`new_witnessed_vsc`, `with_task_citation`) and parses the presented
@@ -93,17 +93,25 @@ serde_json_canonicalizer = { workspace = true }
 sha2 = { workspace = true }
 multibase = { workspace = true }
 # `trust_tasks_rs::ReplayGuard` is an `async_trait` trait.
-async-trait = "0.1"
+async-trait = { workspace = true }
 # The session challenge: 32 bytes straight from the OS RNG.
-getrandom = "0.4"
+getrandom = { workspace = true }
+
+# The resolver trait's types: `witness::ObservedResolver` tells a resolution
+# failure from a proof that does not verify. Already in the graph via vta-sdk.
+affinidi-data-integrity = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 # `store::test_fixture`: test stores copied from a pre-built template rather than
 # created keyspace by keyspace (macOS fsyncs every creation).
 vti-common = { path = "../vti-common", features = ["test-support"] }
-# Signing the presentations the tests submit (`authentication` proofs).
-affinidi-data-integrity = { workspace = true }
 
 [lints]
 workspace = true
+
+# Not called from this crate: both are declared to turn their `tsp` feature on
+# (see their entries above); without it a TSP frame on the shared socket is
+# handed to the DIDComm unpacker.
+[package.metadata.cargo-machete]
+ignored = ["affinidi-tdk", "affinidi-messaging-sdk"]

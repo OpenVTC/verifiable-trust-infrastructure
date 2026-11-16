@@ -1,6 +1,7 @@
 # The VTC as an OpenID4VP verifier for swiyu and EUDI wallets
 
-Status: design, not implemented
+Status: **implemented** — `vtc-service/src/oid4vp/`, `vtc oid4vp …`, operator guide
+[`../03-vtc/oid4vp-verifier.md`](../03-vtc/oid4vp-verifier.md). Originally a design.
 Tracking: OpenVTC/verifiable-trust-infrastructure#1988 (item 4, "plain HTTPS OID4VCI/VP bindings")
 Scope: **verification only.** Issuing into these wallets is a later, separate project.
 Companions: `vti-credential-architecture.md` (D1, §6, §14, open question 6),

@@ -21,8 +21,10 @@ import { Award as AwardIcon, Check, Gift, Pencil, Plus, Settings2, Sparkles, Tra
 import { BadgePicture, BadgePictureField } from "@/components/BadgePicture";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
+import { DidText } from "@/components/DidText";
 import { EmptyState } from "@/components/EmptyState";
-import { EntryName, useEntryFaces } from "@/components/EntryName";
+import { byFace, EntryName, faceLabel, faceMatches, useEntryFaces } from "@/components/EntryName";
+import { formatDate, shortenDid } from "@/lib/format";
 import { Field } from "@/components/Field";
 import { PageHeader } from "@/components/PageHeader";
 import {
@@ -34,8 +36,10 @@ import {
   HOLDERS_AUDIENCES,
   SKIPPED_LABEL,
   createBadge,
+  createClaim,
   listAwards,
   listBadges,
+  listClaims,
   listHolders,
   listKudosGivings,
   offerAwards,
@@ -47,6 +51,7 @@ import {
   updateBadge,
   updateSettings,
   withdrawAward,
+  withdrawClaim,
   type AwardRow,
   type Badge,
   type BadgeImageRef,
@@ -64,6 +69,7 @@ import {
   showGroup,
 } from "@/lib/groups";
 import { type DynamicRule, RuleEditor, emptyRule, ruleReady, wireRule } from "@/plugins/GroupRule";
+import { vtcDid } from "@/lib/api";
 import { listRoles } from "@/lib/roles";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
@@ -76,7 +82,7 @@ function kindLabel(b: Badge): string {
 }
 
 function when(iso: string | undefined): string {
-  return iso ? new Date(iso).toLocaleDateString() : "—";
+  return iso ? formatDate(iso) : "—";
 }
 
 export function Badges() {
@@ -182,7 +188,11 @@ function BadgesList() {
                 <div className="badge-name-cell">
                   <BadgePicture badgeId={badge.badgeId} image={badge.image} name={badge.name} size={44} />
                   <div>
-                    <strong>{badge.name}</strong>
+                    {/* A link, so a keyboard or screen reader reaches the
+                        badge; the row click stays as a convenience (#2611). */}
+                    <Link to={encodeURIComponent(badge.badgeId)} onClick={(e) => e.stopPropagation()}>
+                      <strong>{badge.name}</strong>
+                    </Link>
                     <span className="muted">{badge.description}</span>
                   </div>
                 </div>
@@ -485,15 +495,15 @@ function MemberPicker({
     () =>
       [...faces.entries()]
         .filter(([id]) => !exclude.includes(id))
-        .filter(([, f]) => !filter || (f.name ?? "").toLowerCase().includes(filter.toLowerCase()))
-        .sort(([, a], [, b]) => (a.name ?? "~").localeCompare(b.name ?? "~")),
+        .filter(([, f]) => faceMatches(f, filter))
+        .sort(byFace),
     [faces, exclude, filter],
   );
   return (
     <Field label={label} hint={chosen.length > 0 ? `${chosen.length} chosen` : undefined}>
       <input
         type="search"
-        placeholder="Find a member…"
+        placeholder="Find a member by name or DID…"
         aria-label={`Find a member for ${label}`}
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
@@ -507,7 +517,16 @@ function MemberPicker({
               checked={chosen.includes(id)}
               onChange={(e) => onChange(e.target.checked ? [...chosen, id] : chosen.filter((x) => x !== id))}
             />
-            <span className="checkbox-text">{f.name ?? <span className="muted">(no name)</span>}</span>
+            <span className="checkbox-text">
+              {f.name}
+              {f.name && f.did && <span className="muted"> · </span>}
+              {f.did && (
+                <code className={f.name ? "muted" : undefined} title={f.did}>
+                  {shortenDid(f.did)}
+                </code>
+              )}
+              {!f.name && !f.did && <span className="muted">(no name)</span>}
+            </span>
           </label>
         ))}
       </div>
@@ -606,13 +625,13 @@ function CreateBadgePage() {
             <textarea className="prose" rows={2} value={criteria} maxLength={1000} onChange={(e) => setCriteria(e.target.value)} />
           </Field>
           <Field label="Picture" className="span-2">
-            <BadgePictureField value={image} onChange={setImage} />
+            <BadgePictureField name={name} value={image} onChange={setImage} />
           </Field>
           <div className="span-2 badge-settings-section">
             <h4>Credential</h4>
             <p className="muted">
-              Each holder gets an Open Badge credential issued by the badge&rsquo;s own group identity and endorsed
-              by the community. Inside the community it is short-lived and renewed while they hold the badge, with
+              Each holder gets an Open Badge credential issued by the community, named in it as the community
+              names itself. Inside the community it is short-lived and renewed while they hold the badge, with
               no status list.
             </p>
             <label className="checkbox">
@@ -666,7 +685,7 @@ function CreateBadgePage() {
                 {!mayAutomate && <span className="muted"> (automatic badges are off in the settings)</span>}
               </span>
             </label>
-            {automatic && <RuleEditor value={rule} onChange={setRule} />}
+            {automatic && <RuleEditor value={rule} onChange={setRule} counts />}
           </div>
           <div className="span-2 badge-settings-section">
             <MemberPicker label="Owners" chosen={owners} onChange={setOwners} />
@@ -718,6 +737,7 @@ function BadgePage() {
           {badge.state === "active" && (admin || owns) && badge.kind === "community" && <OfferForm badge={badge} />}
           {badge.groupId && (admin || owns) && <BadgeRequests groupId={badge.groupId} />}
           {badge.groupId && (admin || owns) && <BadgeOwners groupId={badge.groupId} />}
+          {(admin || owns) && badge.kind === "community" && <BadgeClaims badge={badge} />}
           {(admin || owns) && badge.kind === "community" && <BadgeAwards badge={badge} />}
           {admin && badge.kind === "kudos" && <KudosGivings badge={badge} />}
           {badge.state === "active" && admin && badge.kind === "kudos" && <PromoteForm badge={badge} />}
@@ -754,6 +774,7 @@ function BadgeSummary({
     enabled: Boolean(badge.groupId),
     retry: false,
   });
+  const issuer = useQuery({ queryKey: ["vtc-did"], queryFn: vtcDid, retry: false, staleTime: Infinity });
   return (
     <section className="card" aria-labelledby="badge-summary-title">
       <div className="badge-summary">
@@ -794,15 +815,21 @@ function BadgeSummary({
                   )}
                 </dd>
                 <dt>Badge group</dt>
-                <dd>
+                <dd className="badge-fact-did">
                   {badge.groupId ? (
-                    <Link to={`/groups/${encodeURIComponent(badge.groupId)}`}>{group.data?.group.name ?? badge.groupId}</Link>
+                    <>
+                      <Link to={`/groups/${encodeURIComponent(badge.groupId)}`}>{group.data?.group.name ?? badge.groupId}</Link>
+                      {group.data?.group.groupDid && <DidText did={group.data.group.groupDid} />}
+                    </>
                   ) : (
                     "—"
                   )}
                 </dd>
                 <dt>Issued by</dt>
-                <dd>The badge group&rsquo;s own identity, the community as the badge&rsquo;s creator</dd>
+                <dd className="badge-fact-did">
+                  <span>The community, also the badge&rsquo;s creator</span>
+                  {issuer.data && <DidText did={issuer.data} />}
+                </dd>
               </>
             )}
             {badge.kind === "kudos" && (
@@ -884,7 +911,7 @@ function EditBadgeForm({ badge, onDone }: { badge: Badge; onDone: () => void }) 
           <textarea className="prose" rows={2} value={criteria} maxLength={1000} onChange={(e) => setCriteria(e.target.value)} />
         </Field>
         <Field label="Picture" className="span-2" hint="A new picture re-issues no credential.">
-          <BadgePictureField badgeId={badge.badgeId} current={badge.image} value={image} onChange={setImage} />
+          <BadgePictureField badgeId={badge.badgeId} name={name} current={badge.image} value={image} onChange={setImage} />
         </Field>
         {badge.kind === "community" && (
           <label className="checkbox span-2">
@@ -979,6 +1006,128 @@ function OfferForm({ badge }: { badge: Badge }) {
           </button>
         </div>
       </form>
+    </section>
+  );
+}
+
+/** Claim codes for events (VTI-BDG-025 – 027): issued here, handed out by the host, redeemed
+ *  by the members who came. The code is shown once; the community keeps only its digest. */
+function BadgeClaims({ badge }: { badge: Badge }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const key = ["badges", "claims", badge.badgeId];
+  const claims = useQuery({ queryKey: key, queryFn: () => listClaims(badge.badgeId), retry: false });
+  const [label, setLabel] = useState("");
+  const [until, setUntil] = useState("");
+  const [admits, setAdmits] = useState(50);
+  const [shown, setShown] = useState<string | null>(null);
+  const create = useMutation({
+    mutationFn: () =>
+      createClaim(badge.badgeId, label.trim(), new Date(until).toISOString(), admits),
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: key });
+      setShown(r.code);
+      setLabel("");
+      setUntil("");
+    },
+    onError: (err) => toast.pushFromError(err, "No code issued"),
+  });
+  const withdraw = useMutation({
+    mutationFn: withdrawClaim,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: key });
+      toast.push("success", "The code admits no one more. Claims already made stand.");
+    },
+    onError: (err) => toast.pushFromError(err, "Not withdrawn"),
+  });
+  const ok = label.trim() && until && admits >= 1;
+  return (
+    <section className="card" aria-labelledby="badge-claims-title">
+      <h3 id="badge-claims-title">
+        <Sparkles size={16} aria-hidden="true" /> Claim codes
+      </h3>
+      <p className="muted">
+        A code to hand out at an event: any member who has it claims the badge, until its time or its limit. It is shown
+        to you once — copy it now; the community keeps only a digest.
+      </p>
+      {shown && (
+        <p className="badge-claim-code" role="status">
+          Code: <code>{shown}</code>{" "}
+          <button type="button" className="secondary sm" onClick={() => void navigator.clipboard?.writeText(shown)}>
+            Copy
+          </button>
+        </p>
+      )}
+      {badge.state === "active" && (
+        <form
+          className="form-stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (ok) create.mutate();
+          }}
+        >
+          <div className="form-grid">
+            <Field label="Event" hint="What the code is for. Shown to the badge's owners only.">
+              <input aria-label="Claim code label" value={label} maxLength={120} onChange={(e) => setLabel(e.target.value)} />
+            </Field>
+            <Field label="Until" hint="At most 90 days ahead.">
+              <input aria-label="Claim code until" type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
+            </Field>
+            <Field label="Claims" hint="How many members it admits.">
+              <input
+                aria-label="Claim code limit"
+                type="number"
+                min={1}
+                max={10000}
+                value={admits}
+                onChange={(e) => setAdmits(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+              />
+            </Field>
+          </div>
+          <div className="form-actions">
+            <button type="submit" className="primary" disabled={!ok || create.isPending}>
+              {create.isPending ? "Issuing…" : "Issue a code"}
+            </button>
+          </div>
+        </form>
+      )}
+      {(claims.data ?? []).length > 0 && (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Until</th>
+              <th>Claimed</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {(claims.data ?? []).map((c) => (
+              <tr key={c.claimId}>
+                <td>{c.label}</td>
+                <td>{when(c.validUntil)}</td>
+                <td>
+                  {c.claims} of {c.limit}
+                </td>
+                <td>
+                  {c.state === "withdrawn" ? (
+                    <span className="muted">Withdrawn</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary sm"
+                      disabled={withdraw.isPending}
+                      onClick={() => withdraw.mutate(c.claimId)}
+                    >
+                      Withdraw
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </section>
   );
 }
@@ -1102,9 +1251,10 @@ function BadgeOwners({ groupId }: { groupId: string }) {
             <option value="">Choose a member…</option>
             {[...faces.entries()]
               .filter(([e]) => !owners.includes(e))
+              .sort(byFace)
               .map(([entryId, f]) => (
-                <option key={entryId} value={entryId}>
-                  {f.name ?? entryId}
+                <option key={entryId} value={entryId} title={f.did ?? undefined}>
+                  {faceLabel(f)}
                 </option>
               ))}
           </select>

@@ -78,8 +78,8 @@ pub enum RegisterDidWithServerError {
     AlreadyServerManaged { did: String, server_id: String },
     #[error(
         "webvh server `{0}` is not registered. \
-         Add it first with `pnm webvh add-server --id {0} --did <server-did>` (online) \
-         or `vta webvh add-server --id {0} --did <server-did>` (offline, daemon stopped)."
+         Add it first with `pnm did-mgmt servers add --id {0} --did <server-did>` (online) \
+         or `vta did-mgmt servers add --id {0} --did <server-did>` (offline, daemon stopped)."
     )]
     ServerNotFound(String),
     #[error("DID `{0}` has no published log on disk (cannot push to server)")]
@@ -105,7 +105,7 @@ pub enum RegisterDidWithServerError {
     /// `RaceDetected` reason from the shared snapshot helper.
     #[error(
         "DID was modified concurrently between read and write — re-run \
-         `pnm webvh register-did` after confirming no other operator \
+         `pnm did-mgmt dids register` after confirming no other operator \
          is registering the same DID. Reason: {0}"
     )]
     Conflict(RaceDetected),
@@ -195,7 +195,7 @@ pub async fn register_did_with_server(
         // register-server is a follow-up call on an existing
         // serverless DID — the operator didn't pick a domain at
         // create time. Let the remote resolve via caller-default →
-        // system-default. A `pnm did-mgmt register-did --domain`
+        // system-default. A `pnm did-mgmt dids register --domain`
         // override would flow through here as Some.
         params.domain.as_deref(),
     )

@@ -46,7 +46,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use vti_common::audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
+use vtc_audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 

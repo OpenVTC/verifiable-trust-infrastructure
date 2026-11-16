@@ -30,7 +30,10 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 - **Trust Task push** (`trust_task_push`) — pushing a signed Trust Task to a
   peer over TSP > DIDComm > REST by what its DID document advertises: a durable
   record per push, one outbox attempt per transport, evidence-based settlement
-  and escalation (VTI-TRN-030/-040/-041/-042). The node lends its keyspace,
+  and escalation (VTI-TRN-030/-040/-041/-042). Every DIDComm/TSP attempt asks
+  for a delivery receipt under its outbox key; a relayed attempt to a recipient
+  not known to send receipts finishes `unconfirmable`, not escalated
+  (VTI-TRN-042 as amended, VTI-TRN-060 – 064). The node lends its keyspace,
   outbox, resolver and messaging through a `PushContext`. What a node pushes,
   and when, stay with the node.
 - **Cryptographic primitives with no service-specific policy** — the HMAC
@@ -58,6 +61,7 @@ by both `vta-service` (VTA) and `vtc-service` (VTC).
 | `encryption` | AES-256-GCM encryption for `KeyspaceHandle.with_encryption()` |
 | `vsock-store` | `VsockStore` + `VsockKeyspaceHandle` (Linux only — requires `tokio-vsock`) |
 | `host-session` | `host_session` — a host service identity's mediator session, its supervisor (self-resolution gate, jittered backoff, teardown) and the TSP/DIDComm Trust Task carriage, behind a `Responder` the service implements. Used by `vti-witness` and `vti-voting-service`. Implies `tsp`. |
+| `policy` | `policy_engine` — the bounded regorus (Rego) engine: `CompiledPolicy<Id>`, `compile`, `evaluate` with the input-size cap and CPU-time budget. Shared by `vta-policy` and `vtc-service::policy` (#2577); each keeps its own input/verdict mapping on top. Change a bound here, once. |
 | `tsp` | `relationship_store` — the durable TSP relationship store (`KeyspaceRelationshipKv` + `maintenance_loop`) shared by the VTA and VTC for Rev 3 §7.2.2 recovery. Pulls `affinidi-messaging-sdk`, so only the TSP-speaking services enable it. Also enables `trust_task_push::TspPushTransport` (`affinidi-tdk/tsp`, `vta-sdk/tsp`). |
 
 ## Key modules

@@ -34,7 +34,7 @@
 use std::collections::HashMap;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
@@ -238,29 +238,141 @@ pub(super) fn plan_key(id: &Uuid) -> String {
     format!("chunks:{id}")
 }
 
-/// Fetch the chunk plan for a bundle, if it has one.
+/// Where a bundle's progress is kept apart from its plan: a bitmap, one bit per
+/// chunk, lowest index in the lowest bit of the first byte.
+///
+/// The plan's digests never change after initiate, and at 4,096 chunks they are a
+/// few hundred kilobytes of JSON; reading and rewriting all of it to flip one bit
+/// made a transfer quadratic in its chunk count (#2597). The bitmap is at most 512
+/// bytes. A bundle initiated before this row existed has none until its first
+/// chunk, which writes it from the plan's own `done`.
+pub(super) fn progress_key(id: &Uuid) -> String {
+    format!("chunks-done:{id}")
+}
+
+fn encode_progress(done: &[bool]) -> Vec<u8> {
+    let mut out = vec![0u8; done.len().div_ceil(8)];
+    for (i, d) in done.iter().enumerate() {
+        if *d {
+            out[i / 8] |= 1 << (i % 8);
+        }
+    }
+    out
+}
+
+fn decode_progress(raw: &[u8], count: u64) -> Option<Vec<bool>> {
+    let count = usize::try_from(count).ok()?;
+    if raw.len() != count.div_ceil(8) {
+        return None;
+    }
+    Some(
+        (0..count)
+            .map(|i| raw[i / 8] & (1 << (i % 8)) != 0)
+            .collect(),
+    )
+}
+
+/// Fetch the chunk plan for a bundle, if it has one, with its progress as it stands.
 pub async fn get_plan(ks: &KeyspaceHandle, id: &Uuid) -> Result<Option<ChunkPlan>, AppError> {
-    ks.get(plan_key(id)).await
+    let Some(mut plan) = ks.get::<ChunkPlan>(plan_key(id)).await? else {
+        return Ok(None);
+    };
+    if let Some(raw) = ks.get_raw(progress_key(id)).await?
+        && let Some(done) = decode_progress(&raw, plan.chunk_count)
+    {
+        plan.done = done;
+    }
+    Ok(Some(plan))
 }
 
 async fn store_plan(ks: &KeyspaceHandle, plan: &ChunkPlan) -> Result<(), AppError> {
-    ks.insert(plan_key(&plan.bundle_id), plan).await
+    // Written once, at initiate; dropped from the cache in case a plan is ever rewritten.
+    forget_cached_plan(&plan.bundle_id);
+    let mut batch = crate::store::Batch::new();
+    batch
+        .insert(plan_key(&plan.bundle_id), plan)?
+        .insert_raw(progress_key(&plan.bundle_id), encode_progress(&plan.done));
+    ks.apply_batch(batch).await?;
+    Ok(())
+}
+
+/// A plan's progress: its own row, or — for a bundle initiated before that row
+/// existed — the `done` the plan itself was stored with, read fresh.
+async fn load_progress(ks: &KeyspaceHandle, plan: &ChunkPlan) -> Result<Vec<bool>, AppError> {
+    if let Some(raw) = ks.get_raw(progress_key(&plan.bundle_id)).await?
+        && let Some(done) = decode_progress(&raw, plan.chunk_count)
+    {
+        return Ok(done);
+    }
+    Ok(ks
+        .get::<ChunkPlan>(plan_key(&plan.bundle_id))
+        .await?
+        .map(|p| p.done)
+        .unwrap_or_else(|| vec![false; plan.chunk_count as usize]))
+}
+
+async fn store_progress(ks: &KeyspaceHandle, id: &Uuid, done: &[bool]) -> Result<(), AppError> {
+    ks.insert_raw(progress_key(id), encode_progress(done)).await
+}
+
+/// The plans of open bundles, by id, for the per-chunk path: everything in a plan
+/// but `done` is fixed at initiate and a bundle id is never reused, so a cached plan
+/// is never stale in what it is read for. Bounded: once full it is emptied and
+/// refilled by the bundles in use.
+fn plan_cache() -> &'static Mutex<HashMap<Uuid, Arc<ChunkPlan>>> {
+    static CACHE: OnceLock<Mutex<HashMap<Uuid, Arc<ChunkPlan>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const PLAN_CACHE_ENTRIES: usize = 64;
+
+/// The plan of bundle `id` for its fixed members (never its `done`).
+async fn cached_plan(ks: &KeyspaceHandle, id: &Uuid) -> Result<Option<Arc<ChunkPlan>>, AppError> {
+    if let Some(plan) = plan_cache().lock().ok().and_then(|c| c.get(id).cloned()) {
+        return Ok(Some(plan));
+    }
+    let Some(plan) = ks.get::<ChunkPlan>(plan_key(id)).await? else {
+        return Ok(None);
+    };
+    let plan = Arc::new(plan);
+    if let Ok(mut cache) = plan_cache().lock() {
+        if cache.len() >= PLAN_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(*id, plan.clone());
+    }
+    Ok(Some(plan))
+}
+
+fn forget_cached_plan(id: &Uuid) {
+    if let Ok(mut cache) = plan_cache().lock() {
+        cache.remove(id);
+    }
 }
 
 /// Remove a bundle's chunk plan. Called when the bundle ends and by the
 /// sweeper's retention pass; absent is not an error.
 pub async fn delete_plan(ks: &KeyspaceHandle, id: &Uuid) -> Result<(), AppError> {
-    ks.remove(plan_key(id)).await
+    forget_cached_plan(id);
+    let mut batch = crate::store::Batch::new();
+    batch.remove(plan_key(id)).remove(progress_key(id));
+    ks.apply_batch(batch).await?;
+    Ok(())
 }
 
-/// Serializes the read-modify-write of a plan's progress bitmap. Chunk requests
-/// for one bundle may arrive concurrently, and two writers each reading the
-/// bitmap before either stored it would lose one index's progress. One lock for
-/// all bundles is enough: the critical section is a small record write, or one
-/// chunk-sized read or write, and the per-DID limiter bounds how many wait.
-pub(super) fn chunk_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+/// Serializes the read-modify-write of one bundle's record and progress. Chunk
+/// requests for one bundle may arrive concurrently, and two writers each reading
+/// the bitmap before either stored it would lose one index's progress.
+///
+/// **Per bundle**, striped by id: a finalize hashes the whole assembled file
+/// under it, which for a 1 GiB room file is a long section, and one lock for all
+/// bundles made every other transfer — room files and backups alike — wait it out
+/// (#2596). Two bundles sharing a stripe only share the wait.
+pub(super) fn chunk_lock(id: &Uuid) -> &'static tokio::sync::Mutex<()> {
+    const STRIPES: usize = 64;
+    static LOCKS: OnceLock<Vec<tokio::sync::Mutex<()>>> = OnceLock::new();
+    let locks = LOCKS.get_or_init(|| (0..STRIPES).map(|_| tokio::sync::Mutex::new(())).collect());
+    &locks[(id.as_u128() % STRIPES as u128) as usize]
 }
 
 // ─── Per-DID rate limit ──────────────────────────────────────────────────
@@ -431,12 +543,12 @@ pub async fn complete_export(
 ) -> Result<bool, ChunkedError> {
     auth.require_super_admin()?;
     let id = parse_bundle_id(bundle_id)?;
-    let _guard = chunk_lock().lock().await;
-    let (mut record, plan) = load_chunked(ks, &id, &auth.did, BundleKind::Export).await?;
+    let _guard = chunk_lock(&id).lock().await;
+    let (mut record, _plan, done) = load_chunked(ks, &id, &auth.did, BundleKind::Export).await?;
     if record.state != BundleState::ExportReady {
         return Err(ChunkedError::TerminalState("expired".into()));
     }
-    let downloaded = plan.remaining() == 0;
+    let downloaded = done.iter().all(|d| *d);
     if let Some(path) = record.blob_path.take()
         && let Err(e) = tokio::fs::remove_file(&path).await
         && e.kind() != std::io::ErrorKind::NotFound
@@ -483,8 +595,8 @@ pub async fn get_chunk(
     limiter.check(&auth.did)?;
     let id = parse_bundle_id(bundle_id)?;
 
-    let _guard = chunk_lock().lock().await;
-    let (mut record, mut plan) =
+    let _guard = chunk_lock(&id).lock().await;
+    let (mut record, plan, mut done) =
         load_chunked(bundles_ks, &id, &auth.did, BundleKind::Export).await?;
     match record.state {
         BundleState::ExportReady => {}
@@ -519,9 +631,11 @@ pub async fn get_chunk(
         ))));
     }
 
-    plan.done[index as usize] = true;
+    if !done[index as usize] {
+        done[index as usize] = true;
+        store_progress(bundles_ks, &id, &done).await?;
+    }
     extend_expiry(&mut record, &plan, now);
-    store_plan(bundles_ks, &plan).await?;
     backup_bundle_store::store_bundle(bundles_ks, &record).await?;
 
     Ok(ServedChunk {
@@ -739,8 +853,9 @@ pub async fn put_chunk_for(
     limiter.check(owner)?;
     let id = parse_bundle_id(bundle_id)?;
 
-    let _guard = chunk_lock().lock().await;
-    let (mut record, mut plan) = load_chunked(bundles_ks, &id, owner, BundleKind::Import).await?;
+    let _guard = chunk_lock(&id).lock().await;
+    let (mut record, plan, mut done) =
+        load_chunked(bundles_ks, &id, owner, BundleKind::Import).await?;
     match record.state {
         BundleState::ImportPending => {}
         // Assembled and verified: every index is held, so this is a repeat of a
@@ -779,7 +894,7 @@ pub async fn put_chunk_for(
         });
     }
 
-    let stored = if plan.done[index as usize] {
+    let stored = if done[index as usize] {
         false
     } else {
         let path = match record.blob_path.clone() {
@@ -791,17 +906,17 @@ pub async fn put_chunk_for(
             }
         };
         write_range(&path, record.expected_size_bytes, start, data).await?;
-        plan.done[index as usize] = true;
+        done[index as usize] = true;
+        store_progress(bundles_ks, &id, &done).await?;
         true
     };
 
     extend_expiry(&mut record, &plan, now);
-    store_plan(bundles_ks, &plan).await?;
     backup_bundle_store::store_bundle(bundles_ks, &record).await?;
 
     Ok(PutOutcome {
         stored,
-        remaining_count: plan.remaining(),
+        remaining_count: done.iter().filter(|d| !**d).count() as u64,
         expires_at: record.expires_at,
     })
 }
@@ -831,7 +946,7 @@ pub async fn finalize_precheck_for(
     bundle_id: &str,
 ) -> Result<(), ChunkedError> {
     let id = parse_bundle_id(bundle_id)?;
-    let _guard = chunk_lock().lock().await;
+    let _guard = chunk_lock(&id).lock().await;
     let record = require_owned(bundles_ks, &id, owner).await?;
     enforce_kind(&record, BundleKind::Import)?;
     if record.algorithm != ALGORITHM_CHUNKED || record.state != BundleState::ImportPending {
@@ -878,7 +993,7 @@ async fn load_chunked(
     id: &Uuid,
     caller: &str,
     kind: BundleKind,
-) -> Result<(BundleRecord, ChunkPlan), ChunkedError> {
+) -> Result<(BundleRecord, Arc<ChunkPlan>, Vec<bool>), ChunkedError> {
     let record = require_owned(ks, id, caller).await?;
     enforce_kind(&record, kind)?;
     if record.algorithm != ALGORITHM_CHUNKED {
@@ -895,8 +1010,9 @@ async fn load_chunked(
         }
         _ => {}
     }
-    let plan = get_plan(ks, id).await?.ok_or(ChunkedError::NotFound)?;
-    Ok((record, plan))
+    let plan = cached_plan(ks, id).await?.ok_or(ChunkedError::NotFound)?;
+    let done = load_progress(ks, &plan).await?;
+    Ok((record, plan, done))
 }
 
 /// Slide the bundle's expiry to one TTL from now, never past the ceiling and
@@ -1294,6 +1410,53 @@ mod tests {
         assert_eq!(record.state, BundleState::ImportReceived);
         let staged = tokio::fs::read(record.blob_path.unwrap()).await.unwrap();
         assert_eq!(staged, bytes);
+    }
+
+    /// Progress lives in its own small row, and a chunk never rewrites the plan (#2597). A
+    /// bundle opened before that row existed keeps the progress its plan recorded.
+    #[tokio::test]
+    async fn progress_is_kept_apart_from_the_plan_and_an_older_bundle_keeps_its_own() {
+        let e = env();
+        let auth = admin(OWNER);
+        let bytes = bundle_bytes();
+        let slot = open_import(&e, &bytes).await;
+        let id = slot.bundle_id.to_string();
+        let chunks: Vec<&[u8]> = bytes.chunks(MIN as usize).collect();
+        let put = |i: usize| ChunkWrite {
+            bundle_id: &id,
+            index: i as u64,
+            digest_multibase: &slot.digests[i],
+            data: chunks[i],
+        };
+
+        let plan_row = e.ks.get_raw(plan_key(&slot.bundle_id)).await.unwrap();
+        put_chunk(&e.ks, &e.blob_dir, &unlimited(), &auth, put(0))
+            .await
+            .unwrap();
+        assert_eq!(
+            e.ks.get_raw(plan_key(&slot.bundle_id)).await.unwrap(),
+            plan_row,
+            "a chunk leaves the plan as initiate wrote it"
+        );
+        let plan = get_plan(&e.ks, &slot.bundle_id).await.unwrap().unwrap();
+        assert!(plan.done[0] && !plan.done[1]);
+
+        // As an older build left it: progress in the plan, no progress row.
+        let mut legacy = plan.clone();
+        legacy.done[2] = true;
+        e.ks.insert(plan_key(&slot.bundle_id), &legacy)
+            .await
+            .unwrap();
+        e.ks.remove(progress_key(&slot.bundle_id)).await.unwrap();
+        let out = put_chunk(&e.ks, &e.blob_dir, &unlimited(), &auth, put(1))
+            .await
+            .unwrap();
+        assert!(out.stored);
+        // Chunk 2 was never written here, but the older plan said it was: its word stands,
+        // exactly as it would have before.
+        assert_eq!(out.remaining_count, legacy.done.len() as u64 - 3);
+        let plan = get_plan(&e.ks, &slot.bundle_id).await.unwrap().unwrap();
+        assert!(plan.done[0] && plan.done[1] && plan.done[2]);
     }
 
     #[tokio::test]

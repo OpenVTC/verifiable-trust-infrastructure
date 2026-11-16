@@ -101,6 +101,76 @@ pub const TSP_SERVICE_FRAGMENT: &str = "#tsp";
 /// renaming silently breaks TSP discovery by any TSP party.
 pub const TSP_SERVICE_TYPE: &str = "TSPTransport";
 
+/// Build the `services` Vec passed to the WebVH DID builder for a
+/// `CreateWebvh` VTA DID — i.e. everything the VTA DID document
+/// publishes apart from the auto-injected DIDComm/Authentication
+/// entries that `create_simple_webvh_did` adds itself.
+///
+/// Two entries live here:
+///
+/// - `VTARest`, present iff REST is enabled and a `public_url` is
+///   configured;
+/// - `TSPTransport` (`#tsp`), present iff TSP is enabled and a mediator
+///   was resolved — TSP advertises the **same** mediator as DIDComm
+///   (tsp-enablement.md D8), so the endpoint is that mediator's DID, not
+///   a transport URL.
+///
+/// Returns `None` (rather than `Some(vec![])`) when the array would be
+/// empty so the downstream call can pass `None` through to the WebVH
+/// builder without a special case.
+///
+/// Minting `#tsp` here rather than leaving it to a later `services tsp
+/// enable` is the point: a VTA that speaks TSP but doesn't say so in its
+/// DID document is unreachable over TSP, since the document is what a
+/// peer matches on. Publishing it by hand after the fact is how the
+/// reference deployment ended up with a `#tsp` entry at log version 3.
+///
+/// The non-interactive setup path's `validate_inputs` rejects
+/// `services.rest = true` + `public_url = None` at parse time, and
+/// the interactive wizard makes the URL prompt mandatory when REST
+/// is enabled, so in practice the absent branch only fires for
+/// `services.rest = false`. The `is_some()` branch is still gated
+/// on `services.rest` so a stray `public_url` set without REST
+/// doesn't end up advertising a service the VTA isn't running.
+///
+/// Shared by both setup paths and the TEE first boot of a did:webs VTA
+/// (`tee_webs`) so the rule has one source of truth — see the matrix test
+/// in `setup`'s tests for the full `(rest, public_url)` truth table.
+pub fn vta_additional_services(
+    services: &crate::config::ServicesConfig,
+    public_url: Option<&str>,
+    mediator_did: Option<&str>,
+) -> Option<Vec<Value>> {
+    let mut additional = Vec::new();
+    // Same fragment + type the runtime `services tsp enable` patcher
+    // emits, so a document minted at setup and one patched later are the
+    // same shape. Order within this Vec doesn't matter: the document
+    // builder sorts `service[]` canonically once everything is appended.
+    if services.tsp
+        && let Some(did) = mediator_did.map(str::trim).filter(|d| !d.is_empty())
+    {
+        additional.push(json!({
+            "id": format!("{{DID}}{TSP_SERVICE_FRAGMENT}"),
+            "type": TSP_SERVICE_TYPE,
+            "serviceEndpoint": did,
+        }));
+    }
+    if services.rest
+        && let Some(url) = public_url.map(str::trim).filter(|u| !u.is_empty())
+    {
+        additional.push(json!({
+            "id": "{DID}#vta-rest",
+            "type": "VTARest",
+            "serviceEndpoint": url,
+        }));
+    }
+    if additional.is_empty() {
+        None
+    } else {
+        Some(additional)
+    }
+}
+
 /// A read-only view of the DIDComm service entry on a DID document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DidcommServiceRef {
@@ -377,6 +447,30 @@ fn matches_canonical_fragment(id: &str, fragment: &str) -> bool {
         return false;
     };
     !prefix.contains('#')
+}
+
+/// The transport-preference rank of a service `type` (a string, or an array
+/// naming one of these): TSP 0, DIDComm 1, REST 2, WebAuthn 3, anything else
+/// 4. The order [`sort_services_canonical`] gives the VTA's own fragments, by
+/// the type peers match on, for a document whose ids are not those fragments
+/// — a `did:webs` designates DIDComm as `#didcomm`.
+pub fn service_type_rank(type_: &Value) -> u8 {
+    let is = |t: &str| match type_ {
+        Value::String(s) => s == t,
+        Value::Array(a) => a.iter().any(|v| v.as_str() == Some(t)),
+        _ => false,
+    };
+    if is(TSP_SERVICE_TYPE) {
+        0
+    } else if is(vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE) {
+        1
+    } else if is(REST_SERVICE_TYPE) {
+        2
+    } else if is(WEBAUTHN_SERVICE_TYPE) {
+        3
+    } else {
+        4
+    }
 }
 
 /// Sort the `service` array into the canonical transport-preference

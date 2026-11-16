@@ -9,8 +9,11 @@ What the workspace's MCP bridges share — `vta-mcp` and `vtc-mcp`
 (`guard.rs`: the risk classifier, allow/deny slug globs, `--read-only`, the
 confirm levels answered by MCP elicitation) and the **call recorder**
 (`observability.rs`: stderr start/finish lines, the redacted ring a host reads
-back, the optional owner-only JSONL audit file). A bridge exists because an MCP
-host approves a *tool*, not a call; these two are the same for every bridge,
+back, the optional owner-only JSONL audit file) and the **`--listen` server**
+(`listen.rs`: one bridge serving every host on the machine over loopback HTTP
+behind a bearer token, and the protocol versions a bridge that elicits may
+serve). A bridge exists because an MCP
+host approves a *tool*, not a call; these are the same for every bridge,
 and a policy fix made here reaches all of them. `publish = false`.
 
 ## Rules
@@ -37,5 +40,21 @@ and a policy fix made here reaches all of them. `publish = false`.
   name; add a key only when its value can never be a secret, and never add a
   denylist. A task whose payload is a person's own text keeps no string at all
   (`carries_personal_text`).
+- **A failed operation is a tool result, never a protocol error**
+  (`tool_error.rs`, #2594). A node's refusal, a guard refusal, an operator's
+  decline, an unserved URI: `ToolError` → `CallToolResult::error` with
+  `{error, message, next, details}`, so the model reads it and can correct the
+  call. `ErrorData` is only for what MCP itself defines as a protocol error (a
+  request the bridge cannot parse, an unknown resource). Each bridge maps its
+  own client error onto kinds; keep a kind's name stable once shipped.
 - **Nothing here grants access.** The node is the authority; the guard is a
   second gate in front of it and never a substitute.
+- **`listen` is loopback, a token and no browsers — none of it optional.** A
+  bridge's `--listen` endpoint speaks with its identity, so `check_loopback`
+  runs before binding with no flag to widen it, every request carries the
+  bearer token (constant-time compare, an owner-only file refused when others
+  can read it), and `Origin` is refused with `Host` held to loopback. A bridge
+  that elicits returns `listen::supported_protocol_versions` from
+  `ServerHandler::supported_protocol_versions`: `2026-07-28` forbids the
+  request a confirmation is. Lift the cap here, for every bridge, and only
+  once confirmation works on the newer protocol in the hosts in use.

@@ -12,19 +12,24 @@
 //! through `member_signer` only and never do. Every write is audited by reference
 //! (`BadgeChanged`), never a note or a picture (VTI-BDG-091).
 
+use super::routing::{Routes, on};
 use std::collections::BTreeSet;
 
 use base64::Engine as _;
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, BadgeChangedData};
+use vtc_audit::BadgeChangedData;
 use vti_common::error::AppError;
 use vti_specs::vtc::badges::{
     awards::{
         list::v0_1 as awards_list, offer::v0_1 as awards_offer, revoke::v0_1 as awards_revoke,
+        share::v0_1 as awards_share, unshare::v0_1 as awards_unshare,
         withdraw::v0_1 as awards_withdraw,
+    },
+    claims::{
+        create::v0_1 as claims_create, list::v0_1 as claims_list, redeem::v0_1 as claims_redeem,
+        withdraw::v0_1 as claims_withdraw,
     },
     create::v0_1 as badge_create,
     holders::list::v0_1 as holders_list,
@@ -59,58 +64,12 @@ use crate::groups::{self, Group, Membership, Standing};
 use crate::rooms::community::HolderError;
 use crate::server::AppState;
 
-pub(crate) const SETTINGS_SHOW_TYPE: &str = <settings_show::Payload as Payload>::TYPE_URI;
-pub(crate) const SETTINGS_UPDATE_TYPE: &str = <settings_update::Payload as Payload>::TYPE_URI;
-pub(crate) const CREATE_TYPE: &str = <badge_create::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_TYPE: &str = <badge_update::Payload as Payload>::TYPE_URI;
-pub(crate) const RETIRE_TYPE: &str = <badge_retire::Payload as Payload>::TYPE_URI;
-pub(crate) const PROMOTE_TYPE: &str = <badge_promote::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <badge_list::Payload as Payload>::TYPE_URI;
-pub(crate) const SHOW_TYPE: &str = <badge_show::Payload as Payload>::TYPE_URI;
-pub(crate) const IMAGES_UPLOAD_TYPE: &str = <images_upload::Payload as Payload>::TYPE_URI;
-pub(crate) const IMAGES_GET_TYPE: &str = <images_get::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_OFFER_TYPE: &str = <awards_offer::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_WITHDRAW_TYPE: &str = <awards_withdraw::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_REVOKE_TYPE: &str = <awards_revoke::Payload as Payload>::TYPE_URI;
-pub(crate) const AWARDS_LIST_TYPE: &str = <awards_list::Payload as Payload>::TYPE_URI;
-pub(crate) const HOLDERS_LIST_TYPE: &str = <holders_list::Payload as Payload>::TYPE_URI;
-pub(crate) const WALL_SHOW_TYPE: &str = <wall_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_LIST_TYPE: &str = <mine_list::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_ACCEPT_TYPE: &str = <mine_accept::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_DECLINE_TYPE: &str = <mine_decline::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_HIDE_TYPE: &str = <mine_hide::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_SHOW_TYPE: &str = <mine_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MINE_ARRANGE_TYPE: &str = <mine_arrange::Payload as Payload>::TYPE_URI;
-pub(crate) const KUDOS_GIVE_TYPE: &str = <kudos_give::Payload as Payload>::TYPE_URI;
-pub(crate) const KUDOS_LIST_TYPE: &str = <kudos_list::Payload as Payload>::TYPE_URI;
+pub(crate) const CLAIMS_CREATE_TYPE: &str = <claims_create::Payload as Payload>::TYPE_URI;
 
-/// Every type this module serves.
-pub(crate) const URIS: &[&str] = &[
-    SETTINGS_SHOW_TYPE,
-    SETTINGS_UPDATE_TYPE,
-    CREATE_TYPE,
-    UPDATE_TYPE,
-    RETIRE_TYPE,
-    PROMOTE_TYPE,
-    LIST_TYPE,
-    SHOW_TYPE,
-    IMAGES_UPLOAD_TYPE,
-    IMAGES_GET_TYPE,
-    AWARDS_OFFER_TYPE,
-    AWARDS_WITHDRAW_TYPE,
-    AWARDS_REVOKE_TYPE,
-    AWARDS_LIST_TYPE,
-    HOLDERS_LIST_TYPE,
-    WALL_SHOW_TYPE,
-    MINE_LIST_TYPE,
-    MINE_ACCEPT_TYPE,
-    MINE_DECLINE_TYPE,
-    MINE_HIDE_TYPE,
-    MINE_SHOW_TYPE,
-    MINE_ARRANGE_TYPE,
-    KUDOS_GIVE_TYPE,
-    KUDOS_LIST_TYPE,
-];
+/// Tasks whose response carries a claim code, answered once: the community
+/// keeps only its digest, and the duplicate-execution record keeps no copy
+/// either. A redelivery is answered `204`.
+pub(crate) const SECRET_RESPONSES: &[&str] = &[CLAIMS_CREATE_TYPE];
 
 macro_rules! codes {
     ($($name:ident = $module:ident :: $code:ident;)*) => {
@@ -168,6 +127,26 @@ codes! {
     REVOKE_ERR_KEY_HOLDER_UNAVAILABLE = awards_revoke::KEY_HOLDER_UNAVAILABLE;
     REVOKE_ERR_KEY_HOLDER_REFUSED = awards_revoke::KEY_HOLDER_REFUSED;
     AWARDS_LIST_ERR_NOT_FOUND = awards_list::NOT_FOUND;
+    SHARE_ERR_BADGES_OFF = awards_share::BADGES_OFF;
+    SHARE_ERR_NOT_FOUND = awards_share::NOT_FOUND;
+    SHARE_ERR_NOT_SHAREABLE = awards_share::NOT_SHAREABLE;
+    SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE = awards_share::PUBLIC_LOCATION_UNAVAILABLE;
+    UNSHARE_ERR_BADGES_OFF = awards_unshare::BADGES_OFF;
+    UNSHARE_ERR_NOT_FOUND = awards_unshare::NOT_FOUND;
+    CLAIMS_CREATE_ERR_BADGES_OFF = claims_create::BADGES_OFF;
+    CLAIMS_CREATE_ERR_NOT_FOUND = claims_create::NOT_FOUND;
+    CLAIMS_CREATE_ERR_NOT_CLAIMABLE = claims_create::NOT_CLAIMABLE;
+    CLAIMS_CREATE_ERR_SETTINGS_INVALID = claims_create::SETTINGS_INVALID;
+    CLAIMS_LIST_ERR_NOT_FOUND = claims_list::NOT_FOUND;
+    CLAIMS_LIST_ERR_CURSOR_INVALID = claims_list::CURSOR_INVALID;
+    CLAIMS_WITHDRAW_ERR_BADGES_OFF = claims_withdraw::BADGES_OFF;
+    CLAIMS_WITHDRAW_ERR_NOT_FOUND = claims_withdraw::NOT_FOUND;
+    REDEEM_ERR_BADGES_OFF = claims_redeem::BADGES_OFF;
+    REDEEM_ERR_CODE_INVALID = claims_redeem::CODE_INVALID;
+    REDEEM_ERR_ALREADY_CLAIMED = claims_redeem::ALREADY_CLAIMED;
+    REDEEM_ERR_ALREADY_HELD = claims_redeem::ALREADY_HELD;
+    REDEEM_ERR_KEY_HOLDER_UNAVAILABLE = claims_redeem::KEY_HOLDER_UNAVAILABLE;
+    REDEEM_ERR_KEY_HOLDER_REFUSED = claims_redeem::KEY_HOLDER_REFUSED;
     AWARDS_LIST_ERR_CURSOR_INVALID = awards_list::CURSOR_INVALID;
     HOLDERS_ERR_NOT_FOUND = holders_list::NOT_FOUND;
     HOLDERS_ERR_CURSOR_INVALID = holders_list::CURSOR_INVALID;
@@ -193,39 +172,58 @@ codes! {
     KUDOS_LIST_ERR_CURSOR_INVALID = kudos_list::CURSOR_INVALID;
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        SETTINGS_SHOW_TYPE => handle_settings_show(state, ctx, doc).await,
-        SETTINGS_UPDATE_TYPE => handle_settings_update(state, ctx, doc).await,
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        RETIRE_TYPE => handle_retire(state, ctx, doc).await,
-        PROMOTE_TYPE => handle_promote(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        IMAGES_UPLOAD_TYPE => handle_images_upload(state, ctx, doc).await,
-        IMAGES_GET_TYPE => handle_images_get(state, ctx, doc).await,
-        AWARDS_OFFER_TYPE => handle_offer(state, ctx, doc).await,
-        AWARDS_WITHDRAW_TYPE => handle_withdraw(state, ctx, doc).await,
-        AWARDS_REVOKE_TYPE => handle_revoke(state, ctx, doc).await,
-        AWARDS_LIST_TYPE => handle_awards_list(state, ctx, doc).await,
-        HOLDERS_LIST_TYPE => handle_holders_list(state, ctx, doc).await,
-        WALL_SHOW_TYPE => handle_wall_show(state, ctx, doc).await,
-        MINE_LIST_TYPE => handle_mine_list(state, ctx, doc).await,
-        MINE_ACCEPT_TYPE => handle_accept(state, ctx, doc).await,
-        MINE_DECLINE_TYPE => handle_decline(state, ctx, doc).await,
-        MINE_HIDE_TYPE => handle_hide(state, ctx, doc, true).await,
-        MINE_SHOW_TYPE => handle_hide(state, ctx, doc, false).await,
-        MINE_ARRANGE_TYPE => handle_arrange(state, ctx, doc).await,
-        KUDOS_GIVE_TYPE => handle_kudos_give(state, ctx, doc).await,
-        KUDOS_LIST_TYPE => handle_kudos_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, settings_show::Payload => |state, ctx, doc| handle_settings_show(state, ctx, doc));
+    let routes = on!(routes, settings_update::Payload => |state, ctx, doc| handle_settings_update(state, ctx, doc));
+    let routes =
+        on!(routes, badge_create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, badge_update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes =
+        on!(routes, badge_retire::Payload => |state, ctx, doc| handle_retire(state, ctx, doc));
+    let routes =
+        on!(routes, badge_promote::Payload => |state, ctx, doc| handle_promote(state, ctx, doc));
+    let routes = on!(routes, badge_list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, badge_show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes = on!(routes, images_upload::Payload => |state, ctx, doc| handle_images_upload(state, ctx, doc));
+    let routes =
+        on!(routes, images_get::Payload => |state, ctx, doc| handle_images_get(state, ctx, doc));
+    let routes =
+        on!(routes, awards_offer::Payload => |state, ctx, doc| handle_offer(state, ctx, doc));
+    let routes =
+        on!(routes, awards_withdraw::Payload => |state, ctx, doc| handle_withdraw(state, ctx, doc));
+    let routes =
+        on!(routes, awards_revoke::Payload => |state, ctx, doc| handle_revoke(state, ctx, doc));
+    let routes =
+        on!(routes, awards_list::Payload => |state, ctx, doc| handle_awards_list(state, ctx, doc));
+    let routes =
+        on!(routes, awards_share::Payload => |state, ctx, doc| handle_share(state, ctx, doc));
+    let routes = on!(routes, claims_create::Payload => |state, ctx, doc| handle_claims_create(state, ctx, doc));
+    let routes =
+        on!(routes, claims_list::Payload => |state, ctx, doc| handle_claims_list(state, ctx, doc));
+    let routes = on!(routes, claims_withdraw::Payload => |state, ctx, doc| handle_claims_withdraw(state, ctx, doc));
+    let routes = on!(routes, claims_redeem::Payload => |state, ctx, doc| handle_claims_redeem(state, ctx, doc));
+    let routes =
+        on!(routes, awards_unshare::Payload => |state, ctx, doc| handle_unshare(state, ctx, doc));
+    let routes = on!(routes, holders_list::Payload => |state, ctx, doc| handle_holders_list(state, ctx, doc));
+    let routes =
+        on!(routes, wall_show::Payload => |state, ctx, doc| handle_wall_show(state, ctx, doc));
+    let routes =
+        on!(routes, mine_list::Payload => |state, ctx, doc| handle_mine_list(state, ctx, doc));
+    let routes =
+        on!(routes, mine_accept::Payload => |state, ctx, doc| handle_accept(state, ctx, doc));
+    let routes =
+        on!(routes, mine_decline::Payload => |state, ctx, doc| handle_decline(state, ctx, doc));
+    let routes =
+        on!(routes, mine_hide::Payload => |state, ctx, doc| handle_hide(state, ctx, doc, true));
+    let routes =
+        on!(routes, mine_show::Payload => |state, ctx, doc| handle_hide(state, ctx, doc, false));
+    let routes =
+        on!(routes, mine_arrange::Payload => |state, ctx, doc| handle_arrange(state, ctx, doc));
+    let routes =
+        on!(routes, kudos_give::Payload => |state, ctx, doc| handle_kudos_give(state, ctx, doc));
+    on!(routes, kudos_list::Payload => |state, ctx, doc| handle_kudos_list(state, ctx, doc))
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────
@@ -322,19 +320,7 @@ async fn signer(
 
 /// A badge change is never unaudited (VTI-BDG-091).
 async fn audit(state: &AppState, actor: &str, data: BadgeChangedData) -> Result<(), AppError> {
-    let writer = state
-        .audit_writer
-        .as_ref()
-        .ok_or_else(|| AppError::ServiceError {
-            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            message: "audit writer not configured: badge changes are refused rather than made \
-                      unaudited"
-                .into(),
-        })?;
-    writer
-        .write(actor, None, AuditEvent::BadgeChanged(data))
-        .await
-        .map(drop)
+    badges::audit(state, actor, data).await
 }
 
 fn changed(badge_id: &str, change: &str) -> BadgeChangedData {
@@ -475,7 +461,8 @@ async fn directory_shows(
 }
 
 /// An entry's fields as `vtc/directory/entries/show` projects them for `viewer`; `None`
-/// where it shows them none.
+/// where it shows them none. `show` answers that task's payload, `{ "entry": { …,
+/// "fields" } }`, so the fields are the entry's, one level down.
 async fn projected_fields(
     state: &AppState,
     viewer: &crate::directory::project::Viewer,
@@ -483,8 +470,9 @@ async fn projected_fields(
 ) -> Option<Value> {
     use crate::directory::read::{ShowBy, show};
     match show(state, viewer, &ShowBy::Entry(entry_id.to_string())).await {
-        Ok(entry) => entry
-            .get("fields")
+        Ok(shown) => shown
+            .get("entry")
+            .and_then(|e| e.get("fields"))
             .filter(|f| f.as_object().is_some_and(|o| !o.is_empty()))
             .cloned(),
         Err(_) => None,
@@ -493,29 +481,16 @@ async fn projected_fields(
 
 // ── paging: an offset bound to the caller and the question ──
 
-fn cursor_mac(binding: &str, offset: usize) -> String {
-    let mut h = Sha256::new();
-    h.update(b"vtc/badges/cursor/v1\0");
-    for part in [binding, &offset.to_string()] {
-        h.update((part.len() as u64).to_be_bytes());
-        h.update(part.as_bytes());
-    }
-    hex::encode(&h.finalize()[..12])
-}
+/// The family name badge cursors are tagged under ([`super::offset_cursor`]).
+const CURSOR_FAMILY: &str = "vtc/badges";
 
-fn cursor_for(binding: &str, offset: usize) -> String {
-    format!("{offset}.{}", cursor_mac(binding, offset))
-}
-
-fn offset_of(payload: &Value, binding: &str) -> Result<usize, ()> {
+/// The offset `payload`'s cursor names (0 with none). `Err` for a cursor this
+/// community did not mint for this caller and question.
+fn offset_of(key: &[u8; 32], payload: &Value, binding: &str) -> Result<usize, ()> {
     let Some(c) = str_of(payload, "cursor") else {
         return Ok(0);
     };
-    let (n, mac) = c.split_once('.').ok_or(())?;
-    let offset: usize = n.parse().map_err(|_| ())?;
-    (cursor_mac(binding, offset) == mac)
-        .then_some(offset)
-        .ok_or(())
+    super::offset_cursor::read(key, CURSOR_FAMILY, binding, c).ok_or(())
 }
 
 fn limit_of(payload: &Value) -> usize {
@@ -526,16 +501,20 @@ fn limit_of(payload: &Value) -> usize {
         .clamp(1, 200)
 }
 
-/// One page of `items`, and the cursor to the next, where there is one.
+/// One page of `items`, and the cursor to the next, where there is one. An
+/// offset past the end (the list shrank since the cursor was made) is an
+/// empty last page.
 fn page<T: Clone>(
     items: &[T],
     offset: usize,
     limit: usize,
+    key: &[u8; 32],
     binding: &str,
 ) -> (Vec<T>, Option<String>) {
-    let end = (offset + limit).min(items.len());
-    let next = (end < items.len()).then(|| cursor_for(binding, end));
-    (items[offset.min(items.len())..end].to_vec(), next)
+    let (start, end) = super::offset_cursor::window(offset, limit, items.len());
+    let next =
+        (end < items.len()).then(|| super::offset_cursor::mint(key, CURSOR_FAMILY, binding, end));
+    (items[start..end].to_vec(), next)
 }
 
 // ── what the caller may see ──
@@ -1166,7 +1145,7 @@ async fn handle_create(
             Ok(s) => s,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        if let Err(e) = groups::check_rule(rule, &schema) {
+        if let Err(e) = groups::check_badge_rule(rule, &schema) {
             let mut details = json!({ "reason": e.reason.clone() });
             if let Some(f) = &e.field {
                 details["field"] = json!(f);
@@ -1234,7 +1213,6 @@ async fn handle_create(
         created_by: Some(entry_id),
         updated_at: now,
         retired_at: None,
-        endorsement: None,
     };
     // Item 6: the group first, remote steps before the one local write.
     let group = if kind == BadgeKind::Community {
@@ -1304,6 +1282,8 @@ async fn handle_create(
             Err(e) => return app_error_to_reject(&doc, &e),
         }
     }
+    // Its group is published as an issuer the community recognises (VTI-BDG-080).
+    badges::registry::kick();
     success_response(&doc, body)
 }
 
@@ -1551,6 +1531,14 @@ async fn handle_retire(
             return app_error_to_reject(&doc, &e);
         }
     }
+    // A retired badge's claim codes admit no one (VTI-BDG-027).
+    if let Err(e) = badges::claims::withdraw_all_of_badge(&state.badges_ks, &badge.badge_id).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    // A retired badge is shown outside no longer (`share` item 9); also on a retry.
+    if let Err(e) = badges::share::stop_all_of_badge(&state.badges_ks, &badge.badge_id).await {
+        return app_error_to_reject(&doc, &e);
+    }
     if let Some(g) = &group
         && let Err(e) = delete_group(state, g).await
     {
@@ -1569,6 +1557,8 @@ async fn handle_retire(
     if let Err(e) = badges::credential::revoke_all_holders(state, &badge.badge_id).await {
         return app_error_to_reject(&doc, &e);
     }
+    // Its record goes from the trust registry (VTI-BDG-080).
+    badges::registry::kick();
     let _ = RETIRE_ERR_KEY_HOLDER_REFUSED;
     match view.badge_wire(state, &badge).await {
         Ok(b) => success_response(&doc, json!({ "badge": b })),
@@ -1716,6 +1706,7 @@ async fn handle_promote(
                 .map(|d| now + Duration::days(i64::from(d))),
             credential_id: None,
             revoke_reason: None,
+            shared: None,
         };
         if let Err(e) = badges::put_award(&state.badges_ks, &a).await {
             return app_error_to_reject(&doc, &e);
@@ -1731,6 +1722,8 @@ async fn handle_promote(
         Ok(w) => body["group"] = w,
         Err(e) => return app_error_to_reject(&doc, &e),
     }
+    // Its group is published as an issuer the community recognises (VTI-BDG-080).
+    badges::registry::kick();
     success_response(&doc, body)
 }
 
@@ -1794,7 +1787,11 @@ async fn handle_list(
         view.who.did,
         kind.map_or("", BadgeKind::as_str)
     );
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -1804,7 +1801,7 @@ async fn handle_list(
             );
         }
     };
-    let (items, next) = page(&chosen, offset, limit_of(&p), &binding);
+    let (items, next) = page(&chosen, offset, limit_of(&p), &key, &binding);
     let mut out = Vec::with_capacity(items.len());
     for b in &items {
         let wire = match view.badge_wire(state, b).await {
@@ -1869,6 +1866,20 @@ async fn handle_show(
     match view.my_state(state, &badge).await {
         Ok(s) => body["myState"] = json!(s),
         Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    // Item 4: the caller's own accepted awards, newest first, each with its share — what
+    // `awards/share` and `unshare` name. Never another member's.
+    if view.my_count(&badge.badge_id) > 0
+        && let Some(entry) = &view.entry_id
+    {
+        match badges::accepted_of(&state.badges_ks, &badge.badge_id, entry).await {
+            Ok(mut mine) if !mine.is_empty() => {
+                mine.sort_by_key(|a| std::cmp::Reverse(a.decided_at));
+                body["myAwards"] = json!(mine.iter().map(|a| a.wire(true)).collect::<Vec<_>>());
+            }
+            Ok(_) => {}
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
     }
     match &badge.group_id {
         Some(g) => match groups::managers(state, g).await {
@@ -2236,6 +2247,7 @@ async fn handle_offer(
                 .map(|d| now + Duration::days(i64::from(d))),
             credential_id: None,
             revoke_reason: None,
+            shared: None,
         };
         awards.push(a);
     }
@@ -2373,17 +2385,37 @@ async fn settle_after_revoke(
         groups::remove_membership(state.directory.ks(), gid, entry_id).await?;
         return Ok(Ok(()));
     }
-    match badges::credential::issue(state, &group, badge, &did, Some(entry_id), &remaining).await {
+    reissue(state, &group, badge, &did, entry_id, remaining).await
+}
+
+/// Issue `did` their credential of `badge` again over `awards` (the accepted ones), offer
+/// it, and record it on the membership and the awards — credential first, as ever.
+async fn reissue(
+    state: &AppState,
+    group: &Group,
+    badge: &Badge,
+    did: &str,
+    entry_id: &str,
+    awards: Vec<Award>,
+) -> Result<Result<(), Failure>, AppError> {
+    match badges::credential::issue(state, group, badge, did, Some(entry_id), &awards).await {
         Ok(issued) => {
-            badges::credential::offer(state, &group, &did, &issued).await;
-            if let Some(mut m) = groups::membership(state.directory.ks(), gid, entry_id).await? {
+            badges::credential::offer(state, group, did, &issued).await;
+            let ks = state.directory.ks();
+            if let Some(mut m) = groups::membership(ks, &group.group_id, entry_id).await? {
                 m.credential_id = Some(issued.credential_id.clone());
                 m.credential_valid_until = Some(issued.valid_until);
-                groups::put_membership(state.directory.ks(), &m).await?;
+                groups::put_membership(ks, &m).await?;
             }
-            for mut a in remaining {
-                a.credential_id = Some(issued.credential_id.clone());
-                badges::put_award(&state.badges_ks, &a).await?;
+            let _guard = badges::WRITE_LOCK.lock().await;
+            for a in awards {
+                // Re-read: only the record as it stands now is moved on.
+                if let Some(mut a) = badges::get_award(&state.badges_ks, &a.award_id).await?
+                    && a.is_accepted()
+                {
+                    a.credential_id = Some(issued.credential_id.clone());
+                    badges::put_award(&state.badges_ks, &a).await?;
+                }
             }
             Ok(Ok(()))
         }
@@ -2452,6 +2484,10 @@ async fn handle_revoke(
         award.state = AwardState::Revoked;
         award.decided_at = Some(Utc::now());
         award.revoke_reason = reason_of(&doc);
+        // A taken-back award is shown outside no longer (`share` item 9).
+        if let Err(e) = badges::share::forget(&state.badges_ks, &mut award).await {
+            return app_error_to_reject(&doc, &e);
+        }
         if let Err(e) = audit(state, &view.who.did, award_changed(&award, "revoked")).await {
             return app_error_to_reject(&doc, &e);
         }
@@ -2472,6 +2508,532 @@ async fn handle_revoke(
             );
         }
         Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    success_response(&doc, json!({ "award": award.wire(true) }))
+}
+
+/// `awards/share/0.1` (VTI-BDG-070): the holder starts showing one accepted award outside
+/// the community, at locations under the community's public origin.
+async fn handle_share(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let (view, entry_id) = match holder(state, ctx, &doc).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, SHARE_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<awards_share::Payload>(&doc) {
+        return r;
+    }
+    let award_id = str_of(&doc.payload, "awardId").unwrap_or_default();
+    let public_url = state.config.read().await.public_url.clone();
+    let guard = badges::WRITE_LOCK.lock().await;
+    // Item 2: unknown, another's and not accepted answer alike.
+    let award = match badges::get_award(&state.badges_ks, award_id).await {
+        Ok(Some(a)) if a.entry_id == entry_id && a.is_accepted() => a,
+        Ok(_) => {
+            return declared(
+                &doc,
+                SHARE_ERR_NOT_FOUND,
+                "No accepted award of yours has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 3: the badge's regime, fixed when it was defined.
+    let badge = match badges::get_badge(&state.badges_ks, &award.badge_id).await {
+        Ok(b) => b,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let reason = match &badge {
+        Some(b) if !b.is_community() => Some("kudos"),
+        Some(b) if !b.is_active() => Some("retired"),
+        None => Some("retired"),
+        Some(b) if !b.shareable_outside => Some("insideOnly"),
+        Some(_) => None,
+    };
+    if let Some(reason) = reason {
+        return declared_with(
+            &doc,
+            SHARE_ERR_NOT_SHAREABLE,
+            match reason {
+                "kudos" => "A kudos badge is shown inside the community only.",
+                "retired" => "This badge was retired.",
+                _ => "This badge is shown inside the community only.",
+            },
+            json!({ "reason": reason }),
+        );
+    }
+    // Item 4: never answer a location it will not serve.
+    let Some(public_url) = public_url.filter(|u| !u.trim().is_empty()) else {
+        return declared(
+            &doc,
+            SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE,
+            "This community has no public address to show a badge at yet.",
+        );
+    };
+    // The credential the share serves (item 5) is kept whenever one is issued in the
+    // outside regime. A holder whose credential predates that is issued it again first —
+    // the same credential in the same regime and slot, outside the lock as every issue is.
+    let kept =
+        match badges::share::kept_credential(&state.badges_ks, &award.badge_id, &entry_id).await {
+            Ok(k) => k.is_some(),
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+    let mut award = award;
+    if !kept {
+        drop(guard);
+        let badge = badge.expect("checked above");
+        if let Err(r) = issue_to_share(state, &doc, &badge, &view.who.did, &entry_id).await {
+            return r;
+        }
+        let _guard = badges::WRITE_LOCK.lock().await;
+        award = match badges::get_award(&state.badges_ks, award_id).await {
+            Ok(Some(a)) if a.entry_id == entry_id && a.is_accepted() => a,
+            Ok(_) => {
+                return declared(
+                    &doc,
+                    SHARE_ERR_NOT_FOUND,
+                    "No accepted award of yours has this identifier.",
+                );
+            }
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        return share_award(state, &doc, &view, award, &public_url).await;
+    }
+    share_award(state, &doc, &view, award, &public_url).await
+}
+
+/// Issue the holder their badge credential again, for a share whose credential predates
+/// the community keeping one. A key holder that cannot sign is the framework's own
+/// "unavailable": the share declares no key-holder code, and nothing was recorded.
+async fn issue_to_share(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    badge: &Badge,
+    did: &str,
+    entry_id: &str,
+) -> Result<(), TrustTaskOutcome> {
+    let group = match &badge.group_id {
+        Some(g) => groups::get(state.directory.ks(), g)
+            .await
+            .map_err(|e| app_error_to_reject(doc, &e))?,
+        None => None,
+    };
+    let Some(group) = group else {
+        return Err(declared(
+            doc,
+            SHARE_ERR_NOT_SHAREABLE,
+            "This badge was retired.",
+        ));
+    };
+    let awards = badges::accepted_of(&state.badges_ks, &badge.badge_id, entry_id)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    match reissue(state, &group, badge, did, entry_id, awards).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(f)) => {
+            tracing::warn!(badge = %badge.badge_id, error = ?f, "could not issue a badge credential to share");
+            Err(app_error_to_reject(
+                doc,
+                &AppError::Internal(
+                    "the community's key holder could not issue the credential to share; \
+                     try again shortly"
+                        .into(),
+                ),
+            ))
+        }
+        Err(e) => Err(app_error_to_reject(doc, &e)),
+    }
+}
+
+/// Items 5 and 8: start sharing `award` (a share already in force answers its own
+/// locations), audit a new one, and answer the award. The caller holds the write lock.
+async fn share_award(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    view: &View,
+    mut award: Award,
+    public_url: &str,
+) -> TrustTaskOutcome {
+    let doc = doc.clone();
+    let started = match badges::share::start(&state.badges_ks, &mut award, public_url).await {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if started && let Err(e) = audit(state, &view.who.did, award_changed(&award, "shared")).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(&doc, json!({ "award": award.wire(true) }))
+}
+
+/// `awards/unshare/0.1` (VTI-BDG-070): the holder stops showing an award outside. Revokes
+/// nothing.
+async fn handle_unshare(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let (view, entry_id) = match holder(state, ctx, &doc).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, UNSHARE_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<awards_unshare::Payload>(&doc) {
+        return r;
+    }
+    let award_id = str_of(&doc.payload, "awardId").unwrap_or_default();
+    let _guard = badges::WRITE_LOCK.lock().await;
+    let mut award = match badges::get_award(&state.badges_ks, award_id).await {
+        Ok(Some(a)) if a.entry_id == entry_id => a,
+        Ok(_) => {
+            return declared(
+                &doc,
+                UNSHARE_ERR_NOT_FOUND,
+                "No award of yours has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    match badges::share::stop(&state.badges_ks, &mut award).await {
+        Ok(true) => {
+            if let Err(e) = audit(state, &view.who.did, award_changed(&award, "unshared")).await {
+                return app_error_to_reject(&doc, &e);
+            }
+        }
+        Ok(false) => {}
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    success_response(&doc, json!({ "award": award.wire(true) }))
+}
+
+// ─── claim codes (VTI-BDG-025 – 027) ────────────────────────────────────────
+
+/// The badge `badge_id` names, where the caller owns it — manages its group — or
+/// administers badges; `None` otherwise, which every claim task answers as `notFound`.
+async fn claimable_by(
+    state: &AppState,
+    view: &View,
+    badge_id: &str,
+) -> Result<Option<Badge>, AppError> {
+    Ok(view
+        .visible(state, badge_id)
+        .await?
+        .filter(|b| view.admin || (badge_is_community(b) && view.owns(b))))
+}
+
+/// `claims/create/0.1` (VTI-BDG-025).
+async fn handle_claims_create(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, CLAIMS_CREATE_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<claims_create::Payload>(&doc) {
+        return r;
+    }
+    let p = doc.payload.clone();
+    let view = match View::read(state, who).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let badge = match claimable_by(state, &view, str_of(&p, "badgeId").unwrap_or_default()).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return declared(
+                &doc,
+                CLAIMS_CREATE_ERR_NOT_FOUND,
+                "No badge you own has this identifier.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if !badge.is_community() {
+        return declared_with(
+            &doc,
+            CLAIMS_CREATE_ERR_NOT_CLAIMABLE,
+            "A kudos badge is given by members one by one, never by a code.",
+            json!({ "reason": "kudos" }),
+        );
+    }
+    if !badge.is_active() {
+        return declared_with(
+            &doc,
+            CLAIMS_CREATE_ERR_NOT_CLAIMABLE,
+            "This badge was retired.",
+            json!({ "reason": "retired" }),
+        );
+    }
+    let now = Utc::now();
+    let valid_until = str_of(&p, "validUntil")
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&Utc));
+    let Some(valid_until) =
+        valid_until.filter(|t| *t > now && *t <= now + Duration::days(badges::claims::MAX_DAYS))
+    else {
+        return declared(
+            &doc,
+            CLAIMS_CREATE_ERR_SETTINGS_INVALID,
+            "A code's time is in the future and at most 90 days ahead.",
+        );
+    };
+    let limit = p["limit"].as_u64().unwrap_or(1).clamp(1, 10_000) as u32;
+    let label = str_of(&p, "label").unwrap_or_default();
+    let (rec, code) = match badges::claims::create(
+        &state.badges_ks,
+        &badge.badge_id,
+        label,
+        valid_until,
+        limit,
+        view.entry_id.as_deref(),
+    )
+    .await
+    {
+        Ok(x) => x,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut data = changed(&badge.badge_id, "claimCodeIssued");
+    data.fields = vec![rec.claim_id.clone()];
+    if let Err(e) = audit(state, &view.who.did, data).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(&doc, json!({ "claim": rec.wire(), "code": code }))
+}
+
+/// `claims/list/0.1` (VTI-BDG-027): never a code.
+async fn handle_claims_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<claims_list::Payload>(&doc) {
+        return r;
+    }
+    let p = doc.payload.clone();
+    let not_found = || {
+        declared(
+            &doc,
+            CLAIMS_LIST_ERR_NOT_FOUND,
+            "No badge you own has this identifier.",
+        )
+    };
+    match badges::settings(&state.badges_ks).await {
+        Ok(s) if s.enabled => {}
+        Ok(_) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let view = match View::read(state, who).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let badge = match claimable_by(state, &view, str_of(&p, "badgeId").unwrap_or_default()).await {
+        Ok(Some(b)) => b,
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let all = match badges::claims::of_badge(&state.badges_ks, &badge.badge_id).await {
+        Ok(a) => a,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let binding = format!("badges/claims/list|{}|{}", view.who.did, badge.badge_id);
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
+        Ok(o) => o,
+        Err(()) => {
+            return declared(
+                &doc,
+                CLAIMS_LIST_ERR_CURSOR_INVALID,
+                "This cursor is not this caller's for this badge.",
+            );
+        }
+    };
+    let (items, next) = page(&all, offset, limit_of(&p), &key, &binding);
+    let mut body = json!({ "items": items.iter().map(|c| c.wire()).collect::<Vec<_>>() });
+    if let Some(n) = next {
+        body["nextCursor"] = json!(n);
+    }
+    success_response(&doc, body)
+}
+
+/// `claims/withdraw/0.1` (VTI-BDG-027): admits no one more; claims made stand.
+async fn handle_claims_withdraw(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let who = match signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, CLAIMS_WITHDRAW_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<claims_withdraw::Payload>(&doc) {
+        return r;
+    }
+    let view = match View::read(state, who).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let claim_id = str_of(&doc.payload, "claimId").unwrap_or_default();
+    let not_found = || {
+        declared(
+            &doc,
+            CLAIMS_WITHDRAW_ERR_NOT_FOUND,
+            "No claim code of a badge you own has this identifier.",
+        )
+    };
+    let rec = match badges::claims::get(&state.badges_ks, claim_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    match claimable_by(state, &view, &rec.badge_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
+    let rec = match badges::claims::withdraw(&state.badges_ks, claim_id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return not_found(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let mut data = changed(&rec.badge_id, "claimCodeWithdrawn");
+    data.fields = vec![rec.claim_id.clone()];
+    if let Err(e) = audit(state, &view.who.did, data).await {
+        return app_error_to_reject(&doc, &e);
+    }
+    success_response(&doc, json!({ "claim": rec.wire() }))
+}
+
+/// `claims/redeem/0.1` (VTI-BDG-026): the redemption is the member's consent; admitted as
+/// on an approved request, with an award whose giver is the code's issuer.
+async fn handle_claims_redeem(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let (view, entry_id) = match holder(state, ctx, &doc).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    if let Err(r) = settings_on(state, &doc, REDEEM_ERR_BADGES_OFF).await {
+        return r;
+    }
+    if let Err(r) = parse_spec_payload::<claims_redeem::Payload>(&doc) {
+        return r;
+    }
+    let code = str_of(&doc.payload, "code").unwrap_or_default().to_string();
+    let invalid = || declared(&doc, REDEEM_ERR_CODE_INVALID, "This code admits no one.");
+    // Item 2: the code and its badge, refused alike.
+    let rec = match badges::claims::by_code(&state.badges_ks, &code).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return invalid(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let badge = match badges::get_badge(&state.badges_ks, &rec.badge_id).await {
+        Ok(Some(b)) if b.is_active() && b.is_community() => b,
+        Ok(_) => return invalid(),
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let group = match &badge.group_id {
+        Some(g) => match groups::get(state.directory.ks(), g).await {
+            Ok(Some(g)) => g,
+            Ok(None) => return invalid(),
+            Err(e) => return app_error_to_reject(&doc, &e),
+        },
+        None => return invalid(),
+    };
+    // Item 3: a one-off badge already held.
+    if !badge.repeatable && view.my_count(&badge.badge_id) > 0 {
+        return declared(
+            &doc,
+            REDEEM_ERR_ALREADY_HELD,
+            "You already hold this badge.",
+        );
+    }
+    // Item 5: the claim is counted before anything is issued.
+    let now = Utc::now();
+    let rec = match badges::claims::reserve(&state.badges_ks, &code, &entry_id, now).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(badges::claims::Refusal::CodeInvalid)) => return invalid(),
+        Ok(Err(badges::claims::Refusal::AlreadyClaimed)) => {
+            return declared(
+                &doc,
+                REDEEM_ERR_ALREADY_CLAIMED,
+                "You have already claimed this code.",
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    // Item 4: credential first, then the award and the membership.
+    let (issued, award) = match badges::credential::issue_with_new_award(
+        state,
+        &group,
+        &badge,
+        &view.who.did,
+        &entry_id,
+        rec.created_by.as_deref(),
+        "claimed",
+    )
+    .await
+    {
+        Ok(x) => x,
+        Err(f) => {
+            if let Err(e) =
+                badges::claims::release(&state.badges_ks, &rec.claim_id, &entry_id).await
+            {
+                tracing::warn!(error = %e, "could not give back a claim whose issue failed");
+            }
+            return failure_refusal(
+                &doc,
+                f,
+                REDEEM_ERR_KEY_HOLDER_UNAVAILABLE,
+                REDEEM_ERR_KEY_HOLDER_REFUSED,
+            );
+        }
+    };
+    badges::credential::offer(state, &group, &view.who.did, &issued).await;
+    {
+        let ks = state.directory.ks();
+        let _dir = crate::directory::WRITE_LOCK.lock().await;
+        let existing = match groups::membership(ks, &group.group_id, &entry_id).await {
+            Ok(m) => m,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+        let m = Membership {
+            group_id: group.group_id.clone(),
+            entry_id: entry_id.clone(),
+            source: existing
+                .as_ref()
+                .map_or("claimed".to_string(), |m| m.source.clone()),
+            since: existing.as_ref().map_or(now, |m| m.since),
+            state: "active".into(),
+            credential_id: Some(issued.credential_id.clone()),
+            credential_valid_until: Some(issued.valid_until),
+        };
+        if let Err(e) = groups::put_membership(ks, &m).await {
+            return app_error_to_reject(&doc, &e);
+        }
     }
     success_response(&doc, json!({ "award": award.wire(true) }))
 }
@@ -2523,7 +3085,11 @@ async fn handle_awards_list(
         state_filter.map_or("", AwardState::as_str),
         entry_filter.unwrap_or("")
     );
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -2533,7 +3099,7 @@ async fn handle_awards_list(
             );
         }
     };
-    let (items, next) = page(&all, offset, limit_of(&p), &binding);
+    let (items, next) = page(&all, offset, limit_of(&p), &key, &binding);
     let viewer = match crate::directory::read::viewer(state, &view.who.did).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -2611,7 +3177,11 @@ async fn handle_holders_list(
         Err(e) => return app_error_to_reject(&doc, &e),
     };
     let binding = format!("badges/holders/list|{}|{}", view.who.did, badge.badge_id);
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -2622,7 +3192,7 @@ async fn handle_holders_list(
         }
     };
     let total = holders.len();
-    let (items, next) = page(&holders, offset, limit_of(&p), &binding);
+    let (items, next) = page(&holders, offset, limit_of(&p), &key, &binding);
     let viewer = match crate::directory::read::viewer(state, &view.who.did).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -2955,6 +3525,10 @@ async fn handle_accept(
     }
     if let Err(e) = badges::put_award(&state.badges_ks, &accepted).await {
         return app_error_to_reject(&doc, &e);
+    }
+    // An automatic badge may count accepted kudos (VTI-BDG-015).
+    if badge.kind == BadgeKind::Kudos {
+        groups::dynamic::kick();
     }
     if let Some(group) = &group {
         let ks = state.directory.ks();
@@ -3340,6 +3914,7 @@ async fn handle_kudos_give(
             .map(|d| now + Duration::days(i64::from(d))),
         credential_id: None,
         revoke_reason: None,
+        shared: None,
     };
     if let Err(e) = audit(state, &view.who.did, award_changed(&a, "kudosGiven")).await {
         return app_error_to_reject(&doc, &e);
@@ -3418,7 +3993,11 @@ async fn handle_kudos_list(
         badge_filter.as_deref().unwrap_or(""),
         state_filter.map_or("", AwardState::as_str)
     );
-    let offset = match offset_of(&p, &binding) {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let offset = match offset_of(&key, &p, &binding) {
         Ok(o) => o,
         Err(()) => {
             return declared(
@@ -3428,7 +4007,7 @@ async fn handle_kudos_list(
             );
         }
     };
-    let (items, next) = page(&items, offset, limit_of(&p), &binding);
+    let (items, next) = page(&items, offset, limit_of(&p), &key, &binding);
     let viewer = match crate::directory::read::viewer(state, &view.who.did).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, &e),

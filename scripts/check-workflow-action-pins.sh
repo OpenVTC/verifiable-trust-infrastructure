@@ -100,3 +100,16 @@ MSG
 fi
 
 echo "all $checked external \`uses:\` refs are pinned to a commit SHA with a version comment"
+
+# The same hole by another door (#2649): a binary fetched over HTTP and piped
+# straight into `tar`, `sh` or `bash` is neither pinned nor verified, however
+# well the `uses:` lines are. cargo-nextest came in that way (`curl
+# get.nexte.st/latest | tar`) into the jobs that run the whole test suite.
+# Install a tool through the pinned taiki-e/install-action (checksummed), or
+# download a versioned URL and `sha256sum -c` it before use.
+if piped=$(grep -HnE 'curl[^#]*\|[[:space:]]*(sudo[[:space:]]+)?(tar|sh|bash)([[:space:]]|$)' "${files[@]}"); then
+  printf '%s\n' "$piped"
+  echo "::error::a download is piped straight into tar/sh/bash; install it through a pinned action or verify a checksum first"
+  exit 1
+fi
+echo "no workflow pipes a download into tar, sh or bash"

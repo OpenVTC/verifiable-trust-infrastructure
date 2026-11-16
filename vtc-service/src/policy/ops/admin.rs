@@ -1,0 +1,521 @@
+//! Policy admin endpoints — upload, activate, test (M2.3.1).
+//!
+//! Spec §7 + plan §§D2, D3, D8.
+//!
+//! ## Hot-swap atomicity (plan §D8)
+//!
+//! [`ACTIVATE_LOCK`] is a process-wide async mutex that serialises
+//! the activate flow. The flip itself is a single `set_active_policy_id`
+//! call (one fjall put), but we hold the lock across:
+//! 1. Look up the candidate policy.
+//! 2. Stamp `activated_at` and `store_policy(candidate)`.
+//! 3. Read the prior pointer (to record the predecessor in audit).
+//! 4. Flip the active pointer.
+//! 5. Emit `PolicyActivated`.
+//!
+//! Steps 2 + 4 are independent fjall puts — without the lock, two
+//! concurrent activations of the same purpose could observe each
+//! other's prior state and emit contradictory audit envelopes. One
+//! global lock is fine in Phase 2: activations are infrequent
+//! (operator-initiated, not request-path).
+//!
+//! The compiled-policy in-memory registry (the `Arc<RwLock<…>>`
+//! D8 talks about) lands in M2.5 when default policies need to be
+//! evaluated by the join + removal handlers. For M2.3 alone, the
+//! fjall pointer flip is the source of truth; consumers don't
+//! exist yet.
+
+use std::sync::LazyLock;
+
+use chrono::Utc;
+use serde::Serialize;
+use serde_json::Value as JsonValue;
+use tokio::sync::Mutex;
+use tracing::info;
+use uuid::Uuid;
+
+use vtc_audit::{AuditEvent, PolicyActivatedData, PolicyUploadedData};
+use vti_common::error::AppError;
+
+use crate::error::TaskError;
+use crate::policy::POLICY_SOURCE_MAX_BYTES;
+use crate::policy::{
+    PolicyPurpose, compile, evaluate, get_active_policy_id, get_policy, max_version_for,
+    new_policy, set_active_policy_id, store_policy, validate_purpose_package,
+};
+use crate::server::AppState;
+use vti_specs::policy::upsert::v0_3 as upsert;
+use vti_specs::vtc::policies::test::v0_1 as policy_test;
+
+/// Process-wide async mutex covering every activate-policy call so
+/// the predecessor pointer + audit envelope can't be skewed by a
+/// concurrent flip on the same purpose. See module docs.
+static ACTIVATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+// ---------------------------------------------------------------------------
+// Request / response shapes
+// ---------------------------------------------------------------------------
+
+/// The decision slot an upsert's module serves.
+///
+/// Canonical `policy/upsert` has no `purpose` — a module there is
+/// purpose-agnostic and gains meaning only when activated. VTC
+/// cannot work that way (the purpose is baked into the Rego package
+/// and guarded), and it cannot be inferred either: only 4 of the 10
+/// purposes have an expected package. So it is required in `ext`,
+/// and its absence is an error rather than a guess.
+fn upsert_purpose(body: &upsert::Payload) -> Result<PolicyPurpose, AppError> {
+    let ext = body
+        .ext
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| AppError::Internal(format!("ext: {e}")))?;
+    let raw = ext
+        .as_ref()
+        .and_then(|e| e.get(crate::policy::ops::read::PURPOSE_EXT_KEY))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "ext.{} is required: this maintainer binds a policy's purpose \
+                 intrinsically (it is fixed by the module's Rego package), so it \
+                 cannot be deferred to activation as canonical policy/upsert assumes",
+                crate::policy::ops::read::PURPOSE_EXT_KEY,
+            ))
+        })?;
+    serde_json::from_value(serde_json::Value::String(raw.to_owned())).map_err(|e| {
+        AppError::Validation(format!("ext purpose {raw:?} is not a known purpose: {e}"))
+    })
+}
+
+/// The canonical `policy/upsert` members this maintainer does not implement,
+/// which an upsert carrying them is refused for rather than silently dropping
+/// — a caller that sets `enabled: false` must not have it ignored.
+fn upsert_unsupported(body: &upsert::Payload) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if body.applies_to.is_some() {
+        out.push("appliesTo");
+    }
+    if body.priority.is_some() {
+        out.push("priority");
+    }
+    // `enabled` defaults to `true` in the schema, so `true` is the value
+    // every module here already has — and the generated `policy/upsert`
+    // payload always serialises it, so a client built on the canonical
+    // type cannot omit it. Refusing it would refuse every canonical
+    // caller. Only `false` asks for something this maintainer cannot do.
+    if !body.enabled {
+        out.push("enabled");
+    }
+    if body.id.is_some() {
+        // Canonical lets a caller target an existing module id.
+        // Here the lineage is the purpose (one active module per
+        // purpose, monotone revisions), and revision ids are
+        // server-allocated — honouring a caller-supplied id would
+        // mean pretending to update a row we actually append past.
+        out.push("id");
+    }
+    out
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct UploadResponse {
+    pub policy: crate::policy::ops::read::PolicyModuleResponse,
+    /// Canonical-required (`wasCreated`): true when this call created a new
+    /// module lineage rather than revising an existing one. VTC's first
+    /// revision for a purpose is a creation.
+    pub was_created: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct ActivateResponse {
+    /// Canonical name for the id of the policy now in force.
+    pub activated: Uuid,
+    pub purpose: PolicyPurpose,
+    /// The activated module's source hash, under `ext`.
+    ///
+    /// It was a top-level `sha256` until #1110 — and its own doc called it a
+    /// "VTC extension", which is exactly what the framework's `ext` slot is
+    /// for. The response is `additionalProperties: false`, so an extension
+    /// carried beside the canonical members is not an extension, it is a
+    /// violation; `ext` is the sanctioned place and costs one level of
+    /// nesting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ext: Option<JsonValue>,
+    /// Predecessor active policy id for this purpose. `null` for
+    /// the first activation under a given purpose.
+    pub previous_policy_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct TestResponse {
+    pub id: Uuid,
+    pub purpose: PolicyPurpose,
+    pub sha256: String,
+    /// Raw regorus `QueryResults` JSON. Same shape M2.6 / M2.7
+    /// will pluck `result[0].expressions[0].value` from when they
+    /// wire policy evaluation into the membership flows.
+    pub result: JsonValue,
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/policies — upload
+// ---------------------------------------------------------------------------
+
+/// Every check [`upload_inner`] makes before it writes, and the purpose the
+/// revision would serve. Writes nothing.
+///
+/// For the gate on a policy that decides authority (**VTI-VTC-022**): the spine
+/// settles the requester's gesture and another administrator's consent between
+/// this and the upload, so nobody is asked about a module the upload would
+/// refuse anyway. [`upload_inner`] still runs every check itself.
+pub(crate) fn precheck_upload(body: &upsert::Payload) -> Result<PolicyPurpose, AppError> {
+    let unsupported = upsert_unsupported(body);
+    if !unsupported.is_empty() {
+        return Err(AppError::Validation(format!(
+            "this maintainer does not implement {}",
+            unsupported.join(", "),
+        )));
+    }
+    let purpose = upsert_purpose(body)?;
+    if body.module.len() > POLICY_SOURCE_MAX_BYTES {
+        return Err(AppError::Validation(format!(
+            "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
+            body.module.len(),
+        )));
+    }
+    validate_purpose_package(&compile(&body.module, Uuid::new_v4())?, purpose)?;
+    Ok(purpose)
+}
+
+/// Every check [`activate_inner`] makes before it writes, and the purpose of
+/// the revision it would activate. Writes nothing. See [`precheck_upload`].
+pub(crate) async fn precheck_activate(
+    state: &AppState,
+    id: Uuid,
+    purpose: Option<PolicyPurpose>,
+) -> Result<PolicyPurpose, AppError> {
+    let policy = get_policy(&state.policies_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("policy not found: {id}")))?;
+    if let Some(named) = purpose
+        && named != policy.purpose
+    {
+        return Err(AppError::Validation(format!(
+            "policy {id} decides {}, not {}: a revision's purpose is fixed by its Rego package",
+            policy.purpose.as_str(),
+            named.as_str()
+        )));
+    }
+    validate_purpose_package(&compile(&policy.rego_source, policy.id)?, policy.purpose)?;
+    if get_active_policy_id(&state.active_policies_ks, policy.purpose).await? == Some(id) {
+        return Err(AppError::Conflict(format!(
+            "policy {id} is already active for purpose {}",
+            policy.purpose.as_str()
+        )));
+    }
+    Ok(policy.purpose)
+}
+
+/// Every check [`upload_inner`] makes before it writes, without writing — so a
+/// revision that has to wait for other administrators' approval
+/// (VTI-VTC-022) is refused for its own faults first, rather than parked and
+/// failed at execution (`vtc-action-list.md` §4.2: every check that does not
+/// need the approval runs at submission). [`upload_inner`] makes them again
+/// when it runs.
+pub(crate) async fn check_upload(state: &AppState, body: &upsert::Payload) -> Result<(), AppError> {
+    let unsupported = upsert_unsupported(body);
+    if !unsupported.is_empty() {
+        return Err(AppError::Validation(format!(
+            "this maintainer does not implement {}: it selects a policy by its \
+             activated (purpose) binding, not by appliesTo/priority matching, and \
+             modules carry no enabled flag. Refusing rather than accepting a \
+             selection hint that would never be honoured.",
+            unsupported.join(", "),
+        )));
+    }
+    let purpose = upsert_purpose(body)?;
+    if body.module.len() > POLICY_SOURCE_MAX_BYTES {
+        return Err(AppError::Validation(format!(
+            "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
+            body.module.len(),
+        )));
+    }
+    let compiled = compile(&body.module, Uuid::new_v4())?;
+    validate_purpose_package(&compiled, purpose)?;
+    let current_version = max_version_for(&state.policies_ks, purpose).await?;
+    if let Some(expected) = body.expected_version
+        && expected != u64::from(current_version)
+    {
+        return Err(AppError::Conflict(format!(
+            "expectedVersion {expected} does not match the current revision \
+             {current_version} for purpose {}",
+            purpose.as_str(),
+        )));
+    }
+    Ok(())
+}
+
+/// Compile, check and store a revision as `actor` — `policy/upsert/0.3`, on the
+/// route and the spine alike.
+pub(crate) async fn upload_inner(
+    state: &AppState,
+    actor: &str,
+    body: upsert::Payload,
+) -> Result<UploadResponse, AppError> {
+    let unsupported = upsert_unsupported(&body);
+    if !unsupported.is_empty() {
+        return Err(AppError::Validation(format!(
+            "this maintainer does not implement {}: it selects a policy by its \
+             activated (purpose) binding, not by appliesTo/priority matching, and \
+             modules carry no enabled flag. Refusing rather than accepting a \
+             selection hint that would never be honoured.",
+            unsupported.join(", "),
+        )));
+    }
+    let purpose = upsert_purpose(&body)?;
+
+    if body.module.len() > POLICY_SOURCE_MAX_BYTES {
+        return Err(AppError::Validation(format!(
+            "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
+            body.module.len(),
+        )));
+    }
+
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
+    // Allocate id first so the compile error can name it. The
+    // `new_policy` helper also allocates one — we override via
+    // `Policy { id, .. }` after compile rather than mint twice.
+    //
+    // An approved action's execution stores its revision under an id derived
+    // from the action and execution, so the row is its own evidence of the
+    // write: a crash before `record_effect` below is still reconciled
+    // `completed` (R2.1, `admin_actions::policy_revision_id`).
+    let id = crate::admin_actions::executing_revision_id().unwrap_or_else(Uuid::new_v4);
+    let compiled = compile(&body.module, id)?;
+    // Reject a module compiled into the wrong package for its declared
+    // purpose — it would compile + activate cleanly, then evaluate to
+    // `undefined` (silent host default-deny) for that whole ceremony.
+    validate_purpose_package(&compiled, purpose)?;
+    let sha256 = *compiled.source_sha256();
+    let current_version = max_version_for(&state.policies_ks, purpose).await?;
+    // Optimistic concurrency: canonical `expectedVersion` must match the
+    // revision the caller believes is current, else two operators racing
+    // on the same purpose would each append a revision over the other's
+    // read with no signal.
+    if let Some(expected) = body.expected_version
+        && expected != u64::from(current_version)
+    {
+        return Err(AppError::Conflict(format!(
+            "expectedVersion {expected} does not match the current revision \
+             {current_version} for purpose {}",
+            purpose.as_str(),
+        )));
+    }
+    let version = current_version + 1;
+    let was_created = current_version == 0;
+
+    let mut policy = new_policy(
+        purpose,
+        body.module.to_string(),
+        sha256,
+        actor.to_string(),
+        version,
+    );
+    policy.id = id;
+    policy.name = Some(body.name.to_string());
+    policy.description = body.description.map(String::from);
+    store_policy(&state.policies_ks, &policy).await?;
+    crate::admin_actions::record_effect(state).await;
+
+    let sha256_hex = hex::encode(sha256);
+    audit_writer
+        .write(
+            actor,
+            None,
+            AuditEvent::PolicyUploaded(PolicyUploadedData {
+                policy_id: id.to_string(),
+                purpose: purpose.as_str().to_string(),
+                sha256: sha256_hex.clone(),
+                version,
+            }),
+        )
+        .await?;
+
+    info!(
+        actor = actor,
+        policy_id = %id,
+        purpose = purpose.as_str(),
+        version,
+        sha256 = sha256_hex.as_str(),
+        "policy uploaded"
+    );
+
+    Ok(UploadResponse {
+        policy: (&policy).into(),
+        was_created,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/policies/{id}/activate
+// ---------------------------------------------------------------------------
+
+/// Make revision `id` live for its purpose, as `actor` — `policy/activate/0.1`,
+/// on the route and the spine alike.
+///
+/// `purpose` is the one the caller named, where it named one: a revision's
+/// purpose is fixed by its Rego package, so a caller naming another is refused
+/// rather than having the revision bound somewhere it cannot decide.
+pub(crate) async fn activate_inner(
+    state: &AppState,
+    actor: &str,
+    id: Uuid,
+    purpose: Option<PolicyPurpose>,
+) -> Result<ActivateResponse, AppError> {
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
+    let _guard = ACTIVATE_LOCK.lock().await;
+
+    let mut policy = get_policy(&state.policies_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("policy not found: {id}")))?;
+
+    // Re-probe before flipping it live: a policy uploaded before the
+    // package gate (or via a path that bypassed `upload`) must not be
+    // activated into a silent default-deny for its ceremony.
+    if let Some(named) = purpose
+        && named != policy.purpose
+    {
+        return Err(AppError::Validation(format!(
+            "policy {id} decides {}, not {}: a revision's purpose is fixed by its Rego package",
+            policy.purpose.as_str(),
+            named.as_str()
+        )));
+    }
+
+    validate_purpose_package(&compile(&policy.rego_source, policy.id)?, policy.purpose)?;
+
+    let previous = get_active_policy_id(&state.active_policies_ks, policy.purpose).await?;
+
+    if previous == Some(id) {
+        return Err(AppError::Conflict(format!(
+            "policy {id} is already active for purpose {}",
+            policy.purpose.as_str()
+        )));
+    }
+
+    let now = Utc::now();
+    policy.activated_at = Some(now);
+    store_policy(&state.policies_ks, &policy).await?;
+
+    set_active_policy_id(&state.active_policies_ks, policy.purpose, id).await?;
+    crate::admin_actions::record_effect(state).await;
+
+    let sha256_hex = hex::encode(policy.sha256);
+    audit_writer
+        .write(
+            actor,
+            None,
+            AuditEvent::PolicyActivated(PolicyActivatedData {
+                policy_id: id.to_string(),
+                purpose: policy.purpose.as_str().to_string(),
+                sha256: sha256_hex.clone(),
+                previous_policy_id: previous.map(|p| p.to_string()),
+            }),
+        )
+        .await?;
+
+    info!(
+        actor = actor,
+        policy_id = %id,
+        purpose = policy.purpose.as_str(),
+        previous = ?previous,
+        "policy activated"
+    );
+
+    Ok(ActivateResponse {
+        activated: id,
+        purpose: policy.purpose,
+        ext: Some(serde_json::json!({
+            "org.openvtc": { "sha256": sha256_hex }
+        })),
+        previous_policy_id: previous,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/policies/{id}/test
+// ---------------------------------------------------------------------------
+
+use vti_specs::vtc::policies::test::v0_1::error_codes as test_codes;
+
+/// `vtc/policies/test:notFound` — no policy module with that id.
+pub const TEST_ERR_NOT_FOUND: &str = test_codes::NOT_FOUND.code;
+/// `vtc/policies/test:evaluationFailed` — the module failed to compile or
+/// evaluate.
+pub const TEST_ERR_EVALUATION_FAILED: &str = test_codes::EVALUATION_FAILED.code;
+
+/// Evaluate a stored policy against a caller-supplied input.
+/// **Does not activate** the policy and does not mutate any state
+/// beyond log lines. Used by operators to dry-run a candidate
+/// upload before flipping the active pointer.
+pub(crate) async fn test(
+    state: &AppState,
+    actor: &str,
+    id: Uuid,
+    body: policy_test::Payload,
+) -> Result<TestResponse, TaskError> {
+    let policy = get_policy(&state.policies_ks, id).await?.ok_or_else(|| {
+        TaskError::declared(
+            TEST_ERR_NOT_FOUND,
+            AppError::NotFound(format!("policy not found: {id}")),
+        )
+    })?;
+
+    // Recompile every call. The harness is cheap and a per-call
+    // recompile means the test endpoint never depends on a
+    // long-running compiled-cache (M2.5 introduces that for the
+    // active policies; archived rows aren't cached).
+    //
+    // A compile error and an evaluation error are both
+    // `policies/test:evaluationFailed` — "the module failed to evaluate". A
+    // resource-budget abort is not: the module did not fail, the harness
+    // stopped it, and that keeps its own `ResourceExhausted` rendering. The
+    // status of each is unchanged.
+    let evaluation_failed = |e: AppError| match e {
+        e @ (AppError::Validation(_) | AppError::Internal(_)) => {
+            TaskError::declared(TEST_ERR_EVALUATION_FAILED, e)
+        }
+        e => TaskError::App(e),
+    };
+    let compiled = compile(&policy.rego_source, policy.id).map_err(evaluation_failed)?;
+    let result = evaluate(&compiled, &body.query, body.input).map_err(evaluation_failed)?;
+
+    info!(
+        actor = actor,
+        policy_id = %id,
+        purpose = policy.purpose.as_str(),
+        "policy tested"
+    );
+
+    Ok(TestResponse {
+        id,
+        purpose: policy.purpose,
+        sha256: hex::encode(policy.sha256),
+        result,
+    })
+}

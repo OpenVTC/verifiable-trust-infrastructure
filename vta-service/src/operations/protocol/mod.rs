@@ -43,6 +43,10 @@ pub mod update_didcomm;
 pub mod update_rest;
 pub mod update_tsp;
 pub mod update_webauthn;
+#[cfg(feature = "webs")]
+pub(crate) mod webs_backing;
+#[cfg(all(test, feature = "webs"))]
+mod webs_tests;
 
 /// Process-wide lock serializing every service-management mutation
 /// (enable / update / disable / rollback / drain-cancel). Modeled
@@ -177,6 +181,14 @@ pub struct ServiceOpDeps<'a> {
     pub imported_ks: &'a crate::store::KeyspaceHandle,
     pub contexts_ks: &'a crate::store::KeyspaceHandle,
     pub webvh_ks: &'a crate::store::KeyspaceHandle,
+    /// `did:webs` records — read and written when the VTA's own DID is a
+    /// `did:webs` ([`preconditions::VtaDocBacking::Webs`]).
+    pub webs_ks: &'a crate::store::KeyspaceHandle,
+    /// The host a `did:webs` VTA publishes its new key event stream to.
+    /// `None` (every production constructor): the did-hosting client for the
+    /// server its record names, built per publish. `Some` only to put another
+    /// host in its place, as tests do.
+    pub webs_host: Option<&'a dyn OwnWebsHost>,
     pub audit: &'a vta_audit::SharedAuditSink,
     pub snapshot_ks: &'a crate::store::KeyspaceHandle,
     pub service_state_ks: &'a crate::store::KeyspaceHandle,
@@ -217,6 +229,8 @@ impl<'a> ServiceOpDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
+            webs_ks: &s.webs_ks,
+            webs_host: None,
             audit: &s.audit_sink,
             snapshot_ks: &s.snapshot_ks,
             service_state_ks: &s.service_state_ks,
@@ -248,6 +262,8 @@ impl<'a> ServiceOpDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
+            webs_ks: &s.webs_ks,
+            webs_host: None,
             audit: &s.audit_sink,
             snapshot_ks: &s.snapshot_ks,
             service_state_ks: &s.service_state_ks,
@@ -288,6 +304,43 @@ impl<'a> ServiceOpDeps<'a> {
             tsp: None,
         }
     }
+}
+
+/// The host a `did:webs` VTA's runtime service changes are published to, as a
+/// trait object so [`ServiceOpDeps`] can carry one without a type parameter.
+/// Every [`crate::operations::did_webs::WebsHost`] is one (`webs` builds).
+pub trait OwnWebsHost: Send + Sync {
+    /// [`crate::operations::did_webs::WebsHost::publish`].
+    fn publish_stream<'a>(
+        &'a self,
+        mnemonic: &'a str,
+        keri_cesr: &'a str,
+        domain: Option<&'a str>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<crate::webvh_host::RequestUriResponse, crate::error::AppError>,
+                > + Send
+                + 'a,
+        >,
+    >;
+
+    /// [`crate::operations::did_webs::WebsHost::resolve_domain`].
+    fn resolve_domain_boxed<'a>(
+        &'a self,
+        requested: Option<&'a str>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, crate::error::AppError>> + Send + 'a>,
+    >;
+
+    /// [`crate::operations::did_webs::WebsHost::delete`].
+    fn delete_slot<'a>(
+        &'a self,
+        mnemonic: &'a str,
+        domain: Option<&'a str>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), crate::error::AppError>> + Send + 'a>,
+    >;
 }
 
 #[cfg(test)]

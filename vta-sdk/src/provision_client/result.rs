@@ -92,6 +92,14 @@ impl ProvisionResult {
             })
     }
 
+    /// The `keri.cesr` key event stream of the integration DID when it is a
+    /// `did:webs`: its key event log, from which its document derives. The
+    /// VTA has already published it at the DID's host; there is no
+    /// `did.jsonl` for such a DID, and [`Self::webvh_log`] is `None`.
+    pub fn webs_keri_cesr(&self) -> Option<&str> {
+        webs_keri_cesr(&self.payload.config.outputs, self.integration_did()?)
+    }
+
     /// The authorization VC. Opaque JSON; archive for audit or feed to an
     /// `affinidi-vc` verifier if stronger checks are desired.
     pub fn authorization_vc(&self) -> &Value {
@@ -171,10 +179,35 @@ impl ProvisionResultV2 {
             })
     }
 
+    /// The `keri.cesr` key event stream of the integration DID when it is a
+    /// `did:webs` (see [`ProvisionResult::webs_keri_cesr`]).
+    pub fn webs_keri_cesr(&self) -> Option<&str> {
+        webs_keri_cesr(&self.payload.config.outputs, self.integration_did()?)
+    }
+
+    /// The integration's working secrets bundle, led by the key its DID
+    /// document lists for authentication
+    /// ([`DidKeyMaterialV2::secrets_bundle`]): what a host service stores and
+    /// signs its Trust Tasks from. `None` when no integration DID was minted.
+    pub fn integration_secrets_bundle(&self) -> Option<crate::did_secrets::DidSecretsBundle> {
+        Some(
+            self.integration_key()?
+                .secrets_bundle(&self.payload.config.did_document),
+        )
+    }
+
     /// The authorization VC. Opaque JSON.
     pub fn authorization_vc(&self) -> &Value {
         &self.payload.authorization
     }
+}
+
+/// The `keri.cesr` output for `did`, if the bundle carries one.
+fn webs_keri_cesr<'a>(outputs: &'a [TemplateOutput], did: &str) -> Option<&'a str> {
+    outputs.iter().find_map(|out| match out {
+        TemplateOutput::WebsKeriCesr { did: d, keri_cesr } if d == did => Some(keri_cesr.as_str()),
+        _ => None,
+    })
 }
 
 /// As [`response_to_result`], but accepting **either** template-bootstrap

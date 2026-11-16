@@ -76,7 +76,7 @@ pub use exchange::{
     credential_offer, issue_on_request, make_offer, redeem, verify_oid4vci_proof,
     verify_presentation, verify_vp_token, verify_vp_token_with_anchors,
 };
-pub use signer::LocalSigner;
+pub use signer::{DerivationRoot, LocalSigner};
 pub use statement::{StatementParams, build_statement};
 pub use vac::{RoleVacParams, build_role_vac};
 pub use vmc::{CredentialStatusRef, VmcParams, build_vmc};

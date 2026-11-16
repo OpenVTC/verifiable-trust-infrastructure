@@ -36,7 +36,7 @@ mod tests;
 mod verify;
 
 // Re-export the full public surface so every existing `exchange::*` path
-// (credentials/mod.rs, join::retention, routes::recognise, tests) is unchanged.
+// (credentials/mod.rs, join::retention, recognition::recognise, tests) is unchanged.
 pub use issue::{ProvenHolderProof, credential_offer, issue_on_request, verify_oid4vci_proof};
 pub use pending::{DEFAULT_OFFER_TTL, make_offer, redeem, sweep_expired_pending, withdraw_offer};
 pub use verify::{

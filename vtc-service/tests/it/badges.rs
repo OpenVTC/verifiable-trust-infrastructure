@@ -24,6 +24,33 @@ use crate::common::second_party::{GatedAdmin, step_up_request};
 use crate::common::signed::{call, seed_role};
 use vti_specs::vtc::badges as b;
 
+const SHARE_ERR_BADGES_OFF: &str = b::awards::share::v0_1::error_codes::BADGES_OFF.code;
+const SHARE_ERR_NOT_FOUND: &str = b::awards::share::v0_1::error_codes::NOT_FOUND.code;
+const SHARE_ERR_NOT_SHAREABLE: &str = b::awards::share::v0_1::error_codes::NOT_SHAREABLE.code;
+const SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE: &str =
+    b::awards::share::v0_1::error_codes::PUBLIC_LOCATION_UNAVAILABLE.code;
+const UNSHARE_ERR_BADGES_OFF: &str = b::awards::unshare::v0_1::error_codes::BADGES_OFF.code;
+const UNSHARE_ERR_NOT_FOUND: &str = b::awards::unshare::v0_1::error_codes::NOT_FOUND.code;
+const CLAIMS_CREATE_ERR_BADGES_OFF: &str = b::claims::create::v0_1::error_codes::BADGES_OFF.code;
+const CLAIMS_CREATE_ERR_NOT_FOUND: &str = b::claims::create::v0_1::error_codes::NOT_FOUND.code;
+const CLAIMS_CREATE_ERR_NOT_CLAIMABLE: &str =
+    b::claims::create::v0_1::error_codes::NOT_CLAIMABLE.code;
+const CLAIMS_CREATE_ERR_SETTINGS_INVALID: &str =
+    b::claims::create::v0_1::error_codes::SETTINGS_INVALID.code;
+const CLAIMS_LIST_ERR_NOT_FOUND: &str = b::claims::list::v0_1::error_codes::NOT_FOUND.code;
+const CLAIMS_LIST_ERR_CURSOR_INVALID: &str =
+    b::claims::list::v0_1::error_codes::CURSOR_INVALID.code;
+const CLAIMS_WITHDRAW_ERR_BADGES_OFF: &str =
+    b::claims::withdraw::v0_1::error_codes::BADGES_OFF.code;
+const CLAIMS_WITHDRAW_ERR_NOT_FOUND: &str = b::claims::withdraw::v0_1::error_codes::NOT_FOUND.code;
+const REDEEM_ERR_BADGES_OFF: &str = b::claims::redeem::v0_1::error_codes::BADGES_OFF.code;
+const REDEEM_ERR_CODE_INVALID: &str = b::claims::redeem::v0_1::error_codes::CODE_INVALID.code;
+const REDEEM_ERR_ALREADY_CLAIMED: &str = b::claims::redeem::v0_1::error_codes::ALREADY_CLAIMED.code;
+const REDEEM_ERR_ALREADY_HELD: &str = b::claims::redeem::v0_1::error_codes::ALREADY_HELD.code;
+const REDEEM_ERR_KEY_HOLDER_UNAVAILABLE: &str =
+    b::claims::redeem::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE.code;
+const REDEEM_ERR_KEY_HOLDER_REFUSED: &str =
+    b::claims::redeem::v0_1::error_codes::KEY_HOLDER_REFUSED.code;
 const MINT: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.2";
 const SIGN_DOCUMENT: &str = "https://trusttasks.org/spec/keys/sign-document/0.1";
 const WEBVH_SERVERS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/servers/list/1.0";
@@ -594,19 +621,33 @@ async fn an_award_is_an_offer_until_accepted_then_the_group_issues_the_credentia
     assert!(doc["payload"]["award"]["credentialId"].is_string());
     assert_eq!(doc["payload"]["badge"]["count"], 1);
     assert_eq!(doc["payload"]["badge"]["hidden"], false);
-    // The community's endorsement is signed first, once; then the credential as the group.
+    // One signature, as the community: it is the credential's issuer (VTI-BDG-060).
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
-    assert_eq!(signed.len(), signed_before + 2);
-    assert_eq!(
-        signed[signed_before]["document"]["type"][1],
-        "EndorsementCredential"
+    assert_eq!(signed.len(), signed_before + 1);
+    let group_did = created["group"]["groupDid"].as_str().unwrap();
+    assert!(
+        !signed[signed_before]["keyId"]
+            .as_str()
+            .unwrap()
+            .starts_with(group_did),
+        "signed as the community, not the group"
     );
-    let vc = &signed[signed_before + 1]["document"];
+    let vc = &signed[signed_before]["document"];
     assert_eq!(
         vc["type"],
         json!(["VerifiableCredential", "OpenBadgeCredential"])
     );
-    assert_eq!(vc["issuer"]["id"], created["group"]["groupDid"]);
+    assert_eq!(vc["issuer"]["id"], TEST_VTC_DID);
+    assert_eq!(vc["issuer"]["type"], json!(["Profile"]));
+    assert_eq!(
+        vc["credentialSchema"][0]["type"],
+        "1EdTechJsonSchemaValidator2019"
+    );
+    assert!(
+        vc["credentialSubject"]["achievement"]
+            .get("endorsement")
+            .is_none()
+    );
     assert_eq!(vc["credentialSubject"]["id"], fix.member.did);
     assert_eq!(
         vc["credentialSubject"]["achievement"]["creator"]["id"],
@@ -645,6 +686,14 @@ async fn an_award_is_an_offer_until_accepted_then_the_group_issues_the_credentia
     assert_eq!(status, StatusCode::OK, "{doc}");
     assert_eq!(doc["payload"]["total"], 1);
     assert_eq!(doc["payload"]["items"][0]["entryId"], fix.member_entry);
+    // Each holder comes with their fields as the directory projects them for the caller,
+    // so a page names them without a second read.
+    assert!(
+        doc["payload"]["items"][0]["fields"]
+            .as_object()
+            .is_some_and(|f| !f.is_empty()),
+        "the holder's projected fields: {doc}"
+    );
 
     // A repeat award appends evidence and re-issues.
     let again = fix.offer(&badge_id, &fix.member_entry).await;
@@ -1018,31 +1067,22 @@ async fn a_badge_shown_outside_carries_a_status_in_the_communitys_list_and_is_re
     let (_, doc) = fix.as_member("show", json!({ "badgeId": badge_id })).await;
     assert_eq!(doc["payload"]["credentialRegime"], "outside", "{doc}");
 
-    // Accepting signs twice: the community's endorsement of the Achievement, kept on the
-    // badge (VTI-BDG-060), then the group's credential embedding it, with a status slot in
-    // the community's revocation list (VTI-BDG-062).
+    // Accepting signs once, as the community, the credential it issues (VTI-BDG-060), with a
+    // status slot in the community's revocation list (VTI-BDG-062).
     let signed_before = fix.vta.calls_of(SIGN_DOCUMENT).len();
     let first = fix.hold(&badge_id).await;
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
-    assert_eq!(signed.len(), signed_before + 2);
-    let endorsement = &signed[signed_before];
-    assert_eq!(
-        endorsement["document"]["type"],
-        json!(["VerifiableCredential", "EndorsementCredential"])
-    );
-    assert_eq!(endorsement["document"]["issuer"]["id"], TEST_VTC_DID);
+    assert_eq!(signed.len(), signed_before + 1);
     assert_ne!(
-        endorsement["keyId"],
+        signed[signed_before]["keyId"],
         json!(format!("{group_did}#key-1")),
         "signed as the community, not the group"
     );
-    let vc = &signed[signed_before + 1]["document"];
-    assert_eq!(vc["issuer"]["id"], group_did);
-    let embedded = &vc["credentialSubject"]["achievement"]["endorsement"][0];
-    assert_eq!(embedded["type"], endorsement["document"]["type"]);
-    assert!(
-        embedded["proof"].is_object(),
-        "the endorsement rides signed: {vc}"
+    let vc = &signed[signed_before]["document"];
+    assert_eq!(vc["issuer"]["id"], TEST_VTC_DID);
+    assert_eq!(
+        vc["credentialSubject"]["achievement"]["creator"],
+        vc["issuer"]
     );
     assert_eq!(vc["credentialStatus"]["type"], "BitstringStatusListEntry");
     assert_eq!(vc["credentialStatus"]["statusPurpose"], "revocation");
@@ -1057,15 +1097,14 @@ async fn a_badge_shown_outside_carries_a_status_in_the_communitys_list_and_is_re
     );
     assert!(!revocation_list(&fix).await.is_set(slot));
 
-    // A repeat award re-issues in the same slot, with the endorsement already held: one
-    // signature, as the group.
+    // A repeat award re-issues in the same slot: one signature, as the community.
     let second = fix.offer(&badge_id, &fix.member_entry).await;
     let (status, doc) = fix
         .as_member("mine/accept", json!({ "awardId": second }))
         .await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
-    assert_eq!(signed.len(), signed_before + 3);
+    assert_eq!(signed.len(), signed_before + 2);
     assert_eq!(slot_of(&signed.last().unwrap()["document"]), slot);
 
     // Taking one award back re-issues, the bit still clear; taking the last back flips it
@@ -1132,7 +1171,7 @@ async fn a_badge_shown_outside_carries_a_status_in_the_communitys_list_and_is_re
     let signed = fix.vta.calls_of(SIGN_DOCUMENT);
     let vc = &signed.last().unwrap()["document"];
     assert!(vc.get("credentialStatus").is_none(), "{vc}");
-    assert!(vc["credentialSubject"]["achievement"]["endorsement"][0]["proof"].is_object());
+    assert_eq!(vc["issuer"]["id"], TEST_VTC_DID);
 }
 
 #[tokio::test]
@@ -1914,4 +1953,1177 @@ async fn the_public_artefacts_of_a_badge_shown_outside_are_served_and_an_inside_
             .starts_with("urn:sha256:"),
         "{vc}"
     );
+}
+
+/// The path of a public location under the test community's origin.
+fn path_of(url: &str) -> String {
+    url.strip_prefix("https://vtc.example.com")
+        .expect("under the public origin")
+        .to_string()
+}
+
+async fn get_public(
+    fix: &Fixture,
+    path: &str,
+    accept: Option<&str>,
+) -> (StatusCode, String, Vec<u8>) {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let mut req = axum::http::Request::get(path);
+    if let Some(a) = accept {
+        req = req.header(axum::http::header::ACCEPT, a);
+    }
+    let res = fix
+        .vtc
+        .router
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    let media = res
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+    (status, media, bytes)
+}
+
+/// VTI-BDG-070 / 071: a holder shares an accepted award of a badge shown outside; the
+/// community serves the credential exactly as issued, a page verifying it and the picture
+/// with it baked in, at unguessable locations that answer nothing once the share stops,
+/// the award is taken back or the badge retired.
+#[tokio::test]
+async fn a_holder_shares_an_award_outside_and_the_locations_stop_with_the_share() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let award = fix.hold(&badge_id).await;
+    let issued = fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"].clone();
+
+    let (status, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let shared = doc["payload"]["award"]["shared"].clone();
+    let verification = shared["verificationUrl"].as_str().unwrap().to_string();
+    let baked = shared["bakedImageUrl"].as_str().unwrap().to_string();
+    assert!(shared["since"].is_string(), "{doc}");
+    assert!(
+        !verification.contains(&award) && !verification.contains(&badge_id),
+        "the location is derived from nothing: {verification}"
+    );
+    assert!(verification.starts_with("https://vtc.example.com/badges/shared/"));
+    assert_eq!(baked, format!("{verification}/image.png"));
+    assert!(doc["payload"]["award"].get("token").is_none());
+
+    // `show` answers the holder their own awards, the share with them; another member none.
+    let (_, doc) = fix.as_member("show", json!({ "badgeId": badge_id })).await;
+    let mine = doc["payload"]["myAwards"].as_array().expect("myAwards");
+    assert_eq!(mine.len(), 1, "{doc}");
+    assert_eq!(mine[0]["awardId"], award.as_str());
+    assert_eq!(mine[0]["shared"]["verificationUrl"], verification);
+    let (other, _) = fix.another_member().await;
+    let (_, doc) = fix
+        .as_party(&other, "show", json!({ "badgeId": badge_id }))
+        .await;
+    assert!(doc["payload"].get("myAwards").is_none(), "{doc}");
+
+    // A share already in force answers its own locations.
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    assert_eq!(
+        doc["payload"]["award"]["shared"]["verificationUrl"],
+        verification
+    );
+
+    // A verifier gets the credential exactly as issued.
+    let (status, media, bytes) = get_public(&fix, &path_of(&verification), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(media.starts_with("application/vc+ld+json"), "{media}");
+    let served: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(served["id"], issued["id"]);
+    assert_eq!(served["credentialStatus"], issued["credentialStatus"]);
+    // A person gets a page verifying it, naming no other holder (VTI-BDG-071).
+    let (status, media, bytes) = get_public(&fix, &path_of(&verification), Some("text/html")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(media.starts_with("text/html"), "{media}");
+    let html = String::from_utf8(bytes).unwrap();
+    assert!(html.contains("Workshop host"), "{html}");
+    assert!(html.contains("Verified"), "{html}");
+    // The picture with the credential baked in.
+    let (status, media, bytes) = get_public(&fix, &path_of(&baked), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(media, "image/png");
+    let reader = png::Decoder::new(std::io::Cursor::new(&bytes))
+        .read_info()
+        .unwrap();
+    let chunk = reader
+        .info()
+        .utf8_text
+        .iter()
+        .find(|c| c.keyword == "openbadgecredential")
+        .expect("baked");
+    let baked_vc: Value = serde_json::from_str(&chunk.get_text().unwrap()).unwrap();
+    assert_eq!(baked_vc["id"], issued["id"]);
+
+    // Stopping: the locations answer as ones that never existed; sharing again answers
+    // new ones.
+    let (status, doc) = fix
+        .as_member("awards/unshare", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(doc["payload"]["award"].get("shared").is_none(), "{doc}");
+    let (status, _, _) = get_public(&fix, &path_of(&verification), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = get_public(&fix, &path_of(&baked), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, doc) = fix
+        .as_member("awards/unshare", json!({ "awardId": award }))
+        .await;
+    assert!(
+        doc["payload"]["award"].get("shared").is_none(),
+        "idempotent: {doc}"
+    );
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    let again = doc["payload"]["award"]["shared"]["verificationUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(again, verification);
+    let (status, _, _) = get_public(&fix, &path_of(&again), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Taken back: the share ends with it.
+    let (status, doc) = fix
+        .as_admin("awards/revoke", json!({ "awardId": award, "reason": "x" }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert!(doc["payload"]["award"].get("shared").is_none(), "{doc}");
+    let (status, _, _) = get_public(&fix, &path_of(&again), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Retired: every share of the badge ends.
+    let award = fix.hold(&badge_id).await;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    let last = doc["payload"]["award"]["shared"]["verificationUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let chair = GatedAdmin::new(&fix.vtc).await;
+    let (status, doc) = chair
+        .call(
+            &fix.vtc,
+            &task("retire"),
+            json!({ "badgeId": badge_id, "reason": "season over" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (status, _, _) = get_public(&fix, &path_of(&last), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &award)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(a.shared.is_none());
+}
+
+/// A holder whose credential was issued before the community kept one to serve is issued
+/// it again when they first share.
+#[tokio::test]
+async fn sharing_an_award_whose_credential_was_not_kept_issues_it_again() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (_, doc) = fix.as_admin("create", body).await;
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let award = fix.hold(&badge_id).await;
+    fix.vtc
+        .state
+        .badges_ks
+        .remove(format!("bcred:{badge_id}:{}", fix.member_entry).into_bytes())
+        .await
+        .unwrap();
+    let signed_before = fix.vta.calls_of(SIGN_DOCUMENT).len();
+    let (status, doc) = fix
+        .as_member("awards/share", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(fix.vta.calls_of(SIGN_DOCUMENT).len(), signed_before + 1);
+    let issued = fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"].clone();
+    let url = doc["payload"]["award"]["shared"]["verificationUrl"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _, bytes) = get_public(&fix, &path_of(&url), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let served: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(served["id"], issued["id"]);
+    assert_eq!(doc["payload"]["award"]["credentialId"], issued["id"]);
+}
+
+#[tokio::test]
+async fn share_and_unshare_refuse_what_their_specifications_declare() {
+    let fix = fixture().await;
+    // An award kept inside the community.
+    let inside = fix.community_badge("Inside", false).await["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let inside_award = fix.hold(&inside).await;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": inside_award }))
+        .await;
+    assert_eq!(tt_error_code(&doc), SHARE_ERR_NOT_SHAREABLE, "{doc}");
+    assert_eq!(doc["payload"]["details"]["reason"], "insideOnly", "{doc}");
+
+    // A kudos badge.
+    let (giver, _) = fix.another_member().await;
+    let kudos = fix.kudos_badge(&giver, "Clamp whisperer").await;
+    let (_, doc) = fix
+        .as_party(
+            &giver,
+            "kudos/give",
+            json!({ "badgeId": kudos, "to": fix.member_entry }),
+        )
+        .await;
+    let kudos_award = doc["payload"]["award"]["awardId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, doc) = fix
+        .as_member("mine/accept", json!({ "awardId": kudos_award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": kudos_award }))
+        .await;
+    assert_eq!(tt_error_code(&doc), SHARE_ERR_NOT_SHAREABLE, "{doc}");
+    assert_eq!(doc["payload"]["details"]["reason"], "kudos", "{doc}");
+
+    // Another member's award, an open offer and an unknown one answer alike.
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Outside", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (_, doc) = fix.as_admin("create", body).await;
+    let outside = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let held = fix.hold(&outside).await;
+    let open = fix.offer(&outside, &fix.member_entry).await;
+    for id in [held.as_str(), open.as_str(), "awd_NoSuchAward000000"] {
+        let who = if id == held { &giver } else { &fix.member };
+        let (_, doc) = fix
+            .as_party(who, "awards/share", json!({ "awardId": id }))
+            .await;
+        assert_eq!(tt_error_code(&doc), SHARE_ERR_NOT_FOUND, "{id}: {doc}");
+    }
+    let (_, doc) = fix
+        .as_party(&giver, "awards/unshare", json!({ "awardId": held }))
+        .await;
+    assert_eq!(tt_error_code(&doc), UNSHARE_ERR_NOT_FOUND, "{doc}");
+
+    // No public origin: nothing is answered that would not be served.
+    let saved = fix.vtc.state.config.read().await.public_url.clone();
+    fix.vtc.state.config.write().await.public_url = None;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": held }))
+        .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE,
+        "{doc}"
+    );
+    fix.vtc.state.config.write().await.public_url = saved;
+
+    // Badges off.
+    set_settings(&fix, |s| s.enabled = false).await;
+    let (_, doc) = fix
+        .as_member("awards/share", json!({ "awardId": held }))
+        .await;
+    assert_eq!(tt_error_code(&doc), SHARE_ERR_BADGES_OFF, "{doc}");
+    let (_, doc) = fix
+        .as_member("awards/unshare", json!({ "awardId": held }))
+        .await;
+    assert_eq!(tt_error_code(&doc), UNSHARE_ERR_BADGES_OFF, "{doc}");
+}
+
+/// VTI-BDG-080: every active community badge is published to the trust registry as one
+/// the community issues — the community as entity and authority, for the badge's
+/// Achievement, naming the badge by identifier only — and its record goes when the badge
+/// is retired. The projection is the one retry owner and checks itself against what
+/// the registry holds.
+#[tokio::test]
+async fn community_badges_are_published_to_the_registry_as_the_community_s_and_withdrawn_on_retirement()
+ {
+    use vtc_service::badges::registry::{ACTION, KIND, reconcile, verify};
+    use vtc_service::registry::{MockRegistryClient, RegistryError};
+    let fix = fixture().await;
+    let registry = MockRegistryClient::new();
+    let state = &fix.vtc.state;
+
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    let (_, doc) = fix.as_admin("create", body).await;
+    let outside = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let created = fix.community_badge("Inside", false).await;
+    let inside = created["badge"]["badgeId"].as_str().unwrap().to_string();
+    let _kudos = fix.kudos_badge(&fix.member, "Clamp whisperer").await;
+
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted, r.failed), (2, 0, 0));
+    let records = registry.trust_records().await;
+    assert_eq!(records.len(), 2, "community badges only: {records:?}");
+    let key = format!("{TEST_VTC_DID}|{ACTION}|https://vtc.example.com/badges/{outside}");
+    let rec = records
+        .get(&key)
+        .expect("the outside badge, as the community's");
+    assert_eq!(rec["entity_id"], TEST_VTC_DID);
+    assert_eq!(rec["authority_id"], TEST_VTC_DID);
+    assert_eq!(rec["authorized"], true);
+    assert_eq!(rec["context"], json!({ "kind": KIND, "badgeId": outside }));
+    assert!(
+        !serde_json::to_string(&records).unwrap().contains("Inside"),
+        "a badge's name is never published"
+    );
+    // Nothing changed: nothing is written again.
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted), (0, 0));
+
+    // Retiring the badge removes its record.
+    let chair = GatedAdmin::new(&fix.vtc).await;
+    let (status, doc) = chair
+        .call(
+            &fix.vtc,
+            &task("retire"),
+            json!({ "badgeId": inside, "reason": "season over" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted), (0, 1));
+    assert_eq!(registry.trust_records().await.len(), 1);
+
+    // A refused write is retried on the next pass.
+    let sha = fix.upload(&fix.admin).await;
+    fix.as_admin("create", fix.community_body("Mentor", &sha, true))
+        .await;
+    registry
+        .fail_next_trust_record(RegistryError::Transient("down".into()))
+        .await;
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.failed), (0, 1));
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.failed), (1, 0));
+    assert_eq!(registry.trust_records().await.len(), 2);
+
+    // Verify: a record the registry lost is published again; a stray badge record it holds
+    // is deleted; another `issue` record of the community's is never touched.
+    registry.forget_trust_record(&key).await;
+    registry
+        .plant_trust_record(json!({
+            "entity_id": "did:example:stray", "authority_id": TEST_VTC_DID, "action": ACTION,
+            "resource": "https://vtc.example.com/badges/bdg_Gone0000000000000000",
+            "context": { "kind": KIND, "badgeId": "bdg_Gone0000000000000000" },
+        }))
+        .await;
+    registry
+        .plant_trust_record(json!({
+            "entity_id": "did:example:other", "authority_id": TEST_VTC_DID, "action": ACTION,
+            "resource": "something-else", "context": {},
+        }))
+        .await;
+    assert!(verify(state, &registry).await.unwrap());
+    let r = reconcile(state, &registry, TEST_VTC_DID).await.unwrap();
+    assert_eq!((r.put, r.deleted, r.failed), (1, 1, 0));
+    let records = registry.trust_records().await;
+    assert!(records.contains_key(&key));
+    assert!(records.keys().any(|k| k.starts_with("did:example:other|")));
+    assert!(!records.keys().any(|k| k.starts_with("did:example:stray|")));
+}
+
+fn group_task(name: &str) -> String {
+    let version = match name {
+        "requests/list" | "members/list" | "list" => "0.2",
+        _ => "0.1",
+    };
+    format!("https://trusttasks.org/spec/vtc/groups/{name}/{version}")
+}
+
+/// The badges the member holds, by badge, with each one's count (`mine/list`).
+async fn holding(fix: &Fixture, badge_id: &str) -> u64 {
+    let (_, doc) = fix.as_member("mine/list", json!({})).await;
+    doc["payload"]["badges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["badge"]["badgeId"] == badge_id)
+        .map_or(0, |b| b["count"].as_u64().unwrap())
+}
+
+/// VTI-BDG-014 / 024: an approved request for a badge is the requester's consent — they
+/// hold the badge, by an award recorded with the credential as its evidence. VTI-BDG-020:
+/// an owner never gives a badge by adding the member to its group. Leaving the group
+/// declines the badge; an owner's removal takes it back; both end the holding and revoke
+/// the credential's status (VTI-BDG-013, 023, 063).
+#[tokio::test]
+async fn a_badge_groups_own_paths_give_and_end_the_badge_as_its_awards_do() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["shareableOutside"] = json!(true);
+    body["requestable"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // An owner adding the member to the group gives nothing.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("members/add"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+
+    // Asking, approved: the member holds it, with the award as the credential's evidence.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("join"),
+        json!({ "groupId": group_id, "message": "I ran one." }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let request_id = doc["payload"]["request"]["requestId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("requests/decide"),
+        json!({ "requestId": request_id, "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+    let awards =
+        vtc_service::badges::accepted_of(&fix.vtc.state.badges_ks, &badge_id, &fix.member_entry)
+            .await
+            .unwrap();
+    assert_eq!(awards.len(), 1);
+    let vc = fix.vta.calls_of(SIGN_DOCUMENT).last().unwrap()["document"].clone();
+    assert_eq!(awards[0].credential_id.as_deref(), vc["id"].as_str());
+    assert_eq!(
+        vc["credentialSubject"]["achievement"]["id"],
+        format!("https://vtc.example.com/badges/{badge_id}")
+    );
+    let slot = slot_of(&vc);
+    assert!(!revocation_list(&fix).await.is_set(slot));
+
+    // Leaving the group declines the badge and revokes the credential.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("leave"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &awards[0].award_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.state, vtc_service::badges::AwardState::Declined);
+    assert!(revocation_list(&fix).await.is_set(slot));
+
+    // Given again and accepted, then removed by an owner: taken back.
+    let award = fix.hold(&badge_id).await;
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("members/remove"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &award)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.state, vtc_service::badges::AwardState::Revoked);
+}
+
+/// VTI-BDG-012: a badge group is the badge's. `vtc/groups/update` and `vtc/groups/delete`
+/// refuse it, whoever signs: it changes with `vtc/badges/update` and goes with
+/// `vtc/badges/retire`. VTI-BDG-095: its owners' acts through `vtc/groups/*` take their own
+/// key, never the portal's delegated sign-in key.
+#[tokio::test]
+async fn a_badge_group_is_changed_only_through_its_badge_and_by_its_owners_own_key() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["requestable"] = json!(true);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let stored = |fix: &Fixture| {
+        let ks = fix.vtc.state.directory.ks().clone();
+        let group_id = group_id.clone();
+        async move { vtc_service::groups::get(&ks, &group_id).await.unwrap() }
+    };
+
+    // Re-opening the badge's group is refused: who may ask for a badge is the badge's.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("update"),
+        json!({ "groupId": group_id, "joinPolicy": "open" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert_eq!(
+        stored(&fix).await.unwrap().join_policy,
+        vtc_service::groups::JoinPolicy::Request
+    );
+
+    // Deleting it is refused: the badge is retired, never orphaned.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("delete"),
+        json!({ "groupId": group_id, "reason": "tidying up" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert!(stored(&fix).await.is_some());
+
+    // A member asks for the badge.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("join"),
+        json!({ "groupId": group_id, "message": "I ran one." }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let request_id = doc["payload"]["request"]["requestId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Arm the portal's sign-in key `K_b` for the owner's live session, scoped to groups.
+    let k_b = Party::new();
+    let now = vti_common::auth::session::now_epoch();
+    let session: vti_common::auth::session::Session = serde_json::from_value(json!({
+        "session_id": "sess-badge-group-portal",
+        "did": fix.admin.did,
+        "challenge": "c",
+        "state": "Authenticated",
+        "created_at": now,
+        "refresh_token": null,
+        "refresh_expires_at": now + 3600,
+        "not_after": now + 3600,
+        "session_pubkey_b58btc": k_b.did.strip_prefix("did:key:").unwrap(),
+    }))
+    .unwrap();
+    vti_common::auth::session::store_session(&fix.vtc.state.member_sessions_ks, &session)
+        .await
+        .unwrap();
+    vtc_service::member_portal::delegation::record(
+        &fix.vtc.state.member_sessions_ks,
+        &k_b.did,
+        &vtc_service::member_portal::delegation::Delegation {
+            member_did: fix.admin.did.clone(),
+            session_id: "sess-badge-group-portal".into(),
+            scope: vec!["vtc/groups".into()],
+            not_after: now + 3600,
+            grant_id: Some("urn:uuid:badge-group-portal-grant".into()),
+        },
+    )
+    .await
+    .unwrap();
+
+    // The portal's key decides nothing, appoints no owner and removes nobody.
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("requests/decide"),
+        json!({ "requestId": request_id, "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("managers/add"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("managers/remove"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    let (_, doc) = call(
+        &fix.vtc,
+        &k_b,
+        &group_task("members/remove"),
+        json!({ "groupId": group_id, "entryId": fix.member_entry }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+
+    // The owner's own key decides it.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.admin,
+        &group_task("requests/decide"),
+        json!({ "requestId": request_id, "decision": "approve" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+}
+
+/// VTI-BDG-012: a badge's owner — a member managing its group under a grant qualified to
+/// that group, not every group — is refused `vtc/groups/update` and `vtc/groups/delete` on
+/// it, as the group's other managers are.
+#[tokio::test]
+async fn a_badge_owner_who_manages_only_its_group_is_refused_update_and_delete() {
+    let fix = fixture().await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Workshop host", &sha, true);
+    body["owners"] = json!([fix.member_entry]);
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        doc["payload"]["group"]["managers"],
+        json!([fix.member_entry]),
+        "the member is the badge group's one manager: {doc}"
+    );
+
+    // The owner manages this group, so the refusal is the badge's, not a manager check's.
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("update"),
+        json!({ "groupId": group_id, "joinPolicy": "open" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert!(
+        doc["payload"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("backs a badge")),
+        "{doc}"
+    );
+    let (_, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("delete"),
+        json!({ "groupId": group_id, "reason": "tidying up" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+    assert!(
+        doc["payload"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("backs a badge")),
+        "{doc}"
+    );
+    let stored = vtc_service::groups::get(fix.vtc.state.directory.ks(), &group_id)
+        .await
+        .unwrap()
+        .expect("the badge group is still there");
+    assert_eq!(stored.join_policy, vtc_service::groups::JoinPolicy::Request);
+}
+
+/// VTI-BDG-013: an automatic badge is held by whoever its rule admits, each holding an
+/// award the rule made; opting out of its group declines it.
+#[tokio::test]
+async fn an_automatic_badge_is_held_by_its_rule_and_declined_by_opting_out() {
+    let fix = fixture().await;
+    set_settings(&fix, |s| s.automatic_badges = true).await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Member", &sha, false);
+    body["requestable"] = json!(false);
+    body["automatic"] =
+        json!({ "rule": { "all": [{ "fact": "role", "op": "equals", "value": "member" }] } });
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group_id = doc["payload"]["badge"]["groupId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group = vtc_service::groups::get(fix.vtc.state.directory.ks(), &group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+    let awards =
+        vtc_service::badges::accepted_of(&fix.vtc.state.badges_ks, &badge_id, &fix.member_entry)
+            .await
+            .unwrap();
+    assert_eq!(awards.len(), 1);
+    assert!(awards[0].given_by.is_none(), "an award the rule made");
+    // A second pass gives nothing more.
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding(&fix, &badge_id).await, 1);
+
+    // Opting out is declining the badge.
+    let (status, doc) = call(
+        &fix.vtc,
+        &fix.member,
+        &group_task("leave"),
+        json!({ "groupId": group_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(holding(&fix, &badge_id).await, 0);
+    let a = vtc_service::badges::get_award(&fix.vtc.state.badges_ks, &awards[0].award_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(a.state, vtc_service::badges::AwardState::Declined);
+}
+
+fn soon(hours: i64) -> String {
+    (Utc::now() + chrono::Duration::hours(hours)).to_rfc3339()
+}
+
+async fn holding_of(fix: &Fixture, who: &Party, badge_id: &str) -> u64 {
+    let (_, doc) = fix.as_party(who, "mine/list", json!({})).await;
+    doc["payload"]["badges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["badge"]["badgeId"] == badge_id)
+        .map_or(0, |b| b["count"].as_u64().unwrap())
+}
+
+/// VTI-BDG-025 – 027: an owner issues a claim code, answered once and kept only as a
+/// digest; members who redeem it hold the badge — the redemption their consent, the giver
+/// the issuer — within its limit; nobody claims it twice; withdrawn or retired, it admits
+/// no one, and the claims made stand.
+#[tokio::test]
+async fn a_claim_code_admits_the_members_who_redeem_it_within_its_limit_and_time() {
+    let fix = fixture().await;
+    let created = fix.community_badge("Workshop host", true).await;
+    let badge_id = created["badge"]["badgeId"].as_str().unwrap().to_string();
+    let (status, doc) = fix
+        .as_admin(
+            "claims/create",
+            json!({ "badgeId": badge_id, "label": "Saturday workshop", "validUntil": soon(4), "limit": 2 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let code = doc["payload"]["code"].as_str().unwrap().to_string();
+    let claim_id = doc["payload"]["claim"]["claimId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(code.len() >= 22);
+    assert_eq!(doc["payload"]["claim"]["claims"], 0);
+
+    // Redeemed: held, with the issuer as the giver.
+    let (status, doc) = fix
+        .as_member("claims/redeem", json!({ "code": code }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["award"]["state"], "accepted");
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 1);
+    let (_, doc) = fix
+        .as_member("claims/redeem", json!({ "code": code }))
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_ALREADY_CLAIMED, "{doc}");
+
+    // A second member uses the last claim; a third finds it spent.
+    let (second, _) = fix.another_member().await;
+    let (status, doc) = fix
+        .as_party(&second, "claims/redeem", json!({ "code": code }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (third, _) = fix.another_member().await;
+    let (_, doc) = fix
+        .as_party(&third, "claims/redeem", json!({ "code": code }))
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_CODE_INVALID, "{doc}");
+
+    // The owners' list: counted, never the code.
+    let (status, doc) = fix
+        .as_admin("claims/list", json!({ "badgeId": badge_id }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["items"][0]["claims"], 2);
+    assert!(
+        !doc.to_string().contains(&code),
+        "the list never carries a code"
+    );
+
+    // A fresh code, withdrawn: refused as an unknown one is; claims made stand.
+    let (_, doc) = fix
+        .as_admin(
+            "claims/create",
+            json!({ "badgeId": badge_id, "label": "Sunday", "validUntil": soon(4), "limit": 5 }),
+        )
+        .await;
+    let code2 = doc["payload"]["code"].as_str().unwrap().to_string();
+    let claim2 = doc["payload"]["claim"]["claimId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, doc) = fix
+        .as_admin("claims/withdraw", json!({ "claimId": claim2 }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["payload"]["claim"]["state"], "withdrawn");
+    let (_, doc) = fix
+        .as_party(&third, "claims/redeem", json!({ "code": code2 }))
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_CODE_INVALID, "{doc}");
+    let (_, doc) = fix
+        .as_party(
+            &third,
+            "claims/redeem",
+            json!({ "code": "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_CODE_INVALID, "{doc}");
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 1);
+
+    // Retiring the badge withdraws its codes.
+    let (_, doc) = fix
+        .as_admin(
+            "claims/create",
+            json!({ "badgeId": badge_id, "label": "Monday", "validUntil": soon(4), "limit": 5 }),
+        )
+        .await;
+    let code3 = doc["payload"]["code"].as_str().unwrap().to_string();
+    let chair = GatedAdmin::new(&fix.vtc).await;
+    let (status, doc) = chair
+        .call(
+            &fix.vtc,
+            &task("retire"),
+            json!({ "badgeId": badge_id, "reason": "season over" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let (_, doc) = fix
+        .as_party(&third, "claims/redeem", json!({ "code": code3 }))
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_CODE_INVALID, "{doc}");
+    let rec = vtc_service::badges::claims::get(&fix.vtc.state.badges_ks, &claim_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rec.withdrawn);
+}
+
+#[tokio::test]
+async fn the_claim_tasks_refuse_what_their_specifications_declare() {
+    let fix = fixture().await;
+    let created = fix.community_badge("Once", false).await;
+    let badge_id = created["badge"]["badgeId"].as_str().unwrap().to_string();
+    let create = |badge: &str, until: String| json!({ "badgeId": badge, "label": "x", "validUntil": until, "limit": 3 });
+    // create
+    let (_, doc) = fix
+        .as_admin(
+            "claims/create",
+            create("bdg_NoSuchBadge0000000000", soon(1)),
+        )
+        .await;
+    assert_eq!(tt_error_code(&doc), CLAIMS_CREATE_ERR_NOT_FOUND, "{doc}");
+    let (_, doc) = fix
+        .as_admin("claims/create", create(&badge_id, soon(-1)))
+        .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        CLAIMS_CREATE_ERR_SETTINGS_INVALID,
+        "{doc}"
+    );
+    let (_, doc) = fix
+        .as_admin("claims/create", create(&badge_id, soon(24 * 120)))
+        .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        CLAIMS_CREATE_ERR_SETTINGS_INVALID,
+        "{doc}"
+    );
+    let kudos = fix.kudos_badge(&fix.member, "Clamp whisperer").await;
+    let (_, doc) = fix.as_admin("claims/create", create(&kudos, soon(1))).await;
+    assert_eq!(
+        tt_error_code(&doc),
+        CLAIMS_CREATE_ERR_NOT_CLAIMABLE,
+        "{doc}"
+    );
+    assert_eq!(doc["payload"]["details"]["reason"], "kudos", "{doc}");
+    // A member who owns nothing creates nothing.
+    let (_, doc) = fix
+        .as_member("claims/create", create(&badge_id, soon(1)))
+        .await;
+    assert_eq!(tt_error_code(&doc), CLAIMS_CREATE_ERR_NOT_FOUND, "{doc}");
+
+    let (_, doc) = fix
+        .as_admin("claims/create", create(&badge_id, soon(1)))
+        .await;
+    let code = doc["payload"]["code"].as_str().unwrap().to_string();
+
+    // list
+    let (_, doc) = fix
+        .as_member("claims/list", json!({ "badgeId": badge_id }))
+        .await;
+    assert_eq!(tt_error_code(&doc), CLAIMS_LIST_ERR_NOT_FOUND, "{doc}");
+    let (_, doc) = fix
+        .as_admin(
+            "claims/list",
+            json!({ "badgeId": badge_id, "cursor": "forged" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&doc), CLAIMS_LIST_ERR_CURSOR_INVALID, "{doc}");
+    // withdraw
+    let (_, doc) = fix
+        .as_admin(
+            "claims/withdraw",
+            json!({ "claimId": "bcl_NoSuchClaim000000" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&doc), CLAIMS_WITHDRAW_ERR_NOT_FOUND, "{doc}");
+
+    // redeem: the key holder silent, then refusing — nothing recorded, the claim given back.
+    fix.vta.script(SIGN_DOCUMENT, Script::Silent);
+    let (_, doc) = fix
+        .as_member("claims/redeem", json!({ "code": code }))
+        .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        REDEEM_ERR_KEY_HOLDER_UNAVAILABLE,
+        "{doc}"
+    );
+    fix.vta
+        .script(SIGN_DOCUMENT, Script::Refuse("permissionDenied"));
+    let (_, doc) = fix
+        .as_member("claims/redeem", json!({ "code": code }))
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_KEY_HOLDER_REFUSED, "{doc}");
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 0);
+    let (status, doc) = fix
+        .as_member("claims/redeem", json!({ "code": code }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "the claim was given back: {doc}");
+    // A one-off badge already held.
+    let (_, doc) = fix
+        .as_admin("claims/create", create(&badge_id, soon(1)))
+        .await;
+    let other = doc["payload"]["code"].as_str().unwrap().to_string();
+    let (_, doc) = fix
+        .as_member("claims/redeem", json!({ "code": other }))
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_ALREADY_HELD, "{doc}");
+
+    // Badges off.
+    set_settings(&fix, |s| s.enabled = false).await;
+    let (_, doc) = fix
+        .as_admin("claims/create", create(&badge_id, soon(1)))
+        .await;
+    assert_eq!(tt_error_code(&doc), CLAIMS_CREATE_ERR_BADGES_OFF, "{doc}");
+    let (_, doc) = fix
+        .as_admin(
+            "claims/withdraw",
+            json!({ "claimId": "bcl_NoSuchClaim000000" }),
+        )
+        .await;
+    assert_eq!(tt_error_code(&doc), CLAIMS_WITHDRAW_ERR_BADGES_OFF, "{doc}");
+    let (_, doc) = fix
+        .as_member("claims/redeem", json!({ "code": other }))
+        .await;
+    assert_eq!(tt_error_code(&doc), REDEEM_ERR_BADGES_OFF, "{doc}");
+}
+
+/// VTI-BDG-015: an automatic badge's rule reads counts of the community's own records —
+/// here, accepted kudos — and no other group's rule may.
+#[tokio::test]
+async fn an_automatic_badge_counts_accepted_kudos_and_only_a_badge_may() {
+    let fix = fixture().await;
+    set_settings(&fix, |s| s.automatic_badges = true).await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Well liked", &sha, false);
+    body["requestable"] = json!(false);
+    body["automatic"] = json!({ "rule": { "all": [
+        { "fact": "kudosReceived", "op": "atLeast", "count": 1 }
+    ] } });
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group = vtc_service::groups::get(
+        fix.vtc.state.directory.ks(),
+        doc["payload"]["badge"]["groupId"].as_str().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 0);
+
+    // A kudos accepted: the rule now admits them.
+    let (giver, _) = fix.another_member().await;
+    let kudos = fix.kudos_badge(&giver, "Clamp whisperer").await;
+    let (_, doc) = fix
+        .as_party(
+            &giver,
+            "kudos/give",
+            json!({ "badgeId": kudos, "to": fix.member_entry }),
+        )
+        .await;
+    let award = doc["payload"]["award"]["awardId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, doc) = fix
+        .as_member("mine/accept", json!({ "awardId": award }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 1);
+
+    // A count in a rule is a badge's alone; a threshold goes with `atLeast` only.
+    let rule = json!({ "all": [ { "fact": "kudosReceived", "op": "atLeast", "count": 1 } ] });
+    assert!(vtc_service::groups::check_rule(&rule, &[]).is_err());
+    assert!(vtc_service::groups::check_badge_rule(&rule, &[]).is_ok());
+    let bad = json!({ "all": [ { "fact": "kudosReceived", "op": "exists" } ] });
+    assert!(vtc_service::groups::check_badge_rule(&bad, &[]).is_err());
+    let bad =
+        json!({ "all": [ { "fact": "role", "op": "equals", "value": "member", "count": 2 } ] });
+    assert!(vtc_service::groups::check_badge_rule(&bad, &[]).is_err());
+}
+
+/// A list cursor is tagged under a key only the community holds, for one
+/// caller and one question. One made without the key, edited, or presented
+/// by another caller is refused, and an offset past any list (the largest
+/// `usize`) is refused rather than reaching the slice.
+#[tokio::test]
+async fn a_list_cursor_is_honoured_only_as_the_community_minted_it() {
+    use sha2::{Digest, Sha256};
+
+    let fix = fixture().await;
+    fix.community_badge("A", false).await;
+    fix.community_badge("B", false).await;
+
+    let (status, doc) = fix.as_member("list", json!({ "limit": 1 })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let next = doc["payload"]["nextCursor"]
+        .as_str()
+        .expect("two badges, one per page")
+        .to_string();
+    let (status, page2) = fix
+        .as_member("list", json!({ "limit": 1, "cursor": next }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page2}");
+    assert_ne!(
+        doc["payload"]["items"][0]["badge"]["badgeId"],
+        page2["payload"]["items"][0]["badge"]["badgeId"]
+    );
+
+    // The construction before keys: anyone could compute it, at any offset.
+    let binding = format!("badges/list|{}||false|false|false", fix.member.did);
+    let unkeyed = |offset: usize| {
+        let mut h = Sha256::new();
+        h.update(b"vtc/badges/cursor/v1\0");
+        for part in [binding.as_str(), &offset.to_string()] {
+            h.update((part.len() as u64).to_be_bytes());
+            h.update(part.as_bytes());
+        }
+        format!("{offset}.{}", hex::encode(&h.finalize()[..12]))
+    };
+    let (offset, tag) = next.split_once('.').unwrap();
+    for cursor in [
+        unkeyed(1),
+        unkeyed(usize::MAX),
+        format!("{}.{tag}", usize::MAX),
+        format!("{}.{tag}", offset.parse::<usize>().unwrap() + 1),
+    ] {
+        let (_, doc) = fix
+            .as_member("list", json!({ "limit": 1, "cursor": cursor }))
+            .await;
+        assert_eq!(
+            tt_error_code(&doc),
+            LIST_ERR_CURSOR_INVALID,
+            "{cursor}: {doc}"
+        );
+    }
+
+    // The member's cursor is not the administrator's.
+    let (_, doc) = fix
+        .as_admin("list", json!({ "limit": 1, "cursor": next }))
+        .await;
+    assert_eq!(tt_error_code(&doc), LIST_ERR_CURSOR_INVALID, "{doc}");
 }

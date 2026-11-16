@@ -163,8 +163,8 @@ fn acl_list_decodes_including_its_elements() {
 }
 
 /// The two client-private envelopes around the entry: `AclListPage`, an
-/// `acl/list/0.3` page (`nextCursor` and all), and `AclShowResponse`, the
-/// nullable `{ entry }` of `acl/show/0.2`.
+/// `acl/list/0.4` page (`nextCursor` and all), and `AclShowResponse`, the
+/// nullable `{ entry }` of `acl/show/0.3`.
 #[test]
 fn acl_list_page_and_nullable_entry_decode() {
     // Driven through the public client, since both types are `pub(crate)`:

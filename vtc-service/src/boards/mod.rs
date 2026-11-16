@@ -994,7 +994,7 @@ pub async fn audit_facilitator(
         .write(
             actor,
             None,
-            vti_common::audit::AuditEvent::BoardChanged(vti_common::audit::BoardChangedData {
+            vtc_audit::AuditEvent::BoardChanged(vtc_audit::BoardChangedData {
                 board_id: board_id.to_string(),
                 idea_id: None,
                 note_id: None,

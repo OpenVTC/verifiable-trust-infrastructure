@@ -20,15 +20,26 @@ use vti_trust_task_server::{
 const ME: &str = "did:example:service";
 const PING: &str = "https://trusttasks.org/spec/test/ping/0.1";
 const SIGNED_PING: &str = "https://trusttasks.org/spec/test/signed-ping/0.1";
+/// Answered with a bearer token, so its result is never recorded.
+const TOKEN_PING: &str = "https://trusttasks.org/spec/test/token-ping/0.1";
 
-/// `SIGNED_PING` declares `proof` REQUIRED; `PING` declares nothing.
+/// Declares `proof` OPTIONAL, as a public read's specification does.
+const PUBLIC_PING: &str = "https://trusttasks.org/spec/test/public-ping/0.1";
+
+/// `SIGNED_PING` declares `proof` REQUIRED, `PUBLIC_PING` OPTIONAL; `PING`
+/// declares nothing.
 fn policy(type_uri: &str) -> Option<SpecPolicy> {
-    (type_uri == SIGNED_PING).then_some(SpecPolicy {
+    let declared = |proof| SpecPolicy {
         is_bearer: false,
-        is_proof_required: true,
+        is_proof_required: proof,
         is_recipient_required: true,
         is_issued_at_required: true,
-    })
+    };
+    match type_uri {
+        SIGNED_PING => Some(declared(true)),
+        PUBLIC_PING => Some(declared(false)),
+        _ => None,
+    }
 }
 
 struct Hooks;
@@ -56,13 +67,26 @@ impl Dispatcher for Echo {
     ) -> BoxFuture<'a, vti_trust_task_server::TrustTaskOutcome> {
         Box::pin(async move {
             match type_uri {
-                PING | SIGNED_PING => {
+                PING | SIGNED_PING | PUBLIC_PING => {
                     self.runs.fetch_add(1, Ordering::SeqCst);
                     success_response(&doc, json!({ "signer": ctx.verified_signer }))
                 }
-                other => unsupported_type_or_version(&doc, other, [PING, SIGNED_PING], "node"),
+                TOKEN_PING => {
+                    let n = self.runs.fetch_add(1, Ordering::SeqCst);
+                    success_response(&doc, json!({ "accessToken": format!("token-{n}") }))
+                }
+                other => unsupported_type_or_version(
+                    &doc,
+                    other,
+                    [PING, SIGNED_PING, PUBLIC_PING, TOKEN_PING],
+                    "node",
+                ),
             }
         })
+    }
+
+    fn records_response(&self, type_uri: &str) -> bool {
+        type_uri != TOKEN_PING
     }
 }
 
@@ -247,6 +271,72 @@ async fn a_messaging_document_must_be_signed_by_its_sender() {
     let (status, answer) = f.send(&ArrivalCtx::didcomm(did), &doc).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(f.echo.runs.load(Ordering::SeqCst), 1);
+}
+
+/// A service that accepts unsigned public documents over messaging runs one
+/// whose proof is OPTIONAL anonymously, as HTTPS does (VTI-OPS-021), and still
+/// refuses one whose proof is REQUIRED — or whose policy is unknown.
+#[tokio::test]
+async fn an_unsigned_public_document_over_messaging_runs_anonymous_where_accepted() {
+    let f = Fixture::new();
+    let send = |doc: Value| {
+        let f = &f;
+        async move {
+            let body = serde_json::to_vec(&doc).unwrap();
+            let out = f
+                .spine()
+                .accepting_unsigned_optional_over_messaging()
+                .receive(&ArrivalCtx::didcomm("did:example:caller".into()), &body)
+                .await;
+            let answer: Value = serde_json::from_slice(&out.body).unwrap();
+            (out.status, answer)
+        }
+    };
+
+    let (status, answer) = send(unsigned(PUBLIC_PING)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(
+        answer["payload"]["signer"],
+        Value::Null,
+        "anonymous: {answer}"
+    );
+
+    let (_, answer) = send(unsigned(SIGNED_PING)).await;
+    assert_eq!(code(&answer), Some("proofRequired"), "{answer}");
+    let (_, answer) = send(unsigned(PING)).await;
+    assert_eq!(code(&answer), Some("proofRequired"), "{answer}");
+    assert_eq!(f.echo.runs.load(Ordering::SeqCst), 1);
+
+    // Without the option, the same public document is refused.
+    let (_, answer) = f
+        .send(
+            &ArrivalCtx::didcomm("did:example:caller".into()),
+            &unsigned(PUBLIC_PING),
+        )
+        .await;
+    assert_eq!(code(&answer), Some("proofRequired"), "{answer}");
+}
+
+#[tokio::test]
+async fn an_unrecorded_response_is_not_handed_to_a_redelivery() {
+    let f = Fixture::new();
+    let doc = unsigned(TOKEN_PING);
+    let (first_status, first) = f.send(&ArrivalCtx::rest(), &doc).await;
+    assert_eq!(first_status, StatusCode::OK, "{first}");
+    assert_eq!(first["payload"]["accessToken"], "token-0", "{first}");
+
+    let (again_status, again) = f.send(&ArrivalCtx::rest(), &doc).await;
+    assert_eq!(
+        again_status,
+        StatusCode::NO_CONTENT,
+        "a redelivery is acknowledged without the token: {again}"
+    );
+    assert_eq!(again, Value::Null, "and carries no body");
+    assert_eq!(
+        f.echo.runs.load(Ordering::SeqCst),
+        1,
+        "and is not executed twice"
+    );
 }
 
 #[tokio::test]

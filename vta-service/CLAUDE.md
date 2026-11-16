@@ -113,6 +113,32 @@ When adding a flow, add it here and a line to the root index.
 - **Seed**: 24-word BIP-39 mnemonic, stored via `affinidi-secrets-resolver`
   backend (OS keyring by default; AWS/GCP/Azure via feature flags).
 - **Docs**: `docs/02-vta/cold-start.md`, `docs/02-vta/non-interactive-setup.md`.
+- **A did:webs VTA** (`vta_did` kind `create_webs`, alpha): setup mints a
+  key-role identity (`CreateDidWebsParams { key_roles, defer_publish }`) and
+  records it unpublished — setup is offline and the VTA has no standing at the
+  host. `server::publish_own_webs_identity` publishes it at first boot, before
+  messaging starts, through `operations::did_webs::publish_own_identity`: a
+  self-certifying `did/register/0.1` the host accepts from a did:webs outside
+  its ACL. Its authentication key (the `operational` role) is the resident key
+  every request and response proves with; its attestation key signs
+  credentials (`SelfKeys`). Never let first boot fall back to another
+  identifier (VTI-KEY-009), and never treat `published: false` on any record
+  but `vta_did`'s as normal.
+  It acts toward any peer exactly as a did:webvh VTA does: every node resolves
+  did:webs (VTI-KEY-003) and none requires a peer's method (VTI-KEY-001). The
+  `resolvedMethods` declaration and its send-side gate (VTI-KEY-008) are
+  withdrawn — don't reintroduce a per-peer method check; the only method
+  refusal is the receiving `unsupportedDidMethod` (VTI-KEY-009).
+- **A did:webs TEE VTA** (`[tee.kms.vta_did_webs]`, `vta-enclave` feature
+  `webs`, S8): `tee_webs::maybe_generate_webs_vta_did` runs after
+  `did_autogen` (which restores a stored identity and refuses a template
+  beside it) and mints through `operations::did_webs::create_own_identity` —
+  the one create setup's `create_webs` also calls, on first-boot authority
+  (no claims; it refuses once the VTA has an identity, and no transport
+  reaches it). It persists `tee:vta_did`; the webs row is the record; a boot
+  that died before that adopts what it minted (`own_identity_in_progress`).
+  Startup publishes it as above. The enclave proxy allowlists the host and
+  domain from the same setting. Not overlay-settable.
 
 ### Mediator connection (readiness gate + reconnect)
 - **What**: How the VTA establishes and *keeps* its outbound mediator DIDComm
@@ -143,6 +169,42 @@ When adding a flow, add it here and a line to the root index.
   `connect_transport`), `vta-config/src/lib.rs`
   (`MediatorReadinessConfig`).
 - **Docs**: `docs/02-vta/mediator-connection.md`.
+
+### Delivery receipts and waking a device through its mediator
+- **What**: Delivery evidence for pushes across mediators (#2553) and a doorbell
+  for a device the VTA holds no wake channel for (#2663, design C). Every
+  messaging service (main session, collector, watch addresses, transient
+  handshake; the VTC's; `vta-sdk`'s `DIDCommSession`) is built
+  `MessagingService::with_receipts` with an `AtmReceiptPacker` for its own
+  profile, so a message that asks is receipted to its authenticated sender
+  (VTI-TRN-061). The push engine (`vti_common::trust_task_push`) asks for a
+  receipt on every DIDComm and TSP attempt under the attempt's outbox key
+  (`request_receipt`, `tsp_envelope`; VTI-TRN-060). Cross-mediator TSP is scoped
+  `Relayed` (`TspPushTransport::delivery_scope`). The confirmation sweep runs
+  with the service's `receipt_reach()` (`vti_common::outbox_store::confirmation_loop`).
+  Wake: `step_up::trigger_gateway_wake` uses the ACL `DeviceBinding` wake channel
+  first; with none, `messaging::mediator_wake::request_wake` sends one
+  `messaging/wake/request/0.1` to the recipient's mediator naming the first
+  attempt's stored id (`trust_task_push::stored_message_id`).
+- **Invariants to preserve**: a receipt settles an entry only from the party it
+  was addressed to (the delivery layer's rule, VTI-TRN-062) — never settle one
+  from a payload DID. A `Relayed` attempt to a recipient not in `ReceiptReach`
+  finishes `unconfirmable` and is **not** escalated (VTI-TRN-042 as amended,
+  VTI-TRN-064); one to a known receipt sender escalates as before; a `Local`
+  one is confirmed by the status poll as before. Never re-ring a pending wake
+  request (VTI-TRN-072): one per push, an id named once is never named again.
+  The wake request is fire-and-forget (VTI-TRN-074): its `#response` is dropped
+  as a reply no waiter claimed; an older mediator's `trust-task-error` is
+  consumed quietly by the spine (`mediator_wake::note_refusal`) and the mediator
+  is not asked again for an hour — never surface it as an error. `urgency` is
+  constant, never chosen by task type (VTI-TRN-071).
+- **Code**: `vti-common/src/{trust_task_push,outbox_store}.rs`,
+  `vta-service/src/messaging/{mediator_wake,service,collector,watch_addresses,transient_handshake}.rs`,
+  `vta-service/src/trust_tasks/step_up.rs` (`trigger_gateway_wake`),
+  `vtc-service/src/messaging.rs`, `vta-sdk/src/didcomm_session.rs`.
+- **Docs**: `docs/02-vta/task-consent.md` (*Reaching the approver's device*),
+  `docs/03-vtc/credential-delivery.md`,
+  `docs/05-design-notes/mobile-agent-architecture.md` §4.8.
 
 ### Admin credential cold-start
 - **What**: Bootstrap the first operator without a running VTA.
@@ -339,7 +401,7 @@ When adding a flow, add it here and a line to the root index.
   admin credential.
 - **Derivation**: `m/26'/2'/<ctx_idx>'/<key_idx>'` — the context's BIP-32
   base path is allocated at creation and is immutable.
-- **Code**: `vta-service/src/routes/contexts.rs`,
+- **Code**: `vta-service/src/trust_tasks/contexts.rs`,
   `vta-service/src/operations/contexts.rs`.
 
 ### Provision-integration (template-driven)
@@ -383,10 +445,22 @@ When adding a flow, add it here and a line to the root index.
     the context); the standard `e.p.msg.unauthorized` code is
     reserved for actual auth failures so the CLI doesn't print
     a misleading "Token may be expired" hint.
-- **Code**: `vta-service/src/operations/provision_integration.rs`,
+- **did:webs integrations** (design note did-webs-in-the-vta §4, S7): the
+  template var `DID_METHOD=webs` routes the mint to
+  `operations::did_webs::create_did_webs` (level 1, class `service`, the
+  template, `[dids] webs_service_dids`) through
+  `provision_integration/webs.rs`, published at `WEBVH_SERVER` (required — no
+  serverless mode). The bundle stays `TemplateBootstrap`: keys under their
+  `<did>#<CESR key>` ids (the record ids, checked against the derived
+  document), and `TemplateOutput::WebsKeriCesr` in place of a `did.jsonl` —
+  emitted only for a did:webs, so webvh bundles are byte-identical and an old
+  opener is refused it by name. Never add a provision wire member for the
+  method; a spec change goes to dtgwg-trust-tasks-tf first. Tests inject the
+  host through `WebsHostSource` (`provision_integration_with`).
+- **Code**: `vta-service/src/operations/provision_integration/` (a module directory),
   `vta-sdk/src/provision_integration/{http,didcomm}.rs`,
-  `vta-service/src/routes/bootstrap.rs:provision_integration`,
-  `vta-service/src/messaging/handlers.rs:handle_provision_integration`.
+  `vta-service/src/trust_tasks/provision_integration.rs` (the
+  `provision/integration/0.3` Trust Task — the only way in; no REST route).
 - **Docs**: `docs/02-vta/provision-integration.md`.
 
 ### Runtime service management
@@ -401,9 +475,10 @@ When adding a flow, add it here and a line to the root index.
 - **Operator commands** (spec §5.1):
   - `pnm services list` — show currently-advertised services.
   - `pnm services rest {enable,update,disable,rollback}` — manage
-    REST advertisement (`#vta-rest` service entry).
+    REST advertisement (the `VTARest` service, emitted as `#vta-rest`).
   - `pnm services didcomm {enable,update,disable,rollback}` —
-    manage DIDComm mediator advertisement (`#vta-didcomm`).
+    manage DIDComm mediator advertisement (the `DIDCommMessaging`
+    service, emitted as `#vta-didcomm`).
   - `pnm services didcomm drain {list,cancel}` — inspect or cancel
     drain entries.
   - `pnm services report` — per-mediator inbound counts +
@@ -432,6 +507,22 @@ When adding a flow, add it here and a line to the root index.
   highest-preference transport first. Enforced in
   `protocol::document::sort_services_canonical` at the end of
   every `with_*_service` patcher.
+- **A did:webs VTA** (alpha): `preconditions::load_vta_doc_state` switches
+  on the DID's method; `VtaDocBacking::Webs` carries the `WebsDidRecord`,
+  whose document is derived from the stored key event stream. The patchers
+  run unchanged, and `service_lifecycle::publish_patch` (which every family,
+  DIDComm included, publishes through) designates the patched `service[]`
+  as the whole designated service set (`protocol::webs_backing` →
+  `update_did_webs`, host from the record's `server_id`, or
+  `ServiceOpDeps::webs_host`), then reseeds the self-DID resolver entry.
+  The version is the KEL's `<sn>:<said>`; `serverless` is always false.
+  The resolver renders designations in designation order, so canonical
+  order holds (creates and updates sort designations by type too); KERI's
+  own endpoint services, which this VTA never writes, would render first.
+  `#didcomm` (the did:webs convention) is shown to the patchers as
+  `#vta-didcomm` and designated back as `#didcomm`. WebAuthn works as a
+  plain service: passkey VMs live only on webvh DIDs the VTA manages. An
+  identity not yet published at first boot is refused (`VtaDidNotPublished`).
 - **Handshake**: `update`/`rollback`-into-update uses a *live*
   `DIDCommServiceProver` against the running service; first-enable
   spins up a transient `DIDCommService` just for the round-trip
@@ -649,7 +740,7 @@ When adding a flow, add it here and a line to the root index.
   `{code, reason}`, only `remove/0.4` gives it `{stage, code}`.
 - **Code**: `vti-rooms/src/{revocation,revocation_tasks,authz}.rs`,
   `vti-rooms-dtg/src/lib.rs` (`verify_room_signed`, `credential_facts`),
-  `room-host/src/files.rs`, `vtc-service/src/rooms/{handlers,files}.rs`,
+  `vti-rooms-host/src/files.rs` (`handle_revocations`, the held transfer steps),
   `vta-service/src/operations/room_revocation.rs`,
   `vta-service/src/trust_tasks/{room_owner,room_owner_revoke,room_owner_group,room_list_delivery}.rs`,
   `vtc-service/src/rooms/departures.rs` (`remove_member`).
@@ -815,10 +906,10 @@ When adding a flow, add it here and a line to the root index.
   a hosted DID at a different host needs coordinated teardown on
   the old host and is out of scope for this op).
 - **CLI**: `pnm did-mgmt dids register --did <did> --server <id>
-  [--domain <name>]` (online, REST). `vta did-mgmt dids register …`
+  [--domain <name>]` (online, a Trust Task). `vta did-mgmt dids register …`
   (offline; daemon must be stopped, fjall lock; not available in TEE).
-- **Code**: `vta-service/src/operations/did_webvh/register_server.rs`,
-  `vta-service/src/routes/did_webvh.rs::register_did_with_server_handler`,
+- **Code**: `vta-service/src/operations/did_webvh/register_server.rs`
+  (`register_did_with_server`),
   `vta_sdk::client::VtaClient::register_did_with_server`.
 - **Docs**: `docs/02-vta/runtime-service-management.md`
   (walkthrough section).
@@ -849,7 +940,7 @@ When adding a flow, add it here and a line to the root index.
   server before the first create / register.
 - **Code**: `vta-service/src/webvh_host.rs`,
   `vta-service/src/operations/did_webvh/{mod,servers,host,register_server}.rs`,
-  `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
+  `vta-service/src/operations/did_webvh/servers.rs::list_webvh_server_domains`,
   `vta_sdk::client::VtaClient::list_webvh_server_domains`,
   `pnm-cli/src/commands/webvh.rs` (interactive prompt +
   list-domains dispatch).
@@ -858,13 +949,14 @@ When adding a flow, add it here and a line to the root index.
 
 ### DID template management
 - **Offline**: `pnm did-templates init <kind>`, `validate`, `list-builtins`.
-- **Online**: `pnm did-templates list/show/create/update/delete` →
-  REST `/did-templates` (global) or `/contexts/{id}/did-templates` (scoped).
+- **Online**: `pnm did-templates list/show/create/update/delete` → the
+  `vta/did-templates/*` Trust Tasks (global, or context-scoped by the payload's
+  `contextId`).
 - **Built-ins** (`vta_sdk::did_templates::BUILTIN_NAMES`, shipped with
   the SDK, always available): `ai-agent`, `ai-agent-peer`,
   `ballot-box`, `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
   `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
-  `dtg-witness`, `push-gateway`, `swiyu-verifier`, `vta-admin`, `vtc-group`, `vtc-host`. The `did-host-*` names encode
+  `dtg-witness`, `push-gateway`, `room`, `room-host`, `swiyu-verifier`, `trust-registry`, `vta-admin`, `vtc-group`, `vtc-host`, `vtc-host-classical` (`vtc-host` less its post-quantum slot, derived at load: a did:webs VTC's template). The `did-host-*` names encode
   the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
   DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
   a shape: control = `did-host-http-didcomm`, hosting daemon =
@@ -875,7 +967,7 @@ When adding a flow, add it here and a line to the root index.
   valid as an *integration kind* and as a service/binary name; it is only
   retired as a template name.)
 - **Code**: `vta-sdk/src/did_templates/`,
-  `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
+  `vta-service/src/trust_tasks/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.
 
 ### A room's own profile (`rooms/keys/profile/{read,write}`)
@@ -927,17 +1019,30 @@ When adding a flow, add it here and a line to the root index.
   serves a rung at or below it. A member's VTA keeps the floor in its own
   `room-epoch-floor` row, discards rungs at or below it before answering, applies it in
   every chain walk (`SealedRoom::apply_epoch_floor`), and never takes such a rung back.
-  Hosts never prune on their own.
+  Hosts never prune on their own. **Newest first** (`rooms/records/list/0.7`,
+  `rooms/keys/browse/0.5`; #1088): a cursor is bound to its order (`v<N>` / `n<N>`) and
+  refused `invalidCursor` under the other; `sinceVersion` stays a lower bound; browse 0.5
+  answers `nextCursor` exactly when `complete` is false, never compares a resumed listing,
+  and answers `newestFirst` at a host without list/0.7 `hostRefused` — never oldest first.
+  **Load older by version** (`rooms/records/list/0.8`, `rooms/keys/browse/0.6`; #1289):
+  `beforeVersion` is an exclusive upper bound under either order, read as a seek on the
+  version index (`vti_rooms::storage::list_records_bounded`); the cursor is bound to order
+  **and** both bounds (`n<N>[s<S>][b<B>]`) — never relax that, a cursor read in another
+  band skips records silently. Browse 0.6 answers `beforeVersion` at a host without
+  list/0.8 `hostRefused`, never a listing without the bound. The page a list version reads
+  and its response are chosen once, in `vti_rooms::record_tasks::{ListAt, list_page,
+  list_response}`, for both hosts. `rooms/info/0.5`'s limits are each host's own
+  (`HostLimits`): the VTC's `maxRecordDocumentBytes` is its size gate's limit for put.
 - **Code**: `vti-rooms/src/{provenance,record_retention,record_tasks}.rs`,
   `vti-rooms/src/{storage,retention,sealed}.rs`, `room-host/src/{lib,files}.rs`,
   `vtc-service/src/rooms/{handlers,files}.rs`,
-  `vta-service/src/operations/room_groups.rs` (`apply_epoch_floor`),
+  `vta-service/src/operations/room_groups/open.rs` (`apply_epoch_floor`),
   `vta-service/src/trust_tasks/{room_group,room_catch_up}.rs`,
   `vtc_client::rooms` (`prune_records`, `set_record_retention`, `prune_epoch_v2`, …),
   `pnm rooms records {prune,retention}`, `pnm rooms prune`.
 - **Docs**: `docs/02-vta/data-rooms.md` (§9, §10.4, §10.5).
 
-### Watching rooms for a client (`rooms/keys/watch/0.1`, `rooms/keys/changed/0.1`)
+### Watching rooms for a client (`rooms/keys/watch/0.1` + `0.2`, `rooms/keys/changed/0.1`)
 - **What**: a wallet with no member keys and no address asks its VTA to watch up to 64
   rooms at one host (trust-tasks-tf #1040). The VTA arms `rooms/watch/0.1` at the host per
   room as the member (presentation narrowed to `read`, member-signed, as `act/0.12`
@@ -953,13 +1058,38 @@ When adding a flow, add it here and a line to the root index.
   watch's host, for the watch's room, while armed; the watch is forgotten **before** the
   pass-on is sent (one per arming). The pass-on carries `roomId`, `member`, `host`,
   `latestVersion` only, never the address, no doorbell, deadline = one attempt window (no
-  re-send of an accepted push). Removal: fired, cancelled, lapsed (≤ 30 days, ≤ host's
+  re-send of an accepted push). A fresh address is armed at the host only once its
+  connection is open (`connected_before_arming`, ≤ 15 s while the supervisor runs):
+  mediator 0.52 refuses a forward to a DID with no account, and the address's first
+  connection is what creates it. Removal: fired, cancelled, lapsed (≤ 30 days, ≤ host's
   `expiresAt`), caller lost standing, member's credentials gone (`room_key_watch::sweep`,
   every 30 s with the address supervisor). Own bounds 64/member, 64/caller, 256 total →
   `limitReached`; no mediator → `limitReached`. `act/0.12` relays `rooms/watch` without
   reading, checking or changing `address`, `sinceVersion` or `leaseSeconds` (Recipient
   item 6) — never add a recipient-side address check; Producer item 6 binds the client,
   and `pnm rooms watch --via-host` enforces it before sending.
+- **Live watches** (`rooms/keys/watch/0.2`, `rooms/watch/0.2`, trust-tasks-tf #1087):
+  `live: true` arms the host's watch live and passes on **every** signal — the record
+  (`WatchRecord::live`) is kept after each, never compared with an earlier one. The
+  address is kept across renewals (`held.live == live` and not lapsed); a switch
+  one-shot ↔ live mints a new address, parks the old record under its own key
+  (`WatchRecord::retiring`, still receiving), arms the new one, and only then cancels the
+  old at the host and forgets it — a refusal puts the old record back. Never fall back to
+  one-shot for the caller: the host's `liveNotPermitted` is `hostRefused`, and a refused
+  renewal forgets the watch. `live` in the outcome only when the host answered it. Host
+  side (`vti_rooms::watch`): live only where the room's signal delay is `none`, lease
+  ≤ 120 s from each renewal, a renewal without `sinceVersion` keeps the watermark (the
+  version last signalled), signals paced ≥ 1 s per watch by one timer that carries the
+  latest version (no queue per change, no resends), and `end_live_watches` — called by
+  both hosts' `rooms/signal-delay/set` on `randomised` — ends them silently; `fire` also
+  drops any live watch it finds on a randomised room. `pnm rooms watch --live` renews every
+  60 s and cancels on Ctrl-C.
+- **The host's wait** before each `rooms/changed` is the room's **signal delay**
+  (`vti_rooms::signal_delay`, trust-tasks-tf #1084): `randomised` (2–6 s; the default and
+  what an absent field means) or `none`, read from the room record in `RoomWatches::fire`,
+  never from a watch request. Set by `admin` (`rooms/signal-delay/set/0.1`, audited), at
+  `rooms/create/0.3`, or through `rooms/owner/register/0.3`, which refuses `hostRefused`
+  rather than register without it on a host lacking create 0.3.
 - **Code**: `vta-service/src/operations/room_key_watch.rs`,
   `vta-service/src/trust_tasks/{room_key_watch,room_key_watch_tests,room_changed,room_act}.rs`,
   `vta-service/src/messaging/watch_addresses.rs`, `vta_sdk::client` (`room_watch`,
@@ -967,6 +1097,33 @@ When adding a flow, add it here and a line to the root index.
   through a real mediator (address session, a signal queued before it opens, the pass-on
   to the wallet): `tests/e2e/tests/room_key_watch.rs`.
 - **Docs**: `docs/02-vta/data-rooms.md` (*Watching instead of polling*).
+
+### A member's read marker (`rooms/keys/read-marker/*/0.1`, `rooms/keys/list/0.3`)
+- **What**: the VTA keeps, per room and member, where the member has seen the conversation
+  to (`version`, the host's `createdAt`), so every device agrees on unread (trust-tasks-tf
+  #1086). `set` merges forward only (greater version, then later `createdAt` as an instant,
+  absent earliest) unless `rewind`; `list/0.3` returns it under `includePersonal`; a move
+  sends `moved` to the member's **other** clients watching the room as that member.
+- **Invariants to preserve**: authorization as `rooms/keys/label` (acting as the member,
+  one `notHeld` for both causes decided before the marker is read, a delegate
+  `permissionDenied`). `createdAt` is stored and returned **as received** — read from the
+  payload, never the generated type, which reparses it. One row beside the group state
+  (`room_groups` `room-read-marker/…`), written only conditionally on the group being held,
+  removed by `room_groups::forget` and nothing else; no history. **Never audited or logged**
+  — no audit row for a set, the spine's receipt log skips it (`logs_receipt`), the replay
+  record keeps no response and schema errors quote nothing (`carries_personal_state`),
+  `ReadMarker` has no derived `Debug`; only the `room_read_markers_set_total` counter.
+  `moved` goes only to watch callers other than the setter that still stand for the member
+  (`room_key_watch::standing_of` + `acting_as`) when sent, carries room/member/marker only,
+  is coalesced per (room, member) in `RoomKeyWatches` (in memory; the last setter is left
+  out), pushed like `rooms/keys/changed` (one attempt window, no doorbell), never consumes
+  the watch, and its send is never logged as delivered (R1.1).
+- **Code**: `vta-service/src/operations/room_groups/personal.rs` (`ReadMarker`,
+  `set_read_marker`), `vta-service/src/trust_tasks/{room_read_marker,room_read_marker_tests,room_label}.rs`,
+  `vta-service/src/operations/room_key_watch.rs` (`schedule_moved`), `vta_sdk::client`
+  (`room_read_marker_set`, `room_list_v0_3`, `room_read_marker_moved`),
+  `pnm rooms keys mark-read`, `pnm rooms keys list`, `pnm rooms list` (unread count).
+- **Docs**: `docs/02-vta/data-rooms.md` (*Where you have read to, on every device*).
 
 ### Held notifications (`notifications/*`, `vta/notifications/*/0.1`)
 - **What**: The VTA as **recipient** of `notifications/notify/0.1` and `notifications/relay/0.1`

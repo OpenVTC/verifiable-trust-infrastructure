@@ -64,6 +64,7 @@ import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { BANNER_DISMISSED_KEY } from "@/lib/action-badge";
 import { ToastProvider } from "@/lib/toast";
 import { registerPlugin } from "@/plugin-api";
+import { formatDateTime } from "@/lib/format";
 
 beforeAll(() => {
   registerPlugin({ id: "home", label: "Home", path: "/", reactComponent: () => <p>home</p> });
@@ -172,7 +173,7 @@ describe("the Critical action banners", () => {
     shell();
     const text = await screen.findByText(/has asked to reduce your authority/);
     expect(text.textContent).toContain(
-      `It takes effect at ${new Date(LANDS_AT).toLocaleString()} (`,
+      `It takes effect at ${formatDateTime(LANDS_AT)} (`,
     );
     // With a countdown to it, as the action card shows.
     expect(text.textContent).toMatch(/\((lands in \d+ [dhm]( \d+ [hm])?|landing now)\) unless they cancel it\.$/);

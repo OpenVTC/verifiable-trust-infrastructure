@@ -19,6 +19,7 @@ pub mod bundle;
 pub mod from_toml;
 #[cfg(feature = "setup")]
 pub mod phase1;
+pub mod refresh;
 #[cfg(feature = "setup")]
 pub mod wizard;
 

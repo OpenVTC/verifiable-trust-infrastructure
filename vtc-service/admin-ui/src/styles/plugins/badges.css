@@ -103,6 +103,13 @@
 .badge-facts dd {
   margin: 0;
 }
+.badge-facts .badge-fact-did {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.6rem;
+  min-width: 0;
+}
 
 .badge-settings-grid {
   display: grid;
@@ -147,4 +154,9 @@
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
+}
+
+/* The builder opens below the picture and its buttons. */
+.badge-picture-field > .badge-builder {
+  flex-basis: 100%;
 }

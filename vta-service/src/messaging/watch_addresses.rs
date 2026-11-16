@@ -60,6 +60,7 @@ impl AddressSession for WatchAddressSession {
 
 /// Run the supervisor until `shutdown`, then close every address's connection.
 pub async fn run(state: AppState, shutdown: CancellationToken) {
+    state.room_key_watches.set_supervised(true);
     let mut retry: HashMap<String, (Instant, u32)> = HashMap::new();
     loop {
         if let Err(e) = crate::trust_tasks::room_key_watch::sweep(&state).await {
@@ -74,6 +75,7 @@ pub async fn run(state: AppState, shutdown: CancellationToken) {
             _ = tokio::time::sleep(RECONCILE_INTERVAL) => {}
         }
     }
+    state.room_key_watches.set_supervised(false);
     state.room_key_watches.stop_all().await;
 }
 
@@ -187,9 +189,15 @@ async fn open_session(
             return Err(e);
         }
     };
-    let service = Arc::new(MessagingService::new(
+    // A host's `rooms/changed` may ask for a receipt; it is answered as the
+    // watch address, whose session this is (VTI-TRN-061).
+    let service = Arc::new(MessagingService::with_receipts(
         transport,
         Arc::new(InMemoryOutboxStore::new()),
+        Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+            (*atm).clone(),
+            profile.clone(),
+        )),
     ));
     let cancel = CancellationToken::new();
     tokio::spawn(inbound_loop(

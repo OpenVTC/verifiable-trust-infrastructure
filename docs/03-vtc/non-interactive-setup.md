@@ -102,8 +102,34 @@ name it ([`community-rooms.md`](community-rooms.md#troubleshooting-permission-er
 a VTC set up before that has no `vta_context` and may add it by hand.
 
 Phase 2 prints a terse, scrape-friendly block (`vtc_did=…`, `admin_did=…`,
-`install_url=…`, `claim_code=…`, `single_admin_mode=…`); it never prints the
-admin private key.
+`install_url=…`, `claim_code=…`, `single_admin_mode=…`, `admin_key_file=…`).
+It never prints the admin private key: setup writes it to
+`<data_dir>/keys/admin-key.json` (owner-only, `0600`; an existing file is never
+overwritten — a re-run writes `admin-key.<timestamp>.json` beside it) and
+`admin_key_file` names that file. Move it to wherever the client that acts as
+the admin DID keeps its keys, then delete this copy.
+
+### A did:webs community
+
+`identity_method = "webs"` makes the community's own DID a level-1 `did:webs`
+(alpha; VTI-KEY-001) instead of a `did:webvh`. The VTA publishes it at a
+did-hosting server, so `[webvh] server_id` is required — there is no
+serverless did:webs — and `path` may not be `.well-known`;
+`scid_also_known_as` does not apply. `did_method` still decides how the DIDs
+the community mints later are presented.
+
+```toml
+identity_method = "webs"
+
+[webvh]
+server_id = "host-1"        # a server built with did:webs hosting (method-webs)
+path      = "communities"   # → did:webs:<domain>:communities:<AID>
+```
+
+The VTA must allow did:webs service DIDs (`[dids] webs_enabled` and
+`webs_service_dids`). The DID is minted from `vtc-host-classical`, so it has
+one signing key and no post-quantum key, and no `did.jsonl` is written: see
+[A VTC as a did:webs](../02-vta/did-webs.md#a-vtc-as-a-didwebs).
 
 ### A second administrator at install
 
@@ -233,6 +259,10 @@ per-service one; an env var overrides the file). All three are optional
 and default to fjall's own behaviour when unset. See
 [the VTA doc](../02-vta/non-interactive-setup.md#fjall-memory-settings)
 for the full table, accepted byte-size formats, and sizing guidance
-against a pod's memory limit — it applies unchanged here, including the
-**256 MiB minimum**: a VTC writes more than a VTA and is the first to hit
-the journal-replay floor those settings cannot lower (#1777).
+against a pod's memory limit and what a restart costs — it applies
+unchanged here. Since fjall 3.1.13 a restart replays only the writes not yet
+flushed, which the store's flusher keeps near `write_buffer`, so the old
+256 MiB minimum (set for a journal-replay floor of ~64 MiB) no longer applies;
+the VTA doc gives the measurements and a 128 MiB minimum with small settings
+(#1777). A VTC writes more than a VTA, so check its resident memory under
+load before going lower than that.

@@ -36,7 +36,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::RequestPayload;
-use vti_common::audit::{AuditEvent, NetworkMembershipChangedData};
+use vtc_audit::{AuditEvent, NetworkMembershipChangedData};
 use vti_common::error::AppError;
 use vti_specs::vtn::entries::show::v0_1 as entries_show;
 use vti_specs::vtn::membership::{

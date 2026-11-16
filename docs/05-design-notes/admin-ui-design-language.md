@@ -1,5 +1,7 @@
 # Operator console design language
 
+Status: **current** — describes the console, portal and home page as built.
+
 How the community's three web surfaces look, and where each decision lives in
 code: the operator console (`/admin/*`), the member portal (`/members/*`) and
 the default home page (`vtc-service/website-default/`). The console is the
@@ -205,6 +207,8 @@ Every built-in screen is built from these (`admin-ui/src/components/`):
 | `EmptyState` | Icon, title, reason and action; or `compact`, one muted line inside a card. |
 | `Switch` | A native checkbox with `role="switch"` under a drawn track, for one setting that is on or off. Multi-select lists stay checkboxes. |
 | `ConfirmDialog`, `TypedConfirmDialog` | Modal confirmation, the second asking the operator to type a value. |
+| `useModal` | The one keyboard contract of every modal dialog, in the console and the portal: focus moves in on open, Tab stays inside, Escape closes (not while a send is in flight), and focus returns to the opener, through the shadow root a protected surface is drawn in. A dialog that sets `aria-modal` uses it. |
+| `ErrorBoundary` | A render-time throw draws an error card (the portal: an alert) in place of the one screen or page that threw, with its message and a reload button; the shell around it survives, and navigating away clears it. |
 | `ThemeSwitcher` | §4. |
 | `InfoTip`, `CopyButton`, `DidText`, `NamedDid`, `DidQrButton` | An explanation on hover or focus; copy; a DID abbreviated at its colons with the whole on hover; a DID shown by its name with the identifier beside it; a DID's QR code. |
 

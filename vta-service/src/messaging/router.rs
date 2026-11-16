@@ -77,6 +77,10 @@ pub struct VtaState {
     pub service_state_ks: KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    /// `did:webs` records, mirrored from `AppState`: a did:webs VTA's own key
+    /// event log, which its keys by role, its trust bundle and its runtime
+    /// services are read from and written to.
+    pub webs_ks: KeyspaceHandle,
     /// Credentials the VTA issued — needed so a DID deletion over this
     /// transport can revoke them rather than orphan them.
     pub issued_credentials_ks: KeyspaceHandle,
@@ -164,6 +168,7 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
             did_templates_ks: state.did_templates_ks.clone(),
             imported_ks: state.imported_ks.clone(),
             webvh_ks: state.webvh_ks.clone(),
+            webs_ks: state.webs_ks.clone(),
             sealed_nonces_ks: state.sealed_nonces_ks.clone(),
             seed_store: state.seed_store.clone(),
             config: state.config.clone(),
@@ -198,6 +203,7 @@ impl From<&AppState> for VtaState {
             service_state_ks: state.service_state_ks.clone(),
             #[cfg(feature = "webvh")]
             webvh_ks: state.webvh_ks.clone(),
+            webs_ks: state.webs_ks.clone(),
             issued_credentials_ks: state.issued_credentials_ks.clone(),
             sealed_nonces_ks: state.sealed_nonces_ks.clone(),
             #[cfg(feature = "webvh")]

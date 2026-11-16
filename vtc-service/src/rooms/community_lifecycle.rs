@@ -48,7 +48,7 @@ use chrono::{DateTime, Timelike as _, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
+use vtc_audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
 
 use super::community::{CommunityRooms, HolderError, MemberRecord, OwnedRoom};

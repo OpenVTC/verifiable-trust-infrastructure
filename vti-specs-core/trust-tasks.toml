@@ -3,13 +3,13 @@
 registry = "https://trusttasks.org"
 
 [tasks]
-"acl/change-role" = "0.2"
-"acl/grant" = "0.2"
-"acl/list" = "0.3"
-"acl/revoke" = "0.2"
-"acl/show" = "0.2"
+"acl/change-role" = ["0.2", "0.3"]
+"acl/grant" = ["0.2", "0.3"]
+"acl/list" = ["0.3", "0.4"]
+"acl/revoke" = ["0.2", "0.3"]
+"acl/show" = ["0.2", "0.3"]
 "acl/swap-key" = "0.1"
-"acl/update" = "0.2"
+"acl/update" = ["0.2", "0.3"]
 "audit/list" = "0.2"
 "audit/verify" = "0.1"
 "auth/authenticate" = "0.3"
@@ -49,6 +49,7 @@ registry = "https://trusttasks.org"
 "auth/step-up/approver/redeem/finish" = "0.1"
 "auth/step-up/approver/redeem/start" = "0.1"
 "auth/step-up/approver/revoke" = "0.1"
+"auth/step-up/requests/show" = "0.1"
 "auth/whoami" = "0.1"
 "backup/abort" = "0.1"
 "backup/complete-export" = "0.1"
@@ -176,6 +177,9 @@ registry = "https://trusttasks.org"
 "messaging/account/update" = "0.2"
 "messaging/message/status" = "0.2"
 "messaging/ping" = "0.2"
+"messaging/receipt" = "0.1"
+"messaging/wake/request" = "0.1"
+"messaging/wake/set" = "0.1"
 "notifications/notify" = "0.1"
 "notifications/relay" = "0.1"
 "persona/attribute/delete" = "1.0"

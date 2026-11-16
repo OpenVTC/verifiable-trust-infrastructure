@@ -187,8 +187,14 @@ pub enum MembersCommands {
         #[arg(long = "action", value_enum, required = true)]
         actions: Vec<ActionArg>,
         /// How long their authority lasts (`90d`, `12h`). On an open room, removal takes
-        /// effect only when this runs out — keep it short there.
-        #[arg(long, conflicts_with = "valid_until")]
+        /// effect only when this runs out — keep it short there. `--expires`, as
+        /// every lapsing grant spells it (#2589); `--valid-for` is the older name.
+        #[arg(
+            long = "expires",
+            visible_alias = "valid-for",
+            value_name = "DURATION",
+            conflicts_with = "valid_until"
+        )]
         valid_for: Option<String>,
         /// When their authority ends (RFC 3339).
         #[arg(long)]
@@ -747,7 +753,7 @@ fn valid_until(valid_for: Option<&str>, valid_until: Option<&str>) -> CliResult<
                 .to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         }
         _ => Err(
-            "name how long the member's authority lasts: --valid-for 90d, or --valid-until <time>"
+            "name how long the member's authority lasts: --expires 90d, or --valid-until <time>"
                 .into(),
         ),
     }
@@ -959,7 +965,7 @@ async fn run_task(
             }
             println!(
                 "The community's VTA holds the room's keys. Offer members admission with \
-                 `{} rooms members add {} --member <did> --action read --valid-for 90d --reason …`.",
+                 `{} rooms members add {} --member <did> --action read --expires 90d --reason …`.",
                 bin_name(),
                 terminal_safe(v["room"]["room"]["roomId"].as_str().unwrap_or_default()),
             );

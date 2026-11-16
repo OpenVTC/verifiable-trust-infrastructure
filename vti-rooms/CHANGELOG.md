@@ -2,6 +2,213 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.36.0...vti-rooms-v0.37.0) — 2026-11-15
+
+
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.35.0...vti-rooms-v0.36.0) — 2026-11-14
+
+
+### Added
+
+- **rooms**: Load older by version (records/list 0.8, keys/browse 0.6) and host limits in rooms/info 0.5 ([#2727](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2727))
+
+* build(vti-specs-rooms): pin rooms/records/list 0.8, rooms/keys/browse 0.6, rooms/info 0.5
+
+  trustoverip/dtgwg-trust-tasks-tf#1289, for #2294 points 3 and 4. Older versions
+  stay pinned beside them while they are still served or sent. The registry's
+  in-place refresh of rooms/records/put 0.1-0.5 and rooms/keys/list 0.2 (marking
+  them superseded) is left out: adopting put/0.6 is separate work.
+
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Changed
+
+- **rooms**: Share the rooms/* handlers between hosts and run every host receive path on Spine ([#2731](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2731))
+
+* refactor(room-host): receive every document through vti_trust_task_server::Spine
+
+  room-host re-implemented the receive pipeline inline: size, freshness,
+  validate_basic and the accepted-id claim/settle, with no spec-policy step
+  and the proof verified lazily inside each handler. It now runs the shared
+  Spine the VTC runs ([#2576](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2576)): the size gate holds each task to its declared
+  maxDocumentBytes, the spec policy comes from
+  vti_specs::schema_index::spec_policy_for, the proof is verified once over
+  the document as received and bound to its issuer, DIDComm and TSP frames
+  carry their authenticated sender so the spine binds it (VTI-OPS-021/093),
+  and the duplicate-id record is StoreAcceptedIds (VTI-OPS-025..029).
+
+  A host without a DID still refuses an expired document: the spine skips
+  the recipient binding then, so before_proof applies the expiry check.
+  A proof made by someone other than the issuer is now proofInvalid, as at
+  the VTC, rather than permissionDenied.
+
+
+
+### Performance
+
+- **rooms**: Indexed record reads, per-room locks, commits outside the host lock, per-election ballot boxes ([#2712](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2712))
+
+* perf(vti-common): per-bundle chunk lock and a progress bitmap apart from the plan
+
+  A chunked transfer's lock is striped by bundle id, so one bundle's finalize
+  (a whole-file hash) no longer stalls every other transfer ([#2596](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2596)). Progress
+  is a bitmap row beside the immutable plan, read from a per-process cache, so
+  a chunk no longer re-reads and rewrites a plan of up to 4,096 digests ([#2597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2597)).
+  A bundle opened before the bitmap row existed keeps the progress its plan
+  recorded; get_plan still returns the plan with its progress.
+
+
+
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.34.0...vti-rooms-v0.35.0) — 2026-11-12
+
+
+### Added
+
+- **rooms**: A live watch while a conversation is open (rooms/watch 0.2, rooms/keys/watch 0.2) ([#2671](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2671))
+
+* feat(rooms)!: a room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1084. A room's signal delay (randomised, the default, or none) is stored on the host's room record (absent = randomised, no migration) and applied by RoomWatches::fire from the room, never the watch request. Both hosts serve rooms/signal-delay/set/0.1 (admin, idempotent, audited), rooms/create/0.3 and rooms/info/0.4 beside create 0.2 and info 0.3. The VTA serves rooms/owner/register/0.3, passing recordRetention and signalDelay through to create 0.3 and refusing hostRefused on a host that does not take it. pnm rooms signal-delay show|set, pnm rooms owner register --chat; the VTC console shows the setting.
+
+- **rooms**: A room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3) ([#2667](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2667))
+
+* feat(rooms)!: a room may turn off its watch signals' randomised delay (rooms/signal-delay/set 0.1, info 0.4, create 0.3, owner/register 0.3)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1084. A room's signal delay (randomised, the default, or none) is stored on the host's room record (absent = randomised, no migration) and applied by RoomWatches::fire from the room, never the watch request. Both hosts serve rooms/signal-delay/set/0.1 (admin, idempotent, audited), rooms/create/0.3 and rooms/info/0.4 beside create 0.2 and info 0.3. The VTA serves rooms/owner/register/0.3, passing recordRetention and signalDelay through to create 0.3 and refusing hostRefused on a host that does not take it. pnm rooms signal-delay show|set, pnm rooms owner register --chat; the VTC console shows the setting.
+
+- **rooms**: Open a conversation at its newest records (rooms/records/list 0.7, rooms/keys/browse 0.5) ([#2668](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2668))
+
+Implements trustoverip/dtgwg-trust-tasks-tf#1088.
+
+  Pins rooms/records/list/0.7 and rooms/keys/browse/0.5 in vti-specs-rooms,
+  beside the versions already pinned.
+
+  Hosts (room-host and the VTC, through vti_rooms): rooms/records/list/0.7 is
+  served beside 0.5 and 0.6. `order: newestFirst` returns rows in descending
+  version, each cursor continuing downward; `sinceVersion` stays a lower bound,
+  tombstones and `lastPrune` are as oldest first, and the commitment, count and
+  head are over the whole room. A cursor is bound to its order (`v<N>` oldest
+  first, `n<N>` newest first) and refused with the declared `invalidCursor`
+  under the other (Order item 5). `vti_rooms::storage::list_records_page_in`
+  takes a `RecordOrder`; `list_records_page` is unchanged (oldest first).
+  Records are keyed by key, not version, so both orders sort the room in memory,
+  which is no more than every page already pays for its uncached whole-room
+  commitment; a version index belongs with a cached commitment.
+
+
+
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.33.0...vti-rooms-v0.34.0) — 2026-11-10
+
+
+### Added
+
+- **rooms**: Room hosts hold every read to the purposes its chain grants (VTI-ACL-110) ([#2545](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2545))
+
+A room's authority credential may now state purposes (dtg-credentials 0.14,
+  DTG context v2), and a host serving a read holds the request to them
+  (`rooms/records/get/0.4`, *Purpose of use*).
+
+  - vti-rooms: `purpose::ChainPurposes` and `PurposeDecision`; `VerifiedChain.purposes`
+    (a new public field), `AuthorizedAction::purposes` and `admit_purpose`; get/0.4 is
+    dispatched, with `blob_tasks::get_v4_purpose` and `read_purpose_refused`.
+  - vti-rooms-dtg: `DtgChainVerifier` fills `purposes` from the verified chain, whose
+    chain rule (a link may not widen its parent's purposes, VTI-ACL-107) dtg-credentials
+    applies. A scope this build does not know grants nothing.
+  - room-host and vtc-service serve `rooms/records/get/0.4`. A purpose the chain does not
+    grant, or none where it lists several, is refused with `purposeNotGranted` after the
+    chain verifies and before any record is read. get/0.2 and 0.3 cannot name a purpose and
+    are decided as naming none (`permissionDenied` where the chain lists several).
+  - The served read's purpose, or `unstated`, is recorded: `RoomOperationData.purpose`
+    (vti-common, a new public field) at the VTC, the room operation log line at room-host
+    (VTI-ACL-106).
+
+- **rooms**: The key holder holds every opening to the caller's purposes (VTI-ACL-102) ([#2541](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2541))
+
+* feat(rooms): the key holder holds every opening to the caller's purposes (VTI-ACL-102)
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#1076 at the VTA, as #2539 did for
+  agent memory.
+
+  Opening a room record discloses it, so it is purpose-bound (VTI-ACL-102). New
+  versions rooms/keys/open/0.3, read/0.3 and file-key/0.3 carry the purpose the
+  caller will use what it opens for (`purposeOfUse` on file-key, where `purpose`
+  already means seal or open). The purpose is judged against the caller's stored
+  ACL entry before anything is decrypted or the host is asked; one not granted is
+  `purposeNotGranted`, disclosing nothing (VTI-ACL-103, -104). The earlier
+  versions, still served, name none: served under `any` or a single listed
+  purpose, refused as `taskFailed` under an entry listing more. Only a key to
+  open a file is held to a purpose; a sealing key discloses nothing. Every
+  opening's audit row records its purpose, served or refused (VTI-ACL-106).
+
+  read/0.3 passes a named purpose to the host as rooms/records/get/0.4's, and
+  asks get/0.3 of a host that answers unsupportedType.
+
+  Not yet: room authority credentials stating purposes (VTI-ACL-110). A VAC has
+  no such member until trustoverip/dtgwg-cred-spec#84 defines one, and
+  dtg-credentials 0.13 refuses a VAC that carries it, so a chain grants `any`
+  and the caller's entry is what narrows. issue-authority/0.3 is not pinned, and
+  no host serves get/0.4 yet.
+
+  The purpose helpers move from the memory handlers to trust_tasks::helpers.
+  The signing test state now seeds the super admin's ACL entry, as a running VTA
+  always has one.
+
+
+
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.32.0...vti-rooms-v0.33.0) — 2026-11-09
+
+
+### Fixed
+
+- Hash canonical JSON, so digests don't depend on serde_json's map order ([#2500](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2500))
+
+Idempotency hashes, list cursors' filter digests, the election ticket
+  digest, the git namespace role digest, the admin-events change digest and
+  the collection fingerprint all hashed `serde_json::to_vec` output. That is
+  sorted only while serde_json's `preserve_order` feature is off, and any
+  dependency can turn it on for the whole build (cargo unifies features).
+  With it on, the same request with its members in another order hashed
+  differently: a retry was refused as a different request, and a page cursor
+  failed against the filters it was minted for.
+
+  Each now hashes RFC 8785 canonical JSON (serde_json_canonicalizer, already a
+  workspace dependency). For these inputs — ASCII keys, compact, integer
+  numbers — the canonical bytes equal today's sorted output, so stored
+  idempotency records and open cursors stay valid across the upgrade.
+
+  The room file vectors test compares JSON values rather than text, since key
+  order is not part of the vectors.
+
+
+
 ## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.30.0...vti-rooms-v0.32.0) — 2026-11-05
 
 

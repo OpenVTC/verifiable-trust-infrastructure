@@ -35,7 +35,10 @@ import {
   X,
 } from "lucide-react";
 
+import { BadgeBuilder } from "@/components/BadgeBuilder";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { Protected } from "@/components/Protected";
+import { formatDate, shortenDid } from "@/lib/format";
 
 import {
   acceptOffer,
@@ -50,12 +53,16 @@ import {
   listHolders,
   listMine,
   makeBadgeHref,
+  redeemClaim,
+  shareAward,
   showBadge,
   showBadgeAgain,
   showSettings,
   showWall,
+  unshareAward,
   uploadBadgeImage,
   type Badge,
+  type MyAward,
   type MyBadge,
   type Offer,
   type WallVisibility,
@@ -114,6 +121,66 @@ function Off() {
   );
 }
 
+// ─── claiming with a code ──────────────────────────────────────────────────
+
+/** A code an event's host handed out (VTI-BDG-026): entering it is claiming the badge. */
+function ClaimForm() {
+  const qc = useQueryClient();
+  const [code, setCode] = useState("");
+  const [said, setSaid] = useState<{ ok: boolean; text: string } | null>(null);
+  const claim = useMutation({
+    mutationFn: () => redeemClaim(code),
+    onSuccess: () => {
+      setCode("");
+      setSaid({ ok: true, text: "Claimed. The badge is yours, and its credential is on its way to your wallet." });
+      void qc.invalidateQueries({ queryKey: MINE_KEY });
+    },
+    onError: (e) => {
+      const c = e instanceof DirectoryError ? e.code : "";
+      setSaid({
+        ok: false,
+        text: c.endsWith(":alreadyClaimed")
+          ? "You have already claimed this code."
+          : c.endsWith(":alreadyHeld")
+            ? "You already hold this badge."
+            : c.endsWith(":codeInvalid")
+              ? "That code admits no one: check it, or ask the host."
+              : e instanceof Error
+                ? e.message
+                : "That did not work. Try again.",
+      });
+    },
+  });
+  return (
+    <section className="bw-section" aria-labelledby="bw-claim">
+      <h2 id="bw-claim">Have a code?</h2>
+      <form
+        className="bw-claim"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (code.trim()) claim.mutate();
+        }}
+      >
+        <input
+          aria-label="Claim code"
+          placeholder="The code from the event"
+          value={code}
+          autoComplete="off"
+          onChange={(e) => setCode(e.target.value)}
+        />
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!code.trim() || claim.isPending}>
+          {claim.isPending ? "Claiming…" : "Claim the badge"}
+        </button>
+      </form>
+      {said && (
+        <p className={said.ok ? "muted" : "error"} role={said.ok ? "status" : "alert"}>
+          {said.text}
+        </p>
+      )}
+    </section>
+  );
+}
+
 // ─── your badges ───────────────────────────────────────────────────────────
 
 export function BadgesPage() {
@@ -157,6 +224,7 @@ export function BadgesPage() {
       {mine.isPending && <p className="muted">Loading…</p>}
       {mine.isError && <Unavailable error={mine.error} />}
       {offers.length > 0 && <Offers offers={offers} />}
+      <ClaimForm />
       {mine.data && <Wall badges={shown} visibility={mine.data.visibility} kudosTotal={mine.data.kudosTotal} />}
       {hidden.length > 0 && <Hidden badges={hidden} />}
       {myKudos.length > 0 && (
@@ -212,6 +280,7 @@ function Offers({ offers }: { offers: Offer[] }) {
 
 function OffersSurface({ offers }: { offers: Offer[] }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [note, setNote] = useState<string | null>(null);
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["badges"] });
@@ -273,7 +342,15 @@ function OffersSurface({ offers }: { offers: Offer[] }) {
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
-                  onClick={() => decline.mutate(award.awardId)}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Decline ${badge.name}?`,
+                      message: "Nobody is told. You can hold it only if it is offered to you again.",
+                      confirmLabel: "Decline",
+                      destructive: true,
+                    });
+                    if (ok) decline.mutate(award.awardId);
+                  }}
                   disabled={decline.isPending || accept.isPending}
                 >
                   <X size={14} aria-hidden="true" /> Decline
@@ -454,7 +531,7 @@ function Hidden({ badges }: { badges: MyBadge[] }) {
 
 const REGIME: Record<string, string> = {
   none: "Picture only; nothing goes to a wallet",
-  inside: "An Open Badge credential issued by the badge's own group identity, for use inside the community",
+  inside: "An Open Badge credential issued by the community, for use inside the community",
   outside: "An Open Badge credential you may show outside the community",
 };
 
@@ -521,7 +598,7 @@ export function BadgePage({ badgeId }: { badgeId: string }) {
               <dt>Credential</dt>
               <dd>{REGIME[q.data.credentialRegime] ?? q.data.credentialRegime}</dd>
               <dt>Created</dt>
-              <dd>{new Date(badge.createdAt).toLocaleDateString(undefined, { dateStyle: "long" })}</dd>
+              <dd>{formatDate(badge.createdAt)}</dd>
             </dl>
             {badge.criteria && (
               <div className="bw-criteria">
@@ -539,6 +616,9 @@ export function BadgePage({ badgeId }: { badgeId: string }) {
             )}
             {badge.state === "active" && badge.kind === "kudos" && <GiveBadge badge={badge} />}
           </article>
+          {badge.state === "active" && q.data.credentialRegime === "outside" && (q.data.myAwards?.length ?? 0) > 0 && (
+            <ShareOutside badgeId={badge.badgeId} awards={q.data.myAwards ?? []} />
+          )}
           <section className="card bw-holders" aria-labelledby="bw-holders-title">
             <h2 id="bw-holders-title">Who holds it</h2>
             {holders.isPending && <p className="muted">Loading…</p>}
@@ -583,6 +663,89 @@ export function BadgePage({ badgeId }: { badgeId: string }) {
   );
 }
 
+/** Showing one's own awards of a badge outside the community (VTI-BDG-070): each award
+ *  shared on its own, by the member's choice, at locations only those they give them to
+ *  know. Stopping is not a revocation. */
+function ShareOutside({ badgeId, awards }: { badgeId: string; awards: MyAward[] }) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+  const done = () => {
+    setError(null);
+    void qc.invalidateQueries({ queryKey: ["badges", "show", badgeId] });
+  };
+  const share = useMutation({ mutationFn: shareAward, onSuccess: done, onError: (e) => setError(refusal(e)) });
+  const stop = useMutation({ mutationFn: unshareAward, onSuccess: done, onError: (e) => setError(refusal(e)) });
+  const busy = share.isPending || stop.isPending;
+  return (
+    <section className="card bw-share" aria-labelledby="bw-share-title">
+      <h2 id="bw-share-title">Show it outside the community</h2>
+      <p className="muted">
+        Share an award to get a link anyone can open to check it, and a picture with the credential inside it for a
+        website or an email signature. Only people you give the link to can find it. The credential names you and
+        each award&rsquo;s note, so share only an award you are happy to show.
+      </p>
+      <ul className="bw-share-list">
+        {awards.map((a) => (
+          <li key={a.awardId} className="bw-share-item">
+            <span className="bw-share-when">
+              Awarded {a.decidedAt ? formatDate(a.decidedAt) : ""}
+              {a.note && <span className="bw-offer-note"> &ldquo;{a.note}&rdquo;</span>}
+            </span>
+            {a.shared ? (
+              <span className="bw-share-links">
+                <CopyLink label="Link to check it" value={a.shared.verificationUrl} />
+                {a.shared.bakedImageUrl && <CopyLink label="Picture with the credential" value={a.shared.bakedImageUrl} />}
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => stop.mutate(a.awardId)}>
+                  Stop sharing
+                </button>
+              </span>
+            ) : (
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={() => share.mutate(a.awardId)}>
+                Share outside
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+function CopyLink({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <span className="bw-copy">
+      <a href={value} target="_blank" rel="noreferrer noopener">
+        {label}
+      </a>
+      <button
+        type="button"
+        className="btn btn-ghost btn-small"
+        onClick={() => {
+          void navigator.clipboard?.writeText(value).then(() => setCopied(true));
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </span>
+  );
+}
+
+/** What a refused share or stop says to the member. */
+function refusal(e: unknown): string {
+  const code = e instanceof DirectoryError ? e.code : "";
+  if (code.endsWith(":notShareable")) return "This badge can no longer be shown outside the community.";
+  if (code.endsWith(":publicLocationUnavailable"))
+    return "The community has no public address to show badges at yet. Try again later.";
+  if (code.endsWith(":notFound")) return "That award is no longer yours to share.";
+  return e instanceof Error ? e.message : "That did not work. Try again.";
+}
+
 /** Members named by their directory entry, as the directory shows them to this member. */
 function OwnerNames({ entryIds }: { entryIds: string[] }) {
   const entries = useQuery({
@@ -607,6 +770,7 @@ function OwnerNames({ entryIds }: { entryIds: string[] }) {
 /** Asking a community badge's owners for it: a request to join its badge group. */
 function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: string; myState: string }) {
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [note, setNote] = useState<string | null>(null);
@@ -644,7 +808,20 @@ function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: strin
       {myState === "requested" ? (
         <>
           <p className="muted">You&rsquo;ve asked for this badge. Its owners decide.</p>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => withdraw.mutate()} disabled={withdraw.isPending}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={async () => {
+              const ok = await confirm({
+                title: "Withdraw your request?",
+                message: "Its owners no longer see it. You can ask again later.",
+                confirmLabel: "Withdraw",
+                destructive: true,
+              });
+              if (ok) withdraw.mutate();
+            }}
+            disabled={withdraw.isPending}
+          >
             Withdraw my request
           </button>
         </>
@@ -682,6 +859,14 @@ function AskForBadge({ badge, groupId, myState }: { badge: Badge; groupId: strin
   );
 }
 
+/** A member as one line: "Name · did:…short", the shortened DID alone, or "A member" when neither is visible. */
+function memberLabel(fields: Record<string, unknown>): string {
+  const name = nameOf(fields);
+  const did = typeof fields.did === "string" ? shortenDid(fields.did) : null;
+  if (name) return did ? `${name} · ${did}` : name;
+  return did ?? "A member";
+}
+
 /** A member search over the directory, as the member already sees it, naming one entry. */
 function MemberSelect({ value, onChange, exclude }: { value: string; onChange: (entryId: string) => void; exclude?: string }) {
   const [query, setQuery] = useState("");
@@ -705,7 +890,7 @@ function MemberSelect({ value, onChange, exclude }: { value: string; onChange: (
         <option value="">Choose a member…</option>
         {items.map((e) => (
           <option key={e.entryId} value={e.entryId}>
-            {nameOf((e.fields ?? {}) as Record<string, unknown>) ?? "A member"}
+            {memberLabel((e.fields ?? {}) as Record<string, unknown>)}
           </option>
         ))}
       </select>
@@ -784,8 +969,9 @@ export function MakeBadgePage() {
   const [description, setDescription] = useState("");
   const [image, setImage] = useState<{ sha256: string; preview: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"upload" | "build">("upload");
   const upload = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (file: Blob) => {
       const { mediaType, bytes } = await prepare(file);
       const answer = await uploadBadgeImage(mediaType, toBase64Url(bytes));
       return { sha256: answer.image.sha256, preview: URL.createObjectURL(file) };
@@ -842,7 +1028,29 @@ export function MakeBadgePage() {
         </label>
         <div className="card-field">
           <span>Picture</span>
-          <div className="bw-upload">
+          <div className="bw-picture-mode" role="radiogroup" aria-label="How to make the picture">
+            <label>
+              <input type="radio" name="bw-picture-mode" checked={mode === "upload"} onChange={() => setMode("upload")} />{" "}
+              Upload my own picture
+            </label>
+            <label>
+              <input type="radio" name="bw-picture-mode" checked={mode === "build"} onChange={() => setMode("build")} />{" "}
+              Build one from a colour and an icon
+            </label>
+          </div>
+          {mode === "build" && (
+            <BadgeBuilder
+              name={name}
+              busy={upload.isPending}
+              buttons={{ primary: "btn btn-primary btn-sm", secondary: "btn btn-ghost btn-sm" }}
+              onUse={(png) => {
+                upload.mutate(png);
+                setMode("upload");
+              }}
+              onCancel={() => setMode("upload")}
+            />
+          )}
+          <div className="bw-upload" hidden={mode === "build"}>
             {image ? (
               <img className="bw-art" src={image.preview} alt="" style={{ width: 160 }} />
             ) : (
@@ -926,14 +1134,14 @@ export function WallSection({ entryId, name, own }: { entryId: string; name: str
       {pinned.length > 0 && (
         <div className="bw-wall bw-pinned-row">
           {pinned.map((e) => (
-            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} pinned width={130} />
+            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} since={e.since} latestAt={e.latestAt} pinned width={130} />
           ))}
         </div>
       )}
       {rest.length > 0 && (
         <div className="bw-wall">
           {rest.map((e) => (
-            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} width={110} />
+            <BadgeTile key={e.badge.badgeId} badge={e.badge} count={e.count} since={e.since} latestAt={e.latestAt} width={110} />
           ))}
         </div>
       )}

@@ -504,11 +504,11 @@ pub(crate) fn profile_field_pairs(
 pub(crate) fn profile_changes(
     prior: Option<&CommunityProfile>,
     incoming: &CommunityProfile,
-) -> Vec<vti_common::audit::FieldChange> {
+) -> Vec<vtc_audit::FieldChange> {
     profile_field_pairs(prior, incoming)
         .into_iter()
         .filter(|(_, old, new)| old != new)
-        .map(|(field, old, new)| vti_common::audit::FieldChange {
+        .map(|(field, old, new)| vtc_audit::FieldChange {
             field: field.to_string(),
             old,
             new,

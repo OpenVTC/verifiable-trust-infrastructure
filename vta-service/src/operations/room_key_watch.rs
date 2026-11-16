@@ -1,5 +1,5 @@
 //! The watches this VTA holds for its principal's clients (`rooms/keys/watch/0.1`,
-//! trust-tasks-tf #1040): the record each keeps, the bounds, and the addresses it receives
+//! trust-tasks-tf #1040, and `0.2`'s live watches, #1087): the record each keeps, the bounds, and the addresses it receives
 //! the hosts' signals at.
 //!
 //! # What is kept
@@ -20,8 +20,11 @@
 //! mediator's DID. Never the VTA's DID, the member's or the caller's, and never another
 //! watch's (item 5): each is fresh. A host learns the mediator from it, which the
 //! specification accepts (*Correlation*). A re-arm of a watch that has not fired keeps
-//! its address, so that it replaces the host's watch rather than adding one; every other
-//! arming mints a new one.
+//! its address, so that it replaces the host's watch rather than adding one, and so does a
+//! renewal of a live watch, for as long as the caller renews it; every other arming mints a
+//! new one. A switch between one-shot and live arms the new watch at a new address while
+//! the old record waits under its own key ([`WatchRecord::retiring`]) until the host has
+//! armed the new one — so a refused live watch leaves the one-shot watch in place.
 //!
 //! The VTA receives at an address over a mediator connection of its own, one per
 //! address, opened and closed by `messaging::watch_addresses` from these records — the
@@ -52,6 +55,8 @@ pub const MAX_WATCHES: usize = 256;
 pub const MAX_LEASE_SECS: i64 = 30 * 24 * 60 * 60;
 
 const WATCH_PREFIX: &str = "w:";
+/// Appended to the key of a watch being replaced by a switch ([`WatchRecord::retiring`]).
+const RETIRING_SUFFIX: &str = ":retiring";
 
 /// One armed watch: exactly what Recipient item 6 keeps.
 #[derive(Clone, Serialize, Deserialize)]
@@ -72,6 +77,17 @@ pub struct WatchRecord {
     keys: Vec<Secret>,
     /// When the watch lapses, as Unix seconds.
     pub expires_at: i64,
+    /// Whether the watch is live (`rooms/keys/watch/0.2`): every signal is passed on, not
+    /// just the first. Recipient item 6 lets the record say so; absent — every record kept
+    /// before 0.2 — is one-shot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
+    /// The watch a switch between one-shot and live is replacing (Recipient item 5): kept,
+    /// under a key of its own, only until the host has armed the new watch at its new
+    /// address, then cancelled at the host and forgotten — or put back, when the host
+    /// refused the new one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retiring: bool,
 }
 
 /// Written by hand: a derived `Debug` would print the address's private keys.
@@ -85,6 +101,8 @@ impl std::fmt::Debug for WatchRecord {
             .field("address", &self.address)
             .field("keys", &"<redacted>")
             .field("expires_at", &self.expires_at)
+            .field("live", &self.live)
+            .field("retiring", &self.retiring)
             .finish()
     }
 }
@@ -93,7 +111,12 @@ impl WatchRecord {
     /// The store key: one watch per (caller, member, host, room), so a re-arm finds the
     /// watch it replaces.
     pub fn key(&self) -> String {
-        watch_key(&self.caller, &self.member, &self.host, &self.room_id)
+        let key = watch_key(&self.caller, &self.member, &self.host, &self.room_id);
+        if self.retiring {
+            format!("{key}{RETIRING_SUFFIX}")
+        } else {
+            key
+        }
     }
 
     /// The address's secrets, for the connection that receives at it.
@@ -156,6 +179,15 @@ pub struct RoomKeyWatches {
     /// Wakes the address supervisor when the records changed.
     kick: tokio::sync::Notify,
     sessions: std::sync::Mutex<HashMap<String, Arc<dyn AddressSession>>>,
+    /// `rooms/keys/read-marker/moved/0.1` waiting out its coalescing window, per (room,
+    /// member): the client whose set last moved the marker, which is not told
+    /// (Producer items 1 and 3). In memory only — the key holder keeps no record of sending
+    /// one (*Retention*), and a restart drops what is pending, which the client's next
+    /// `rooms/keys/list` restores.
+    moved_pending: std::sync::Mutex<HashMap<(String, String), String>>,
+    /// Whether the address supervisor (`messaging::watch_addresses::run`) is running, so
+    /// an arming can wait for it to open a fresh address's connection.
+    supervised: std::sync::atomic::AtomicBool,
 }
 
 impl RoomKeyWatches {
@@ -165,7 +197,20 @@ impl RoomKeyWatches {
             lock: tokio::sync::Mutex::new(()),
             kick: tokio::sync::Notify::new(),
             sessions: std::sync::Mutex::new(HashMap::new()),
+            moved_pending: std::sync::Mutex::new(HashMap::new()),
+            supervised: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Record whether the address supervisor is running.
+    pub fn set_supervised(&self, running: bool) {
+        self.supervised
+            .store(running, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the address supervisor is running.
+    pub fn supervised(&self) -> bool {
+        self.supervised.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Hold the store's lock for a change made of several steps.
@@ -249,6 +294,8 @@ impl RoomKeyWatches {
             address,
             keys,
             expires_at,
+            live: false,
+            retiring: false,
         })
     }
 
@@ -305,6 +352,28 @@ impl RoomKeyWatches {
         for address in self.receiving() {
             self.stop(&address).await;
         }
+    }
+
+    /// A set by `setter` moved `member`'s read marker for `room_id`: hold a `moved` notice
+    /// for the coalescing window. `true` when none was pending — the caller starts the
+    /// window; `false` when one was, which now leaves out `setter` instead, so one window
+    /// sends at most one notice whatever number of sets it saw.
+    pub fn schedule_moved(&self, room_id: &str, member: &str, setter: &str) -> bool {
+        let mut pending = self.moved_pending.lock().unwrap_or_else(|p| p.into_inner());
+        pending
+            .insert(
+                (room_id.to_string(), member.to_string()),
+                setter.to_string(),
+            )
+            .is_none()
+    }
+
+    /// The end of a coalescing window: the client to leave out, if a notice was pending.
+    pub fn take_moved(&self, room_id: &str, member: &str) -> Option<String> {
+        self.moved_pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&(room_id.to_string(), member.to_string()))
     }
 }
 

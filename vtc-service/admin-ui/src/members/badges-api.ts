@@ -13,6 +13,9 @@
 // by the badge's owners: `vtc/groups/join` on `badge.groupId` (`./groups-api`).
 
 import type {
+  BadgeAwardsShareResponse,
+  BadgeAwardsUnshareResponse,
+  BadgeClaimsRedeemResponse,
   BadgeCreatePayload,
   BadgeCreateResponse,
   BadgeHoldersListResponse,
@@ -51,6 +54,9 @@ export const MINE_SHOW_TASK = "https://trusttasks.org/spec/vtc/badges/mine/show/
 export const MINE_ARRANGE_TASK = "https://trusttasks.org/spec/vtc/badges/mine/arrange/0.1";
 export const KUDOS_GIVE_TASK = "https://trusttasks.org/spec/vtc/badges/kudos/give/0.1";
 export const KUDOS_LIST_TASK = "https://trusttasks.org/spec/vtc/badges/kudos/list/0.1";
+export const AWARDS_SHARE_TASK = "https://trusttasks.org/spec/vtc/badges/awards/share/0.1";
+export const AWARDS_UNSHARE_TASK = "https://trusttasks.org/spec/vtc/badges/awards/unshare/0.1";
+export const CLAIMS_REDEEM_TASK = "https://trusttasks.org/spec/vtc/badges/claims/redeem/0.1";
 
 export type Badge = BadgeShowResponse["badge"];
 export type BadgeSettings = BadgeSettingsShowResponse["settings"];
@@ -63,6 +69,8 @@ export type Holder = BadgeHoldersListResponse["items"][number];
 export type ListedBadge = BadgeListResponse["items"][number];
 export type KudosRow = BadgeKudosListResponse["items"][number];
 export type MyState = ListedBadge["myState"];
+/** One of the member's own accepted awards of a badge, as `show` answers them. */
+export type MyAward = NonNullable<BadgeShowResponse["myAwards"]>[number];
 
 /** The community's badge settings, as any member reads them. `enabled: false`
  *  hides every badge surface; the pages show nothing then. */
@@ -83,6 +91,21 @@ export const declineOffer = (awardId: string) => send<BadgeMineDeclineResponse>(
 export const hideBadge = (badgeId: string) => send<BadgeMineHideResponse>(MINE_HIDE_TASK, { badgeId });
 export const showBadgeAgain = (badgeId: string) => send<BadgeMineShowResponse>(MINE_SHOW_TASK, { badgeId });
 export const arrangeWall = (p: BadgeMineArrangePayload) => send<BadgeMineArrangeResponse>(MINE_ARRANGE_TASK, p);
+
+/** Show one accepted award outside the community (VTI-BDG-070): the community answers
+ *  the public locations it now serves it at. The member's own choice, award by award;
+ *  the page never shares one on its own. */
+export const shareAward = (awardId: string) =>
+  send<BadgeAwardsShareResponse>(AWARDS_SHARE_TASK, { awardId }).then((r) => r.award);
+
+/** Claim a badge with a code an event's host handed out (VTI-BDG-026): the redemption is
+ *  the member's consent, and the badge is theirs from the answer. */
+export const redeemClaim = (code: string) =>
+  send<BadgeClaimsRedeemResponse>(CLAIMS_REDEEM_TASK, { code: code.trim() }).then((r) => r.award);
+
+/** Stop showing it: the locations answer nothing from now on. Revokes nothing. */
+export const unshareAward = (awardId: string) =>
+  send<BadgeAwardsUnshareResponse>(AWARDS_UNSHARE_TASK, { awardId }).then((r) => r.award);
 
 /** A member's wall, as the directory shows it to this member. */
 export const showWall = (entryId: string) => send<BadgeWallShowResponse>(BADGES_WALL_TASK, { entryId });

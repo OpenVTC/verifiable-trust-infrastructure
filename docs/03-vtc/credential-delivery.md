@@ -36,7 +36,19 @@ Trust Task documents**, one per credential
 Delivery goes through the VTC's durable push engine. The push is queued, then
 escalated to the next transport you offer if an attempt yields no evidence of
 collection, for up to 24 hours. So a client that is offline at admission still
-receives the credentials when it reconnects, within that window. The same path
+receives the credentials when it reconnects, within that window.
+
+Each DIDComm and TSP attempt asks your delivery layer for a receipt
+(`messaging/receipt/0.1`, under the DIDComm `delivery_id` header or the TSP
+envelope's `deliveryId`; VTI-TRN-060). Send one back to the community once you
+hold the message and it settles the attempt delivered — the only evidence the
+community has when your mediator is not its own. `vta-sdk`'s `DIDCommSession`
+does this for you. Without a receipt, an attempt relayed to your own mediator
+is recorded `unconfirmable` at the end of its window rather than re-sent over
+another transport (VTI-TRN-042 as amended, VTI-TRN-064); your acknowledgement
+(`join-requests/submit-receipt`, `credentialsDelivered` on
+`vtc/join-requests/status`) is still how the community learns you hold the
+credentials. The same path
 delivers a re-minted role endorsement after a role change and a vetter role
 credential after a vetter grant.
 

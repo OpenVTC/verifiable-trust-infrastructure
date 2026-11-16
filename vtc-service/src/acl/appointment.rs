@@ -16,7 +16,7 @@
 //! standing silently.
 //!
 //! Every write takes the git-namespace write lock: an `acl/*` write re-reads an entry's
-//! resource grants under it (`routes::acl::commit_grant`), so a grant written here is
+//! resource grants under it (`acl::ops::commit_grant`), so a grant written here is
 //! never lost to a racing role change.
 
 use std::collections::{BTreeMap, BTreeSet};

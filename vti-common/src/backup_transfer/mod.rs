@@ -155,7 +155,7 @@ pub async fn set_file_mode_600(path: &Path) -> Result<(), AppError> {
 /// write's or a finalize's update (or be overwritten by one, un-aborting the
 /// bundle), and two aborts could both report having aborted it.
 pub async fn abort(ks: &KeyspaceHandle, caller_did: &str, id: &Uuid) -> Result<bool, AppError> {
-    let _guard = chunked::chunk_lock().lock().await;
+    let _guard = chunked::chunk_lock(id).lock().await;
     let mut record = require_owned(ks, id, caller_did).await?;
     if record.state.is_terminal() {
         return Ok(false);
@@ -177,7 +177,8 @@ pub async fn abort(ks: &KeyspaceHandle, caller_did: &str, id: &Uuid) -> Result<b
     let mut batch = crate::store::Batch::new();
     batch
         .insert(bundle_store::bundle_key(id), &record)?
-        .remove(chunked::plan_key(id));
+        .remove(chunked::plan_key(id))
+        .remove(chunked::progress_key(id));
     ks.apply_batch(batch).await?;
     Ok(true)
 }

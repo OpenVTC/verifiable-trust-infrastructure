@@ -2217,3 +2217,111 @@ textarea {
   gap: 0.75rem;
   flex-wrap: wrap;
 }
+
+/* Showing one's own awards outside the community (VTI-BDG-070). */
+.bw-share {
+  grid-column: 1 / -1;
+}
+.bw-share h2 {
+  margin: 0 0 0.25rem;
+}
+.bw-share-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+.bw-share-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+.bw-share-links,
+.bw-copy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Claiming a badge with an event's code (VTI-BDG-026). */
+.bw-claim {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.bw-claim input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+/* Make a badge: upload a picture, or build one. */
+.bw-picture-mode {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.bw-picture-mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+.bw-upload[hidden] {
+  display: none;
+}
+
+/* A confirmation before an act that is hard to undo (#2607): the console's
+   `ConfirmDialog` drawn with the portal's buttons (`look="portal"`). Inside a
+   protected surface, whose root carries the body's `.vtc-signin`. */
+.vtc-signin .confirm-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 0.45);
+}
+.vtc-signin .confirm-dialog {
+  width: min(28rem, 100%);
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--elev-3);
+  padding: 1.35rem;
+  display: grid;
+  gap: 0.75rem;
+}
+.vtc-signin .confirm-dialog h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.vtc-signin .confirm-dialog p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.vtc-signin .confirm-dialog .form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.vtc-signin .btn-danger {
+  background: var(--bg-elev);
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  color: var(--danger);
+}
+.vtc-signin .btn-danger:not(:disabled):hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}

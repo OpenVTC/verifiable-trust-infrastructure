@@ -64,7 +64,7 @@ pkgs_for() {
     echo "could not find the '$key:' job in $WORKFLOW" >&2
     return 1
   fi
-  if ! echo "$block" | grep -qE '^    name: Feature combos \('; then
+  if ! grep -qE '^    name: Feature combos \(' <<<"$block"; then
     echo "'$key' is not a Feature combos group job in $WORKFLOW" >&2
     return 1
   fi
@@ -74,7 +74,7 @@ pkgs_for() {
   # perfectly fine.
   commands=$(echo "$block" | grep -vE '^\s*#')
 
-  if echo "$commands" | grep -qE 'cargo [a-z]+([^#]*)--workspace'; then
+  if grep -qE 'cargo [a-z]+([^#]*)--workspace' <<<"$commands"; then
     echo "refusing: Feature combos job '$key' has a --workspace step, so the" >&2
     echo "packages its -p flags name are not the full set it builds. Move that" >&2
     echo "step to the features-all job, or this filter will under-cover it:" >&2

@@ -112,6 +112,11 @@ Press Enter in the VTC setup wizard. Now that the ephemeral key is
 authorised, the wizard authenticates to the VTA and asks **where the
 VTC DID should be published**:
 
+- **DID method** — `did:webvh` (the default) or `did:webs` (alpha): a
+  level-1 KERI identifier the VTA publishes at a hosting server, with one
+  signing key and no post-quantum key. A did:webs has no serverless
+  option, and no `did.jsonl` is written for it — see
+  [A VTC as a did:webs](../02-vta/did-webs.md#a-vtc-as-a-didwebs).
 - **did-hosting server** — pick a registered DID-hosting server from
   the VTA's live catalogue, or choose *serverless* to self-host the
   `did.jsonl` at the VTC base URL.
@@ -137,9 +142,15 @@ opens the sealed bundle, and writes:
 
 - `<data_dir>/did/<scid>.jsonl` — the `did:webvh` log entry the
   daemon serves at `GET /.well-known/did.jsonl` (the URL the VTC's
-  own DID resolves to).
+  own DID resolves to). Not for a did:webs, whose host serves its
+  `keri.cesr`.
 - `config.toml` — the VTC's runtime configuration.
 - The `VtcKeyBundle` to the configured secrets backend.
+- `<data_dir>/keys/admin-key.json` — the admin DID's private key material
+  (owner-only, `0600`; a re-run against the same data directory never
+  overwrites it and writes `admin-key.<timestamp>.json` beside it). Setup
+  prints only this path, never the key. Move it to wherever the client that
+  acts as the admin DID keeps its keys, then delete this copy.
 
 The wizard prints a one-shot **install URL**. Save it.
 
@@ -178,8 +189,9 @@ same shape the mediator and did-hosting services use:
    one), provisions against the VTA, writes the same `did.jsonl` /
    `config.toml` / sealed bundle as the interactive path, and prints a
    terse `key=value` block (including the install URL + claim code).
-   The admin private key is **never** printed in non-interactive mode —
-   re-run interactively if you need it.
+   The admin private key is never printed; like the interactive wizard,
+   phase 2 writes it to `<data_dir>/keys/admin-key.json` (`0600`) and
+   prints `admin_key_file=<path>`.
 
 For the full walkthrough — including the secret-store `backend` selector
 and a Kubernetes example — see
@@ -251,44 +263,30 @@ the order that admits a community's first vetter, follow the
 
 ## Step 4 — Configure policy (optional)
 
-Out of the box, the VTC ships default Rego policies that admit
-nothing (`join.rego` and `removal.rego` default-deny) so a fresh
-community has zero implicit members. Upload your own policies via:
-
-```sh
-# Upload a custom join policy
-cnm policies upload --purpose join --rego ./my-join.rego
-
-# Activate it
-cnm policies activate --id <returned-policy-id>
-```
+Who may join is set by the community's **join criteria**
+([`join-criteria.md`](join-criteria.md)): manage them in the console under
+**Vetting → Requirements**. The default `join.rego` follows the criteria; an
+operator replaces it only to tighten. To upload and activate a policy of your
+own, use the console's **Policies** page, or sign `policy/upsert/0.3` and then
+`policy/activate/0.1` (there is no `cnm` command for either). Changing an
+authority purpose's policy is consent-gated and parks in the action list.
 
 See [`community-lifecycle.md`](community-lifecycle.md) for the
 canonical Rego inputs each policy receives and worked examples.
 
 ## Step 5 — Receive your first join request
 
-A prospective member presents a Verifiable Presentation containing
-the evidence credentials your policy demands, then POSTs the VP to
-`/v1/join-requests`:
+A prospective member's wallet reads the community's published criteria
+(`vtc/join-requests/manifest/0.4`) and sends a signed
+`vtc/join-requests/submit/0.3` Trust Task — over TSP, DIDComm, or HTTPS
+(`POST /v1/trust-tasks`) — presenting what a criterion asks for. The VTC
+decides it under the governing criterion and the active `join.rego`
+([`join-criteria.md`](join-criteria.md)): an `automatic` criterion that is met
+admits at once; a `review` criterion refers the request to an administrator.
 
-```sh
-# Member-side, with their own DID + signing key
-curl https://community.example.com/v1/join-requests \
-  -H 'Content-Type: application/json' \
-  -H 'Trust-Task: https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0' \
-  --data @join-request.json
-```
-
-The VTC evaluates the active `join.rego` against the presented
-evidence. On `allow`, it persists the request and notifies admins;
-on `deny`, it returns 403 with the rule failure reason.
-
-Admins approve via:
-
-```sh
-cnm join approve <request-id>
-```
+Administrators decide referred requests on the console's **Join requests**
+page (or **Actions**), which signs `vtc/join-requests/decide/0.1`; `cnm` has
+no join command.
 
 The VTC issues a VMC + a role VAC, allocates a status-list
 slot for revocation, and delivers each credential to the member as

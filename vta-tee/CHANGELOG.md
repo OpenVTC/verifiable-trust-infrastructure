@@ -2,6 +2,78 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.42.0...vta-tee-v0.43.0) — 2026-11-15
+
+
+## [0.42.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.41.0...vta-tee-v0.42.0) — 2026-11-14
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+## [0.41.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.40.0...vta-tee-v0.41.0) — 2026-11-12
+
+
+### Added
+
+- **vta**: A TEE VTA can take a key-role did:webs as its own DID at first boot ([#2696](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2696))
+
+A TEE operator asks for a key-role did:webs as the enclave's identity with
+  `[tee.kms.vta_did_webs]` (server_did, domain, optional path / server_id), in an
+  image built with vta-enclave's new `webs` feature and `[dids] webs_enabled`.
+  Additive: absent, first boot is unchanged; exclusive with `vta_did_template`.
+
+  First boot mints it inside the enclave from the KMS-bootstrapped seed through
+  `operations::did_webs::create_own_identity` — the one create `vta setup`'s
+  `create_webs` now calls too, on first-boot authority (no claims; refused once
+  the VTA has an identity; no transport reaches it) — records it unpublished and
+  persists the DID as `tee:vta_did`, so later boots restore it store-first. A
+  boot that died before that adopts what it minted. Startup publishes it exactly
+  as for a plain VTA (`publish_own_webs_identity`, self-certifying
+  `did/register/0.1`). A refused mint is fatal on Nitro: never another
+  identifier (VTI-KEY-001, VTI-KEY-009).
+
+  The enclave proxy allowlists the identity's host and domain from the same
+  table; `extract_host_from_did` reads did:webs and honours a `%3A` port for
+  every method (it dropped the port before).
+
+  A restore that replaces another identity now detaches did:webs slots as well
+  as did:webvh ones: the record keeps its slot and loses its server, so nothing
+  is published to the source's host.
+
+
+
+## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.39.0...vta-tee-v0.40.0) — 2026-11-10
+
+
+## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.38.0...vta-tee-v0.39.0) — 2026-11-09
+
+
 ## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.37.0...vta-tee-v0.38.0) — 2026-11-05
 
 

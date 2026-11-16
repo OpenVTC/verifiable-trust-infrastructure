@@ -193,7 +193,7 @@ async fn supported_trust_tasks_via_didcomm() {
                 trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
                 json!({
                     "frameworkVersion": "0.6.0",
-                    "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.2"]
+                    "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.3"]
                 }),
             )
         } else {
@@ -555,12 +555,12 @@ async fn rotate_seed_via_didcomm() {
 /// while the client parsed `{ entry }`, so `pnm acl get` over DIDComm failed
 /// with `missing field 'entry'` against a VTA whose REST route was correct.
 ///
-/// `acl/list/0.3` names the filter `context` and requires its `direction`;
+/// `acl/list/0.4` names the filter `context` and requires its `direction`;
 /// 0.1's `scope` is refused by the schema.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_acl_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_ACL_LIST_0_3) {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_LIST_0_4) {
             let payload = &body["payload"];
             assert_eq!(
                 payload["context"], "ctx-a",
@@ -572,7 +572,7 @@ async fn list_acl_via_didcomm() {
                 "0.1's `scope` must not be sent: {body}"
             );
             tt_ok(
-                trust_tasks::TASK_ACL_LIST_0_3,
+                trust_tasks::TASK_ACL_LIST_0_4,
                 json!({"entries": [acl_entry_json("did:key:zAdmin")]}),
             )
         } else {
@@ -590,10 +590,10 @@ async fn list_acl_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_acl_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_ACL_SHOW_0_2) {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_SHOW_0_3) {
             assert_eq!(body["payload"]["subject"], "did:key:zAdmin", "{body}");
             tt_ok(
-                trust_tasks::TASK_ACL_SHOW_0_2,
+                trust_tasks::TASK_ACL_SHOW_0_3,
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
@@ -611,9 +611,9 @@ async fn get_acl_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_acl_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_ACL_GRANT_0_2) {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_GRANT_0_3) {
             tt_ok(
-                trust_tasks::TASK_ACL_GRANT_0_2,
+                trust_tasks::TASK_ACL_GRANT_0_3,
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
@@ -632,10 +632,10 @@ async fn create_acl_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_acl_via_didcomm_returns_unit() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_ACL_REVOKE_0_2) {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_REVOKE_0_3) {
             // rpc_tt_void path: any non-rejection reply works; the SDK
             // doesn't deserialize the payload for unit-returning calls.
-            tt_ok(trust_tasks::TASK_ACL_REVOKE_0_2, json!({}))
+            tt_ok(trust_tasks::TASK_ACL_REVOKE_0_3, json!({}))
         } else {
             no_handler()
         }
@@ -655,13 +655,13 @@ async fn delete_acl_via_didcomm_returns_unit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_acl_via_didcomm_carries_every_member() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_ACL_SHOW_0_2) {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_SHOW_0_3) {
             // The context move is read against the stored entry (`primary`).
             tt_ok(
-                trust_tasks::TASK_ACL_SHOW_0_2,
+                trust_tasks::TASK_ACL_SHOW_0_3,
                 acl_entry_envelope("did:key:zAdmin"),
             )
-        } else if is_tt(msg_type, body, trust_tasks::TASK_ACL_UPDATE_0_2) {
+        } else if is_tt(msg_type, body, trust_tasks::TASK_ACL_UPDATE_0_3) {
             let p = &body["payload"];
             assert_eq!(p["subject"], "did:key:zAdmin", "{body}");
             // `primary` → `ctx-a` is lateral: widen to the union here, narrow
@@ -689,17 +689,17 @@ async fn update_acl_via_didcomm_carries_every_member() {
                 "{body}"
             );
             tt_ok(
-                trust_tasks::TASK_ACL_UPDATE_0_2,
+                trust_tasks::TASK_ACL_UPDATE_0_3,
                 acl_entry_envelope("did:key:zAdmin"),
             )
-        } else if is_tt(msg_type, body, trust_tasks::TASK_ACL_REVOKE_0_2) {
+        } else if is_tt(msg_type, body, trust_tasks::TASK_ACL_REVOKE_0_3) {
             assert_eq!(
                 body["payload"]["revocation"],
                 json!({"kind": "act", "act": {"scope": "contexts", "contexts": ["ctx-a"]}}),
                 "{body}"
             );
             tt_ok(
-                trust_tasks::TASK_ACL_REVOKE_0_2,
+                trust_tasks::TASK_ACL_REVOKE_0_3,
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
@@ -721,6 +721,7 @@ async fn update_acl_via_didcomm_carries_every_member() {
         approve_scope: Some(vta_sdk::acl::ApproveScope::Contexts(vec!["ctx-b".into()])),
         allowed_keys: Some(Some(vec!["tenant-key-a".into()])),
         capabilities: None,
+        purposes: None,
     };
     client.update_acl("did:key:zAdmin", req).await.unwrap();
 
@@ -735,14 +736,14 @@ async fn update_acl_via_didcomm_carries_every_member() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn change_acl_role_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_ACL_CHANGE_ROLE_0_2) {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_CHANGE_ROLE_0_3) {
             // The compare-and-swap has to reach the maintainer, or the
             // check it exists for cannot run.
             let p = &body["payload"];
             assert_eq!(p["fromRole"], "reader", "fromRole must be sent: {body}");
             assert_eq!(p["toRole"], "application", "toRole must be sent: {body}");
             tt_ok(
-                trust_tasks::TASK_ACL_CHANGE_ROLE_0_2,
+                trust_tasks::TASK_ACL_CHANGE_ROLE_0_3,
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
@@ -1288,7 +1289,7 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
                     trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
                     json!({
                         "frameworkVersion": "0.6.0",
-                        "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.2"]
+                        "supportedTypes": ["https://trusttasks.org/spec/acl/grant/0.3"]
                     }),
                 )
             } else {

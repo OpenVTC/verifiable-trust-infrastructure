@@ -39,8 +39,9 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
     Implementation, ListPromptsResult, ListResourcesResult, PaginatedRequestParams, Prompt,
-    PromptArgument, PromptMessage, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities, ServerConfig,
+    PromptArgument, PromptMessage, ProtocolVersion, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
+    ServerConfig,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{
@@ -55,6 +56,7 @@ use vti_mcp_common::guard::{Decision, Guard, Risk, classify, glob_match, slug_of
 
 use crate::guides;
 use vti_mcp_common::observability::{CallRecord, Recorder, redact_call};
+use vti_mcp_common::tool_error::{CallFailure, ToolError};
 
 /// The Trust Task URI each convenience tool **actually sends**.
 mod wire {
@@ -84,12 +86,28 @@ fn ok_json(value: impl serde::Serialize) -> Result<CallToolResult, McpError> {
 
 /// What a community answered, as a tool result.
 ///
-/// A refusal becomes an error carrying the community's own `trust-task-error`
-/// document (its `code` and `message` are what the caller reads, whichever
-/// transport carried the task). A parked operation is **not** an error: it
+/// A refusal becomes a tool-execution error (#2594) carrying the community's
+/// own `trust-task-error` document (its `code` and `message` are what the
+/// caller reads, whichever transport carried the task) — a result the model
+/// reads, never a JSON-RPC protocol error, which hosts show as a bridge fault. A parked operation is **not** an error: it
 /// completes itself when enough administrators approve, so the result says
 /// so and names the action to follow.
-pub(crate) fn outcome(result: Result<Value, VtcError>) -> Result<Value, McpError> {
+///
+/// A step-up the community offered to hand to the person's wallet is not an
+/// error either: the result says `"status": "stepUpRequired"` and carries the
+/// `step-up` link (VTI-LNK-127) for the person to open, and nothing else —
+/// never the inline request as something to approve. The bridge holds no
+/// factor and never answers it; once the person has, the identical call goes
+/// through.
+pub(crate) fn outcome(result: Result<Value, VtcError>) -> Result<Value, ToolError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    outcome_at(result, now)
+}
+
+/// [`outcome`] at `now` (epoch seconds), for tests.
+pub(crate) fn outcome_at(result: Result<Value, VtcError>, now: i64) -> Result<Value, ToolError> {
     match result {
         Ok(value) => Ok(value),
         Err(VtcError::Parked { action_id, message }) => Ok(json!({
@@ -100,12 +118,151 @@ pub(crate) fn outcome(result: Result<Value, VtcError>) -> Result<Value, McpError
                      itself when enough of them approve. Follow it with \
                      vtc/admin/actions/show, and do not send it again.",
         })),
-        Err(VtcError::Refused { document }) => Err(McpError::internal_error(
-            format!("the community refused the request: {document}"),
-            None,
-        )),
-        Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        Err(VtcError::Refused { document }) if step_up_link(&parsed(&document), now).is_some() => {
+            let document = parsed(&document);
+            let link = step_up_link(&document, now).expect("checked above");
+            let inline = vtc_client::step_up::inline_request(&document);
+            Ok(json!({
+                "status": "stepUpRequired",
+                "subject": inline.and_then(|r| r.get("subject")),
+                "reason": inline.and_then(|r| r.get("reason")),
+                "link": link.link,
+                "linkExpiresAt": link.expires_at,
+                "next": "the community needs the person's own step-up for this one call. Show \
+                         them the link (or a QR code of it) and ask them to open it in their \
+                         wallet, which shows exactly what will be done; it expires at \
+                         linkExpiresAt. Once they have approved, send the identical call \
+                         again. Never approve it yourself or describe it as approved.",
+            }))
+        }
+        Err(VtcError::Refused { document }) => Err(refused(&document)),
+        Err(e) => Err(to_tool(e)),
     }
+}
+
+/// What a transport or unclassified failure tells the model to do.
+const NEXT_STATUS: &str = "call vtc_status to see which identity this bridge runs as and how it \
+                           is connected";
+
+/// A community's refusal: kind `refused`, its own `code` and `message`, and
+/// the whole `trust-task-error` document as received for anything else it
+/// carries.
+fn refused(document: &str) -> ToolError {
+    let parsed = parsed(document);
+    let code = parsed["payload"]["code"]
+        .as_str()
+        .or_else(|| parsed["code"].as_str())
+        .map(str::to_string);
+    let message = parsed["payload"]["message"]
+        .as_str()
+        .or_else(|| parsed["message"].as_str())
+        .map_or_else(
+            || format!("the community refused the request: {document}"),
+            |m| format!("the community refused the request: {m}"),
+        );
+    let next = match code.as_deref() {
+        Some(c) if c.ends_with("permissionDenied") || c.ends_with("forbidden") => {
+            "this identity's standing at the community does not permit the operation. Call \
+             vtc_whoami to see what the community knows of it; only an administrator can widen \
+             it. Do not retry."
+        }
+        Some(c) if c.ends_with("malformedRequest") => {
+            "the payload does not match the operation's schema. Read it with \
+             vtc_list_operations (detail 'full') and correct the call."
+        }
+        Some(c) if c.ends_with("unsupportedType") || c.ends_with("unsupportedVersion") => {
+            "the community does not serve this operation at this version. Call \
+             vtc_supported_tasks and use one it serves."
+        }
+        _ => "read the code; send a corrected call only if the refusal says what to change.",
+    };
+    let mut error = ToolError::new("refused", message).with_next(next);
+    if !parsed.is_null() {
+        error = error.with_details(json!({ "code": code, "document": parsed }));
+    }
+    error
+}
+
+/// A client-side failure as a tool-execution error, its kind the [`VtcError`]
+/// variant.
+fn to_tool(e: VtcError) -> ToolError {
+    let message = e.to_string();
+    match e {
+        VtcError::NotFound { code, .. } => ToolError::new("notFound", message)
+            .with_next("check the identifier: list the collection first.")
+            .with_details(json!({ "code": code })),
+        VtcError::InvalidPayload(_) => ToolError::new("invalidRequest", message).with_next(
+            "nothing was sent: the payload does not satisfy the operation's schema. Read it \
+             with vtc_list_operations (detail 'full'); an unset optional member is absent, \
+             never null.",
+        ),
+        VtcError::UnpinnedTask { type_uri, .. } => ToolError::new("notPinned", message)
+            .with_next(
+                "nothing was sent: this bridge sends only the Trust Task versions it pins. Call \
+                 vtc_list_operations for the URIs it can send.",
+            )
+            .with_details(json!({ "operation": type_uri })),
+        VtcError::NotAuthenticated | VtcError::Auth(_) => {
+            ToolError::new("unauthenticated", message).with_next(NEXT_STATUS)
+        }
+        VtcError::Transport(_)
+        | VtcError::Session(_)
+        | VtcError::NoTransport { .. }
+        | VtcError::NoRestTransport(_) => {
+            ToolError::new("transport", message).with_next(NEXT_STATUS)
+        }
+        VtcError::Http { status, .. } => ToolError::new("httpError", message)
+            .with_next(NEXT_STATUS)
+            .with_details(json!({ "status": status })),
+        _ => ToolError::new("failed", message).with_next(NEXT_STATUS),
+    }
+}
+
+/// Check `operation` against what the community said it serves (#2594).
+/// `None` when served, or when nothing is known; otherwise the refusal to
+/// return instead of sending — the discovery answer is the community's own
+/// dispatch table, so absence from it is a fact.
+fn check_served(operation: &str, served: &[String]) -> Option<ToolError> {
+    if served.iter().any(|u| u == operation) {
+        return None;
+    }
+    let family = operation.rsplit_once('/').map(|(f, _)| f);
+    let versions: Vec<String> = served
+        .iter()
+        .filter_map(|u| {
+            let (f, v) = u.rsplit_once('/')?;
+            (Some(f) == family).then(|| v.to_string())
+        })
+        .collect();
+    let message = if versions.is_empty() {
+        format!("this community does not serve {operation}")
+    } else {
+        format!(
+            "this community does not serve {operation} — it serves {}",
+            versions.join(", ")
+        )
+    };
+    Some(
+        ToolError::new("notServed", message)
+            .with_next(
+                "nothing was sent. Call vtc_supported_tasks (or vtc_list_operations, whose \
+                 'served' says the same) and use an operation the community serves.",
+            )
+            .with_details(json!({ "operation": operation, "servedVersions": versions })),
+    )
+}
+
+/// A refusal document as JSON; `Null` when it does not parse.
+fn parsed(document: &str) -> Value {
+    serde_json::from_str(document).unwrap_or(Value::Null)
+}
+
+/// The `step-up` link a refusal's hand-off makes, its contact the community
+/// that issued the refusal.
+fn step_up_link(document: &Value, now: i64) -> Option<vtc_client::step_up::StepUpLink> {
+    let handoff = vtc_client::step_up::handoff_of(document)?;
+    let community = document["issuer"].as_str()?;
+    vtc_client::step_up::link(community, handoff, now)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -171,18 +328,27 @@ pub struct BridgeIdentity {
     pub vtc_did: Option<String>,
     /// The transport pinned by the operator, or `auto`.
     pub transport_choice: String,
+    /// Set when the agent key was used with another community before
+    /// (`key_reuse`): what the operator should be told about it.
+    pub reuse_warning: Option<String>,
+    /// How MCP is served: `stdio`, or the `--listen` URL.
+    pub serving: String,
 }
 
 impl BridgeIdentity {
     fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "mode": self.mode,
             "agentDid": self.agent_did,
             "vtcDid": self.vtc_did,
             "transportChoice": self.transport_choice,
             // Always: this bridge has no rung that replays an operator login.
             "dedicatedAgent": true,
-        })
+        });
+        if let Some(w) = &self.reuse_warning {
+            v["keyReuseWarning"] = json!(w);
+        }
+        v
     }
 }
 
@@ -252,6 +418,10 @@ pub struct VtcMcp {
     served: Arc<RwLock<Option<Vec<String>>>>,
     /// The wallet sign-in this bridge has open, and who it is signed in as.
     pub(crate) sign_in: Arc<RwLock<crate::signin::SignInState>>,
+    /// Whether the community has answered since the last transport failure
+    /// (`health`): what `connected` reports, instead of a flag latched at
+    /// connect.
+    pub(crate) health: Arc<crate::health::TransportHealth>,
 }
 
 /// One in-flight guarded call. Created by [`VtcMcp::begin`], consumed by
@@ -269,30 +439,37 @@ pub(crate) struct CallGuard {
 }
 
 impl CallGuard {
-    pub(crate) fn finish(
+    /// Record the outcome and hand back the result. An operation failure
+    /// ([`ToolError`]) is a tool result with `isError: true`, which the model
+    /// reads; only a [`CallFailure::Protocol`] stays a JSON-RPC error.
+    pub(crate) fn finish<E: Into<CallFailure>>(
         self,
-        result: Result<Value, McpError>,
+        result: Result<Value, E>,
     ) -> Result<CallToolResult, McpError> {
         let duration_ms = self.started.elapsed().as_millis();
-        let (outcome, error) = match &result {
-            Ok(_) => ("ok", None),
-            Err(e) => ("error", Some(e.message.to_string())),
-        };
-        self.emit(outcome, error, duration_ms);
         match result {
-            Ok(value) => ok_json(value),
-            Err(e) => Err(e),
+            Ok(value) => {
+                self.emit("ok", None, duration_ms);
+                ok_json(value)
+            }
+            Err(e) => {
+                let failure = e.into();
+                self.emit("error", Some(failure.message()), duration_ms);
+                failure.into_result()
+            }
         }
     }
 
+    /// Record a call that never reached the community, and answer it as a
+    /// tool result the model reads.
     pub(crate) fn refuse(
         self,
         outcome: &'static str,
-        message: String,
+        error: ToolError,
     ) -> Result<CallToolResult, McpError> {
         let duration_ms = self.started.elapsed().as_millis();
-        self.emit(outcome, Some(message.clone()), duration_ms);
-        Err(McpError::invalid_request(message, None))
+        self.emit(outcome, Some(error.message.clone()), duration_ms);
+        Ok(error.into_call_result())
     }
 
     fn emit(&self, outcome: &'static str, error: Option<String>, duration_ms: u128) {
@@ -355,6 +532,7 @@ impl VtcMcp {
             started: vti_mcp_common::observability::now_rfc3339().into(),
             served: Arc::new(RwLock::new(None)),
             sign_in: Arc::new(RwLock::new(crate::signin::SignInState::default())),
+            health: Arc::default(),
         }
     }
 
@@ -376,6 +554,7 @@ impl VtcMcp {
             started: vti_mcp_common::observability::now_rfc3339().into(),
             served: Arc::new(RwLock::new(None)),
             sign_in: Arc::new(RwLock::new(crate::signin::SignInState::default())),
+            health: Arc::default(),
         }
     }
 
@@ -385,7 +564,7 @@ impl VtcMcp {
     /// the catalog saying "unknown", never "no".
     pub async fn learn_served(&self) {
         let Some(client) = &self.client else { return };
-        match client.discover(&[]).await {
+        match self.health.observe(client.discover(&[]).await) {
             Ok(answer) => {
                 let uris: Vec<String> = vtc_client::supported_type_uris(&answer)
                     .into_iter()
@@ -398,17 +577,21 @@ impl VtcMcp {
         }
     }
 
-    pub(crate) fn client(&self) -> Result<&VtcClient, McpError> {
+    pub(crate) fn client(&self) -> Result<&VtcClient, ToolError> {
         match &self.client {
             Some(client) => Ok(client),
-            None => Err(McpError::internal_error(
+            None => Err(ToolError::new(
+                "notConnected",
                 format!(
                     "this vtc-mcp bridge is not connected to its community: {}. Fix the \
                      connection and restart the MCP server; `vtc_status` reports the \
                      configuration it tried.",
                     self.connect_error.as_deref().unwrap_or("unknown error")
                 ),
-                None,
+            )
+            .with_next(
+                "call vtc_status to see the configuration it tried; the operator has to fix the \
+                 connection and restart vtc-mcp.",
             )),
         }
     }
@@ -452,7 +635,10 @@ impl VtcMcp {
             Decision::Allow => Ok(guard),
             Decision::Deny(reason) => {
                 tracing::warn!(seq, tool, reason = %reason, "call denied by local policy");
-                Err(Box::new(guard.refuse("denied", reason)))
+                Err(Box::new(guard.refuse(
+                    "denied",
+                    ToolError::refused_locally("denied", reason, "vtc_status"),
+                )))
             }
             Decision::Confirm(prompt) => {
                 let answer = match peer {
@@ -464,10 +650,18 @@ impl VtcMcp {
                 };
                 match answer {
                     Ok(true) => Ok(guard),
-                    Ok(false) => Err(Box::new(
-                        guard.refuse("declined", format!("{prompt} — declined by the operator.")),
-                    )),
-                    Err(reason) => Err(Box::new(guard.refuse("denied", reason))),
+                    Ok(false) => Err(Box::new(guard.refuse(
+                        "declined",
+                        ToolError::refused_locally(
+                            "declined",
+                            format!("{prompt} — declined by the operator."),
+                            "vtc_status",
+                        ),
+                    ))),
+                    Err(reason) => Err(Box::new(guard.refuse(
+                        "denied",
+                        ToolError::refused_locally("denied", reason, "vtc_status"),
+                    ))),
                 }
             }
         }
@@ -498,9 +692,25 @@ impl VtcMcp {
 
     /// Send one operation and read the answer — the body of `vtc_call`,
     /// without the MCP plumbing, so it can be exercised directly.
-    pub async fn call_operation(&self, operation: &str, payload: Value) -> Result<Value, McpError> {
+    ///
+    /// An operation the community has said it does not serve is refused here,
+    /// with the versions of it that it does serve, rather than sent.
+    pub async fn call_operation(
+        &self,
+        operation: &str,
+        payload: Value,
+    ) -> Result<Value, ToolError> {
         let client = self.client()?;
-        outcome(client.send_task(operation, payload).await)
+        let served = self.served.read().await.clone();
+        if let Some(served) = served
+            && let Some(refusal) = check_served(operation, &served)
+        {
+            return Err(refusal);
+        }
+        outcome(
+            self.health
+                .observe(client.send_task(operation, payload).await),
+        )
     }
 
     #[tool(
@@ -549,7 +759,7 @@ impl VtcMcp {
         };
         let patterns: Vec<&str> = p.patterns.iter().map(String::as_str).collect();
         let result = self.operations_catalog(&patterns, full).await;
-        call.finish(Ok(result))
+        call.finish(Ok::<_, ToolError>(result))
     }
 
     /// The catalog, annotated with this bridge's view of each entry. Shared
@@ -655,7 +865,7 @@ impl VtcMcp {
         };
         let patterns: Vec<&str> = p.patterns.iter().map(String::as_str).collect();
         let result = match self.client() {
-            Ok(client) => match client.discover(&patterns).await {
+            Ok(client) => match self.health.observe(client.discover(&patterns).await) {
                 Ok(answer) => {
                     let uris: Vec<String> = vtc_client::supported_type_uris(&answer)
                         .into_iter()
@@ -703,17 +913,22 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => Ok(match client.send_task(wire::WHOAMI, json!({})).await {
-                Ok(answer) => json!({
-                    "identity": self.identity.to_json(),
-                    "whoami": answer,
-                }),
-                Err(e) => json!({
-                    "identity": self.identity.to_json(),
-                    "whoami": Value::Null,
-                    "reason": e.to_string(),
-                }),
-            }),
+            Ok(client) => Ok(
+                match self
+                    .health
+                    .observe(client.send_task(wire::WHOAMI, json!({})).await)
+                {
+                    Ok(answer) => json!({
+                        "identity": self.identity.to_json(),
+                        "whoami": answer,
+                    }),
+                    Err(e) => json!({
+                        "identity": self.identity.to_json(),
+                        "whoami": Value::Null,
+                        "reason": e.to_string(),
+                    }),
+                },
+            ),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -743,7 +958,7 @@ impl VtcMcp {
         };
         let limit = p.recent_calls.unwrap_or(10).min(100);
         let status = self.status(limit).await;
-        call.finish(Ok(status))
+        call.finish(Ok::<_, ToolError>(status))
     }
 
     /// The status document, shared by the tool and the `vtc://status` resource.
@@ -754,7 +969,11 @@ impl VtcMcp {
             .and_then(|c| c.transport())
             .map(|t| t.to_string());
         json!({
-            "connected": self.client.is_some(),
+            // A session, and no transport failure since the community last
+            // answered (R6.2: never a flag latched at connect).
+            "connected": self.client.is_some() && self.health.reachable(),
+            "transportHealth": self.health.to_json(),
+            "serving": self.identity.serving,
             "connectError": self.connect_error.as_deref(),
             "startedAt": &*self.started,
             "version": env!("CARGO_PKG_VERSION"),
@@ -779,6 +998,17 @@ impl VtcMcp {
 
 #[tool_handler(router = (Self::tool_router() + Self::workflow_router() + Self::signin_router()))]
 impl ServerHandler for VtcMcp {
+    /// Up to `2025-11-25`, never `2026-07-28`. Confirmation (`--confirm`) and
+    /// `vtc_actions_decide` ask the human with a server-to-client elicitation
+    /// request, which `2026-07-28` forbids: a host that negotiates it is served
+    /// statelessly, with no client capabilities, so every confirmation would be
+    /// refused as "this host cannot ask you". Capping the version makes such a
+    /// host fall back to `initialize`, where elicitation works. Lift the cap
+    /// only once confirmation is answered with an `InputRequiredResult`.
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        vti_mcp_common::listen::supported_protocol_versions()
+    }
+
     fn get_info(&self) -> ServerConfig {
         let mut server_info = Implementation::from_build_env();
         server_info.name = "vtc-mcp".to_string();
@@ -946,6 +1176,8 @@ mod tests {
             agent_did: Some("did:key:zAgent".into()),
             vtc_did: Some(VTC_DID.into()),
             transport_choice: "auto".into(),
+            reuse_warning: None,
+            serving: "stdio".into(),
         }
     }
 
@@ -1056,6 +1288,7 @@ mod tests {
             "room_open",
             "member_admit",
             "admin_grant",
+            "badge_create",
             "vtc_actions_list",
             "vtc_actions_show",
             "vtc_actions_decide",
@@ -1089,6 +1322,7 @@ mod tests {
         ("room_open", None),
         ("member_admit", None),
         ("admin_grant", None),
+        ("badge_create", None),
         (
             "vtc_actions_list",
             Some(crate::workflows::wire::ACTIONS_LIST),
@@ -1310,5 +1544,118 @@ mod tests {
         .unwrap();
         assert_eq!(value["status"], "parked");
         assert_eq!(value["actionId"], "act_1");
+    }
+
+    /// VTI-LNK-127: a refusal with a hand-off becomes the `step-up` link for
+    /// the person, never the inline request to approve; one without stays an
+    /// error.
+    #[test]
+    fn vti_lnk_127_a_hand_off_becomes_the_persons_step_up_link() {
+        let now = 1_791_460_800; // 2026-10-08T12:00:00Z
+        let refusal = |handoff: Option<Value>| {
+            let mut details = json!({
+                "stepUpRequest": {
+                    "subject": "did:key:z6Mkadmin",
+                    "reason": "Invite an approver",
+                    "challenge": "c",
+                    "boundTo": "b",
+                },
+            });
+            if let Some(h) = handoff {
+                details["stepUpHandoff"] = h;
+            }
+            VtcError::Refused {
+                document: json!({
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.3",
+                    "issuer": VTC_DID,
+                    "payload": { "code": "permissionDenied", "details": details },
+                })
+                .to_string(),
+            }
+        };
+        let value = outcome_at(
+            Err(refusal(Some(json!({
+                "handle": "Hk2pQ9xV4mT7rW1sZ8yN3A",
+                "expiresAt": "2026-10-08T12:04:00Z",
+                "show": vtc_client::step_up::REQUESTS_SHOW,
+            })))),
+            now,
+        )
+        .unwrap();
+        assert_eq!(value["status"], "stepUpRequired");
+        assert_eq!(value["subject"], "did:key:z6Mkadmin");
+        assert_eq!(value["linkExpiresAt"], now + 240);
+        let link = value["link"].as_str().unwrap();
+        assert!(
+            link.starts_with("https://link.trustoverip.org/t#_from="),
+            "{link}"
+        );
+        assert!(link.ends_with("&_type=/vti/flow/step-up/0.1"), "{link}");
+        assert!(value.get("challenge").is_none() && value.get("boundTo").is_none());
+
+        assert!(outcome_at(Err(refusal(None)), now).is_err());
+    }
+
+    /// #2594: a community's refusal is a tool result the model reads, with
+    /// the community's own code, never `-32603 internal error`.
+    #[test]
+    fn a_refusal_is_a_tool_result_carrying_the_communitys_code() {
+        let err = outcome(Err(VtcError::Refused {
+            document: json!({
+                "type": "https://trusttasks.org/spec/trust-task-error/0.3",
+                "issuer": VTC_DID,
+                "payload": { "code": "permissionDenied", "message": "not a manager" },
+            })
+            .to_string(),
+        }))
+        .unwrap_err();
+        assert_eq!(err.kind, "refused");
+        assert!(err.message.contains("not a manager"), "{}", err.message);
+        assert_eq!(
+            err.details.as_ref().unwrap()["code"],
+            json!("permissionDenied")
+        );
+        assert!(err.next.as_deref().unwrap().contains("vtc_whoami"));
+
+        let result = err.into_call_result();
+        assert_eq!(result.is_error, Some(true));
+
+        let unpinned = outcome(Err(VtcError::UnpinnedTask {
+            type_uri: "https://trusttasks.org/spec/vtc/x/9.9".into(),
+            reason: "not pinned".into(),
+        }))
+        .unwrap_err();
+        assert_eq!(unpinned.kind, "notPinned");
+    }
+
+    /// Once the community has said what it serves, an operation outside that
+    /// is refused before anything is sent, naming the versions it does serve.
+    #[tokio::test]
+    async fn an_operation_the_community_does_not_serve_is_not_sent() {
+        // Nothing listens: a send would fail as a transport error.
+        let client = Arc::new(VtcClient::with_key(
+            "http://127.0.0.1:9/v1",
+            VTC_DID,
+            holder(),
+        ));
+        let bridge = VtcMcp::new(
+            client,
+            identity(),
+            Guard::default(),
+            Arc::new(Recorder::default()),
+        );
+        let served_version = GROUPS_CREATE.rsplit_once('/').unwrap().1.to_string();
+        *bridge.served.write().await = Some(vec![GROUPS_CREATE.to_string()]);
+        let family = GROUPS_CREATE.rsplit_once('/').unwrap().0;
+        let err = bridge
+            .call_operation(&format!("{family}/9.9"), json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, "notServed");
+        assert_eq!(
+            err.details.as_ref().unwrap()["servedVersions"],
+            json!([served_version])
+        );
+        assert!(check_served(GROUPS_CREATE, &[GROUPS_CREATE.to_string()]).is_none());
     }
 }

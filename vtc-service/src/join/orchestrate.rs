@@ -1,6 +1,6 @@
 //! The join-submit orchestration spine — holder-binding verification, the
 //! decide -> auto-admit-effect -> audit pipeline, and the join-request
-//! persistence — moved out of `routes/join_requests/submit.rs` (P2.1) so it
+//! persistence — moved out of `join/ops/submit.rs` (P2.1) so it
 //! lives beside the join lifecycle it drives (`crate::join`) and is shared by
 //! every entry point (REST submit, DIDComm, credential-exchange present)
 //! without a `crate::routes::...` back-reference. The route handler keeps only
@@ -8,7 +8,7 @@
 //!
 //! Also hosts `emit_admit_audit` (the `MemberAdded` + `VmcIssued` + `VecIssued`
 //! envelopes a member admission records) — shared with the manual-approve route
-//! (`routes::join_requests::decide::decide`).
+//! (`join::ops::decide::decide`).
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use affinidi_vc::VerifiableCredential;
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, AuditWriter, CredentialIssuedData, JoinRequestData, JoinRequestRejectedData,
     JoinRequestSupplementedData, JoinRequestWithdrawnData, MemberAddedData,
 };

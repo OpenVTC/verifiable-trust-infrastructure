@@ -19,12 +19,20 @@ ask the operator to confirm it. Nothing you do here grants access.
    match number for them to compare in their wallet, then with the session.
    Never approve on their behalf, and never describe the number as anything
    but theirs to compare. For administrative work, `vtc_enrol_signing_key`
-   with no arguments gives the person one `cnm access authorize-key` command
-   to run; called again with the file it wrote, the bridge acts with their
-   administrative standing. A refusal asking for a step-up or an approval is
-   theirs to answer in the console, wallet or `cnm` — say so, and resend the
-   same call only after they have.
+   with no arguments names the bridge's key; the person signs the
+   authorization in the console (*Console signing keys → Authorize another
+   key*, through their wallet) or with `cnm access authorize-key`. Called again
+   with the JSON or the saved file, the bridge acts with their administrative
+   standing. A result with `status: "stepUpRequired"` carries
+   a `link`: show it to the person (a QR code is fine), tell them it expires
+   at `linkExpiresAt` and that their wallet will show exactly what will be
+   done, and resend the identical call only after they say they approved.
+   Never call it approved yourself. A refusal asking for a step-up with no
+   link, or for an approval, is theirs to answer in the console, wallet or
+   `cnm` — say so, and resend the same call only after they have.
 1. `vtc_status` — connected? as whom? over which transport? what policy?
+   `connected: false` with a `transportHealth.lastFailure` means the last
+   call could not reach the community; retry once before reporting it.
 2. `vtc_whoami` — what the community knows of this identity (it may answer
    only the configured identity, with the community's reason).
 3. `vtc_supported_tasks` — what this community serves; after it, the catalog
@@ -49,6 +57,8 @@ ask the operator to confirm it. Nothing you do here grants access.
 | Open a data room | `open-data-room` | `room_open` |
 | Admit a member | `admit-member` | `member_admit` |
 | Grant administration | `grant-administration` | `admin_grant` |
+| Create a member badge | `create-badge` | `badge_create` |
+| A member's own badges | `my-badges` | — (`vtc_call`, signed in as the member) |
 
 A workflow tool stops at the first step that is refused or parked and
 reports how far it got; continue from there with `vtc_call`.
@@ -66,7 +76,7 @@ response says so.
 
 The community's own operator guides are resources: `vtc://guide/groups`,
 `boards`, `elections`, `rooms`, `rooms-quickstart`, `admission`, `lifecycle`,
-`vetting`, `directory`, `admin-access`. Read the one for the job before the
+`vetting`, `directory`, `admin-access`, `badges`. Read the one for the job before the
 first write; the prompts name which.
 
 ## Rules

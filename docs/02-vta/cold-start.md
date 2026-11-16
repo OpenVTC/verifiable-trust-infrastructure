@@ -423,7 +423,7 @@ WEBVH_PATH/WEBVH_SERVER knobs and SDK-level integration), see
    to `/.well-known/did.jsonl`, and rotates on first connect.
 
 The `didcomm-mediator` template is a built-in. Custom integration
-shapes register their own template via `pnm did-templates upload` and
+shapes register their own template via `pnm did-templates create --file <path>` and
 pass the name in the request's `ask.template.name`.
 
 Revocation is the ACL — `pnm acl delete <mediator-did>` cuts access
@@ -511,7 +511,7 @@ VTA connect using the same `needs_rotation` flag the PNM flow uses
 ### `pnm setup` can't resolve the VTA DID
 
 PNM's interactive prompt only stores the DID — endpoints are resolved
-at runtime from the DID document (`#vta-rest` service endpoint, or
+at runtime from the DID document (the `VTARest` service's endpoint, matched on its type, or
 did:web / did:webvh domain parsing). If resolution fails:
 
 - Check the DID document is actually hosted where the DID claims

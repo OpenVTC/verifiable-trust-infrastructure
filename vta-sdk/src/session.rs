@@ -618,7 +618,7 @@ impl SessionStore {
     /// uses DIDComm authcrypt as the auth: every outbound message is
     /// encrypted to the VTA's recipient key, the VTA decrypts and
     /// reads `from` as the authenticated sender DID, then ACL-checks
-    /// it (see `vta-service/src/messaging/auth.rs::auth_from_message`).
+    /// it (see `vta-service/src/messaging/auth.rs::auth_for_trust_task_envelope`).
     /// No JWT changes hands; no token to expire.
     ///
     /// Pending-rotation parity with the REST path: when the loaded
@@ -884,7 +884,7 @@ impl SessionStore {
         transport: TransportChoice,
     ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
         let session = self.load_session(key).ok_or(
-            "Not authenticated.\n\nTo authenticate, import a credential:\n  <cli> auth login <credential-string>",
+            "Not authenticated: no session is stored for this VTA.\n\nSet one up with `pnm setup` (pnm) or `cnm auth login --credential-bundle <file>` (cnm).",
         )?;
 
         let session_vta_did = require_vta_did(&session)?.to_string();
@@ -1249,17 +1249,8 @@ impl SessionStore {
 /// `acl/swap-key` presentation) without re-deriving it from the multibase.
 fn generate_did_key()
 -> Result<(String, String, ed25519_dalek::SigningKey), Box<dyn std::error::Error>> {
-    let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed)
-        .map_err(|e| format!("CSPRNG failed while minting rotated did:key: {e}"))?;
-    let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let pubkey = signing.verifying_key().to_bytes();
-    let did = format!(
-        "did:key:{}",
-        crate::did_key::ed25519_multibase_pubkey(&pubkey)
-    );
-    let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, seed);
-    Ok((did, private_key_multibase, signing))
+    crate::did_key::generate_did_key()
+        .map_err(|e| format!("minting the rotated did:key: {e}").into())
 }
 
 /// Which mediator transport, if any, a pending rotation should run over.
@@ -2441,11 +2432,15 @@ pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error
     )
 }
 
-/// Extract the base URL from a `did:web:` or `did:webvh:` DID string, or from
-/// the `src` of a `did:scid:vh:1` DID URL (a bare did:scid names no host).
+/// Extract the base URL from a `did:web:`, `did:webs:` or `did:webvh:` DID
+/// string, or from the `src` of a `did:scid:vh:1` DID URL (a bare did:scid
+/// names no host).
 fn url_from_did(did: &str) -> Option<String> {
     let domain = if let Some(rest) = did.strip_prefix("did:web:") {
         // did:web:domain.com or did:web:domain.com%3A8100
+        rest.split(':').next()
+    } else if let Some(rest) = did.strip_prefix("did:webs:") {
+        // did:webs:domain.com[:path…]:AID, the domain first as for did:web
         rest.split(':').next()
     } else if let Some(rest) = did.strip_prefix("did:webvh:") {
         // did:webvh:SCID:domain.com or did:webvh:SCID:domain.com%3A8100
@@ -3068,6 +3063,12 @@ pub struct TspSession {
     // `TspWebSocket::close` consumes `self`, which a `MutexGuard` can't yield.
     // `None` means already shut down; receive then no-ops.
     ws: tokio::sync::Mutex<Option<affinidi_tdk::messaging::TspWebSocket>>,
+    /// Which socket `ws` holds: bumped each time [`reconnect`](Self::reconnect)
+    /// replaces it, and only ever written with the `ws` lock held. A waiter
+    /// that saw socket N die reconnects only if `ws` still holds N, so several
+    /// requests failing on the same close open one fresh socket between them,
+    /// not one each (see [`reconnect`](Self::reconnect) for why that matters).
+    ws_generation: std::sync::atomic::AtomicU64,
     /// This client's DID — the `issuer` on an [`announce`](Self::announce) frame.
     client_did: String,
     /// In-flight [`request`](Self::request) waiters plus the parking lot for
@@ -3224,6 +3225,7 @@ impl TspSession {
             identity,
             ownership,
             ws: tokio::sync::Mutex::new(Some(ws)),
+            ws_generation: std::sync::atomic::AtomicU64::new(0),
             client_did: client_did.to_string(),
             demux: crate::tsp_demux::TspDemux::new(),
         })
@@ -3424,8 +3426,9 @@ impl TspSession {
             // idle — otherwise a long-polling `receive_next` would hold it for
             // its whole budget and stall every concurrent `request`.
             let slice = PUMP_SLICE.min(deadline.saturating_duration_since(Instant::now()));
-            // Bound before the `match` — see `await_reply`.
-            let outcome = self.pump_once(ws, slice).await?;
+            // Bound before the `match` — see `await_reply`. A dead socket is
+            // the caller's `Err` to reconnect on, as documented above.
+            let outcome = self.pump_once(ws, slice).await.map_err(|e| e.to_string())?;
             match outcome {
                 // Not addressed to any in-flight request → it is a push, and
                 // pushes are what this method is for.
@@ -3471,6 +3474,17 @@ impl TspSession {
     ///   lost a race with the live notification and stranded the reply for
     ///   days (affinidi-tdk-rs#957); for `provision/integration` that reply
     ///   carried the only copy of a freshly minted admin key (OpenVTC #501).
+    /// - **A closed socket is reopened, once.** The mediator closes every
+    ///   websocket when the access token it was opened with expires (close
+    ///   1008, "authentication token expired" — 15 minutes by default), and a
+    ///   session that kept the dead socket failed every later request with
+    ///   "closed by the mediator" for the rest of its life. Now a request that
+    ///   finds the socket gone reconnects once — a fresh authentication, so a
+    ///   fresh token — and keeps waiting on the same waiter until its own
+    ///   deadline, or [`STRANDED_REPLY_GRACE`] if that is sooner. The request
+    ///   went out over the TSP transport's HTTP post, not this socket, so the
+    ///   reply is in the inbox and the new socket's flush-on-connect delivers
+    ///   it. Nothing is resent.
     ///
     /// # Authentication
     ///
@@ -3516,13 +3530,12 @@ impl TspSession {
 
         let deadline = Instant::now() + timeout;
         let mut outcome = self.await_reply(&request_id, &mut rx, deadline).await;
-        if outcome
-            .as_ref()
-            .is_err_and(|e| e.starts_with(crate::error::TSP_REPLY_TIMEOUT_PREFIX))
-        {
-            // The waiter is still registered, so whatever the reconnect flushes
-            // is routed to it like any other frame.
-            match self.reconnect().await {
+        // At most one reconnect per request, whichever way the first wait
+        // failed, so every request stays bounded (R1.2). In both arms the
+        // waiter is still registered, so whatever the reconnect flushes is
+        // routed to it like any other frame.
+        match &outcome {
+            Err(ReplyFailure::TimedOut(_)) => match self.reconnect(None).await {
                 Ok(()) => {
                     tracing::debug!(
                         request_id,
@@ -3534,12 +3547,32 @@ impl TspSession {
                 Err(e) => {
                     tracing::debug!(request_id, error = %e, "TSP reconnect after a reply timeout failed");
                 }
+            },
+            Err(ReplyFailure::SocketGone { generation, reason }) => {
+                let reason = reason.clone();
+                match self.reconnect(Some(*generation)).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            request_id,
+                            %reason,
+                            "TSP websocket was closed; reconnected to collect the reply"
+                        );
+                        // The request's own budget, but never less than the
+                        // grace: the close may have come just before it ran out.
+                        let resume = deadline.max(Instant::now() + STRANDED_REPLY_GRACE);
+                        outcome = self.await_reply(&request_id, &mut rx, resume).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(request_id, %reason, error = %e, "TSP reconnect after the websocket closed failed");
+                    }
+                }
             }
+            _ => {}
         }
         // Always deregister — a timed-out or failed request must not leave a
         // waiter behind for the pump to deliver into.
         self.demux.deregister(&request_id).await;
-        Ok(outcome?)
+        Ok(outcome.map_err(|f| f.to_string())?)
     }
 
     /// Replace this session's websocket with a fresh one, which the mediator
@@ -3559,11 +3592,26 @@ impl TspSession {
     /// lock), and the connect itself is bounded by [`STRANDED_REPLY_GRACE`]
     /// (R1.2).
     ///
+    /// `expected_generation` is the socket the caller saw die. When `ws` no
+    /// longer holds it, another waiter has already reconnected and this is a
+    /// no-op. Without that check, every request failing on one close would
+    /// open its own socket, each evicting the one before; frames the mediator
+    /// had already flushed onto an evicted socket are gone with it, since
+    /// raw-TSP mode deletes a frame once it is written. `None` reconnects
+    /// regardless, as the reply-timeout path always has.
+    ///
     /// [`pump_once`]: Self::pump_once
-    async fn reconnect(&self) -> Result<(), String> {
+    async fn reconnect(&self, expected_generation: Option<u64>) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+
         let mut guard = self.ws.lock().await;
         if guard.is_none() {
             return Err("TSP session was shut down".to_string());
+        }
+        if let Some(expected) = expected_generation
+            && self.ws_generation.load(Ordering::Acquire) != expected
+        {
+            return Ok(());
         }
         let fresh = tokio::time::timeout(
             STRANDED_REPLY_GRACE,
@@ -3576,6 +3624,8 @@ impl TspSession {
         .await
         .map_err(|_| "timed out reconnecting the TSP websocket".to_string())?
         .map_err(|e| e.to_string())?;
+        // Written under the `ws` lock, like every write of the generation.
+        self.ws_generation.fetch_add(1, Ordering::AcqRel);
         if let Some(old) = guard.replace(fresh) {
             let _ = old.close().await;
         }
@@ -3591,25 +3641,30 @@ impl TspSession {
     /// moment the leader finishes, with no background task to supervise and no
     /// change to [`shutdown`](Self::shutdown) semantics.
     ///
-    /// Returns `String` errors, not `Box<dyn Error>`: the latter is not `Send`,
-    /// and a `Box` living across any of the awaits in this loop would make the
-    /// whole call chain `!Send`. Keeping the internals `String`-typed makes
-    /// that mistake structurally impossible rather than merely tested for.
+    /// Returns a [`ReplyFailure`] of plain `String`s, not `Box<dyn Error>`: the
+    /// latter is not `Send`, and a `Box` living across any of the awaits in
+    /// this loop would make the whole call chain `!Send`. Keeping the internals
+    /// `String`-typed makes that mistake structurally impossible rather than
+    /// merely tested for.
     async fn await_reply(
         &self,
         request_id: &str,
         rx: &mut tokio::sync::oneshot::Receiver<String>,
         deadline: std::time::Instant,
-    ) -> Result<String, String> {
+    ) -> Result<String, ReplyFailure> {
         use std::time::Instant;
+
+        let timed_out = || {
+            ReplyFailure::TimedOut(format!(
+                "{} to request '{request_id}'",
+                crate::error::TSP_REPLY_TIMEOUT_PREFIX
+            ))
+        };
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(format!(
-                    "{} to request '{request_id}'",
-                    crate::error::TSP_REPLY_TIMEOUT_PREFIX
-                ));
+                return Err(timed_out());
             }
 
             tokio::select! {
@@ -3618,19 +3673,26 @@ impl TspSession {
                 // Someone else's pump already delivered our reply.
                 delivered = &mut *rx => {
                     return delivered.map_err(|_| {
-                        "TSP session shut down while waiting for a reply".to_string()
+                        ReplyFailure::Failed(
+                            "TSP session shut down while waiting for a reply".to_string(),
+                        )
                     });
                 }
 
                 // We are the leader for as long as we hold this.
                 mut guard = self.ws.lock() => {
                     let Some(ws) = guard.as_mut() else {
-                        return Err("TSP session was shut down".to_string());
+                        return Err(ReplyFailure::Failed("TSP session was shut down".to_string()));
                     };
+                    // Read under the lock, so it names the socket pumped below.
+                    let generation = self.ws_generation.load(std::sync::atomic::Ordering::Acquire);
                     let slice = PUMP_SLICE.min(remaining);
                     // Bound before the `match`: a scrutinee temporary lives for
                     // the whole match body, which contains an `.await`.
-                    let outcome = self.pump_once(ws, slice).await?;
+                    let outcome = self.pump_once(ws, slice).await.map_err(|fault| match fault {
+                        SocketFault::Gone(reason) => ReplyFailure::SocketGone { generation, reason },
+                        SocketFault::Other(reason) => ReplyFailure::Failed(reason),
+                    })?;
                     match outcome {
                         PumpOutcome::Uncorrelated(doc) => {
                             // Not ours and not any other waiter's — park it for
@@ -3644,10 +3706,7 @@ impl TspSession {
                 }
 
                 () = tokio::time::sleep(remaining) => {
-                    return Err(format!(
-                        "{} to request '{request_id}'",
-                        crate::error::TSP_REPLY_TIMEOUT_PREFIX
-                    ));
+                    return Err(timed_out());
                 }
             }
         }
@@ -3659,12 +3718,13 @@ impl TspSession {
     ///
     /// Frames that don't unpack are TSP control/relationship traffic and are
     /// skipped within the slice rather than surfaced.
-    /// `String` errors for the same reason as [`await_reply`](Self::await_reply).
+    /// `String`-typed errors for the same reason as
+    /// [`await_reply`](Self::await_reply).
     async fn pump_once(
         &self,
         ws: &mut affinidi_tdk::messaging::TspWebSocket,
         slice: std::time::Duration,
-    ) -> Result<PumpOutcome, String> {
+    ) -> Result<PumpOutcome, SocketFault> {
         use std::time::Instant;
 
         let until = Instant::now() + slice;
@@ -3687,8 +3747,14 @@ impl TspSession {
                 // Surfacing it as `Err` lets the supervisor do its job: the
                 // mobile listen loop already treats an error as a drop and
                 // reconnects with backoff.
-                Ok(Ok(None)) => return Err("TSP websocket closed by the mediator".to_string()),
-                Ok(Err(e)) => return Err(e.to_string()),
+                Ok(Ok(None)) => {
+                    return Err(SocketFault::Gone(
+                        "TSP websocket closed by the mediator".to_string(),
+                    ));
+                }
+                // A receive error ends this socket too: nothing more will be
+                // read from it, so it is as gone as a close.
+                Ok(Err(e)) => return Err(SocketFault::Gone(e.to_string())),
                 Err(_) => return Ok(PumpOutcome::Idle),
             };
 
@@ -3753,7 +3819,7 @@ impl TspSession {
                 }
             };
             let json = String::from_utf8(document)
-                .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
+                .map_err(|e| SocketFault::Other(format!("TSP payload was not UTF-8: {e}")))?;
 
             // One correlation rule for every TSP session — see `tsp_demux`.
             return Ok(match self.demux.route(json).await {
@@ -3806,6 +3872,50 @@ enum PumpOutcome {
     Uncorrelated(String),
     /// The slice elapsed with no application frame.
     Idle,
+}
+
+/// Why one turn at the socket failed.
+#[cfg(feature = "tsp")]
+enum SocketFault {
+    /// The socket is finished — closed by the mediator (its token expired, or
+    /// another socket for this DID evicted it) or broken. Reading it again can
+    /// never produce anything; only a reconnect can.
+    Gone(String),
+    /// The socket is fine but a frame on it could not be read.
+    Other(String),
+}
+
+#[cfg(feature = "tsp")]
+impl std::fmt::Display for SocketFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gone(reason) | Self::Other(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// Why [`TspSession::await_reply`] returned without a reply. The variants are
+/// what [`TspSession::request`] decides on; each carries the message the caller
+/// finally sees.
+#[cfg(feature = "tsp")]
+enum ReplyFailure {
+    /// The deadline passed. Starts with `TSP_REPLY_TIMEOUT_PREFIX`, which
+    /// `VtaError::is_tsp_reply_timeout` reads.
+    TimedOut(String),
+    /// The socket numbered `generation` was closed or broke while waiting.
+    SocketGone { generation: u64, reason: String },
+    /// Anything else, such as the session being shut down.
+    Failed(String),
+}
+
+#[cfg(feature = "tsp")]
+impl std::fmt::Display for ReplyFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut(reason) | Self::Failed(reason) => f.write_str(reason),
+            Self::SocketGone { reason, .. } => f.write_str(reason),
+        }
+    }
 }
 
 fn now_epoch() -> u64 {
@@ -4129,6 +4239,18 @@ mod tests {
     fn test_url_from_did_web_with_port() {
         assert_eq!(
             url_from_did("did:web:localhost%3A8100"),
+            Some("https://localhost:8100".to_string())
+        );
+    }
+
+    #[test]
+    fn test_url_from_did_webs() {
+        assert_eq!(
+            url_from_did("did:webs:vta.example.com:nodes:EAbc"),
+            Some("https://vta.example.com".to_string())
+        );
+        assert_eq!(
+            url_from_did("did:webs:localhost%3A8100:EAbc"),
             Some("https://localhost:8100".to_string())
         );
     }

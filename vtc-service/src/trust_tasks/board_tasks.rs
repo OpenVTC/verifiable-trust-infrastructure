@@ -17,11 +17,11 @@
 //! signer's own key only. A board the caller may not see is `notFound`, exactly as one that
 //! does not exist, on every task. None has a REST route.
 
+use super::routing::{Routes, on};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::audit::{AuditEvent, BoardChangedData};
+use vtc_audit::{AuditEvent, BoardChangedData};
 use vti_common::error::AppError;
 use vti_specs::vtc::boards::{
     create::v0_1 as board_create,
@@ -56,45 +56,19 @@ use crate::boards::{
 };
 use crate::server::AppState;
 
-pub(crate) const CREATE_TYPE: &str = <board_create::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_TYPE: &str = <board_update::Payload as Payload>::TYPE_URI;
-pub(crate) const DELETE_TYPE: &str = <board_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <board_list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const SHOW_TYPE: &str = <board_show::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_PROPOSE_TYPE: &str = <ideas_propose::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_UPDATE_TYPE: &str = <ideas_update::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_WITHDRAW_TYPE: &str = <ideas_withdraw::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_DECIDE_TYPE: &str = <ideas_decide::Payload as Payload>::TYPE_URI;
-pub(crate) const IDEAS_SELECT_TYPE: &str = <ideas_select::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_ADD_TYPE: &str = <notes_add::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const NOTES_LIST_TYPE: &str = <notes_list::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_WITHDRAW_TYPE: &str = <notes_withdraw::Payload as Payload>::TYPE_URI;
-pub(crate) const NOTES_HIDE_TYPE: &str = <notes_hide::Payload as Payload>::TYPE_URI;
-pub(crate) const FACILITATORS_ADD_TYPE: &str = <facilitators_add::Payload as Payload>::TYPE_URI;
-pub(crate) const FACILITATORS_REMOVE_TYPE: &str =
-    <facilitators_remove::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <board_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const FACILITATORS_LIST_TYPE: &str = <facilitators_list::Payload as Payload>::TYPE_URI;
 
-/// Every type this module serves.
-pub(crate) const URIS: &[&str] = &[
-    CREATE_TYPE,
-    UPDATE_TYPE,
-    DELETE_TYPE,
-    LIST_TYPE,
-    SHOW_TYPE,
-    IDEAS_PROPOSE_TYPE,
-    IDEAS_UPDATE_TYPE,
-    IDEAS_WITHDRAW_TYPE,
-    IDEAS_DECIDE_TYPE,
-    IDEAS_SELECT_TYPE,
-    NOTES_ADD_TYPE,
-    NOTES_LIST_TYPE,
-    NOTES_WITHDRAW_TYPE,
-    NOTES_HIDE_TYPE,
-    FACILITATORS_ADD_TYPE,
-    FACILITATORS_REMOVE_TYPE,
-    FACILITATORS_LIST_TYPE,
-];
+pub(crate) const DELETE_TYPE: &str = <board_delete::Payload as Payload>::TYPE_URI;
 
 macro_rules! codes {
     ($($name:ident = $module:ident :: $code:ident;)*) => {
@@ -174,32 +148,35 @@ codes! {
     FACILITATORS_LIST_ERR_NOT_FOUND = facilitators_list::NOT_FOUND;
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        DELETE_TYPE => handle_delete(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        IDEAS_PROPOSE_TYPE => handle_propose(state, ctx, doc).await,
-        IDEAS_UPDATE_TYPE => handle_idea_update(state, ctx, doc).await,
-        IDEAS_WITHDRAW_TYPE => handle_idea_withdraw(state, ctx, doc).await,
-        IDEAS_DECIDE_TYPE => handle_decide(state, ctx, doc).await,
-        IDEAS_SELECT_TYPE => handle_select(state, ctx, doc).await,
-        NOTES_ADD_TYPE => handle_note_add(state, ctx, doc).await,
-        NOTES_LIST_TYPE => handle_notes_list(state, ctx, doc).await,
-        NOTES_WITHDRAW_TYPE => handle_note_withdraw(state, ctx, doc).await,
-        NOTES_HIDE_TYPE => handle_note_hide(state, ctx, doc).await,
-        FACILITATORS_ADD_TYPE => handle_facilitators_add(state, ctx, doc).await,
-        FACILITATORS_REMOVE_TYPE => handle_facilitators_remove(state, ctx, doc).await,
-        FACILITATORS_LIST_TYPE => handle_facilitators_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, board_create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, board_update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes =
+        on!(routes, board_delete::Payload => |state, ctx, doc| handle_delete(state, ctx, doc));
+    let routes = on!(routes, board_list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, board_show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_propose::Payload => |state, ctx, doc| handle_propose(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_update::Payload => |state, ctx, doc| handle_idea_update(state, ctx, doc));
+    let routes = on!(routes, ideas_withdraw::Payload => |state, ctx, doc| handle_idea_withdraw(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_decide::Payload => |state, ctx, doc| handle_decide(state, ctx, doc));
+    let routes =
+        on!(routes, ideas_select::Payload => |state, ctx, doc| handle_select(state, ctx, doc));
+    let routes =
+        on!(routes, notes_add::Payload => |state, ctx, doc| handle_note_add(state, ctx, doc));
+    let routes =
+        on!(routes, notes_list::Payload => |state, ctx, doc| handle_notes_list(state, ctx, doc));
+    let routes = on!(routes, notes_withdraw::Payload => |state, ctx, doc| handle_note_withdraw(state, ctx, doc));
+    let routes =
+        on!(routes, notes_hide::Payload => |state, ctx, doc| handle_note_hide(state, ctx, doc));
+    let routes = on!(routes, facilitators_add::Payload => |state, ctx, doc| handle_facilitators_add(state, ctx, doc));
+    let routes = on!(routes, facilitators_remove::Payload => |state, ctx, doc| handle_facilitators_remove(state, ctx, doc));
+    on!(routes, facilitators_list::Payload => |state, ctx, doc| handle_facilitators_list(state, ctx, doc))
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────
@@ -318,29 +295,20 @@ async fn own_entry(state: &AppState, who: &Who) -> Result<String, AppError> {
 
 // ── paging: an offset bound to the caller and the question ──
 
-fn cursor_mac(binding: &str, offset: usize) -> String {
-    let mut h = Sha256::new();
-    h.update(b"vtc/boards/cursor/v1\0");
-    for part in [binding, &offset.to_string()] {
-        h.update((part.len() as u64).to_be_bytes());
-        h.update(part.as_bytes());
-    }
-    hex::encode(&h.finalize()[..12])
+/// The family name board cursors are tagged under ([`super::offset_cursor`]).
+const CURSOR_FAMILY: &str = "vtc/boards";
+
+fn cursor_for(key: &[u8; 32], binding: &str, offset: usize) -> String {
+    super::offset_cursor::mint(key, CURSOR_FAMILY, binding, offset)
 }
 
-fn cursor_for(binding: &str, offset: usize) -> String {
-    format!("{offset}.{}", cursor_mac(binding, offset))
-}
-
-fn offset_of(payload: &Value, binding: &str) -> Result<usize, ()> {
+/// The offset `payload`'s cursor names (0 with none). `Err` for a cursor this
+/// community did not mint for this caller and question.
+fn offset_of(key: &[u8; 32], payload: &Value, binding: &str) -> Result<usize, ()> {
     let Some(c) = str_of(payload, "cursor") else {
         return Ok(0);
     };
-    let (n, mac) = c.split_once('.').ok_or(())?;
-    let offset: usize = n.parse().map_err(|_| ())?;
-    (cursor_mac(binding, offset) == mac)
-        .then_some(offset)
-        .ok_or(())
+    super::offset_cursor::read(key, CURSOR_FAMILY, binding, c).ok_or(())
 }
 
 fn limit_of(payload: &Value) -> usize {
@@ -1071,7 +1039,11 @@ async fn handle_list(
             .then(a.board_id.cmp(&b.board_id))
     });
     let binding = format!("list|{}|{status:?}|{include_archived}", who.did);
-    let Ok(start) = offset_of(p, &binding) else {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let Ok(start) = offset_of(&key, p, &binding) else {
         return declared(
             &doc,
             LIST_ERR_CURSOR_INVALID,
@@ -1079,8 +1051,8 @@ async fn handle_list(
         );
     };
     let limit = limit_of(p);
-    let start = start.min(all.len());
-    let page = &all[start..(start + limit).min(all.len())];
+    let (start, end) = super::offset_cursor::window(start, limit, all.len());
+    let page = &all[start..end];
     let mut items = Vec::with_capacity(page.len());
     for b in page {
         match boards::board_wire(state, b, &who).await {
@@ -1090,7 +1062,7 @@ async fn handle_list(
     }
     let mut body = json!({ "boards": items });
     if start + page.len() < all.len() {
-        body["nextCursor"] = json!(cursor_for(&binding, start + page.len()));
+        body["nextCursor"] = json!(cursor_for(&key, &binding, start + page.len()));
     }
     success_response(&doc, body)
 }
@@ -1155,7 +1127,11 @@ async fn handle_show(
             .then(a.0.idea_id.cmp(&b.0.idea_id))
     });
     let binding = format!("show|{}|{}|{states:?}|{topic:?}", who.did, board.board_id);
-    let Ok(start) = offset_of(p, &binding) else {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let Ok(start) = offset_of(&key, p, &binding) else {
         return declared(
             &doc,
             SHOW_ERR_CURSOR_INVALID,
@@ -1163,8 +1139,8 @@ async fn handle_show(
         );
     };
     let limit = limit_of(p);
-    let start = start.min(ideas.len());
-    let page = &ideas[start..(start + limit).min(ideas.len())];
+    let (start, end) = super::offset_cursor::window(start, limit, ideas.len());
+    let page = &ideas[start..end];
     let notes = match notes_readable_on(state, &who, &board).await {
         Ok(n) => n,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -1190,7 +1166,7 @@ async fn handle_show(
     };
     let mut body = json!({ "board": board_wire, "ideas": items });
     if start + page.len() < ideas.len() {
-        body["nextCursor"] = json!(cursor_for(&binding, start + page.len()));
+        body["nextCursor"] = json!(cursor_for(&key, &binding, start + page.len()));
     }
     success_response(&doc, body)
 }
@@ -1474,7 +1450,7 @@ async fn another_facilitator(
     board_id: &str,
 ) -> Result<bool, AppError> {
     let q = ResourceQualifier::Board(board_id.to_string());
-    Ok(crate::acl::list_acl_entries(&state.acl_ks)
+    Ok(crate::acl::list_authority_entries(&state.acl_ks)
         .await?
         .iter()
         .any(|e| e.did != who.did && e.can(Capability::BoardsManage, Some(&q))))
@@ -1898,6 +1874,8 @@ async fn handle_select(
         return app_error_to_reject(&doc, &e);
     }
     drop(_guard);
+    // An automatic badge may count selected ideas (VTI-BDG-015).
+    crate::groups::dynamic::kick();
     idea_answer(state, &doc, &who, &idea).await
 }
 
@@ -2100,7 +2078,11 @@ async fn handle_notes_list(
         "notes|{}|{}|{idea_id:?}|{scope_all}",
         who.did, board.board_id
     );
-    let Ok(start) = offset_of(p, &binding) else {
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let Ok(start) = offset_of(&key, p, &binding) else {
         return declared(
             &doc,
             NOTES_LIST_ERR_CURSOR_INVALID,
@@ -2108,8 +2090,8 @@ async fn handle_notes_list(
         );
     };
     let limit = limit_of(p);
-    let start = start.min(notes.len());
-    let page = &notes[start..(start + limit).min(notes.len())];
+    let (start, end) = super::offset_cursor::window(start, limit, notes.len());
+    let page = &notes[start..end];
     let authors = match Authors::for_viewer(state, &who).await {
         Ok(a) => a,
         Err(e) => return app_error_to_reject(&doc, &e),
@@ -2120,7 +2102,7 @@ async fn handle_notes_list(
     }
     let mut body = json!({ "notes": items });
     if start + page.len() < notes.len() {
-        body["nextCursor"] = json!(cursor_for(&binding, start + page.len()));
+        body["nextCursor"] = json!(cursor_for(&key, &binding, start + page.len()));
     }
     success_response(&doc, body)
 }

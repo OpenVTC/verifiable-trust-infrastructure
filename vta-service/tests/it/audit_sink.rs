@@ -151,13 +151,13 @@ async fn the_default_sink_is_still_the_keyspace() {
         .await
         .expect("scan audit keyspace");
     let found = rows.iter().any(|(_, v)| {
-        serde_json::from_slice::<vti_common::audit::AuditEnvelope>(v)
+        serde_json::from_slice::<vta_audit::VtaAuditEnvelope>(v)
             .ok()
             .is_some_and(|env| {
                 env.actor_did_plain.as_deref() == Some("did:key:zTestAdmin")
                     && matches!(
                         &env.event,
-                        vti_common::audit::event::AuditEvent::VtaOperation(op)
+                        vta_audit::VtaAuditEvent::VtaOperation(op)
                             if op.action == "acl.grant"
                     )
             })

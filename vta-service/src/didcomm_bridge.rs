@@ -171,6 +171,11 @@ impl DIDCommBridge {
         keys_ks: &crate::store::KeyspaceHandle,
         imported_ks: &crate::store::KeyspaceHandle,
         contexts_ks: &crate::store::KeyspaceHandle,
+        // This VTA's own `did:webvh` log, from which its signing key's id is
+        // read (VTI-KEY-150); `None` falls back to the did:webvh convention.
+        webvh_ks: Option<&crate::store::KeyspaceHandle>,
+        // A did:webs VTA's key event log, for the same purpose.
+        webs_ks: Option<&crate::store::KeyspaceHandle>,
         seed_store: &dyn crate::keys::seed_store::SeedStore,
         audit: &vta_audit::SharedAuditSink,
     ) -> Result<Self, AppError> {
@@ -178,13 +183,16 @@ impl DIDCommBridge {
         let Some(vta_did) = vta_did else {
             return Ok(bridge);
         };
+        let self_keys = crate::self_keys::self_keys(vta_did, webvh_ks, webs_ks).await;
+        // It signs requests with `proofPurpose: authentication`, so it holds
+        // the authentication key (a key-role identity's `operational` one).
         let secret = crate::operations::credentials::load_vta_issuer_secret_from_store(
             keys_ks,
             imported_ks,
             contexts_ks,
             seed_store,
             audit,
-            vta_did,
+            &self_keys.authentication,
             "cli-did-management",
         )
         .await?;
@@ -319,6 +327,13 @@ impl DIDCommBridge {
     /// combination that works.
     pub fn profile(&self) -> Option<Arc<ATMProfile>> {
         self.snapshot().map(|i| i.profile.clone())
+    }
+
+    /// The ATM and its mediator-registered profile of **one** session, taken
+    /// together, or `None` before the service is published — what a
+    /// `messaging/wake/request` needs (`crate::messaging::mediator_wake`).
+    pub fn wake_wiring(&self) -> Option<(ATM, Arc<ATMProfile>)> {
+        self.snapshot().map(|i| (i.atm.clone(), i.profile.clone()))
     }
 
     /// The service, ATM and own DID of **one** session, taken together, or
@@ -690,6 +705,8 @@ mod tests {
             &state.keys_ks,
             &state.imported_ks,
             &state.contexts_ks,
+            Some(&state.webvh_ks),
+            Some(&state.webs_ks),
             &*state.seed_store,
             &state.audit_sink,
         )

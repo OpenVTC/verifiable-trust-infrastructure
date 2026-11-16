@@ -354,7 +354,7 @@ pub async fn list_agent_names(
         Some(&domain),
     )
     .await
-    .map_err(|e| UpdateDidWebvhError::Publish(format!("list_agent_names: {e}")))?;
+    .map_err(|e| UpdateDidWebvhError::publish_failed("list_agent_names", e))?;
 
     Ok((record.did, names))
 }
@@ -379,7 +379,7 @@ pub async fn check_agent_name(
 
     super::super::check_agent_name_on_server(deps, vta_did, &server, name, Some(&domain))
         .await
-        .map_err(|e| UpdateDidWebvhError::Publish(format!("check_agent_name: {e}")))
+        .map_err(|e| UpdateDidWebvhError::publish_failed("check_agent_name", e))
 }
 
 /// Bind, release, park or resume an agent name (`/@alice`) on a hosted webvh
@@ -1035,7 +1035,7 @@ async fn run_update(
                 None,
             )
             .await
-            .map_err(|e| UpdateDidWebvhError::Publish(format!("reconcile publish_did: {e}")))?;
+            .map_err(|e| UpdateDidWebvhError::publish_failed("reconcile publish_did", e))?;
             webvh_store::set_published_version(webvh_ks, &record.did, &prior_version_id)
                 .await
                 .map_err(|e| {
@@ -1500,7 +1500,7 @@ async fn run_update(
                     None,
                 )
                 .await
-                .map_err(|e| UpdateDidWebvhError::Publish(format!("publish_did: {e}")))?;
+                .map_err(|e| UpdateDidWebvhError::publish_failed("publish_did", e))?;
             }
             PublishTarget::AgentName { name, verb } => {
                 // The host both republishes this signed log AND applies the
@@ -1519,7 +1519,7 @@ async fn run_update(
                     domain.as_deref(),
                 )
                 .await
-                .map_err(|e| UpdateDidWebvhError::Publish(format!("agent_name: {e}")))?;
+                .map_err(|e| UpdateDidWebvhError::publish_failed("agent_name", e))?;
             }
         }
 

@@ -1673,15 +1673,15 @@ async fn vti_dir_100_a_groups_grants_are_provisioned_onto_its_members_entries() 
     assert!(!plain.can(Capability::InvitationsManage, None));
 
     // Audited by reference.
-    let audited: Vec<vti_common::audit::GroupGrantsChangedData> = state
+    let audited: Vec<vtc_audit::GroupGrantsChangedData> = state
         .audit_ks
         .prefix_iter_raw(Vec::new())
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter_map(|env| match env.event {
-            vti_common::audit::AuditEvent::GroupGrantsChanged(d) => Some(d),
+            vtc_audit::AuditEvent::GroupGrantsChanged(d) => Some(d),
             _ => None,
         })
         .collect();

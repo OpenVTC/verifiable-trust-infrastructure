@@ -75,7 +75,7 @@ use vti_common::pagination::{Cursor, CursorKey, MAX_LIMIT, paginate};
 
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-use vti_common::store::Batch;
+use vti_common::store::{Batch, ScanOpts};
 
 // ---------------------------------------------------------------------------
 // Limits
@@ -118,6 +118,9 @@ pub const PUT_MANY_REQUEST_BUDGET_BYTES: u64 = 768 * 1024;
 /// tooling). Matches the vault's grace window, which the specification calls a
 /// starting point to revisit on evidence.
 pub const DEFAULT_TOMBSTONE_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+/// Rows one page of a sweep or a list reads from the store (#2626, #2627).
+const SWEEP_PAGE: usize = 256;
 
 /// Namespace grammar, matching the published schema's `pattern`.
 fn namespace_is_valid(ns: &str) -> bool {
@@ -218,6 +221,11 @@ pub enum AppStateError {
     AtomicBatchRejected(Vec<WriteResult>),
     /// The batch's aggregate size exceeds what one request may carry.
     BatchTooLarge { limit_bytes: u64, actual_bytes: u64 },
+    /// The `cursor` cannot be honoured: not one this VTA issued for this query,
+    /// or no longer valid. `vta/app-state/list:cursorInvalid` (and memory's),
+    /// which the caller recovers from by restarting the enumeration — so it is
+    /// not `malformedRequest`, which says the request itself was wrong.
+    CursorInvalid,
     /// A malformed request the schema did not catch (bad namespace, bad key,
     /// both/neither of `value` and `mergePatch`, too many items).
     Validation(String),
@@ -296,6 +304,10 @@ impl std::fmt::Display for AppStateError {
                 f,
                 "batch is {actual_bytes} bytes; this VTA accepts {limit_bytes} per request"
             ),
+            Self::CursorInvalid => write!(
+                f,
+                "cursor is not valid for this query; restart the enumeration without one"
+            ),
             Self::Validation(m) => write!(f, "{m}"),
             Self::Internal(m) => write!(f, "internal error: {m}"),
         }
@@ -305,9 +317,7 @@ impl std::fmt::Display for AppStateError {
 impl From<AppError> for AppStateError {
     fn from(e: AppError) -> Self {
         match e {
-            AppError::InvalidCursor => {
-                Self::Validation("cursor is not valid for this query".into())
-            }
+            AppError::InvalidCursor => Self::CursorInvalid,
             other => Self::Internal(other.to_string()),
         }
     }
@@ -535,6 +545,40 @@ fn value_size(value: &Value) -> u64 {
         .unwrap_or(0)
 }
 
+/// How a store built on this module measures a value against
+/// [`MAX_VALUE_BYTES`] and reports its `valueBytes`.
+///
+/// Application state is JSON and is measured as its compact encoding, as its
+/// specification says. Agent memory (`crate::operations::memory`) keeps its
+/// items here too, as JSON strings, but `vta/memory/put/0.2` measures the
+/// **UTF-8 text** of the value: measured as JSON, a note full of quotes or
+/// newlines would meet the cap early (an escape is up to six bytes) and report
+/// a `valueBytes` its writer cannot predict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueMeasure {
+    /// The compact JSON encoding (`vta/app-state/*`).
+    CompactJson,
+    /// A string's UTF-8 bytes (`vta/memory/*`); anything else as compact JSON.
+    Utf8Text,
+    /// [`Self::Utf8Text`] with no cap: only for carrying over memory written by
+    /// `vta/memory/put/0.1`, which enforced none, so an item stored before the
+    /// cap existed is moved rather than lost (`operations::memory`).
+    Utf8TextUncapped,
+}
+
+impl ValueMeasure {
+    fn size(self, value: &Value) -> u64 {
+        match (self, value) {
+            (Self::Utf8Text | Self::Utf8TextUncapped, Value::String(s)) => s.len() as u64,
+            _ => value_size(value),
+        }
+    }
+
+    fn capped(self) -> bool {
+        !matches!(self, Self::Utf8TextUncapped)
+    }
+}
+
 /// RFC 7386 JSON Merge Patch.
 ///
 /// Implemented here rather than pulled in as a dependency: the algorithm is
@@ -565,7 +609,18 @@ fn merge_patch(target: &mut Value, patch: &Value) {
     }
 }
 
-fn validate_address(namespace: &str, key: &str) -> Result<(), AppStateError> {
+/// The layout (`app:{context}:{namespace}:{key}` and its siblings) is unambiguous only
+/// because neither a context id nor a namespace can contain `:`. Access does not imply a
+/// well-formed id: an unrestricted admin may name any context, including one that cannot
+/// exist, such as `acme:x`, whose rows would sit under `acme`'s prefix — read by `acme`'s
+/// listings and erased by `acme`'s purge.
+fn validate_context(context_id: &str) -> Result<(), AppStateError> {
+    vti_common::context_path::validate_context_path(context_id)
+        .map_err(|e| AppStateError::Validation(format!("contextId: {e}")))
+}
+
+fn validate_address(context_id: &str, namespace: &str, key: &str) -> Result<(), AppStateError> {
+    validate_context(context_id)?;
     if !namespace_is_valid(namespace) {
         return Err(AppStateError::Validation(format!(
             "namespace `{namespace}` is not a valid partition name \
@@ -594,7 +649,7 @@ pub async fn get(
     key: &str,
     include_deleted: bool,
 ) -> Result<AppStateRecord, AppStateError> {
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
     match read_record(ks, context_id, namespace, key).await? {
         Some(r) if !r.deleted || include_deleted => Ok(r.to_wire(true)),
         _ => Err(AppStateError::NotFound),
@@ -632,7 +687,7 @@ pub async fn get_many(
         return Err(AppStateError::DuplicateKey(dupes));
     }
     for k in keys {
-        validate_address(namespace, k)?;
+        validate_address(context_id, namespace, k)?;
     }
 
     let mut records = Vec::new();
@@ -697,6 +752,7 @@ async fn put_locked(
     expected_version: Option<u64>,
     version: u64,
     now: &str,
+    measure: ValueMeasure,
 ) -> Result<PutOutcome, AppStateError> {
     let mut batch = Batch::new();
     let outcome = stage_put(
@@ -710,6 +766,7 @@ async fn put_locked(
         expected_version,
         version,
         now,
+        measure,
     )
     .await?;
     ks.apply_batch(batch).await?;
@@ -732,8 +789,9 @@ async fn stage_put(
     expected_version: Option<u64>,
     version: u64,
     now: &str,
+    measure: ValueMeasure,
 ) -> Result<PutOutcome, AppStateError> {
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
 
     let existing = read_record(ks, context_id, namespace, key).await?;
     let live = existing.as_ref().filter(|r| !r.deleted);
@@ -795,8 +853,8 @@ async fn stage_put(
         }
     };
 
-    let size = value_size(&new_value);
-    if size > MAX_VALUE_BYTES {
+    let size = measure.size(&new_value);
+    if measure.capped() && size > MAX_VALUE_BYTES {
         return Err(AppStateError::ValueTooLarge {
             limit_bytes: MAX_VALUE_BYTES,
             actual_bytes: size,
@@ -859,10 +917,37 @@ pub async fn put(
     patch: Option<&Value>,
     expected_version: Option<u64>,
 ) -> Result<PutOutcome, AppStateError> {
+    put_measured(
+        ks,
+        locks,
+        context_id,
+        namespace,
+        key,
+        value,
+        patch,
+        expected_version,
+        ValueMeasure::CompactJson,
+    )
+    .await
+}
+
+/// [`put`], measuring the value with `measure` ([`ValueMeasure`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn put_measured(
+    ks: &KeyspaceHandle,
+    locks: &NamespaceLocks,
+    context_id: &str,
+    namespace: &str,
+    key: &str,
+    value: Option<&Value>,
+    patch: Option<&Value>,
+    expected_version: Option<u64>,
+    measure: ValueMeasure,
+) -> Result<PutOutcome, AppStateError> {
     // Validate before reserving. A reservation is a durable write, so a
     // malformed namespace would otherwise leave an `appc:` counter behind for
     // an address that can never hold a record.
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
 
     let _guard = locks.acquire(context_id, namespace).await;
     let now = Utc::now().to_rfc3339();
@@ -877,6 +962,7 @@ pub async fn put(
         expected_version,
         version,
         &now,
+        measure,
     )
     .await
 }
@@ -924,7 +1010,7 @@ pub async fn put_many(
     }
 
     for w in writes {
-        validate_address(namespace, &w.key)?;
+        validate_address(context_id, namespace, &w.key)?;
     }
 
     let submitted: u64 = writes
@@ -992,6 +1078,7 @@ pub async fn put_many(
                 w.expected_version,
                 first + i as u64,
                 &now,
+                ValueMeasure::CompactJson,
             )
             .await
             {
@@ -1035,6 +1122,7 @@ pub async fn put_many(
             w.expected_version,
             first + i as u64,
             &now,
+            ValueMeasure::CompactJson,
         )
         .await;
         results.push(write_result(&w.key, outcome)?);
@@ -1080,7 +1168,7 @@ async fn dry_run_atomic(
     writes: &[AppStateWrite],
 ) -> Result<Option<DryRunFailure>, AppStateError> {
     for (index, w) in writes.iter().enumerate() {
-        validate_address(namespace, &w.key)?;
+        validate_address(context_id, namespace, &w.key)?;
         let existing = read_record(ks, context_id, namespace, &w.key).await?;
         let live = existing.as_ref().filter(|r| !r.deleted);
 
@@ -1247,7 +1335,7 @@ pub async fn delete(
     key: &str,
     expected_version: Option<u64>,
 ) -> Result<DeleteOutcome, AppStateError> {
-    validate_address(namespace, key)?;
+    validate_address(context_id, namespace, key)?;
     if expected_version == Some(0) {
         return Err(AppStateError::VersionConflict {
             reason: ConflictReason::CreateOnlyNotApplicable,
@@ -1354,6 +1442,7 @@ pub async fn reap_tombstones_through(
     namespace: &str,
     through: u64,
 ) -> Result<usize, AppStateError> {
+    validate_context(context_id)?;
     let _guard = locks.acquire(context_id, namespace).await;
     write_u64(ks, reaped_key(context_id, namespace), through).await?;
 
@@ -1390,6 +1479,8 @@ pub async fn reap_tombstones_through(
 /// change feed from zero, not inherit the old one's records — which is what a
 /// client syncing from an empty watermark would otherwise pull straight back.
 pub async fn purge_context(ks: &KeyspaceHandle, context_id: &str) -> Result<usize, AppError> {
+    // `acme:x`'s prefix lies inside `acme`'s; never erase by an id that is not a context.
+    vti_common::context_path::validate_context_path(context_id)?;
     let mut batch = Batch::new();
     let (mut any, mut records) = (false, 0);
     for (i, prefix) in context_family_prefixes(context_id).into_iter().enumerate() {
@@ -1455,26 +1546,46 @@ pub async fn sweep_expired_tombstones(
     // Collect (contextId, namespace) -> tombstones, reading the address from
     // the record rather than parsing the storage key: a context id may contain
     // `/` and a key may contain `:`, so splitting the key is ambiguous.
+    //
+    // A bounded page at a time, never one read of every record and value: over
+    // vsock that is one response frame, and a store past 16 MiB would fail the
+    // sweep on every tick (#2626). Only tombstones are kept in memory.
     let mut by_namespace: HashMap<(String, String), Vec<(u64, Option<String>)>> = HashMap::new();
-    for (_sk, bytes) in ks.prefix_iter_raw("app:").await? {
-        let rec: StoredRecord = match serde_json::from_slice(&bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(error = %e, "app-state sweeper: skipping unreadable row");
+    let mut pages = ks.scan_pager(vti_common::store::ScanOpts::new("app:", SWEEP_PAGE));
+    loop {
+        let page = pages.next_page().await?;
+        if page.is_empty() {
+            break;
+        }
+        for (_sk, bytes) in page {
+            let rec: StoredRecord = match serde_json::from_slice(&bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(error = %e, "app-state sweeper: skipping unreadable row");
+                    continue;
+                }
+            };
+            if !rec.deleted {
                 continue;
             }
-        };
-        if !rec.deleted {
-            continue;
+            by_namespace
+                .entry((rec.context_id.clone(), rec.namespace.clone()))
+                .or_default()
+                .push((rec.version, rec.deleted_at.clone()));
         }
-        by_namespace
-            .entry((rec.context_id.clone(), rec.namespace.clone()))
-            .or_default()
-            .push((rec.version, rec.deleted_at.clone()));
     }
 
     let mut total = 0usize;
     for ((context_id, namespace), mut tombstones) in by_namespace {
+        // A row written before context ids were checked is left alone, not reaped by an
+        // id the store now refuses — and never allowed to stop the sweep of the rest.
+        if validate_context(&context_id).is_err() {
+            tracing::warn!(
+                context_id = %context_id,
+                "app-state sweeper: skipping tombstones under an id that is not a context path"
+            );
+            continue;
+        }
         tombstones.sort_by_key(|(v, _)| *v);
 
         let mut through = 0u64;
@@ -1566,6 +1677,7 @@ pub async fn list(
     // infer it must sync more often than that.
     tombstone_retention_seconds: Option<u64>,
 ) -> Result<ListPage, AppStateError> {
+    validate_context(context_id)?;
     if let Some(ns) = namespace
         && !namespace_is_valid(ns)
     {
@@ -1641,28 +1753,45 @@ pub async fn list(
                     high_watermark: high_watermark.unwrap_or(0),
                 });
             }
-            // The index is ordered by zero-padded version, so a range scan from
-            // `since + 1` is the feed. Resolve each index entry to its record.
+            // The index is ordered by zero-padded version, so the feed is a
+            // range read that seeks past `since` (and past the cursor), a page
+            // at a time, stopping once one more than the page is in hand — the
+            // page's cost, not the namespace's (#2627). Each index entry is
+            // resolved to its record only as it is taken.
+            let mut after = index_key(context_id, ns, since).into_bytes();
+            if let Some(c) = &decoded
+                && c.last_key > after
+            {
+                after.clone_from(&c.last_key);
+            }
+            let mut pages =
+                ks.scan_pager(ScanOpts::new(index_prefix(context_id, ns), SWEEP_PAGE).after(after));
             let mut out = Vec::new();
-            for (ik, key_bytes) in ks.prefix_iter_raw(index_prefix(context_id, ns)).await? {
-                let Some(version) = version_from_index_key(&ik) else {
-                    continue;
-                };
-                if version <= since {
-                    continue;
+            'feed: loop {
+                let page = pages.next_page().await?;
+                if page.is_empty() {
+                    break;
                 }
-                let Ok(key) = std::str::from_utf8(&key_bytes) else {
-                    continue;
-                };
-                if let Some(p) = prefix
-                    && !key.starts_with(p)
-                {
-                    continue;
+                for (ik, key_bytes) in page {
+                    if version_from_index_key(&ik).is_none_or(|version| version <= since) {
+                        continue;
+                    }
+                    let Ok(key) = std::str::from_utf8(&key_bytes) else {
+                        continue;
+                    };
+                    if let Some(p) = prefix
+                        && !key.starts_with(p)
+                    {
+                        continue;
+                    }
+                    let Some(rec) = read_record(ks, context_id, ns, key).await? else {
+                        continue;
+                    };
+                    out.push((ik, serde_json::to_vec(&rec).map_err(encode_err)?));
+                    if out.len() > limit {
+                        break 'feed;
+                    }
                 }
-                let Some(rec) = read_record(ks, context_id, ns, key).await? else {
-                    continue;
-                };
-                out.push((ik, serde_json::to_vec(&rec).map_err(encode_err)?));
             }
             out
         }
@@ -1673,18 +1802,36 @@ pub async fn list(
                 None => context_prefix(context_id),
             };
             let want_deleted = include_deleted.unwrap_or(false);
+            // Records sort by key, which is the cursor's order, so a page is a
+            // range read from the cursor that stops once one more than the
+            // page is in hand (#2627) — never every record and value in the
+            // namespace, which over vsock is one frame that stops fitting.
+            let mut opts = ScanOpts::new(scan_prefix, SWEEP_PAGE);
+            if let Some(c) = &decoded {
+                opts = opts.after(c.last_key.clone());
+            }
+            let mut pages = ks.scan_pager(opts);
             let mut out = Vec::new();
-            for (sk, bytes) in ks.prefix_iter_raw(scan_prefix).await? {
-                let rec: StoredRecord = serde_json::from_slice(&bytes).map_err(decode_err)?;
-                if rec.deleted && !want_deleted {
-                    continue;
+            'snapshot: loop {
+                let page = pages.next_page().await?;
+                if page.is_empty() {
+                    break;
                 }
-                if let Some(p) = prefix
-                    && !rec.key.starts_with(p)
-                {
-                    continue;
+                for (sk, bytes) in page {
+                    let rec: StoredRecord = serde_json::from_slice(&bytes).map_err(decode_err)?;
+                    if rec.deleted && !want_deleted {
+                        continue;
+                    }
+                    if let Some(p) = prefix
+                        && !rec.key.starts_with(p)
+                    {
+                        continue;
+                    }
+                    out.push((sk, bytes));
+                    if out.len() > limit {
+                        break 'snapshot;
+                    }
                 }
-                out.push((sk, bytes));
             }
             out
         }
@@ -2687,6 +2834,44 @@ mod tests {
         }
     }
 
+    /// `app:acme:x:…` is inside `acme`'s prefix: an id that is not a context path would
+    /// put rows where `acme`'s listings read them and `acme`'s purge erases them.
+    #[tokio::test]
+    async fn a_context_id_that_is_not_a_context_path_is_refused() {
+        let (_d, ks, locks) = open().await;
+        put_value(&ks, &locks, "acme", "openvtc", "k", json!(1)).await;
+        for bad in ["acme:x", "acme:openvtc", "", "/acme", "acme//eng"] {
+            let err = put(
+                &ks,
+                &locks,
+                bad,
+                "openvtc",
+                "k",
+                Some(&json!(2)),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, AppStateError::Validation(_)),
+                "context `{bad}` should be refused by put, got {err:?}"
+            );
+            let err = get(&ks, bad, "openvtc", "k", false).await.unwrap_err();
+            assert!(matches!(err, AppStateError::Validation(_)), "get `{bad}`");
+            let err = list(&ks, bad, None, None, None, true, None, None, None, None)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, AppStateError::Validation(_)), "list `{bad}`");
+            assert!(purge_context(&ks, bad).await.is_err(), "purge `{bad}`");
+        }
+        // `acme` itself is untouched.
+        assert_eq!(
+            get(&ks, "acme", "openvtc", "k", false).await.unwrap().value,
+            Some(json!(1))
+        );
+    }
+
     // ── Batches ────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -3086,6 +3271,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, AppStateError::Validation(_)), "{err:?}");
+        assert!(matches!(err, AppStateError::CursorInvalid), "{err:?}");
     }
 }

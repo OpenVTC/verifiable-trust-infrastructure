@@ -5,7 +5,7 @@
 //! caller. Search and filters match only what that projection shows, so a
 //! query can never test a value the caller may not see (VTI-DIR-113).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::Utc;
 use serde_json::{Map, Value, json};
@@ -88,13 +88,36 @@ async fn with_groups(state: &AppState, mut subject: Subject) -> Result<Subject, 
 /// Every member with a card, as a projection subject. A member who has none
 /// gets one now: every member has a card (`card/show` item 3). A card whose
 /// member record is gone is skipped — nothing is left to project.
+///
+/// Read in bulk — the members, the ACL, the cards with their `entry:` index
+/// and the `mg:` memberships, one scan each — and joined in memory, rather
+/// than four store round trips per member (#2600). Each record is the one a
+/// per-member read would have found.
 pub async fn subjects(state: &AppState) -> Result<Vec<Subject>, AppError> {
     let dir = &state.directory;
     let settings = dir.settings();
+    let mut acl: HashMap<String, crate::acl::VtcAclEntry> =
+        crate::acl::list_acl_entries(&state.acl_ks)
+            .await?
+            .into_iter()
+            .map(|e| (e.did.clone(), e))
+            .collect();
+    let entry_ids = cards::entry_index(dir.ks()).await?;
+    let mut card_rows = cards::raw_cards(dir.ks()).await?;
+    let mut groups = crate::groups::active_groups_by_entry(dir.ks()).await?;
     let mut out = Vec::new();
     for member in list_members(&state.members_ks).await? {
-        let entry = get_acl_entry(&state.acl_ks, &member.did).await?;
-        let card = match cards::by_did(dir.ks(), &member.did).await? {
+        let entry = acl.remove(&member.did);
+        let stored = match entry_ids.get(&member.did) {
+            Some(id) => match card_rows.remove(id) {
+                Some(raw) => Some(serde_json::from_slice::<super::model::Card>(&raw).map_err(
+                    |e| AppError::Internal(format!("stored directory card is unreadable: {e}")),
+                )?),
+                None => None,
+            },
+            None => None,
+        };
+        let card = match stored {
             Some(c) => c,
             // A departed member's card is never created after the fact.
             None if member.is_removed() => continue,
@@ -106,13 +129,11 @@ pub async fn subjects(state: &AppState) -> Result<Vec<Subject>, AppError> {
                 cards::ensure(dir.ks(), &member.did, &settings, own.as_deref()).await?
             }
         };
-        out.push(
-            with_groups(
-                state,
-                Subject::from_records(card, entry.as_ref(), Some(&member)),
-            )
-            .await?,
-        );
+        let mut subject = Subject::from_records(card, entry.as_ref(), Some(&member));
+        // The groups they belong to, active — what `with_groups` reads one
+        // member at a time.
+        subject.groups = groups.remove(&subject.card.entry_id).unwrap_or_default();
+        out.push(subject);
     }
     Ok(out)
 }

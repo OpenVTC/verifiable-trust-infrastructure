@@ -306,21 +306,12 @@ pub async fn run(
 /// `auth/signing-key/authorize/0.1`'s Type URI.
 const AUTHORIZE_TYPE: &str = "https://trusttasks.org/spec/auth/signing-key/authorize/0.1";
 
-/// A duration flag: N followed by s, m, h, d or w.
+/// A duration flag, through the one parser both CLIs use
+/// (`vta_cli_common::duration`, #2589): `N[s|m|h|d|w]`, or seconds.
 fn parse_duration(s: &str) -> CliResult<chrono::TimeDelta> {
-    let s = s.trim();
-    let (n, unit) = s.split_at(s.len().saturating_sub(1));
-    let n: i64 = n
-        .parse()
-        .map_err(|_| format!("`{s}` is not a duration: N followed by s, m, h, d or w"))?;
-    Ok(match unit {
-        "s" => chrono::TimeDelta::seconds(n),
-        "m" => chrono::TimeDelta::minutes(n),
-        "h" => chrono::TimeDelta::hours(n),
-        "d" => chrono::TimeDelta::days(n),
-        "w" => chrono::TimeDelta::weeks(n),
-        _ => return Err(format!("`{s}` is not a duration: N followed by s, m, h, d or w").into()),
-    })
+    let secs = vta_cli_common::duration::parse_duration_secs(s)?;
+    let secs = i64::try_from(secs).map_err(|_| format!("`{s}` is too long"))?;
+    Ok(chrono::TimeDelta::seconds(secs))
 }
 
 /// The identity's signed terms of one signing-key enrolment: exactly the

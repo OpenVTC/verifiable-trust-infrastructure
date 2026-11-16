@@ -16,12 +16,10 @@ use bip39::Mnemonic;
 use dialoguer::{Confirm, Input};
 use didwebvh_rs::url::WebVHURL;
 use rand::Rng;
-use serde_json::{Value as JsonValue, json};
+use serde_json::Value as JsonValue;
 use url::Url;
 
-use crate::config::ServicesConfig;
 use crate::contexts::{self, ContextRecord};
-use crate::operations::protocol::document::{TSP_SERVICE_FRAGMENT, TSP_SERVICE_TYPE};
 use crate::store::KeyspaceHandle;
 
 mod from_toml;
@@ -110,75 +108,10 @@ pub(crate) fn generate_mnemonic_silent() -> Result<Mnemonic, Box<dyn std::error:
     Ok(Mnemonic::from_entropy(&entropy)?)
 }
 
-/// Build the `services` Vec passed to the WebVH DID builder for a
-/// `CreateWebvh` VTA DID — i.e. everything the VTA DID document
-/// publishes apart from the auto-injected DIDComm/Authentication
-/// entries that `create_simple_webvh_did` adds itself.
-///
-/// Two entries live here:
-///
-/// - `VTARest`, present iff REST is enabled and a `public_url` is
-///   configured;
-/// - `TSPTransport` (`#tsp`), present iff TSP is enabled and a mediator
-///   was resolved — TSP advertises the **same** mediator as DIDComm
-///   (tsp-enablement.md D8), so the endpoint is that mediator's DID, not
-///   a transport URL.
-///
-/// Returns `None` (rather than `Some(vec![])`) when the array would be
-/// empty so the downstream call can pass `None` through to the WebVH
-/// builder without a special case.
-///
-/// Minting `#tsp` here rather than leaving it to a later `services tsp
-/// enable` is the point: a VTA that speaks TSP but doesn't say so in its
-/// DID document is unreachable over TSP, since the document is what a
-/// peer matches on. Publishing it by hand after the fact is how the
-/// reference deployment ended up with a `#tsp` entry at log version 3.
-///
-/// The non-interactive setup path's `validate_inputs` rejects
-/// `services.rest = true` + `public_url = None` at parse time, and
-/// the interactive wizard makes the URL prompt mandatory when REST
-/// is enabled, so in practice the absent branch only fires for
-/// `services.rest = false`. The `is_some()` branch is still gated
-/// on `services.rest` so a stray `public_url` set without REST
-/// doesn't end up advertising a service the VTA isn't running.
-///
-/// Shared by both setup paths so the rule has one source of truth —
-/// see the matrix test in this module's `tests` for the full
-/// `(rest, public_url)` truth table.
-pub(crate) fn build_vta_additional_services(
-    services: &ServicesConfig,
-    public_url: Option<&str>,
-    mediator_did: Option<&str>,
-) -> Option<Vec<JsonValue>> {
-    let mut additional = Vec::new();
-    // Same fragment + type the runtime `services tsp enable` patcher
-    // emits, so a document minted at setup and one patched later are the
-    // same shape. Order within this Vec doesn't matter: the document
-    // builder sorts `service[]` canonically once everything is appended.
-    if services.tsp
-        && let Some(did) = mediator_did.map(str::trim).filter(|d| !d.is_empty())
-    {
-        additional.push(json!({
-            "id": format!("{{DID}}{TSP_SERVICE_FRAGMENT}"),
-            "type": TSP_SERVICE_TYPE,
-            "serviceEndpoint": did,
-        }));
-    }
-    if services.rest
-        && let Some(url) = public_url.map(str::trim).filter(|u| !u.is_empty())
-    {
-        additional.push(json!({
-            "id": "{DID}#vta-rest",
-            "type": "VTARest",
-            "serviceEndpoint": url,
-        }));
-    }
-    if additional.is_empty() {
-        None
-    } else {
-        Some(additional)
-    }
-}
+/// Re-exported from the library, where the TEE first boot reads it too
+/// (`vta_service::tee_webs`): one rule for every path that mints the VTA's
+/// own document.
+pub(crate) use crate::operations::protocol::document::vta_additional_services as build_vta_additional_services;
 
 /// Derive the mediator's WebSocket endpoint from its HTTP endpoint by
 /// swapping the scheme (`http`→`ws`, `https`→`wss`), trimming any
@@ -315,6 +248,8 @@ pub(crate) fn mediator_tsp_from_document(doc: &JsonValue) -> MediatorTsp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ServicesConfig;
+    use serde_json::json;
 
     /// Keyring VTI-33: a mediator is judged by the `type` of its services.
     #[test]

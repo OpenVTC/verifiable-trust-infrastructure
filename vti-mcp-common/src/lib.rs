@@ -14,6 +14,13 @@
 //! - [`observability`] — a start line and a finish line per call on stderr, a
 //!   redacted record in a ring the host can read back, and an optional JSONL
 //!   audit file.
+//! - [`listen`] — `--listen`: one bridge serving every MCP host on the machine
+//!   over loopback HTTP behind a bearer token, since the mediator holds one
+//!   socket per DID; and the protocol versions a bridge that asks the human
+//!   may serve.
+//! - [`tool_error`] — a failed operation as a tool result the model reads
+//!   (`isError: true` with a `{error, message, next}` body), never a JSON-RPC
+//!   protocol error.
 //!
 //! A policy fix made here reaches every bridge. A bridge that copied these
 //! would be a second thing to keep correct.
@@ -21,4 +28,6 @@
 //! Nothing here grants access. `publish = false`.
 
 pub mod guard;
+pub mod listen;
 pub mod observability;
+pub mod tool_error;

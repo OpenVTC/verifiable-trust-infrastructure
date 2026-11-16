@@ -44,7 +44,7 @@ use vta_sdk::session::TspSession;
 use vta_sdk::trust_tasks::{
     TASK_ROOMS_KEYS_ACT_0_12, TASK_ROOMS_KEYS_CHANGED_0_1, TASK_ROOMS_KEYS_WATCH_0_1,
 };
-use vta_service::test_support::{MockVta, seed_holder_key, seed_room_membership};
+use vta_test_support::{MockVta, seed_holder_key, seed_room_membership};
 use vti_rooms_dtg::test_support::Party;
 
 mod common;
@@ -133,6 +133,7 @@ impl World {
         // DID keeps the `did:peer:2` under the 1000-byte resolver limit.
         let host_dir = tempfile::tempdir().expect("host data dir");
         let host = room_host::open_state(host_dir.path()).expect("a room host");
+        host.set_room_creation(room_host::creation::RoomCreation::any_creator());
         host.set_watch_signal_delay_ms(10, 20);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -208,6 +209,7 @@ impl World {
                 mirror_of: None,
                 record_retention: None,
                 last_prune: None,
+                signal_delay: Default::default(),
                 epoch_floor: None,
                 frozen_at: None,
             },
@@ -471,6 +473,12 @@ async fn a_signal_queued_before_the_address_connects_is_delivered_when_it_does()
         !w.receiving(&address),
         "nothing receives at the address yet"
     );
+
+    // The address has connected before — it is a restart that left it unconnected — so
+    // it holds an account at the mediator: a mediator refuses a forward to a DID with no
+    // account (affinidi-messaging-mediator 0.52), and the supervisor's first connection is
+    // what creates it.
+    w.mock.register_mediator_account(&address).await;
 
     let version = w.write("n1").await;
     eventually(

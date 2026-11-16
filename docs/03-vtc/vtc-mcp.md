@@ -35,8 +35,8 @@ operator guides describe, and the action list.
 | `vtc_call` | Send any pinned operation by Type URI with a JSON payload. A result with `status: "parked"` is not a failure (§2.3) | *per operation* |
 | `vtc_supported_tasks` | What the connected community serves (`trust-task-discovery/0.4`) | read-only |
 | `vtc_whoami` | What the community knows of this identity (`auth/whoami`), beside the configured identity | read-only |
-| `vtc_status` | What this bridge is: identity, community, transport, policy, counters, recent calls | read-only |
-| `group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant` | The six workflows as thin orchestrators: each sends its steps in order, **every step through the bridge's policy under its own operation**, stops at the first step that is refused or parked, and reports how far it got with each step's answer | per step |
+| `vtc_status` | What this bridge is: identity, community, transport and whether it is reaching the community, how MCP is served, policy, counters, recent calls | read-only |
+| `group_setup`, `board_create`, `election_create`, `room_open`, `member_admit`, `admin_grant`, `badge_create` | The workflows as thin orchestrators: each sends its steps in order, **every step through the bridge's policy under its own operation**, stops at the first step that is refused or parked, and reports how far it got with each step's answer | per step |
 | `vtc_actions_list`, `vtc_actions_show` | The community's action list as this identity sees it; an action's summary re-derived from the payload that would run and verified, with the match code | read-only |
 | `vtc_actions_decide` | Approve or deny a parked action as this identity. **Always** asks the operator, whatever `--confirm` says (§2.4) | sensitive |
 | `vtc_actions_cancel` | Cancel an action this identity requested | mutating |
@@ -55,6 +55,7 @@ built against:
 | `vtc://guide/admission`, `vtc://guide/lifecycle`, `vtc://guide/vetting` | [Join criteria](join-criteria.md), [Membership lifecycle](community-lifecycle.md), [Vetting](vetting.md) |
 | `vtc://guide/directory` | [Member directory](member-directory.md) |
 | `vtc://guide/admin-access` | [Administrators, roles and consent](admin-access.md) |
+| `vtc://guide/badges` | [Member badges](badges.md) |
 
 **Prompts.** One per multi-step job, each an ordered brief: the preconditions
 to check, the tasks to send in order, which of them **park** on the action
@@ -70,6 +71,8 @@ to the pinned index).
 | `open-data-room` | `label`, `members` |
 | `admit-member` | `subject`, `role` |
 | `grant-administration` | `subject`, `role` |
+| `create-badge` | `name`, `kind` |
+| `my-badges` | `code` |
 
 Every tool carries MCP **tool annotations**; a test asserts each agrees with
 the shared classifier's verdict on the operation the tool sends, so they cannot
@@ -84,7 +87,8 @@ drift.
 1. **Process spawn is the authentication boundary.** stdio means no listener
    and no authentication on the MCP channel itself: whoever can spawn the
    process, or read the host's MCP configuration, inherits the full standing of
-   the configured identity.
+   the configured identity. With `--listen` (§7.1) the boundary is the bearer
+   token instead: whoever holds it, on this machine, inherits that standing.
 2. **The identity decides whose standing that is.** Two rungs (§3), both a
    dedicated identity; there is no rung that replays an operator's login.
 3. **The community is the policy decision point.** The entry's administrative
@@ -119,6 +123,31 @@ The bridge returns that as a *successful* call whose result says
 sent again. The prompts say up front which steps park; the workflow tools stop
 there and report; `vtc_actions_show` follows it.
 
+### 2.3a A step-up is yours, through a link
+
+An authority-changing act — a grant, a role change, a join criterion — also
+takes your own step-up, bound to that one operation (VTI-APV-015). The bridge
+signs with a key you delegated, and a delegated key can redeem a step-up but
+never make one. So when you hold a step-up approver, such as the browser
+plugin's, the community hands the step-up to your wallet instead. The bridge
+returns a *successful* call whose result says `"status": "stepUpRequired"` and
+carries a `step-up` link (VTI-LNK-125 – VTI-LNK-131):
+
+1. Open the link in your wallet, or scan it as a QR code. It expires within
+   five minutes.
+2. Your wallet reads the step-up from the community itself, signed by the
+   community and addressed to you, together with the operation exactly as
+   the bridge sent it. It checks that the two belong together, and shows you
+   what will be done.
+3. Approve there. Your wallet answers the community directly, as you; nothing
+   comes back through the bridge.
+4. Ask the assistant to send the identical call again. It goes through.
+
+The link can be opened once. If it has expired or was used, the call is simply
+sent again for a new one. A workflow tool stops at that step and reports the
+link in its progress. Administrators whose only factor is a passkey get no
+link; they finish the act in the console.
+
 ### 2.4 Deciding is vouching
 
 `vtc_actions_decide` signs a `task-consent/decision` as this identity — the
@@ -150,6 +179,23 @@ exactly what a human's assistant acting as a second administrator should hold.
 process on the machine. The flags stay supported and the bridge warns when it
 sees one; prefer the matching `VTC_MCP_*` environment variable, or a file path
 for `--agent-secrets`.
+
+### 2.7 One agent key per community
+
+An agent key is a DID every community it signs in to records — in its audit
+trail, its list of your signing keys, its delegations. Two communities that
+see the same agent DID can tell that the same assistant, and so the same
+person, stands behind both: a correlation no protocol step prevents, and that
+neither community can see on its own. Mint one key per community
+(`vtc-mcp --mint-did-key`) and never point one at a second `--vtc-did`.
+
+The bridge keeps a local note of the communities each agent DID was used with
+(`$VTC_MCP_STATE_DIR`, else `$XDG_STATE_HOME/vtc-mcp`, else
+`~/.local/state/vtc-mcp`; file `agent-communities.json`, owner-only, DIDs
+only, never key material). When a key it has seen with one community is
+pointed at another, it logs a warning and `vtc_whoami` / `vtc_status` carry it
+as `keyReuseWarning`. It warns rather than refuses, since an operator may mean
+it; `--no-key-reuse-check` (`VTC_MCP_NO_KEY_REUSE_CHECK`) turns the note off.
 
 ---
 
@@ -192,26 +238,31 @@ What you then hold, and nothing more:
   sign-in is not needed for this:
 
   1. `vtc_enrol_signing_key` with no arguments answers with the bridge's DID
-     and the command to run.
-  2. Run it as the administrator — `cnm` signs the authorization with your
-     administrative identity's key, offline:
+     and how to sign the authorization.
+  2. Sign it as the administrator. If your identity lives in your wallet,
+     sign in to the console with the wallet and open **Console signing keys →
+     Authorize another key**: give it the bridge's DID, a label and how many
+     days (at most 30), and your wallet signs the authorization as you. Copy
+     it, or download `authorization.json`. If `cnm` holds your
+     administrative identity, it signs the same document offline:
 
      ```bash
      cnm access authorize-key did:key:z6Mk… --label "vtc-mcp" --expires 30d \
          --out ~/.config/vtc-mcp/authorization.json
      ```
 
-  3. `vtc_enrol_signing_key` with `authorization_file` set to that file. The
-     bridge sends `auth/signing-key/enroll/0.2`, signed by its own key, with
-     your authorization inside.
+  3. `vtc_enrol_signing_key` with `authorization` set to the JSON, or
+     `authorization_file` set to the saved file. The bridge sends
+     `auth/signing-key/enroll/0.2`, signed by its own key, with your
+     authorization inside.
 
   From then on every document the bridge signs is authorized by your
   administrative standing, read at every call. The delegation creates no
   access-control entry, expires within 30 days, appears in the console's list
   of your signing keys, and is revoked on its own. It can never approve an
-  action or answer a step-up: those stay with your own factor (§11). The
+  action or answer a step-up: those stay with your own factor (§2.3a). The
   authorization is single-use, usable only by the key it names, and lapses an
-  hour after `cnm` signs it unless sent.
+  hour after it is signed unless sent.
 
   An `admin` wallet sign-in still works, and gives the bridge's key your
   console session so `vtc_whoami` answers for it; it confers no
@@ -308,6 +359,7 @@ regardless, for a diagnosis. `vtc_status` reports which is in use.
 | `--allow <glob>` | `VTC_MCP_ALLOW` | Permit only these slug globs. Repeatable; comma-separated in the env var. When set, everything else is refused |
 | `--deny <glob>` | `VTC_MCP_DENY` | Always refuse these. Checked **before** `--allow` |
 | `--confirm <level>` | `VTC_MCP_CONFIRM` | Which classes need a human: `never`, `destructive` (default), `sensitive`, `always` |
+| `--no-key-reuse-check` | `VTC_MCP_NO_KEY_REUSE_CHECK` | Keep no note of which community each agent key was used with, and so give no warning when one is reused (§2.7) |
 
 Globs are `*`, a family (`vtc/groups/*`), or an exact slug, matched against
 the part after `https://trusttasks.org/spec/`. Confirmation uses MCP
@@ -339,6 +391,13 @@ vtc-mcp --agent-did … --vtc-did … --allow 'vtc/admin/actions/*,task-consent/
 - **`vtc_status` and `vtc://calls/recent`** answer from inside the session:
   the last hundred calls, redacted, without an audit file having been
   configured.
+- **`connected` is earned, not latched.** It is true while the bridge has a
+  session and no transport failure has happened since the community last
+  answered; one failed call (the mediator unreachable, the socket gone and
+  not reopened) turns it false, and the next answer — success, refusal or
+  parked — turns it back. `transportHealth` gives `lastReachedAt`,
+  `lastFailureAt` and `lastFailure`; `serving` says `stdio` or the `--listen`
+  URL.
 - **Redaction is an allowlist.** A string survives in a record only under a
   known identifier key (`groupId`, `subject`, `electionId`, …); anything else
   is elided, so a note or a card value never reaches a log.
@@ -370,6 +429,63 @@ vtc-mcp --agent-did … --vtc-did … --allow 'vtc/admin/actions/*,task-consent/
 
 Keep the key in `env`, not `args`. Every flag has a `VTC_MCP_*` environment
 equivalent.
+
+### 7.1 Several assistant sessions: one shared bridge (`--listen`)
+
+A host started as above spawns its own bridge. Two of them with the same agent
+key — two assistant sessions — is two mediator sockets for one DID, and the
+mediator keeps one: each eviction is followed by a reconnect that evicts the
+other, and a reply the mediator flushes onto the other process's socket is
+deleted once written, so the call waiting for it fails though the community
+did the work. Do not run the same key in two stdio bridges.
+
+Run one bridge for the machine instead, and point every host at it:
+
+```sh
+# Once, as a long-running process (a launchd agent or systemd user unit):
+VTC_MCP_AGENT_KEY=z3u2… vtc-mcp \
+  --agent-did did:key:z6Mk… \
+  --vtc-did did:webvh:…:vtc.example.com \
+  --confirm sensitive \
+  --listen 127.0.0.1:7465
+# → serving MCP over loopback HTTP  url=http://127.0.0.1:7465/mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "community": {
+      "type": "http",
+      "url": "http://127.0.0.1:7465/mcp",
+      "headers": { "Authorization": "Bearer ${VTC_MCP_LISTEN_TOKEN}" }
+    }
+  }
+}
+```
+
+- **One session, every host.** The bridge holds one community session and
+  gives each MCP session its own view of it; replies are routed to the request
+  waiting for them however many hosts are calling. A confirmation (`--confirm`)
+  or a decision is asked of the host that made the call. The guard, the audit
+  log and an open wallet sign-in are the bridge's, shared by every host.
+- **Loopback only.** Any other address is refused at startup.
+- **A bearer token on every request.** `VTC_MCP_LISTEN_TOKEN` (at least 32
+  characters), else the file `listen-token` in the state directory
+  (`$VTC_MCP_STATE_DIR`, else `$XDG_STATE_HOME/vtc-mcp`, else
+  `~/.local/state/vtc-mcp`), created owner-only on first start. A token file
+  anyone else can read is refused. Give the hosts the same token, through the
+  environment the host expands in `headers` — never written into a project's
+  checked-in `.mcp.json`. Whoever holds it acts with the bridge's standing, so
+  rotate it by deleting the file and restarting.
+- **No browsers.** A request with an `Origin` header is refused, and the
+  `Host` must be a loopback name, so a web page cannot reach the port.
+- **Confirmations work over HTTP.** The bridge serves MCP up to `2025-11-25`:
+  `2026-07-28` forbids the server-to-client request a confirmation is, so a
+  host that asks for it is refused and falls back to a version that can ask
+  you. After upgrading the bridge, reconnect the host once (`/mcp` in Claude
+  Code) so it renegotiates.
+- **Stops cleanly** on SIGINT or SIGTERM, closing every MCP session and then
+  the community session.
 
 **The skill.** `vtc-mcp/skills/vtc-community/SKILL.md` is a Claude Code skill
 that teaches an assistant how to work through this bridge: start with status,
@@ -418,16 +534,27 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
 
 ## 9. Troubleshooting
 
+A failed call is a **tool result** with `isError: true`, not a JSON-RPC
+error, so the model reads it: a JSON body with a stable `error` kind
+(`refused` with the community's own `code` in `details`, `notServed`,
+`notPinned`, `invalidRequest`, `transport`, `notConnected`,
+`deniedByLocalPolicy`, `declinedByOperator`, …), the `message`, and what to do
+`next`. Parked and step-up outcomes stay successful results, as below.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | The host lists **no tools** | The server exited before speaking MCP: a bad `--confirm` value or an unopenable `--audit-log` | Read the host's MCP server log; both are fatal by design |
 | Every tool returns "not connected to its community" | Degraded mode (§6) | The message names what is missing or what failed; fix and restart |
 | `no usable transport to <did>: the community advertises TSP but no session could be opened` | The advertised mediator did not answer | Fix the mediator; `--transport rest` posts signed documents for a diagnosis |
 | `will not send <uri>: not a Trust Task version this client pins` | The URI is not in the pinned index | Take the URI from `vtc_list_operations`; a version the community serves but this build does not pin needs a newer build |
+| `notServed`: `this community does not serve <uri>` | The community's discovery answer (asked at connect, or by an unnarrowed `vtc_supported_tasks`) does not list it; nothing was sent | Use a version from `details.servedVersions` |
 | `invalid request payload: does not conform to …` | The payload fails the task's schema, locally, before anything is sent | Read the schema with `detail: "full"`; an unset optional member is absent, never `null` |
 | `permissionDenied` from the community | The entry does not hold the capability, or a member persona was asked an administrative task | `vtc_whoami`; ask the administrator who enrolled the entry |
 | A result says `parked` | Second-party consent (§2.3) | Not an error; follow the action, do not resend |
 | `this MCP host cannot ask you (it does not support elicitation)` | `--confirm`, or `vtc_actions_decide`, needs a prompt the host cannot show | `--confirm never` or `--allow` for ordinary steps; a decision has no such override — use a host that can ask |
+| Calls fail or time out only while a **second assistant session** is open | Two stdio bridges on one agent key: two sockets for one DID (§7.1) | One bridge with `--listen`, or a separate key per session |
+| `401` from the bridge's URL | No `Authorization: Bearer` header, or a different token | The host's `headers` must expand to the bridge's token (§7.1) |
+| `--listen …: only a loopback address is served` | A non-loopback `--listen` address | `127.0.0.1:<port>` or `[::1]:<port>` |
 
 ---
 
@@ -447,19 +574,6 @@ An administrator's assistant, enrolled as in §3.1 with `vtc.groups.manage`.
 
 ## 11. Not built yet
 
-- **An administrator whose identity lives in a wallet.** `cnm access
-  authorize-key` signs with the key `cnm` holds for the community. An
-  administrator whose identity is a persona their VTA holds, and who has no
-  `cnm` profile for it, has no tool yet that signs the authorization outside
-  the console's own page, which signs it through the wallet for the console's
-  key. The fix is a console action that signs the same authorization for a
-  key you name.
-- **Step-up through the wallet.** An authority-changing act — a grant, a role
-  change, a join criterion — takes your own factor bound to that one
-  operation, and a delegated key can never make that gesture. The bridge
-  reports the refusal; finishing the act in the console works today. Handing
-  the step-up request to your wallet out of band changes the step-up
-  ceremony, so it starts in the specification.
 - **Approving someone else's action** is a decision signed by your own DID,
   which a delegated key may not sign: use the console, your wallet or
   `cnm consent approve`.

@@ -365,9 +365,11 @@ async fn session_cookies_are_scoped_to_the_member_api() {
     };
     assert!(find("vtc_member_session").contains("Path=/v1/member;"));
     assert!(find("vtc_member_refresh").contains("Path=/v1/member;"));
-    assert!(find("vtc_member_csrf").contains("Path=/;"));
+    assert!(find("__Host-vtc_member_csrf").contains("Path=/;"));
     assert!(
-        !cookies.iter().any(|c| c.starts_with("vtc_admin_session=")),
+        !cookies
+            .iter()
+            .any(|c| c.starts_with("__Host-vtc_admin_session=")),
         "the portal must never set the console's cookie"
     );
 

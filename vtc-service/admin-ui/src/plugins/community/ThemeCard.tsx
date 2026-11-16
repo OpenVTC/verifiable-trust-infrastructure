@@ -25,6 +25,7 @@ import {
 import { setPreviewStylesheet } from "@/lib/theme-preview";
 import { MAX_STYLESHEET_BYTES, checkThemeStylesheet } from "@/lib/theme-profile";
 import { useToast } from "@/lib/toast";
+import { messageOf } from "@/lib/messages";
 
 const THEME_KEY = ["community-theme"] as const;
 const OUTSIDE_PROFILE = "vtc/community/theme/update:outsideProfile";
@@ -46,7 +47,7 @@ function refusal(e: unknown): string {
     const d = err.details as { line?: number; column?: number; rule?: string };
     return `The community refused it — line ${d.line}, column ${d.column}: ${err.message} (${d.rule}).`;
   }
-  return err?.message ?? String(e);
+  return messageOf(e);
 }
 
 /** Which built-in a draft is, if it is one unchanged. */

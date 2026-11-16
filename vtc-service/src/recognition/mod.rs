@@ -51,7 +51,11 @@
 //! (min of three TTLs) and refresh paths are rare relative to
 //! "regular member" sessions.
 
+/// The administrator's recognition check.
+pub(crate) mod admin;
 pub mod challenge;
+/// TRQP recognition (`vtc/recognise`).
+pub mod recognise;
 pub mod verify;
 
 pub use verify::{

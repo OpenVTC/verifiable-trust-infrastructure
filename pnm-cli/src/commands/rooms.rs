@@ -21,15 +21,36 @@ use vta_sdk::client::VtaClient;
 use crate::cli::{
     RoomCommands, RoomFileCommands, RoomKeysCommands, RoomNameCommands, RoomOffersCommands,
     RoomOwnerCommands, RoomProfileCommands, RoomRecordsCommands, RoomRetentionCommands,
+    RoomSignalDelayCommands,
 };
 
 /// The operator's DID and key, from the session this CLI authenticates with.
 fn signer(keyring_key: &str) -> Result<vta_sdk::session::SessionInfo, Box<dyn std::error::Error>> {
     crate::auth::loaded_session(keyring_key).ok_or_else(|| -> Box<dyn std::error::Error> {
-        "not authenticated — run `pnm auth login` first. A room request is signed by the \
+        "not authenticated — run `pnm setup` first. A room request is signed by the \
          DID your VTA minted the presentation for, so this needs your session."
             .into()
     })
+}
+
+/// `rooms read`'s `--limit`, `--pages` and `--cursor` read the head of a conversation, and
+/// mean nothing beside named keys. Clap cannot refuse them there (`keys` conflicts with
+/// `--newest`, which suppresses `requires`), so this does, naming the command meant.
+pub(crate) fn read_newest_flags(
+    newest: bool,
+    limit: Option<usize>,
+    pages: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<(), String> {
+    if newest || (limit.is_none() && pages.is_none() && cursor.is_none()) {
+        return Ok(());
+    }
+    Err(
+        "`--limit`, `--pages` and `--cursor` read the newest records of a conversation, not \
+         named keys. Drop the keys and add --newest, e.g.\n  pnm rooms read --newest \
+         --limit 20 --room <room-did> --host-did <host-did>"
+            .into(),
+    )
 }
 
 pub(crate) async fn run(
@@ -63,7 +84,22 @@ pub(crate) async fn run(
                     visibility,
                     retention_days,
                     retention_policy,
+                    chat,
+                    signal_delay,
+                    tombstone_days,
+                    record_days,
                 } => {
+                    // Remembered before the call: what the operator typed is
+                    // what later commands should default to, whatever the
+                    // host answers (#2590).
+                    crate::rooms_profile::remember(
+                        &room_id,
+                        crate::rooms_profile::RoomEntry {
+                            host_did: Some(host_did.clone()),
+                            ..Default::default()
+                        },
+                        true,
+                    );
                     custody::cmd_rooms_owner_register(
                         client,
                         &room_id,
@@ -72,6 +108,12 @@ pub(crate) async fn run(
                         &visibility,
                         retention_days,
                         retention_policy.as_deref(),
+                        custody::RoomSettings {
+                            chat,
+                            signal_delay: signal_delay.as_deref(),
+                            tombstone_days,
+                            record_days,
+                        },
                     )
                     .await
                 }
@@ -259,7 +301,7 @@ pub(crate) async fn run(
                     member,
                     key_package,
                 } => {
-                    rooms::cmd_rooms_offers_accept(
+                    let accepted = rooms::cmd_rooms_offers_accept(
                         client,
                         rooms::OfferTarget {
                             vtc_url: &vtc,
@@ -269,7 +311,21 @@ pub(crate) async fn run(
                         &room_id,
                         key_package.as_deref(),
                     )
-                    .await
+                    .await;
+                    // A community's room is hosted by the community itself
+                    // (#2590).
+                    if accepted.is_ok() {
+                        crate::rooms_profile::remember(
+                            &room_id,
+                            crate::rooms_profile::RoomEntry {
+                                host: Some(vtc.clone()),
+                                host_did: Some(vtc_did.clone()),
+                                signing_key_id: None,
+                            },
+                            true,
+                        );
+                    }
+                    accepted
                 }
                 RoomOffersCommands::Renew {
                     room_id,
@@ -393,8 +449,14 @@ pub(crate) async fn run(
                 invitation,
                 welcome,
             } => {
-                return custody::cmd_rooms_keys_welcome(client, &room_id, &invitation, &welcome)
-                    .await;
+                let joined =
+                    custody::cmd_rooms_keys_welcome(client, &room_id, &invitation, &welcome).await;
+                if joined.is_ok() {
+                    // The room just joined is the one the next command means
+                    // (#2590); its host is learned from `rooms use`.
+                    crate::rooms_profile::remember(&room_id, Default::default(), true);
+                }
+                return joined;
             }
             RoomKeysCommands::Commit {
                 room_id,
@@ -410,6 +472,23 @@ pub(crate) async fn run(
             }
             RoomKeysCommands::List { host_did } => {
                 return custody::cmd_rooms_keys_list_named(client, host_did.as_deref()).await;
+            }
+            RoomKeysCommands::MarkRead {
+                room_id,
+                member,
+                version,
+                created_at,
+                unread,
+            } => {
+                return custody::cmd_rooms_keys_mark_read(
+                    client,
+                    &room_id,
+                    &member,
+                    version.unwrap_or(0),
+                    created_at.as_deref(),
+                    unread,
+                )
+                .await;
             }
             RoomKeysCommands::Label {
                 room_id,
@@ -447,6 +526,7 @@ pub(crate) async fn run(
     };
 
     match command {
+        RoomCommands::Use { .. } => unreachable!("`rooms use` is handled before authenticating"),
         RoomCommands::File { command } => match command {
             RoomFileCommands::Put {
                 path,
@@ -503,36 +583,71 @@ pub(crate) async fn run(
             prefix,
             since_version,
             limit,
+            newest,
+            pages,
+            cursor,
+            before_version,
         } => {
-            rooms::cmd_rooms_list(
-                client,
-                RoomTarget {
-                    host_url: &host,
-                    host_did: host_did.as_deref(),
-                    room_id: &room_id,
-                },
-                prefix.as_deref(),
-                since_version,
-                limit,
-            )
-            .await
+            let target = RoomTarget {
+                host_url: &host,
+                host_did: host_did.as_deref(),
+                room_id: &room_id,
+            };
+            if newest {
+                rooms::cmd_rooms_list_newest(
+                    client,
+                    target,
+                    rooms::NewestPage {
+                        prefix: prefix.as_deref(),
+                        since_version,
+                        limit,
+                        pages,
+                        cursor: cursor.as_deref(),
+                        before_version,
+                    },
+                )
+                .await
+            } else {
+                rooms::cmd_rooms_list(client, target, prefix.as_deref(), since_version, limit).await
+            }
         }
         RoomCommands::Read {
             keys,
+            newest,
+            limit,
+            pages,
+            cursor,
+            before_version,
             room_id,
             host,
             host_did,
         } => {
-            rooms::cmd_rooms_read(
-                client,
-                RoomTarget {
-                    host_url: host.as_deref().unwrap_or_default(),
-                    host_did: Some(&host_did),
-                    room_id: &room_id,
-                },
-                &keys,
-            )
-            .await
+            read_newest_flags(newest, limit, pages, cursor.as_deref())?;
+            let target = RoomTarget {
+                // Unused by `read`, which reaches the host through the VTA; named in the
+                // command a `--newest` read prints for the page before.
+                host_url: host
+                    .as_deref()
+                    .unwrap_or(if newest { "<the host's URL>" } else { "" }),
+                host_did: Some(&host_did),
+                room_id: &room_id,
+            };
+            if newest {
+                rooms::cmd_rooms_read_newest(
+                    client,
+                    target,
+                    rooms::NewestPage {
+                        limit,
+                        pages,
+                        cursor: cursor.as_deref(),
+                        before_version,
+                        ..Default::default()
+                    },
+                )
+                .await
+            } else {
+                rooms::cmd_rooms_read(client, target, &keys).await
+            }
         }
         RoomCommands::Get {
             key,
@@ -673,25 +788,27 @@ pub(crate) async fn run(
             since,
             lease,
             cancel,
+            live,
         } => {
             let lease_secs = lease
                 .as_deref()
                 .map(vta_cli_common::duration::parse_duration_secs)
                 .transpose()?;
             if !via_host {
-                return rooms::cmd_rooms_watch(
-                    client,
-                    rooms::WatchThroughVta {
-                        host_did: &host_did,
-                        room_ids: &room_ids,
-                        member: member.as_deref(),
-                        host_url: host.as_deref(),
-                        since,
-                        lease_secs,
-                        cancel,
-                    },
-                )
-                .await;
+                let req = rooms::WatchThroughVta {
+                    host_did: &host_did,
+                    room_ids: &room_ids,
+                    member: member.as_deref(),
+                    host_url: host.as_deref(),
+                    since,
+                    lease_secs,
+                    cancel,
+                };
+                if live {
+                    return rooms::cmd_rooms_watch_live(client, req, session.vta_did.as_deref())
+                        .await;
+                }
+                return rooms::cmd_rooms_watch(client, req).await;
             }
             let [room_id] = room_ids.as_slice() else {
                 return Err("--via-host watches one room: name one --room".into());
@@ -830,6 +947,45 @@ pub(crate) async fn run(
                     .await
                 }
             },
+        },
+        RoomCommands::SignalDelay { command } => match command {
+            RoomSignalDelayCommands::Show {
+                room_id,
+                host,
+                host_did,
+            } => {
+                rooms::cmd_rooms_signal_delay_show(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                )
+                .await
+            }
+            RoomSignalDelayCommands::Set {
+                room_id,
+                host,
+                host_did,
+                none,
+                randomised: _,
+                reason,
+            } => {
+                rooms::cmd_rooms_signal_delay_set(
+                    client,
+                    RoomTarget {
+                        host_url: &host,
+                        host_did: host_did.as_deref(),
+                        room_id: &room_id,
+                    },
+                    signer,
+                    if none { "none" } else { "randomised" },
+                    reason,
+                )
+                .await
+            }
         },
         RoomCommands::Keys { command } => match command {
             RoomKeysCommands::Commit {

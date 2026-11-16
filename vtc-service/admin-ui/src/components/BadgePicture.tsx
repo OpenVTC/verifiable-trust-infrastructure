@@ -9,8 +9,9 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ImagePlus, Trash2 } from "lucide-react";
+import { ImagePlus, Palette, Trash2 } from "lucide-react";
 
+import { BadgeBuilder } from "@/components/BadgeBuilder";
 import { getBadgeImage, uploadBadgeImage, type BadgeImageRef } from "@/lib/badges";
 import { PictureError, pictureUrl, prepare, toBase64Url } from "@/members/picture";
 
@@ -66,12 +67,15 @@ export function BadgePicture({
  */
 export function BadgePictureField({
   badgeId,
+  name = "",
   current,
   value,
   onChange,
 }: {
   /** The badge being changed, to show its current picture; absent for a new one. */
   badgeId?: string;
+  /** The badge's name, which the builder puts on a banner. */
+  name?: string;
   /** The badge's picture as it is, for the preview. */
   current?: BadgeImageRef | null;
   /** The upload chosen for the next write, if any. */
@@ -80,10 +84,11 @@ export function BadgePictureField({
 }) {
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [building, setBuilding] = useState(false);
   useEffect(() => () => void (preview && URL.revokeObjectURL(preview)), [preview]);
   const stored = useBadgePicture(badgeId, value ? null : current);
   const send = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async (file: Blob) => {
       const { mediaType, bytes } = await prepare(file);
       const answer = await uploadBadgeImage(mediaType, toBase64Url(bytes));
       return { image: answer.image, local: URL.createObjectURL(file) };
@@ -121,6 +126,15 @@ export function BadgePictureField({
             }}
           />
         </label>
+        <button
+          type="button"
+          className="secondary"
+          aria-expanded={building}
+          disabled={send.isPending}
+          onClick={() => setBuilding((b) => !b)}
+        >
+          <Palette size={14} aria-hidden="true" /> Build one from a colour and an icon
+        </button>
         {value && (
           <button type="button" className="secondary" onClick={() => onChange(null)}>
             <Trash2 size={14} aria-hidden="true" /> Keep the old one
@@ -136,6 +150,17 @@ export function BadgePictureField({
           </p>
         )}
       </div>
+      {building && (
+        <BadgeBuilder
+          name={name}
+          busy={send.isPending}
+          onUse={(png) => {
+            send.mutate(png);
+            setBuilding(false);
+          }}
+          onCancel={() => setBuilding(false)}
+        />
+      )}
     </div>
   );
 }

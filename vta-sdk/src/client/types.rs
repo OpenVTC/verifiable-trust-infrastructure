@@ -432,7 +432,8 @@ pub use crate::protocols::seed_management::rotate::RotateSeedResultBody as Rotat
 
 /// One ACL entry as a VTA returns it.
 ///
-/// Read from the canonical **AclEntry 0.2** wire (`acl/_shared/0.2`), where
+/// Read from the canonical **AclEntry 0.3** wire (`acl/_shared/0.3`: 0.2's
+/// members plus `purposes`, read by [`AclEntryResponse::purposes`]), where
 /// every authority axis is explicit, into the VTA's own model: `act` becomes
 /// `allowed_contexts` read through the role (empty is unrestricted for
 /// `admin`, nowhere for every other role), `keys` becomes `allowed_keys`, a
@@ -443,7 +444,7 @@ pub use crate::protocols::seed_management::rotate::RotateSeedResultBody as Rotat
 ///
 /// It serialises (for CLI `--json` output) in that flattened form, not as 0.2.
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", try_from = "WireAclEntry")]
+#[serde(rename_all = "camelCase", try_from = "serde_json::Value")]
 pub struct AclEntryResponse {
     #[serde(rename = "subject")]
     pub did: String,
@@ -482,6 +483,31 @@ pub struct AclEntryResponse {
     /// The explicit act scope, as the wire stated it.
     #[serde(skip)]
     act: crate::acl::ActScope,
+    /// What the subject may use the content it reads for (AclEntry 0.3,
+    /// VTI-ACL-100). `None` where the answer was an AclEntry that has no such
+    /// member (`acl/swap-key/0.1`'s), which states nothing about them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    purposes: Option<crate::acl::PurposeScope>,
+}
+
+/// An AclEntry as a VTA answers it: 0.3 is 0.2's members plus `purposes`
+/// (`acl/_shared/0.3` CONVENTIONS §8a), so `purposes` is taken off and the rest
+/// read as the 0.2 (or swap-key's 0.1) entry.
+impl TryFrom<serde_json::Value> for AclEntryResponse {
+    type Error = String;
+
+    fn try_from(mut v: serde_json::Value) -> Result<Self, String> {
+        let purposes = v
+            .as_object_mut()
+            .and_then(|m| m.remove("purposes"))
+            .map(serde_json::from_value::<crate::acl::PurposeScope>)
+            .transpose()
+            .map_err(|e| format!("`purposes`: {e}"))?;
+        let wire: WireAclEntry = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let mut entry = Self::try_from(wire)?;
+        entry.purposes = purposes;
+        Ok(entry)
+    }
 }
 
 /// The two AclEntry versions a VTA answers in: 0.2 from `acl/*`, and 0.1 from
@@ -531,6 +557,7 @@ impl TryFrom<WireAclEntry> for AclEntryResponse {
                     }),
                     ext: e.ext,
                     act,
+                    purposes: None,
                 })
             }
         }
@@ -601,6 +628,7 @@ impl TryFrom<crate::protocols::acl_management::v0_2::AclEntry> for AclEntryRespo
             approve,
             ext: capabilities_into_ext(e.ext, &capabilities),
             act: e.act.to_act_scope(),
+            purposes: None,
         })
     }
 }
@@ -609,6 +637,12 @@ impl AclEntryResponse {
     /// The explicit act scope the VTA stated for this entry.
     pub fn act(&self) -> &crate::acl::ActScope {
         &self.act
+    }
+
+    /// What the subject may use the content it reads for (VTI-ACL-100), where
+    /// the answer stated it.
+    pub fn purposes(&self) -> Option<&crate::acl::PurposeScope> {
+        self.purposes.as_ref()
     }
 
     /// The entry's capability narrowing, as kebab-case names.
@@ -698,14 +732,14 @@ pub(crate) struct AclEntryEnvelope {
     pub entry: AclEntryResponse,
 }
 
-/// Every entry `acl/list/0.3` returned, the client having followed
+/// Every entry `acl/list/0.4` returned, the client having followed
 /// `nextCursor` to the last page.
 #[derive(Debug, Deserialize)]
 pub struct AclListResponse {
     pub entries: Vec<AclEntryResponse>,
 }
 
-/// One page of an ACL listing, as `acl/list/0.3` answers it.
+/// One page of an ACL listing, as `acl/list/0.4` answers it.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AclListPage {
@@ -714,18 +748,18 @@ pub(crate) struct AclListPage {
     pub next_cursor: Option<String>,
 }
 
-/// An `{ entry }` that may be `null` — `acl/show/0.2`'s "no such entry", and
-/// `acl/revoke/0.2`'s removal.
+/// An `{ entry }` that may be `null` — `acl/show/0.3`'s "no such entry", and
+/// `acl/revoke/0.3`'s removal.
 #[derive(Debug, Deserialize)]
 pub(crate) struct AclShowResponse {
     pub entry: Option<AclEntryResponse>,
 }
 
-/// Builder for `acl/grant/0.2`.
+/// Builder for `acl/grant/0.3`.
 ///
 /// Callers keep writing `CreateAclRequest::new(did, role).contexts(..)`; the
-/// wire carries an AclEntry 0.2 with every axis explicit
-/// ([`to_entry_v0_2`](Self::to_entry_v0_2)).
+/// wire carries an AclEntry 0.3 with every axis explicit: the 0.2 members
+/// ([`to_entry_v0_2`](Self::to_entry_v0_2)) and its `purposes`.
 #[derive(Debug)]
 #[must_use]
 pub struct CreateAclRequest {
@@ -761,6 +795,10 @@ pub struct CreateAclRequest {
     /// granter's own authority rather than by this entry's expiry. Requires an
     /// expiry. The provision-integration admin rollover needs it.
     pub handoff: bool,
+    /// What the subject may use the content it reads for (VTI-ACL-100):
+    /// `any` by default. A grant to a software agent should list what its task
+    /// needs instead (VTI-VTA-044); `any` never grants `modelTraining`.
+    pub purposes: crate::acl::PurposeScope,
 }
 
 impl CreateAclRequest {
@@ -865,10 +903,17 @@ pub(crate) fn capability_scope_for(
 }
 
 impl serde::Serialize for CreateAclRequest {
-    /// The `acl/grant/0.2` payload.
+    /// The `acl/grant/0.3` payload: the AclEntry 0.2 members and `purposes`.
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        crate::protocols::acl_management::v0_2::grant_payload(&self.to_entry_v0_2(), None, false)
-            .serialize(s)
+        let payload = crate::protocols::acl_management::v0_2::grant_payload(
+            &self.to_entry_v0_2(),
+            None,
+            false,
+        );
+        let mut payload = serde_json::to_value(payload).map_err(serde::ser::Error::custom)?;
+        crate::protocols::acl_management::v0_2::state_purposes(&mut payload, &self.purposes)
+            .map_err(serde::ser::Error::custom)?;
+        payload.serialize(s)
     }
 }
 
@@ -887,7 +932,13 @@ impl CreateAclRequest {
             allowed_keys: None,
             capabilities: Vec::new(),
             handoff: false,
+            purposes: crate::acl::PurposeScope::Any,
         }
+    }
+    /// What the subject may use what it reads for (the `purposes` field).
+    pub fn purposes(mut self, purposes: crate::acl::PurposeScope) -> Self {
+        self.purposes = purposes;
+        self
     }
     /// Mark the entry as a one-time hand-off. See [`CreateAclRequest::handoff`].
     pub fn handoff(mut self) -> Self {
@@ -999,6 +1050,10 @@ pub struct UpdateAclRequest {
     /// member. Both spellings reach the same stored field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
+    /// Replace the entry's purposes wholesale (`acl/update/0.3`); `None`
+    /// leaves them unchanged. Narrowing them is a privilege reduction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purposes: Option<crate::acl::PurposeScope>,
 }
 
 // ── WebVH server types ──────────────────────────────────────────────

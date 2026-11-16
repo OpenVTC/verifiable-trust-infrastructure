@@ -2,6 +2,7 @@
 // card is published, and stopping publication is one narrowing write.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,9 +63,9 @@ function card(external: { state: string; cardDigest?: string } | null) {
 function renderCard() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
       <MyCardPage />
-    </QueryClientProvider>,
+    </ConfirmDialogProvider></QueryClientProvider>,
   );
 }
 
@@ -253,9 +254,9 @@ describe("browsing and reading members", () => {
     });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
         <DirectoryPage />
-      </QueryClientProvider>,
+      </ConfirmDialogProvider></QueryClientProvider>,
     );
     expect(await screen.findByText("Glenn Gore")).toBeTruthy();
     expect(screen.queryByText("A member")).toBeNull();
@@ -282,9 +283,9 @@ describe("browsing and reading members", () => {
     });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
         <EntryPage entryId="dir_aaaaaaaaaaaaaaaa" />
-      </QueryClientProvider>,
+      </ConfirmDialogProvider></QueryClientProvider>,
     );
     expect(await screen.findByRole("heading", { name: "Glenn Gore" })).toBeTruthy();
     expect(screen.queryByText(/Personhood/i)).toBeNull();
@@ -305,9 +306,9 @@ describe("browsing and reading members", () => {
     api.showCard.mockResolvedValue({ card: { entryId: "dir_aaaaaaaaaaaaaaaa", values: {} } });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
         <EntryPage entryId="dir_aaaaaaaaaaaaaaaa" />
-      </QueryClientProvider>,
+      </ConfirmDialogProvider></QueryClientProvider>,
     );
     const edit = await screen.findByRole("link", { name: /Edit my card/ });
     expect(edit.getAttribute("href")).toBe("#/card");
@@ -348,9 +349,9 @@ describe("the member's own marks, from their wallet", () => {
     (window as { vtaWallet?: unknown }).vtaWallet = { directory: wallet };
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
         <DirectoryPage />
-      </QueryClientProvider>,
+      </ConfirmDialogProvider></QueryClientProvider>,
     );
     expect(await screen.findByText("Ada")).toBeTruthy();
     expect(wallet.marks).not.toHaveBeenCalled();
@@ -381,9 +382,9 @@ describe("the member's own marks, from their wallet", () => {
     (window as { vtaWallet?: unknown }).vtaWallet = { directory: { publishCard: vi.fn() } };
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
         <DirectoryPage />
-      </QueryClientProvider>,
+      </ConfirmDialogProvider></QueryClientProvider>,
     );
     expect(await screen.findByText("Ada")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Show my stars and lists/ })).toBeNull();

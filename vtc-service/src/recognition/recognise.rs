@@ -1,0 +1,819 @@
+//! `POST /v1/auth/recognise` — cross-community session mint.
+//!
+//! Phase 3 M3.10. Spec §8.4.
+//!
+//! The caller presents a foreign community's (role `VAC`, `VMC`) pair —
+//! the role credential is a DTG `AuthorityCredential` conferring
+//! `role:<name>` at the foreign community's DID — **inside a
+//! holder-signed W3C Verifiable Presentation**, the route runs the M3.9
+//! verifier, evaluates `cross_community_roles.rego` to map the foreign role
+//! onto a local role, and mints a session JWT with TTL clamped to
+//! `min(jwt_default, vac.validUntil - now, vmc.validUntil - now)`.
+//!
+//! ## Holder proof-of-possession (P0.2 part 2)
+//!
+//! A VAC + VMC are bearer artifacts: anyone who captures the pair (a relayed
+//! join, an audit log, a compromised member device) holds everything the old
+//! `{vac, vmc}` body of 0.1 needed. Minting a session straight off them made the pair
+//! a **replayable impersonation token** for the subject — no proof the caller
+//! controls the subject's key, no replay nonce, no audience binding.
+//!
+//! The flow is now two-step and proof-of-possession bound:
+//! 1. `POST /v1/auth/recognise/challenge` issues a single-use, TTL'd `nonce`
+//!    bound to this VTC's DID (see [`crate::recognition::challenge`]).
+//! 2. `POST /v1/auth/recognise` carries a **VP** whose holder
+//!    `eddsa-jcs-2022` proof (`proofPurpose: authentication`) commits to that
+//!    `nonce` (freshness/replay) + this VTC's DID as `domain` (audience), and
+//!    embeds the VAC + VMC. The handler consumes the challenge, verifies the
+//!    holder proof (proves possession of the subject key) plus each embedded
+//!    credential's issuer proof, and refuses unless the **VP holder is the
+//!    credential subject**. Only then does it run the recognition gate + mint.
+//!
+//! A captured VAC + VMC is now inert: the attacker can't produce the holder
+//! signature over a fresh challenge, and a replayed VP finds its single-use
+//! nonce already consumed.
+//!
+//! ## No refresh path
+//!
+//! Spec §8.4 + plan D5: cross-community sessions **never**
+//! refresh. The standard `POST /v1/auth/refresh` route doesn't
+//! carry the foreign credentials needed to re-run the
+//! recognition check, so re-issuing a token without
+//! re-verifying would defeat the "peer community removed
+//! mid-session loses access" invariant. The session simply
+//! expires when its clamped TTL elapses; the caller mints a
+//! fresh one with the latest credentials.
+
+use std::sync::Arc;
+
+use axum::Json;
+use chrono::{DateTime, Utc};
+use dtg_credentials::DTGCredentialType;
+use serde::Serialize;
+use serde_json::Value as JsonValue;
+use tracing::{info, warn};
+use uuid::Uuid;
+use vtc_audit::{AuditEvent, CrossCommunitySessionMintedData};
+
+use crate::auth::session::{Session, SessionState, now_epoch, store_session};
+use crate::credentials::exchange::verify_vp_token;
+use crate::error::{AppError, TaskError};
+use crate::policy::{
+    PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
+    get_policy,
+};
+use vti_common::auth::PurposeVmResolver;
+
+use crate::credentials::vm_resolver::DidVmResolver;
+use crate::recognition::{
+    HttpStatusListFetcher, RecognitionError, VerifiedForeignCredential, challenge,
+    verify_foreign_role,
+};
+use crate::server::AppState;
+use affinidi_vc::VerifiableCredential;
+use vta_sdk::protocols::members::{AUTHORITY_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
+use vti_specs::vtc::auth::recognise::challenge::v0_2::Response as RecogniseChallengeResponse;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct RecogniseResponse {
+    pub session_id: String,
+    pub data: RecogniseData,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct RecogniseData {
+    /// Minted JWT. Carries the *mapped local* role, not the
+    /// foreign one.
+    pub access_token: String,
+    /// The access token's expiry: RFC 3339 on the wire (`vtc/auth/recognise/0.3`;
+    /// 0.2 sent Unix seconds).
+    pub access_expires_at: DateTime<Utc>,
+    /// Foreign issuer DID, surfaced so the caller can correlate
+    /// the response with their request (the route doesn't echo
+    /// the credentials).
+    pub foreign_issuer_did: String,
+    /// Local role the foreign role mapped to.
+    pub mapped_role: String,
+}
+
+/// Written by hand so the access token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RecogniseData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecogniseData")
+            .field("access_token", &"<redacted>")
+            .field("access_expires_at", &self.access_expires_at)
+            .field("foreign_issuer_did", &self.foreign_issuer_did)
+            .field("mapped_role", &self.mapped_role)
+            .finish()
+    }
+}
+
+/// `vtc/auth/recognise/challenge/0.2` — issue a single-use, TTL'd nonce the
+/// holder binds into their recognise VP. Bound to this VTC's DID as the
+/// audience, so the resulting VP can't be replayed against a different VTC.
+/// Called from `trust_tasks::recognise_tasks`; no REST route mounts it.
+pub(crate) async fn recognise_challenge(
+    state: &AppState,
+) -> Result<RecogniseChallengeResponse, AppError> {
+    let vtc_did = vtc_did(state).await?;
+    let now = Utc::now();
+    let nonce = challenge::issue(
+        &state.join_requests_ks,
+        &vtc_did,
+        challenge::DEFAULT_CHALLENGE_TTL,
+        now,
+    )
+    .await?;
+    let expires_at = now + challenge::DEFAULT_CHALLENGE_TTL;
+    RecogniseChallengeResponse::builder()
+        .nonce(nonce)
+        .expires_at(expires_at)
+        .try_into()
+        .map_err(|e| AppError::Internal(format!("build recognise-challenge response: {e}")))
+}
+
+/// `vtc/auth/recognise:credentialInvalid` — the VAC or VMC failed proof
+/// verification, fell outside its validity window, or was revoked through
+/// `credentialStatus`.
+pub const RECOGNISE_ERR_CREDENTIAL_INVALID: &str =
+    vti_specs::vtc::auth::recognise::v0_3::error_codes::CREDENTIAL_INVALID.code;
+/// `vtc/auth/recognise:issuerNotRecognised` — the foreign issuer is not in this
+/// community's recognition graph.
+pub const RECOGNISE_ERR_ISSUER_NOT_RECOGNISED: &str =
+    vti_specs::vtc::auth::recognise::v0_3::error_codes::ISSUER_NOT_RECOGNISED.code;
+/// `vtc/auth/recognise:roleNotMapped` — policy allowed the issuer but mapped
+/// the foreign role to no local role.
+pub const RECOGNISE_ERR_ROLE_NOT_MAPPED: &str =
+    vti_specs::vtc::auth::recognise::v0_3::error_codes::ROLE_NOT_MAPPED.code;
+
+/// `vtc/auth/recognise/0.3` — cross-community session mint from a
+/// holder-signed VP embedding a foreign VAC + VMC. Called from
+/// `trust_tasks::recognise_tasks`; no REST route mounts it.
+pub(crate) async fn recognise(
+    state: &AppState,
+    presentation: JsonValue,
+) -> Result<RecogniseResponse, TaskError> {
+    // Pre-flight: the route depends on optional state. Refuse cleanly when a
+    // piece is missing rather than 500ing mid-handler. The `resolver` is
+    // needed immediately (VP holder + issuer proof verification); the
+    // `registry_client` is acquired later, just before the recognition gate
+    // that needs it, so the cheap caller-input + holder-binding checks
+    // fail-fast first. `jwt_keys` is re-checked inside
+    // `mint_recognised_session`, checked here only to surface a config issue
+    // before any real verification runs.
+    let resolver = state
+        .did_resolver
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| AppError::Internal("DID resolver not configured".into()))?;
+    state
+        .jwt_keys
+        .as_ref()
+        .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
+
+    let now = Utc::now();
+
+    // 1. Consume the challenge the holder bound into the VP. The nonce is read
+    //    from the *unverified* VP purely to look it up; the holder signature
+    //    over that same nonce is verified in step 2. Single-use + TTL: a
+    //    replayed VP finds its nonce already consumed; a stale nonce is gone.
+    let nonce = presentation
+        .get("nonce")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            AppError::Validation("presentation carries no top-level `nonce` to consume".into())
+        })?
+        .to_string();
+    let consumed = challenge::consume(&state.join_requests_ks, &nonce, now).await?;
+
+    // 2. Verify the holder proof (proof-of-possession of the subject key) and
+    //    bind freshness (`nonce`) + audience (`domain == consumed.aud`, this
+    //    VTC's DID). `verify_vp_token` also verifies each embedded credential's
+    //    issuer `eddsa-jcs-2022` proof + temporal validity. `did:key` holders
+    //    and issuers resolve locally.
+    //
+    //    `verify_vp_token` reads a DCQL `vp_token` (a map keyed by query id) or
+    //    a bare SD-JWT-VC string; recognise carries a single W3C DI VP, so wrap
+    //    it in a one-entry map before handing it over.
+    let vp_token = serde_json::json!({ "recognise": presentation });
+    let verified_vp = verify_vp_token(
+        &vp_token,
+        &consumed.aud,
+        &nonce,
+        state.did_resolver.as_ref(),
+        now,
+    )
+    .await?;
+    let holder_did = verified_vp.holder;
+
+    // 3. Pull the raw VAC + VMC back out of the (now holder-bound) VP so the
+    //    recognition gate can run its status-list / registry / role checks.
+    let (vac, vmc) = extract_vac_vmc(&presentation)?;
+
+    // 4. Holder-binding (the headline of P0.2 part 2). The proven VP holder
+    //    MUST be the credential subject — otherwise a captured VAC + VMC,
+    //    re-wrapped in a VP signed by the *attacker's own* holder key, would
+    //    still verify in step 2 and mint a session to the victim subject.
+    //    Cheap (no network) and fail-fast, so it gates before the recognition
+    //    HTTP calls. `verify_foreign_role` independently binds
+    //    `vmc.subject == vac.subject` (part 1), making this transitive to the
+    //    returned `verified.subject_did`.
+    let vac_subject = vc_subject_id(&vac)
+        .ok_or_else(|| AppError::Validation("foreign VAC has no credentialSubject.id".into()))?;
+    if holder_did != vac_subject {
+        let err = RecognitionError::Malformed(format!(
+            "VP holder `{holder_did}` is not the credential subject `{vac_subject}`"
+        ));
+        emit_denied_audit(state, &holder_did, None, "holder-binding", None, &err).await;
+        return Err(AppError::Forbidden(
+            "presentation holder is not the foreign credential subject".into(),
+        )
+        .into());
+    }
+
+    let registry = state.registry_client.as_ref().cloned().ok_or_else(|| {
+        AppError::Validation("trust-registry client not configured on this VTC".into())
+    })?;
+    let key_resolver: Arc<dyn PurposeVmResolver> = Arc::new(DidVmResolver::new(Some(resolver)));
+    // Verify the foreign status list's own issuer signature (bound to the
+    // VAC/VMC issuer) before trusting it — the same key resolver the proof check
+    // uses.
+    let status_fetcher = HttpStatusListFetcher::with_issuer_verification(key_resolver.clone());
+
+    // 5. Run the M3.9 recognition gate. Failures are mapped to `denied` audit
+    //    envelopes (actor = the cryptographically-proven VP holder) + a 403.
+    let verified = match verify_foreign_role(
+        &vac,
+        &vmc,
+        key_resolver.as_ref(),
+        &status_fetcher,
+        Arc::clone(&registry),
+        now,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            emit_denied_audit(state, &holder_did, None, e.reason_code(), None, &e).await;
+            return Err(map_recognition_error(e));
+        }
+    };
+
+    Ok(mint_recognised_session(state, verified).await?.0)
+}
+
+/// This VTC's own DID — the audience a recognise challenge is bound to and the
+/// `domain` the holder's VP must name.
+pub(crate) async fn vtc_did(state: &AppState) -> Result<String, AppError> {
+    state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .ok_or_else(|| AppError::Validation("VTC DID not configured".into()))
+}
+
+/// Classify an embedded credential by its `type` array.
+///
+/// Classification goes through `dtg_credentials` — the same catalog the VTC
+/// mints through — rather than comparing string literals here. A literal on
+/// this side can drift from what the catalog emits without anything failing,
+/// which is exactly what happened once: this path matched a
+/// `Verifiable`-prefixed role-credential type no VTC ever minted, so no
+/// genuinely-issued role credential was ever routed to its slot, and
+/// cross-community recognition rejected every real presentation.
+///
+/// The catalog is the only accepted authority. Nothing here re-admits the
+/// `Verifiable`-prefixed tags that hand-rolled pre-catalog bodies carried:
+/// they were never DTG credential types, and a reference implementation that
+/// accepts a type the specification does not define reintroduces the drift
+/// this function exists to prevent.
+fn classify(types: &[String]) -> Option<DTGCredentialType> {
+    DTGCredentialType::try_from(types).ok()
+}
+
+/// Pull the foreign VAC + VMC out of a VP's `verifiableCredential`, classifying
+/// by `type`. Both must be present exactly once. Accepts either a single object
+/// or an array (the W3C VP shape).
+fn extract_vac_vmc(
+    presentation: &JsonValue,
+) -> Result<(VerifiableCredential, VerifiableCredential), AppError> {
+    let raw = presentation
+        .get("verifiableCredential")
+        .ok_or_else(|| AppError::Validation("presentation has no `verifiableCredential`".into()))?;
+    let entries: Vec<&JsonValue> = match raw {
+        JsonValue::Array(items) => items.iter().collect(),
+        other => vec![other],
+    };
+
+    let mut vac_cred: Option<VerifiableCredential> = None;
+    let mut vmc_cred: Option<VerifiableCredential> = None;
+    for entry in entries {
+        let cred: VerifiableCredential = serde_json::from_value(entry.clone()).map_err(|e| {
+            AppError::Validation(format!("embedded credential is not a valid VC: {e}"))
+        })?;
+        // Common structure first: a presented credential must be a DTG
+        // credential before its subtype means anything. This path used to
+        // classify on `type` alone, so a document carrying the right subtype
+        // tag and neither `@context` entry was routed as though it were a VAC.
+        // Non-DTG credentials in a VP are legitimate and simply skipped — only
+        // the VAC + VMC pair is acted on — so a failure here is not an error.
+        if crate::credentials::ingress::classify_dtg(entry).is_err() {
+            continue;
+        }
+
+        // Route the credential to its slot by type. Other credential types are
+        // ignored — the recognition gate only acts on the VAC + VMC pair.
+        let (slot, label) = match classify(&cred.types) {
+            Some(DTGCredentialType::Authority) => (&mut vac_cred, AUTHORITY_CREDENTIAL_TYPE),
+            Some(DTGCredentialType::Membership) => (&mut vmc_cred, MEMBERSHIP_CREDENTIAL_TYPE),
+            _ => continue,
+        };
+        if slot.replace(cred).is_some() {
+            return Err(AppError::Validation(format!(
+                "presentation carries more than one {label}"
+            )));
+        }
+    }
+
+    let vac = vac_cred.ok_or_else(|| {
+        AppError::Validation(format!("presentation has no {AUTHORITY_CREDENTIAL_TYPE}"))
+    })?;
+    let vmc = vmc_cred.ok_or_else(|| {
+        AppError::Validation(format!("presentation has no {MEMBERSHIP_CREDENTIAL_TYPE}"))
+    })?;
+    Ok((vac, vmc))
+}
+
+/// Read a credential's `credentialSubject.id`. `None` if absent or
+/// id-less (a VAC the recognition gate would reject anyway).
+fn vc_subject_id(vc: &VerifiableCredential) -> Option<String> {
+    use affinidi_vc::SubjectValue;
+    let subj = match &vc.credential_subject {
+        SubjectValue::Single(m) => Some(m),
+        SubjectValue::Multiple(v) => v.first(),
+    }?;
+    subj.get("id").and_then(|v| v.as_str()).map(str::to_string)
+}
+
+/// Post-verification half of the recognise flow — exposed at
+/// `pub(crate)` so integration tests can exercise it without
+/// faking a DID resolver. Production goes through
+/// [`recognise`] which runs the verifier first; tests
+/// hand-build a [`VerifiedForeignCredential`] (typestate
+/// proof of "this credential passed the four checks") and
+/// drive only the route-level concerns: role-mapping policy,
+/// TTL clamp, session mint, audit emission.
+pub async fn mint_recognised_session(
+    state: &AppState,
+    verified: VerifiedForeignCredential,
+) -> Result<Json<RecogniseResponse>, TaskError> {
+    let jwt_keys = state
+        .jwt_keys
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
+
+    // Run cross_community_roles.rego to map the foreign role
+    // onto a local role. Deny is encoded as either:
+    //   - `data.vtc.cross_community_roles.allow = false`, or
+    //   - missing/null `mapped_role`.
+    let mapped_role = match map_foreign_role(state, &verified).await? {
+        Some(r) => r,
+        None => {
+            emit_denied_audit(
+                state,
+                &verified.subject_did,
+                Some(verified.foreign_issuer_did.as_str()),
+                "role-mapping-denied",
+                Some(verified.foreign_role.as_str()),
+                &RecognitionError::Malformed("policy denied role mapping".into()),
+            )
+            .await;
+            return Err(TaskError::declared(
+                RECOGNISE_ERR_ROLE_NOT_MAPPED,
+                AppError::Forbidden(format!(
+                    "cross_community_roles.rego denied mapping for foreign role '{}'",
+                    verified.foreign_role
+                )),
+            ));
+        }
+    };
+
+    // Clamp the TTL to `min(jwt_default, vac.validUntil - now,
+    // vmc.validUntil - now)`. The verifier already exposed the
+    // *earliest* validUntil; we just compare to the configured
+    // access-token TTL.
+    let config = state.config.read().await;
+    let jwt_default = config.auth.access_token_expiry;
+    drop(config);
+
+    let now = Utc::now();
+    let creds_window_secs = (verified.earliest_valid_until - now).num_seconds().max(0) as u64;
+    let access_expiry = jwt_default.min(creds_window_secs);
+    if access_expiry == 0 {
+        // Credentials expire before the next clock tick. Treat
+        // as denied — minting a JWT that expires the same
+        // instant it's issued is operator-hostile.
+        emit_denied_audit(
+            state,
+            &verified.subject_did,
+            Some(verified.foreign_issuer_did.as_str()),
+            "validity-window",
+            Some(verified.foreign_role.as_str()),
+            &RecognitionError::ValidityWindow("credentials expire immediately".into()),
+        )
+        .await;
+        // The declared `credentialInvalid` covers "was expired", and a window
+        // that has already closed by the time a session could be minted is
+        // that, not a policy refusal.
+        return Err(TaskError::declared(
+            RECOGNISE_ERR_CREDENTIAL_INVALID,
+            AppError::Forbidden("foreign credentials expire too soon to mint a session".into()),
+        ));
+    }
+
+    // Mint the session. Mirror the existing
+    // `authenticate` path: store a Session row + emit a JWT.
+    // Skip the refresh token (cross-community sessions don't
+    // refresh — see module docs). AAL is `did/aal1`: the foreign
+    // VAC verification is a single-factor proof of the subject
+    // DID; passkey or VTA step-up is not part of the recognise
+    // flow.
+    let session_id = format!("xc-{}", Uuid::new_v4());
+    let session = Session {
+        session_id: session_id.clone(),
+        did: verified.subject_did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        last_seen: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: None,
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        acr_expires_at: None,
+        token_id: None,
+        session_pubkey_b58btc: None,
+        not_after: None,
+    };
+    store_session(&state.sessions_ks, &session).await?;
+
+    let claims = jwt_keys
+        .new_claims(
+            verified.subject_did.clone(),
+            session_id.clone(),
+            mapped_role.clone(),
+            Vec::new(),
+            access_expiry,
+            false,
+        )
+        .with_aal(vec!["did".to_string()], "aal1");
+    let access_expires_at =
+        DateTime::from_timestamp(claims.exp as i64, 0).unwrap_or(DateTime::UNIX_EPOCH);
+    let access_token = jwt_keys.encode(&claims)?;
+
+    // Audit: minted.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        let payload = CrossCommunitySessionMintedData {
+            outcome: "minted".into(),
+            foreign_issuer_did: verified.foreign_issuer_did.clone(),
+            foreign_role: Some(verified.foreign_role.clone()),
+            mapped_role: Some(mapped_role.clone()),
+            ttl_seconds: Some(access_expiry),
+            reason: None,
+        };
+        if let Err(e) = writer
+            .write(
+                &verified.subject_did,
+                Some(&verified.subject_did),
+                AuditEvent::CrossCommunitySessionMinted(payload),
+            )
+            .await
+        {
+            warn!(error = %e, "failed to emit CrossCommunitySessionMinted (minted) envelope");
+        }
+    }
+
+    info!(
+        subject = %verified.subject_did,
+        issuer = %verified.foreign_issuer_did,
+        mapped_role = %mapped_role,
+        ttl = access_expiry,
+        "cross-community session minted"
+    );
+
+    Ok(Json(RecogniseResponse {
+        session_id,
+        data: RecogniseData {
+            access_token,
+            access_expires_at,
+            foreign_issuer_did: verified.foreign_issuer_did,
+            mapped_role,
+        },
+    }))
+}
+
+/// Run `cross_community_roles.rego` against the verified
+/// credential pair. Returns `Ok(Some(mapped_role))` on policy
+/// allow, `Ok(None)` on deny. Errors propagate as
+/// `AppError::Internal` because they indicate a workspace bug
+/// (no policy, compile failure, etc.) — the operator has the
+/// fallback "default deny" stub from M2.5.
+async fn map_foreign_role(
+    state: &AppState,
+    verified: &VerifiedForeignCredential,
+) -> Result<Option<String>, AppError> {
+    let active_id = get_active_policy_id(
+        &state.active_policies_ks,
+        PolicyPurpose::CrossCommunityRoles,
+    )
+    .await?
+    .ok_or_else(|| AppError::Internal("no active cross_community_roles policy".into()))?;
+    let policy = get_policy(&state.policies_ks, active_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "active cross_community_roles policy {active_id} not found"
+            ))
+        })?;
+    let compiled = compile_policy(&policy.rego_source, policy.id)?;
+
+    let input = serde_json::json!({
+        "foreign_vac": {
+            "issuer": verified.foreign_issuer_did,
+            "role": verified.foreign_role,
+            "subject_did": verified.subject_did,
+        },
+        "action": "mint_session",
+    });
+
+    let allow = evaluate_policy(
+        &compiled,
+        "data.vtc.cross_community_roles.allow",
+        input.clone(),
+    )?;
+    let allow = allow
+        .pointer("/result/0/expressions/0/value")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false);
+    if !allow {
+        return Ok(None);
+    }
+
+    // Policy passed the allow gate; now read mapped_role.
+    let mapped = evaluate_policy(
+        &compiled,
+        "data.vtc.cross_community_roles.mapped_role",
+        input,
+    )?;
+    let mapped = mapped
+        .pointer("/result/0/expressions/0/value")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    Ok(mapped)
+}
+
+fn map_recognition_error(e: RecognitionError) -> TaskError {
+    use axum::http::StatusCode;
+    match e {
+        // The registry is a downstream dependency, not the caller —
+        // its outages must not read as a 500 (our bug) or a 403
+        // (caller's fault). Unreachable/flaky → 503 (retry later);
+        // a reachable-but-rejecting registry → 502 (upstream fault).
+        RecognitionError::RegistryUnreachable(msg) => AppError::ServiceError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: format!("trust registry unavailable: {msg}"),
+        }
+        .into(),
+        RecognitionError::RegistryRejected(msg) => AppError::ServiceError {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("trust registry rejected the recognise query: {msg}"),
+        }
+        .into(),
+        // The three the specification names, each carrying its declared code so
+        // a client can branch on the refusal instead of parsing prose
+        // (SPEC §8.5; `vtc/auth/recognise/0.3`).
+        //
+        // `credentialInvalid` is declared as "failed proof verification, was
+        // expired, or was revoked via credentialStatus" — exactly these three
+        // variants, and no more. `IssuerKeyUnresolved` and `Malformed` are
+        // refusals about a document that could not be checked at all rather
+        // than one that was checked and failed, so they stay uncoded rather
+        // than being filed under a code that would misdescribe them.
+        e @ (RecognitionError::ProofInvalid(_)
+        | RecognitionError::StatusListFailed(_)
+        | RecognitionError::ValidityWindow(_)) => TaskError::declared(
+            RECOGNISE_ERR_CREDENTIAL_INVALID,
+            AppError::Forbidden(e.to_string()),
+        ),
+        e @ RecognitionError::IssuerNotRecognised(_) => TaskError::declared(
+            RECOGNISE_ERR_ISSUER_NOT_RECOGNISED,
+            AppError::Forbidden(e.to_string()),
+        ),
+        // All other variants are caller-driven rejection
+        // signals → 403 Forbidden.
+        other => AppError::Forbidden(other.to_string()).into(),
+    }
+}
+
+async fn emit_denied_audit(
+    state: &AppState,
+    actor_did: &str,
+    foreign_issuer_did: Option<&str>,
+    reason: &str,
+    foreign_role: Option<&str>,
+    _err: &RecognitionError,
+) {
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return;
+    };
+    let payload = CrossCommunitySessionMintedData {
+        outcome: "denied".into(),
+        foreign_issuer_did: foreign_issuer_did.unwrap_or("<unknown>").to_string(),
+        foreign_role: foreign_role.map(str::to_string),
+        mapped_role: None,
+        ttl_seconds: None,
+        reason: Some(reason.to_string()),
+    };
+    if let Err(e) = writer
+        .write(
+            actor_did,
+            None,
+            AuditEvent::CrossCommunitySessionMinted(payload),
+        )
+        .await
+    {
+        warn!(error = %e, "failed to emit CrossCommunitySessionMinted (denied) envelope");
+    }
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    fn types(ts: &[&str]) -> Vec<String> {
+        ts.iter().map(|t| t.to_string()).collect()
+    }
+
+    // `DTGCredentialType` derives no `PartialEq`, so these assert by pattern.
+    fn is_authority(t: Option<DTGCredentialType>) -> bool {
+        matches!(t, Some(DTGCredentialType::Authority))
+    }
+    fn is_membership(t: Option<DTGCredentialType>) -> bool {
+        matches!(t, Some(DTGCredentialType::Membership))
+    }
+
+    /// The wire form the role and membership paths actually mint.
+    #[test]
+    fn classifies_the_wire_form_the_catalog_mints() {
+        assert!(is_authority(classify(&types(&[
+            "VerifiableCredential",
+            "DTGCredential",
+            "AuthorityCredential"
+        ]))));
+        assert!(is_membership(classify(&types(&[
+            "VerifiableCredential",
+            "DTGCredential",
+            "MembershipCredential"
+        ]))));
+    }
+
+    /// The `Verifiable`-prefixed tags were never DTG credential types, and
+    /// the role-endorsement type earlier drafts used is retired: a role is a
+    /// VAC. Accepting any of them would reintroduce the drift `classify`
+    /// prevents.
+    #[test]
+    fn refuses_tags_that_are_not_current_dtg_types() {
+        for tag in [
+            "VerifiableAuthorityCredential",
+            "VerifiableMembershipCredential",
+        ] {
+            assert!(
+                classify(&types(&["VerifiableCredential", "DTGCredential", tag])).is_none(),
+                "{tag}"
+            );
+        }
+    }
+
+    /// The guard that would have caught #1062.
+    ///
+    /// Every other test in this module states the wire form as a literal, and
+    /// a literal here can agree with a literal in the handler while both
+    /// disagree with what the VTC actually issues — which is exactly what
+    /// happened. This one asserts against **catalog output**: it mints through
+    /// the same `dtg-credentials` constructors `credentials::dtg` uses and
+    /// requires `classify` to recognise the result.
+    #[tokio::test]
+    async fn classifies_what_the_catalog_actually_mints() {
+        use dtg_credentials::{DTGCredential, IssuerScope};
+
+        fn types_of(dtg: &DTGCredential) -> Vec<String> {
+            crate::test_support::dtg_json(dtg)["type"]
+                .as_array()
+                .expect("`type` is an array")
+                .iter()
+                .map(|t| t.as_str().expect("`type` entries are strings").to_string())
+                .collect()
+        }
+
+        let now = chrono::Utc::now();
+        let vac = DTGCredential::new_community_role_vac(
+            "did:web:issuer.example".into(),
+            "did:key:zSubject".into(),
+            "moderator",
+            now,
+            now + chrono::Duration::days(30),
+        )
+        .unwrap();
+        assert!(
+            is_authority(classify(&types_of(&vac))),
+            "a catalog-minted role VAC must classify as an authority credential — got {:?}",
+            types_of(&vac)
+        );
+
+        let vmc = DTGCredential::new_vmc(
+            "did:web:community.example".into(),
+            "did:key:zMember".into(),
+            now,
+            None,
+            false,
+        );
+        assert!(
+            is_membership(classify(&types_of(&vmc))),
+            "a catalog-minted VMC must classify as a membership — got {:?}",
+            types_of(&vmc)
+        );
+
+        // A relationship credential is neither, and the recognition gate must
+        // ignore it rather than routing it into a slot.
+        let vrc = DTGCredential::new_vrc(
+            "did:peer:2.zR1".into(),
+            IssuerScope::Pairwise,
+            "did:peer:2.zR2".into(),
+            now,
+            None,
+        );
+        let vrc_types = types_of(&vrc);
+        assert!(
+            !is_authority(classify(&vrc_types)) && !is_membership(classify(&vrc_types)),
+            "a VRC must not be routed to the VAC or VMC slot"
+        );
+    }
+
+    #[test]
+    fn ignores_credentials_the_recognition_gate_does_not_act_on() {
+        assert!(classify(&types(&["VerifiableCredential"])).is_none());
+        assert!(classify(&types(&["EmailCredential"])).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// The registry is a downstream dependency, not the caller: its
+    /// outages must surface as 5xx, never a 500 (our bug) or a 403
+    /// (caller's fault). Pins the P3.6 boundary mapping.
+    #[test]
+    fn registry_failures_map_to_5xx_not_500_or_403() {
+        let status = |e: RecognitionError| match AppError::from(map_recognition_error(e)) {
+            AppError::ServiceError { status, .. } => status,
+            other => panic!("expected ServiceError, got {other:?}"),
+        };
+        assert_eq!(
+            status(RecognitionError::RegistryUnreachable("dns".into())),
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
+        assert_eq!(
+            status(RecognitionError::RegistryRejected("bad query".into())),
+            StatusCode::BAD_GATEWAY,
+        );
+    }
+
+    /// Genuine caller-driven rejections stay 403 — a not-recognised
+    /// issuer is the operator's "forgot to add the peer" path — and each now
+    /// carries the code its specification declares beside the status.
+    #[test]
+    fn caller_rejections_stay_403() {
+        let issuer = map_recognition_error(RecognitionError::IssuerNotRecognised("did:x".into()));
+        assert_eq!(issuer.code(), Some(RECOGNISE_ERR_ISSUER_NOT_RECOGNISED));
+        assert!(matches!(AppError::from(issuer), AppError::Forbidden(_)));
+
+        let proof = map_recognition_error(RecognitionError::ProofInvalid("bad sig".into()));
+        assert_eq!(proof.code(), Some(RECOGNISE_ERR_CREDENTIAL_INVALID));
+        assert!(matches!(AppError::from(proof), AppError::Forbidden(_)));
+
+        // A refusal the specification does not name stays uncoded rather than
+        // being filed under a code that would misdescribe it.
+        let malformed = map_recognition_error(RecognitionError::Malformed("no subject".into()));
+        assert_eq!(malformed.code(), None);
+    }
+}

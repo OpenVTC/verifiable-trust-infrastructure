@@ -148,7 +148,13 @@ fi
 # the PR's actual effect on the base. Three dots would ask for the merge base of
 # the merge commit and its own parent, which is the parent — same answer here,
 # but only by accident, and wrong the moment the base ref is a branch tip.
-if ! CHANGED=$(git diff --name-only "$BASE" HEAD 2>/dev/null); then
+#
+# CI_AFFECTS_TEST_CHANGED replaces the diff with a fixed file list. It exists
+# for scripts/ci-affects.test.sh, the table of path -> answer this script is
+# held to (#2659); nothing in a workflow sets it.
+if [ -n "${CI_AFFECTS_TEST_CHANGED:-}" ]; then
+  CHANGED=$CI_AFFECTS_TEST_CHANGED
+elif ! CHANGED=$(git diff --name-only "$BASE" HEAD 2>/dev/null); then
   emit true "could not diff against $BASE — running rather than guessing"
 fi
 if [ -z "$CHANGED" ]; then

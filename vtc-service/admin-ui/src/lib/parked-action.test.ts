@@ -174,11 +174,34 @@ describe("the success notice", () => {
     expect(window.location.pathname + window.location.search).toBe("/admin/actions?action=act-9");
   });
 
+  it("keeps a parked act's notice until it is dismissed (#2617)", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        createElement(ToastProvider, null, createElement(Fire, { err: parkedActionFromDocument(nextStep()) })),
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(screen.getByRole("status").textContent).toContain(MESSAGE);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("mounts its live region before the first notice (#2617)", () => {
+    render(createElement(ToastProvider, null));
+    const region = screen.getByRole("region", { name: "Notifications" });
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.children).toHaveLength(0);
+  });
+
   it("still shows a real error as an error", async () => {
     render(
       createElement(ToastProvider, null, createElement(Fire, { err: { status: 403, message: "no" } })),
     );
     const toast = await screen.findByRole("alert");
-    expect(toast.textContent).toContain("Create failed: no (403)");
+    // The status is on hover, not in the words (#2617).
+    expect(toast.textContent).toContain("Create failed: no");
+    expect(toast.textContent).not.toContain("(403)");
+    expect(toast.getAttribute("title")).toBe("HTTP 403");
   });
 });

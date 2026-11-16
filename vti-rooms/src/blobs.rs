@@ -59,6 +59,8 @@ pub use migrate::{
     MigrationRequest, MigrationStart, MigrationState, MigrationStep, PAUSED_RETRY_SECS, PauseCause,
 };
 #[cfg(test)]
+mod lock_tests;
+#[cfg(test)]
 mod purge_tests;
 mod usage;
 pub use usage::{
@@ -516,6 +518,44 @@ struct UploadRecord {
     /// an upload begun before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     presented: Option<Presented>,
+    /// When a commit last began work outside the host lock — verifying the staged bytes
+    /// and writing them to storage, or finishing a direct upload there (#2596). The
+    /// sweeper leaves the upload alone for [`COMMIT_HOLD_SECS`] after it, so a slow
+    /// commit is never released under itself; a commit that died is released after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    committing_at: Option<u64>,
+}
+
+/// How long a commit in progress holds its upload against the sweeper
+/// ([`UploadRecord::committing_at`]): longer than any upload of the largest blob takes.
+const COMMIT_HOLD_SECS: u64 = 6 * 60 * 60;
+
+/// The members of an [`UploadRecord`] a chunk needs, read without its manifest (#2597):
+/// a chunk is one of up to 4,096, and decoding the whole manifest for each made a
+/// transfer quadratic in its chunk count.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadHead {
+    upload_id: Uuid,
+    room_id: String,
+    opener: String,
+    phase: UploadPhase,
+    #[serde(default)]
+    protocol: TransferProtocol,
+    #[serde(default)]
+    upload_key_did: Option<String>,
+    #[serde(default)]
+    direct: Option<serde::de::IgnoredAny>,
+}
+
+/// The members of a [`BlobEntry`] a served chunk needs, read without its manifest.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BlobLocation {
+    room_id: String,
+    blob_ref: String,
+    config_id: String,
+    backend_ref: BackendRef,
 }
 
 /// A direct upload's state: the object this host chose, storage's multipart upload
@@ -699,15 +739,40 @@ impl UploadCaller<'_> {
     /// Whether this caller may act on `rec`. Anything else is `notFound`, which
     /// conflates an unknown id with somebody else's upload.
     fn admits(&self, rec: &UploadRecord) -> bool {
+        self.admits_parts(
+            rec.protocol,
+            &rec.opener,
+            rec.direct.is_some(),
+            rec.upload_key_did.as_deref(),
+        )
+    }
+
+    fn admits_head(&self, rec: &UploadHead) -> bool {
+        self.admits_parts(
+            rec.protocol,
+            &rec.opener,
+            rec.direct.is_some(),
+            rec.upload_key_did.as_deref(),
+        )
+    }
+
+    fn admits_parts(
+        &self,
+        protocol: TransferProtocol,
+        opener: &str,
+        direct: bool,
+        upload_key_did: Option<&str>,
+    ) -> bool {
         match *self {
-            Self::V1(opener) => rec.protocol == TransferProtocol::V1 && rec.opener == opener,
+            Self::V1(caller) => protocol == TransferProtocol::V1 && opener == caller,
             // Proxied: the upload key and nobody else. Direct: the owner, since no
             // byte passes through a document (commit/0.2 and abort/0.2 item 1).
             Self::V2(signer) => {
-                rec.protocol == TransferProtocol::V2
-                    && match &rec.direct {
-                        Some(_) => rec.opener == signer,
-                        None => rec.upload_key_did.as_deref() == Some(signer),
+                protocol == TransferProtocol::V2
+                    && if direct {
+                        opener == signer
+                    } else {
+                        upload_key_did == Some(signer)
                     }
             }
         }
@@ -962,6 +1027,79 @@ pub struct ConfigHoldings {
     pub pending_delete_bytes: u64,
 }
 
+/// The record locks of a host's rooms, striped by a hash of the room identifier.
+///
+/// Striped rather than one per room so the set is bounded however many rooms a host
+/// holds and nothing has to be removed when a room goes. Two rooms sharing a stripe only
+/// share it for writes: reads hold it shared.
+struct RoomLocks {
+    stripes: Box<[tokio::sync::RwLock<()>]>,
+}
+
+/// Enough that two busy rooms rarely share one; a stripe is a few words.
+const ROOM_LOCK_STRIPES: usize = 256;
+
+impl RoomLocks {
+    fn new() -> Self {
+        Self {
+            stripes: (0..ROOM_LOCK_STRIPES)
+                .map(|_| tokio::sync::RwLock::new(()))
+                .collect(),
+        }
+    }
+
+    fn of(&self, room_id: &str) -> &tokio::sync::RwLock<()> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        room_id.hash(&mut h);
+        &self.stripes[(h.finish() % self.stripes.len() as u64) as usize]
+    }
+}
+
+/// One mutex per stripe of upload ids ([`BlobHost::uploads`]).
+struct UploadLocks {
+    stripes: Box<[tokio::sync::Mutex<()>]>,
+}
+
+impl UploadLocks {
+    fn new() -> Self {
+        Self {
+            stripes: (0..ROOM_LOCK_STRIPES)
+                .map(|_| tokio::sync::Mutex::new(()))
+                .collect(),
+        }
+    }
+
+    fn of(&self, id: &Uuid) -> &tokio::sync::Mutex<()> {
+        &self.stripes[(id.as_u128() % self.stripes.len() as u128) as usize]
+    }
+}
+
+/// A small cache of parsed manifests, by `blob_ref`. Bounded: once full it is emptied
+/// and refilled by whatever is being served, which is the working set.
+#[derive(Default)]
+struct ManifestCache {
+    entries: std::sync::Mutex<std::collections::HashMap<String, Arc<Manifest>>>,
+}
+
+/// Open downloads rarely span more blobs than this at once.
+const MANIFEST_CACHE_ENTRIES: usize = 64;
+
+impl ManifestCache {
+    fn get(&self, blob_ref: &str) -> Option<Arc<Manifest>> {
+        self.entries.lock().ok()?.get(blob_ref).cloned()
+    }
+
+    fn put(&self, blob_ref: &str, manifest: Arc<Manifest>) {
+        if let Ok(mut entries) = self.entries.lock() {
+            if entries.len() >= MANIFEST_CACHE_ENTRIES {
+                entries.clear();
+            }
+            entries.insert(blob_ref.to_string(), manifest);
+        }
+    }
+}
+
 /// Everything a host needs to store room files.
 pub struct BlobHost {
     blobs: KeyspaceHandle,
@@ -969,7 +1107,21 @@ pub struct BlobHost {
     staging_dir: PathBuf,
     stores: Arc<dyn BlobStores>,
     limits: HostLimits,
+    /// The host lock: blob index rows, reference counts, usage counters and upload
+    /// state transitions. Held only for those short transitions — never across a
+    /// whole-file hash or a store upload (#2596) — and always taken **after** a room's
+    /// lock when both are held.
     lock: tokio::sync::Mutex<()>,
+    /// Per-room record locks (#2595): a record read holds its room's for reading, a
+    /// record write, curation or prune for writing. Reads in different rooms, and reads
+    /// in one room, never wait for one another.
+    rooms: RoomLocks,
+    /// One commit or abort of an upload at a time, striped by upload id: a commit does
+    /// its slow work outside the host lock, and must not race another commit or an
+    /// abort of the same upload while it does (#2596).
+    uploads: UploadLocks,
+    /// Parsed manifests of committed blobs, by `blob_ref` (`manifest_of`).
+    manifests: ManifestCache,
     /// Serialises the activity counters and daily rows, apart from `lock`: a
     /// chunk served must not wait behind a commit writing to a store.
     activity: tokio::sync::Mutex<()>,
@@ -1083,6 +1235,9 @@ impl BlobHost {
             stores,
             limits,
             lock: tokio::sync::Mutex::new(()),
+            rooms: RoomLocks::new(),
+            uploads: UploadLocks::new(),
+            manifests: ManifestCache::default(),
             activity: tokio::sync::Mutex::new(()),
             direct: DirectTransfer::default(),
         }
@@ -1701,6 +1856,7 @@ impl BlobHost {
                 upload_key_did: None,
                 direct: None,
                 presented: presented.cloned(),
+                committing_at: None,
             };
             self.bind(&mut rec, offer.as_ref()).await?;
             self.blobs
@@ -1764,6 +1920,7 @@ impl BlobHost {
                     expires_at,
                 }),
                 presented: presented.cloned(),
+                committing_at: None,
             };
             self.reserve(&rec).await?;
             self.bind(&mut rec, Some(&Self::without_key(offer.as_ref())))
@@ -1832,6 +1989,7 @@ impl BlobHost {
             upload_key_did: None,
             direct: None,
             presented: presented.cloned(),
+            committing_at: None,
         };
         self.reserve(&rec).await?;
         self.bind(&mut rec, offer.as_ref()).await?;
@@ -1911,6 +2069,18 @@ impl BlobHost {
     /// `rooms/blobs/upload/commit`, from `caller`. Whoever commits, the blob is
     /// recorded and charged as the owner's — never the upload key's (`commit/0.2`
     /// item 5).
+    ///
+    /// # What holds which lock (#2596)
+    ///
+    /// The slow work — hashing the whole staged file and writing it to storage, or
+    /// finishing a direct upload there — runs **outside** the host lock, under only
+    /// this upload's own lock (`BlobHost::uploads`), which a second commit or an
+    /// abort of the same upload waits on. The host lock is taken twice, briefly: to
+    /// read the upload and mark it committing (so the sweeper leaves it,
+    /// `UploadRecord::committing_at`), and to record the blob and convert the
+    /// reservation. Storage keys are content-addressed, so two uploads of one blob
+    /// writing the same object write the same bytes, and the second to record finds
+    /// the first's entry and charges nothing.
     pub async fn commit_as(
         &self,
         caller: UploadCaller<'_>,
@@ -1919,48 +2089,56 @@ impl BlobHost {
         let Ok(id) = Uuid::parse_str(upload_id) else {
             return Err(BlobError::NotFound);
         };
-        let _guard = self.lock.lock().await;
-        let mut rec = match self
-            .blobs
-            .get::<UploadRecord>(upload_key_record(&id))
-            .await?
-        {
-            Some(r) if caller.admits(&r) => r,
-            _ => return Err(BlobError::NotFound),
-        };
-        // The slot is the owner's, whoever signed this document.
-        let owner = rec.opener.clone();
-        match rec.phase {
-            UploadPhase::Open => {}
-            // Answered again, storing and charging nothing a second time.
-            UploadPhase::Committed => {
+        let _upload = self.uploads.of(&id).lock().await;
+        let rec = {
+            let _guard = self.lock.lock().await;
+            let mut rec = match self
+                .blobs
+                .get::<UploadRecord>(upload_key_record(&id))
+                .await?
+            {
+                Some(r) if caller.admits(&r) => r,
+                _ => return Err(BlobError::NotFound),
+            };
+            match rec.phase {
+                UploadPhase::Open => {}
+                // Answered again, storing and charging nothing a second time.
+                UploadPhase::Committed => {
+                    return Ok(Committed {
+                        blob_ref: rec.blob_ref,
+                        size: rec.size,
+                    });
+                }
+                UploadPhase::Aborted | UploadPhase::Released => return Err(BlobError::NotFound),
+            }
+
+            // Begun on a blob this room already holds: answer with it, charging
+            // nothing. Gone since (collected), the upload is gone with it.
+            if rec.already_committed {
+                let Some(entry) = self.blob(&rec.room_id, &rec.blob_ref).await? else {
+                    return Err(BlobError::NotFound);
+                };
+                rec.phase = UploadPhase::Committed;
+                rec.finished_at = Some(now_secs());
+                self.blobs.insert(upload_key_record(&id), &rec).await?;
                 return Ok(Committed {
-                    blob_ref: rec.blob_ref,
-                    size: rec.size,
+                    blob_ref: entry.blob_ref,
+                    size: entry.size,
                 });
             }
-            UploadPhase::Aborted | UploadPhase::Released => return Err(BlobError::NotFound),
-        }
-
-        // Begun on a blob this room already holds: answer with it, charging
-        // nothing. Gone since (collected), the upload is gone with it.
-        if rec.already_committed {
-            let Some(entry) = self.blob(&rec.room_id, &rec.blob_ref).await? else {
-                return Err(BlobError::NotFound);
-            };
-            rec.phase = UploadPhase::Committed;
-            rec.finished_at = Some(now_secs());
+            rec.committing_at = Some(now_secs());
             self.blobs.insert(upload_key_record(&id), &rec).await?;
-            return Ok(Committed {
-                blob_ref: entry.blob_ref,
-                size: entry.size,
-            });
-        }
+            rec
+        };
 
         if let Some(d) = rec.direct.clone() {
             return self.commit_direct(rec, d).await;
         }
+        // The slot is the owner's, whoever signed this document.
+        let owner = rec.opener.clone();
 
+        // Every chunk present, and the assembled file the committed digest: a read and
+        // a hash of the whole file, under this upload's lock only.
         match chunked::finalize_precheck_for(&self.transfers, &owner, upload_id).await {
             Ok(()) => {}
             Err(ChunkedError::IncompleteUpload { missing_count, .. }) => {
@@ -1969,6 +2147,10 @@ impl BlobHost {
                 });
             }
             Err(ChunkedError::BundleDigestMismatch) => {
+                let _guard = self.lock.lock().await;
+                let Some(mut rec) = self.open_upload(&id).await? else {
+                    return Err(BlobError::NotFound);
+                };
                 let _ = backup_transfer::abort(&self.transfers, &owner, &id).await;
                 self.release_reservation(&rec).await?;
                 rec.phase = UploadPhase::Released;
@@ -1978,6 +2160,38 @@ impl BlobHost {
             }
             Err(e) => return Err(chunked_error(e)),
         }
+
+        // Write it to storage unless this room already holds it — durable in the store
+        // before anything says it is committed.
+        let config_id = match &rec.config_id {
+            Some(c) => c.clone(),
+            None => self.stores.upload_target(&rec.room_id).await?.config_id,
+        };
+        let stored = if self.blob(&rec.room_id, &rec.blob_ref).await?.is_some() {
+            None
+        } else {
+            let slot = bundle_store::get_bundle(&self.transfers, &id)
+                .await?
+                .ok_or(BlobError::NotFound)?;
+            let staged = slot.blob_path.clone().ok_or(BlobError::NotFound)?;
+            let key = BlobKey::for_room(&rec.room_id, &rec.blob_ref)?;
+            let store = self.stores.store_for(&config_id, &rec.room_id).await?;
+            Some((store.put(&key, &staged, rec.size).await?, store))
+        };
+
+        let _guard = self.lock.lock().await;
+        // Re-read under the lock: a purge of the room may have aborted it meanwhile.
+        let Some(mut rec) = self.open_upload(&id).await? else {
+            if let Some((backend_ref, store)) = stored
+                && self.blob(&rec.room_id, &rec.blob_ref).await?.is_none()
+            {
+                // Nothing names what was just written, so nothing would collect it.
+                if let Err(e) = store.delete(&backend_ref).await {
+                    tracing::warn!(upload = %id, error = %e, "an abandoned commit's object was not deleted");
+                }
+            }
+            return Err(BlobError::NotFound);
+        };
 
         // Already in this room: store and charge nothing twice.
         if self.blob(&rec.room_id, &rec.blob_ref).await?.is_some() {
@@ -1991,19 +2205,14 @@ impl BlobHost {
                 size: rec.size,
             });
         }
-
-        let slot = bundle_store::get_bundle(&self.transfers, &id)
-            .await?
-            .ok_or(BlobError::NotFound)?;
-        let staged = slot.blob_path.clone().ok_or(BlobError::NotFound)?;
-        let key = BlobKey::for_room(&rec.room_id, &rec.blob_ref)?;
-        let config_id = match &rec.config_id {
-            Some(c) => c.clone(),
-            None => self.stores.upload_target(&rec.room_id).await?.config_id,
+        let Some((backend_ref, _)) = stored else {
+            // Held when this commit looked, collected since: nothing was written. The
+            // upload stays open, and committing again writes it.
+            return Err(BlobError::App(AppError::Internal(format!(
+                "blob `{}` was collected while this upload committed; commit again",
+                rec.blob_ref
+            ))));
         };
-        let store = self.stores.store_for(&config_id, &rec.room_id).await?;
-        // Durable in the store before anything says it is committed.
-        let backend_ref = store.put(&key, &staged, rec.size).await?;
 
         let entry = BlobEntry {
             room_id: rec.room_id.clone(),
@@ -2034,14 +2243,26 @@ impl BlobHost {
         })
     }
 
+    /// The upload `id` if it is still open. Called under the host lock.
+    async fn open_upload(&self, id: &Uuid) -> Result<Option<UploadRecord>, AppError> {
+        Ok(self
+            .blobs
+            .get::<UploadRecord>(upload_key_record(id))
+            .await?
+            .filter(|r| r.phase == UploadPhase::Open))
+    }
+
     /// A direct upload's commit (`commit/0.2` items 2, 3, 5–8): verify the object at
     /// storage before recording anything — each part's length and checksum, the
     /// completion bound to the planned size, the assembled object's length and
     /// checksum — and, on any disagreement, delete what storage holds, release the
-    /// reservation and refuse `digestMismatch`. Called under the lock.
+    /// reservation and refuse `digestMismatch`.
+    ///
+    /// Called under the upload's own lock and **not** the host lock: storage is asked
+    /// first, and the host lock is taken only to record what it answered (#2596).
     async fn commit_direct(
         &self,
-        mut rec: UploadRecord,
+        rec: UploadRecord,
         d: DirectState,
     ) -> Result<Committed, BlobError> {
         let id = rec.upload_id;
@@ -2057,6 +2278,12 @@ impl BlobHost {
                 &d.parts(rec.size),
             )
             .await?;
+
+        let _guard = self.lock.lock().await;
+        let Some(mut rec) = self.open_upload(&id).await? else {
+            // Aborted meanwhile (a purge of the room), which deleted the object.
+            return Err(BlobError::NotFound);
+        };
         let backend_ref = match finished {
             DirectFinish::Missing(n) => {
                 return Err(BlobError::Incomplete { remaining_count: n });
@@ -2130,6 +2357,8 @@ impl BlobHost {
         let Ok(id) = Uuid::parse_str(upload_id) else {
             return Err(BlobError::NotFound);
         };
+        // Never while a commit of the same upload does its work outside the host lock.
+        let _upload = self.uploads.of(&id).lock().await;
         let _guard = self.lock.lock().await;
         let mut rec = match self
             .blobs
@@ -2321,16 +2550,13 @@ impl BlobHost {
             Some(r) if r.opener == opener && r.expires_at > now => r,
             _ => return Err(BlobError::NotFound),
         };
+        // Where the blob is now (a migration may move it), without its manifest.
         let entry = self
-            .blob(&rec.room_id, &rec.blob_ref)
+            .blobs
+            .get::<BlobLocation>(blob_key(&rec.room_id, &rec.blob_ref))
             .await?
             .ok_or(BlobError::NotFound)?;
-        let manifest = Manifest::parse(&entry.manifest).map_err(|e| {
-            BlobError::App(AppError::Internal(format!(
-                "stored manifest of `{}` no longer parses: {e}",
-                entry.blob_ref
-            )))
-        })?;
+        let manifest = self.manifest_of(&rec.room_id, &rec.blob_ref).await?;
         if index >= manifest.chunk_count {
             return Err(BlobError::ChunkOutOfRange {
                 index,
@@ -2405,6 +2631,7 @@ impl BlobHost {
         record_key: &str,
         blobs: &[String],
     ) -> Result<RecordBlobs<'_>, BlobError> {
+        let room_guard = self.rooms.of(&room.room_id).write().await;
         let guard = self.lock.lock().await;
         let member = match room.visibility {
             Visibility::Private => None,
@@ -2433,6 +2660,7 @@ impl BlobHost {
         Ok(RecordBlobs {
             host: self,
             _guard: guard,
+            _room: room_guard,
             room_id: room.room_id.clone(),
             record_key: record_key.to_string(),
             blobs: blobs.to_vec(),
@@ -2450,11 +2678,13 @@ impl BlobHost {
         room_id: &str,
         record_key: &str,
     ) -> Result<RecordBlobs<'_>, AppError> {
+        let room_guard = self.rooms.of(room_id).write().await;
         let guard = self.lock.lock().await;
         let previous = self.record_blobs(room_id, record_key).await?;
         Ok(RecordBlobs {
             host: self,
             _guard: guard,
+            _room: room_guard,
             room_id: room_id.to_string(),
             record_key: record_key.to_string(),
             blobs: Vec::new(),
@@ -2463,26 +2693,32 @@ impl BlobHost {
         })
     }
 
-    /// Hold the lock every record write holds, so a read of a record and of
+    /// Hold `room_id`'s record lock for reading, so a read of a record and of
     /// the blobs it names sees one version of both. A record write and its blob
-    /// references change together under this lock; reading both inside it is
-    /// what keeps a 0.2 read from pairing one version's record with another's
-    /// `blobs`.
-    pub async fn read_snapshot(&self) -> ReadSnapshot<'_> {
+    /// references change together under the room's lock held for writing; reading
+    /// both inside it is what keeps a 0.2 read from pairing one version's record with
+    /// another's `blobs`, and a page with a head from another moment.
+    ///
+    /// Shared: reads in one room proceed together, and nothing in another room — a
+    /// write, a commit, a sweep — holds them up (#2595).
+    pub async fn read_snapshot(&self, room_id: &str) -> ReadSnapshot<'_> {
         ReadSnapshot {
             host: self,
-            _guard: self.lock.lock().await,
+            _guard: self.rooms.of(room_id).read().await,
         }
     }
 
-    /// Hold the lock every record write holds, for an operation over many records at once
-    /// — a prune (`rooms/records/prune`), or a change to the rule a prune reads. While it
-    /// is held no record is written and no read pairs a root with a head from another
-    /// moment.
-    pub async fn records_lock(&self) -> RecordsLock<'_> {
+    /// Hold `room_id`'s record lock for writing, for an operation over many of its
+    /// records at once — a prune (`rooms/records/prune`), a change to the rule a prune
+    /// reads, or a mirror's copy. While it is held no record of the room is written and no
+    /// read pairs a root with a head from another moment.
+    ///
+    /// Only the room's lock: the host lock is taken for the moment a prune releases blobs
+    /// ([`RecordsLock::release`]), so a prune holds up no other room's writes or uploads.
+    pub async fn records_lock(&self, room_id: &str) -> RecordsLock<'_> {
         RecordsLock {
             host: self,
-            _guard: self.lock.lock().await,
+            _room: self.rooms.of(room_id).write().await,
         }
     }
 
@@ -2636,6 +2872,18 @@ impl BlobHost {
             match rec.phase {
                 UploadPhase::Open => {
                     let _guard = self.lock.lock().await;
+                    // Re-read under the lock, and leave a commit in progress alone
+                    // (`UploadRecord::committing_at`).
+                    let Some(current) = self.open_upload(&rec.upload_id).await? else {
+                        continue;
+                    };
+                    rec = current;
+                    if rec
+                        .committing_at
+                        .is_some_and(|at| at + COMMIT_HOLD_SECS > now)
+                    {
+                        continue;
+                    }
                     let lapsed = if rec.already_committed {
                         rec.created_at + ALREADY_COMMITTED_TTL_SECS <= now
                     } else if let Some(d) = &rec.direct {
@@ -2727,6 +2975,7 @@ impl BlobHost {
     /// upload and download records, which are keyed by id — by the exact room id it
     /// carries.
     pub async fn purge_room(&self, room_id: &str) -> Result<PurgeStats, AppError> {
+        let _room = self.rooms.of(room_id).write().await;
         let _guard = self.lock.lock().await;
         let mut stats = PurgeStats::default();
         let mut changed = false;
@@ -2875,18 +3124,42 @@ impl BlobHost {
         &self,
         caller: UploadCaller<'_>,
         upload_id: &str,
-    ) -> Result<UploadRecord, BlobError> {
+    ) -> Result<UploadHead, BlobError> {
         let Ok(id) = Uuid::parse_str(upload_id) else {
             return Err(BlobError::NotFound);
         };
-        match self
-            .blobs
-            .get::<UploadRecord>(upload_key_record(&id))
-            .await?
-        {
-            Some(r) if caller.admits(&r) && r.phase == UploadPhase::Open => Ok(r),
+        match self.blobs.get::<UploadHead>(upload_key_record(&id)).await? {
+            Some(r) if caller.admits_head(&r) && r.phase == UploadPhase::Open => Ok(r),
             _ => Err(BlobError::NotFound),
         }
+    }
+
+    /// A committed blob's parsed manifest, from the cache when it is there. A
+    /// manifest is immutable and named by its own digest (`blob_ref`), so a cached
+    /// one is never stale; it is parsed and checked once rather than for every chunk
+    /// served (#2597).
+    async fn manifest_of(&self, room_id: &str, blob_ref: &str) -> Result<Arc<Manifest>, BlobError> {
+        if let Some(m) = self.manifests.get(blob_ref) {
+            return Ok(m);
+        }
+        let entry = self
+            .blob(room_id, blob_ref)
+            .await?
+            .ok_or(BlobError::NotFound)?;
+        let manifest = Manifest::parse(&entry.manifest).map_err(|e| {
+            BlobError::App(AppError::Internal(format!(
+                "stored manifest of `{}` no longer parses: {e}",
+                entry.blob_ref
+            )))
+        })?;
+        if manifest.blob_ref != blob_ref {
+            return Err(BlobError::App(AppError::Internal(format!(
+                "stored manifest of `{blob_ref}` is another blob's"
+            ))));
+        }
+        let manifest = Arc::new(manifest);
+        self.manifests.put(blob_ref, manifest.clone());
+        Ok(manifest)
     }
 
     /// The slot behind an upload while it can still take chunks.
@@ -3152,11 +3425,12 @@ impl BlobHost {
 
 /// A record write's blob references, prepared and waiting for the write.
 ///
-/// Holds the host's lock, so nothing about these blobs changes between the
-/// check and [`RecordBlobs::apply`].
+/// Holds the room's record lock for writing and the host's lock, so nothing about the
+/// room's records or these blobs changes between the check and [`RecordBlobs::apply`].
 pub struct RecordBlobs<'a> {
     host: &'a BlobHost,
     _guard: tokio::sync::MutexGuard<'a, ()>,
+    _room: tokio::sync::RwLockWriteGuard<'a, ()>,
     room_id: String,
     record_key: String,
     blobs: Vec<String>,
@@ -3167,14 +3441,14 @@ pub struct RecordBlobs<'a> {
 /// A read under the record-write lock ([`BlobHost::read_snapshot`]).
 pub struct ReadSnapshot<'a> {
     host: &'a BlobHost,
-    _guard: tokio::sync::MutexGuard<'a, ()>,
+    _guard: tokio::sync::RwLockReadGuard<'a, ()>,
 }
 
 /// The record-write lock, held across an operation over many records
 /// ([`BlobHost::records_lock`]).
 pub struct RecordsLock<'a> {
     host: &'a BlobHost,
-    _guard: tokio::sync::MutexGuard<'a, ()>,
+    _room: tokio::sync::RwLockWriteGuard<'a, ()>,
 }
 
 impl RecordsLock<'_> {
@@ -3203,6 +3477,8 @@ impl RecordsLock<'_> {
     /// record's: a blob whose last reference goes is orphaned, and stops counting against
     /// its room and member at once. Called once the records are gone.
     pub async fn release(&self, room_id: &str, keys: &[String]) -> Result<(), AppError> {
+        // Reference counts and usage are the host lock's; the records are this lock's.
+        let _guard = self.host.lock.lock().await;
         for key in keys {
             let previous = self.host.record_blobs(room_id, key).await?;
             self.host

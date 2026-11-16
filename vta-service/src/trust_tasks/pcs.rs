@@ -805,7 +805,6 @@ pub(super) async fn handle_voter_read(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     use spec::voter::read::v0_7 as t;
-    use trust_tasks_rs::validate::ValidatedPayload as _;
     use vti_specs::vtc::elections::{
         list::v0_3 as list_0_3, list::v0_5 as list, show::v0_2 as show_0_2, show::v0_3 as show_0_3,
         show::v0_6 as show, tombstones::show::v0_1 as tombstone,
@@ -843,28 +842,34 @@ pub(super) async fn handle_voter_read(
     let (type_uri, checked) = match (read, version) {
         ("list", 0) => (
             <list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            list::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+            vta_sdk::schema_cache::check_payload::<list::Payload>(&payload)
+                .map_err(|e| e.to_string()),
         ),
         ("list", _) => (
             <list_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            list_0_3::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+            vta_sdk::schema_cache::check_payload::<list_0_3::Payload>(&payload)
+                .map_err(|e| e.to_string()),
         ),
         ("show", 2) => (
             <show_0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            show_0_2::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+            vta_sdk::schema_cache::check_payload::<show_0_2::Payload>(&payload)
+                .map_err(|e| e.to_string()),
         ),
         ("show", 3) => (
             <show_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            show_0_3::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+            vta_sdk::schema_cache::check_payload::<show_0_3::Payload>(&payload)
+                .map_err(|e| e.to_string()),
         ),
         ("show", _) => (
             <show::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            show::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+            vta_sdk::schema_cache::check_payload::<show::Payload>(&payload)
+                .map_err(|e| e.to_string()),
         ),
         // Only 0.7 signs a tombstone read (VTI-BRD-009); its schema keeps a presentation out.
         ("tombstone", 0) => (
             <tombstone::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            tombstone::Payload::validate_value(&payload).map_err(|e| e.to_string()),
+            vta_sdk::schema_cache::check_payload::<tombstone::Payload>(&payload)
+                .map_err(|e| e.to_string()),
         ),
         (other, _) => ("", Err(format!("`{other}` is not a read this task signs"))),
     };

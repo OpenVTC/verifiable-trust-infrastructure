@@ -30,6 +30,7 @@
 #
 # Environment variables (for non-interactive mode):
 #   VTA_PROFILE         Build profile: hardened, full, rest-only (default: full)
+#   VTA_ENABLE_WEBS     true builds the `webs` feature in ([tee.kms.vta_did_webs])
 #   VTA_REGION          AWS region (default: us-east-1)
 #   VTA_ROLE_NAME       IAM role name (default: vta-enclave-role)
 #   VTA_SIGNING_DIR     Signing key directory (default: ./signing)
@@ -169,6 +170,11 @@ case "${PROFILE_CHOICE^^}" in
         NEEDS_MEDIATOR=true
         ;;
 esac
+
+# A did:webs as the VTA's own identity (`[tee.kms.vta_did_webs]`, alpha).
+if [ "${VTA_ENABLE_WEBS:-false}" = true ]; then
+    FEATURES="$FEATURES,webs"
+fi
 
 ok "Profile: $PROFILE_NAME"
 ok "Features: $FEATURES"

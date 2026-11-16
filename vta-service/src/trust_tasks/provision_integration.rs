@@ -135,6 +135,7 @@ pub(super) async fn handle_request(
     // surface as Forbidden. Idempotent when the context already exists.
     let context_created = match ensure_target_context_or_create(
         &deps.contexts_ks,
+        &deps.acl_ks,
         auth,
         &context,
         req.create_context,

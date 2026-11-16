@@ -90,11 +90,18 @@ pub struct SealedCredentials {
 
 impl SealedCredentials {
     /// Over `ks` (encrypted here under `storage_key`), for the community whose Ed25519
-    /// signing key has `ed25519_seed`.
-    pub fn new(ks: KeyspaceHandle, storage_key: [u8; 32], ed25519_seed: &[u8; 32]) -> Self {
+    /// signing key has `ed25519_seed` and whose long-lived keys derive from
+    /// `derivation_root` (the same bytes as `ed25519_seed` for every community
+    /// without a stored root, so the fingerprint key is what it always was).
+    pub fn new(
+        ks: KeyspaceHandle,
+        storage_key: [u8; 32],
+        ed25519_seed: &[u8; 32],
+        derivation_root: &[u8; 32],
+    ) -> Self {
         let open_key = vta_sdk::sealed_transfer::ed25519_seed_to_x25519_secret(ed25519_seed);
         let mut fingerprint_key = Zeroizing::new([0u8; 32]);
-        Hkdf::<Sha256>::new(None, ed25519_seed)
+        Hkdf::<Sha256>::new(None, derivation_root)
             .expand(
                 b"vtc-storage-credential-fingerprint/v1",
                 &mut fingerprint_key[..],
@@ -290,7 +297,12 @@ mod tests {
             &["storage_credentials"],
         )
         .unwrap();
-        SealedCredentials::new(s.keyspace("storage_credentials").unwrap(), [3; 32], &SEED)
+        SealedCredentials::new(
+            s.keyspace("storage_credentials").unwrap(),
+            [3; 32],
+            &SEED,
+            &SEED,
+        )
     }
 
     fn s3(config: &str) -> Value {

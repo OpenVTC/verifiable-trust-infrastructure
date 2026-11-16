@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { formatRelative, shortenDid } from "./format";
+import { formatDate, formatDateTime, formatEpoch, formatIso, formatRelative, shortenDid } from "./format";
+
+describe("formatDate / formatDateTime / formatIso / formatEpoch (#2613)", () => {
+  it("names the time zone of every moment", () => {
+    const zone = new Date("2026-11-12T15:00:00Z")
+      .toLocaleString(undefined, { timeZoneName: "short" })
+      .split(" ")
+      .pop()!;
+    expect(formatDateTime("2026-11-12T15:00:00Z")).toContain(zone);
+    expect(formatIso("2026-11-12T15:00:00Z")).toBe(formatDateTime("2026-11-12T15:00:00Z"));
+    expect(formatEpoch(Date.parse("2026-11-12T15:00:00Z") / 1000)).toBe(
+      formatDateTime("2026-11-12T15:00:00Z"),
+    );
+  });
+
+  it("returns an unparseable input as given, never 'Invalid Date'", () => {
+    expect(formatIso("not a time")).toBe("not a time");
+    expect(formatDateTime("2026-13-45")).toBe("2026-13-45");
+    expect(formatDate("soon")).toBe("soon");
+    expect(formatEpoch(Number.NaN)).toBe("NaN");
+  });
+});
 
 describe("formatRelative", () => {
   const now = Date.parse("2026-10-11T12:00:00Z");
@@ -16,7 +37,7 @@ describe("formatRelative", () => {
 
   it("gives the date past a week, and survives skew and garbage", () => {
     expect(formatRelative(ago(30 * 86400), now)).toBe(
-      new Date(now - 30 * 86400 * 1000).toLocaleDateString(),
+      formatDate(now - 30 * 86400 * 1000),
     );
     expect(formatRelative(new Date(now + 60_000).toISOString(), now)).toBe("just now");
     expect(formatRelative("not a date", now)).toBe("not a date");

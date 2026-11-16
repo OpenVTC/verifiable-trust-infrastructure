@@ -1,7 +1,7 @@
 //! The workflow tools and the action-list tools.
 //!
 //! A workflow tool is a **thin orchestrator**: it sends the tasks of one of
-//! the six workflows the prompts describe, in order, each through the same
+//! the workflows the prompts describe, in order, each through the same
 //! guard and recorder as a `vtc_call` and under its own Trust Task URI — so
 //! `--read-only`, `--deny` and `--confirm` apply to every step exactly as
 //! they would to the assistant sending it by hand — and it **stops at the
@@ -13,7 +13,7 @@
 //! Nothing here builds a payload the specification does not describe: a
 //! workflow takes the create payload as the task's own JSON and derives only
 //! the identifiers later steps need (`groupId`, `boardId`, `roomId`,
-//! `electionId`) from the answers it received.
+//! `electionId`, `badgeId`, a picture's digest) from the answers it received.
 //!
 //! The action-list tools follow and decide a parked operation. Deciding is
 //! this identity **vouching** for someone else's authority, so
@@ -30,6 +30,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::server::{VtcMcp, outcome};
+use vti_mcp_common::tool_error::ToolError;
 
 /// The Trust Task URIs the workflows send. Every one is held to the pinned
 /// index by `every_workflow_uri_is_pinned`.
@@ -53,6 +54,13 @@ pub(crate) mod wire {
         "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2";
     pub const MEMBERS_ADMIT: &str = "https://trusttasks.org/spec/vtc/members/admit/0.1";
     pub const MEMBERS_CREDENTIALS: &str = "https://trusttasks.org/spec/vtc/members/credentials/0.1";
+    pub const BADGES_IMAGES_UPLOAD: &str =
+        "https://trusttasks.org/spec/vtc/badges/images/upload/0.1";
+    pub const BADGES_CREATE: &str = "https://trusttasks.org/spec/vtc/badges/create/0.1";
+    pub const BADGES_AWARDS_OFFER: &str = "https://trusttasks.org/spec/vtc/badges/awards/offer/0.1";
+    pub const BADGES_CLAIMS_CREATE: &str =
+        "https://trusttasks.org/spec/vtc/badges/claims/create/0.1";
+    pub const BADGES_SHOW: &str = "https://trusttasks.org/spec/vtc/badges/show/0.1";
     pub const ACL_SHOW: &str = "https://trusttasks.org/spec/acl/show/0.2";
     pub const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.2";
     pub const ACTIONS_LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
@@ -78,6 +86,11 @@ pub(crate) mod wire {
         ROOMS_MEMBERS_LIST,
         MEMBERS_ADMIT,
         MEMBERS_CREDENTIALS,
+        BADGES_IMAGES_UPLOAD,
+        BADGES_CREATE,
+        BADGES_AWARDS_OFFER,
+        BADGES_CLAIMS_CREATE,
+        BADGES_SHOW,
         ACL_SHOW,
         ACL_GRANT,
         ACTIONS_LIST,
@@ -153,11 +166,19 @@ impl VtcMcp {
         {
             Ok(call) => call,
             Err(refused) => {
-                let (status, message) = match *refused {
-                    Err(e) => ("refused-locally", e.message.to_string()),
-                    Ok(_) => ("refused-locally", "refused".to_string()),
+                // A local refusal is a tool result carrying the guard's
+                // words; a protocol error carries its own.
+                let message = match *refused {
+                    Err(e) => e.message.to_string(),
+                    Ok(result) => result
+                        .content
+                        .first()
+                        .and_then(|c| c.as_text())
+                        .and_then(|t| serde_json::from_str::<Value>(&t.text).ok())
+                        .and_then(|body| body["message"].as_str().map(str::to_string))
+                        .unwrap_or_else(|| "refused".to_string()),
                 };
-                progress.record(slug, status, json!({ "error": message }));
+                progress.record(slug, "refused-locally", json!({ "error": message }));
                 return StepEnd::Stopped;
             }
         };
@@ -166,6 +187,12 @@ impl VtcMcp {
             Ok(value) if value["status"] == "parked" => {
                 progress.record(slug, "parked", value.clone());
                 StepEnd::Parked(value.clone())
+            }
+            // The person's own step-up is owed; the link is in the record, and
+            // the workflow stops here like any other step that did not run.
+            Ok(value) if value["status"] == "stepUpRequired" => {
+                progress.record(slug, "stepUpRequired", value.clone());
+                StepEnd::Stopped
             }
             Ok(value) => {
                 progress.record(slug, "ok", value.clone());
@@ -199,7 +226,7 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let report = run(peer).await;
-        call.finish(Ok(report))
+        call.finish(Ok::<_, ToolError>(report))
     }
 
     /// The group workflow: create, appoint managers, add bindings, add
@@ -589,6 +616,88 @@ impl VtcMcp {
         progress.finish(outcome, json!({ "subject": p.subject }))
     }
 
+    /// The badge workflow: upload the picture, create the badge, offer it,
+    /// issue a claim code, read it back. Only `create` is required; each
+    /// later step runs when it was asked for.
+    pub(crate) async fn run_badge_create(
+        &self,
+        p: BadgeCreateParams,
+        peer: Option<&Peer<RoleServer>>,
+    ) -> Value {
+        const TOOL: &str = "badge_create";
+        let mut progress = Progress::new();
+        let mut create = p.create;
+        if let Some(image) = p.image {
+            let uploaded = match self
+                .step(TOOL, wire::BADGES_IMAGES_UPLOAD, image, peer, &mut progress)
+                .await
+            {
+                StepEnd::Done(v) => v,
+                StepEnd::Parked(_) => return progress.finish("parked", json!({})),
+                StepEnd::Stopped => return progress.finish("stopped", json!({})),
+            };
+            // The create names the picture by the digest the upload answered
+            // to this signer: the community's own re-encoding (VTI-BDG-050).
+            let Some(sha256) = uploaded["image"]["sha256"].as_str() else {
+                progress.record(
+                    "vtc/badges/images/upload",
+                    "refused",
+                    json!({ "error": "the answer carries no image.sha256" }),
+                );
+                return progress.finish("stopped", json!({}));
+            };
+            create["image"] = json!({ "sha256": sha256 });
+        }
+        let badge = match self
+            .step(TOOL, wire::BADGES_CREATE, create, peer, &mut progress)
+            .await
+        {
+            StepEnd::Done(v) => v,
+            StepEnd::Parked(_) => return progress.finish("parked", json!({})),
+            StepEnd::Stopped => return progress.finish("stopped", json!({})),
+        };
+        let Some(badge_id) = badge["badge"]["badgeId"].as_str().map(str::to_string) else {
+            progress.record(
+                "vtc/badges/create",
+                "refused",
+                json!({ "error": "the answer carries no badge.badgeId" }),
+            );
+            return progress.finish("stopped", json!({}));
+        };
+        let ids = || json!({ "badgeId": badge_id });
+        if let Some(mut offer) = p.offer {
+            offer["badgeId"] = json!(badge_id);
+            match self
+                .step(TOOL, wire::BADGES_AWARDS_OFFER, offer, peer, &mut progress)
+                .await
+            {
+                StepEnd::Done(_) => {}
+                StepEnd::Parked(_) => return progress.finish("parked", ids()),
+                StepEnd::Stopped => return progress.finish("stopped", ids()),
+            }
+        }
+        if let Some(mut claim) = p.claim_code {
+            claim["badgeId"] = json!(badge_id);
+            match self
+                .step(TOOL, wire::BADGES_CLAIMS_CREATE, claim, peer, &mut progress)
+                .await
+            {
+                StepEnd::Done(_) => {}
+                StepEnd::Parked(_) => return progress.finish("parked", ids()),
+                StepEnd::Stopped => return progress.finish("stopped", ids()),
+            }
+        }
+        let outcome = match self
+            .step(TOOL, wire::BADGES_SHOW, ids(), peer, &mut progress)
+            .await
+        {
+            StepEnd::Done(_) => "completed",
+            StepEnd::Parked(_) => "parked",
+            StepEnd::Stopped => "stopped",
+        };
+        progress.finish(outcome, ids())
+    }
+
     /// The grant workflow: read the subject's entry, grant, and when the grant
     /// parks, read the action it is waiting as.
     pub(crate) async fn run_admin_grant(
@@ -674,33 +783,35 @@ impl VtcMcp {
         &self,
         p: &ActionDecideParams,
         peer: Option<&Peer<RoleServer>>,
-    ) -> Result<Value, McpError> {
+    ) -> Result<Value, ToolError> {
         let client = self.client()?;
         // `show_action` answers the action itself, unwrapped.
-        let action = outcome(client.show_action(&p.action_id).await)?;
+        let action = outcome(self.health.observe(client.show_action(&p.action_id).await))?;
         let verified = vtc_client::actions::verify_action(&action).map_err(|e| {
-            McpError::internal_error(
+            ToolError::new(
+                "actionMismatch",
                 format!(
                     "refusing to decide {}: {e}. What the action says is not what would run; \
                      do not approve it.",
                     p.action_id
                 ),
-                None,
             )
+            .with_next("nothing was decided. Tell the operator; do not retry.")
         })?;
         let Some(decision) =
             vtc_client::actions::decision_for(&verified.action, p.approve, p.reason.as_deref())
-                .map_err(|e| McpError::internal_error(e, None))?
+                .map_err(|e| ToolError::new("cannotDecide", e))?
         else {
-            return Err(McpError::internal_error(
+            return Err(ToolError::new(
+                "cannotDecide",
                 format!(
                     "this identity cannot decide {} now: the action is not open, it is not \
                      waiting for this identity, or this identity has already decided it \
                      (it carries no challenge for this caller)",
                     p.action_id
                 ),
-                None,
-            ));
+            )
+            .with_next("read the action with vtc_actions_show before trying again."));
         };
         let match_code = verified.action["payloadDigest"]
             .as_str()
@@ -740,25 +851,29 @@ impl VtcMcp {
         match answer {
             Ok(true) => {}
             Ok(false) => {
-                return Err(McpError::invalid_request(
+                return Err(ToolError::refused_locally(
+                    "declined",
                     format!("{prompt} — declined by the operator; nothing was decided."),
-                    None,
+                    "vtc_status",
                 ));
             }
             Err(reason) => {
-                return Err(McpError::invalid_request(
+                return Err(ToolError::new(
+                    "notConfirmed",
                     format!(
                         "{prompt} — could not obtain the operator's confirmation ({reason}), so \
                          nothing was decided: a decision is never sent unconfirmed."
                     ),
-                    None,
+                )
+                .with_next(
+                    "deciding an action always asks the operator through the MCP host; use a \
+                     host that supports elicitation, or decide it in the console.",
                 ));
             }
         }
         let response = outcome(
-            client
-                .decide_action(&decision)
-                .await
+            self.health
+                .observe(client.decide_action(&decision).await)
                 .and_then(|r| serde_json::to_value(r).map_err(|e| VtcErrorShim::from(e).0)),
         )?;
         Ok(json!({
@@ -857,6 +972,31 @@ pub struct MemberAdmitParams {
     /// Why, recorded in the audit.
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BadgeCreateParams {
+    /// The `vtc/badges/create` payload: `kind` (`community` or `kudos`),
+    /// `name`, `description`, `image`, `reason`, and optionally `criteria`,
+    /// `owners`, `requestable`, `repeatable`, `automatic` (a rule),
+    /// `shareableOutside`, `listed`, `holdersVisibleTo`. Read its schema with
+    /// `vtc_list_operations` (detail `full`). When `image` below is given, the
+    /// payload's own `image` is replaced by the uploaded picture's digest.
+    pub create: Value,
+    /// The picture to upload first, as a `vtc/badges/images/upload` payload:
+    /// `mediaType` and base64 `data`.
+    #[serde(default)]
+    pub image: Option<Value>,
+    /// Offer the new badge, as a `vtc/badges/awards/offer` payload without
+    /// `badgeId`: `to` (directory entry ids) or `group`, and an optional
+    /// `note`. Nothing is issued until each member accepts.
+    #[serde(default)]
+    pub offer: Option<Value>,
+    /// Issue a claim code for an event, as a `vtc/badges/claims/create`
+    /// payload without `badgeId`: `label`, `validUntil` (at most 90 days
+    /// ahead) and `limit`. The code is in that step's answer, once.
+    #[serde(default)]
+    pub claim_code: Option<Value>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1036,6 +1176,39 @@ impl VtcMcp {
     }
 
     #[tool(
+        description = "Create a member badge end to end: upload its picture \
+                       (`vtc/badges/images/upload`), create it from a `vtc/badges/create` \
+                       payload naming the uploaded digest, optionally offer it to members or \
+                       a group and issue a claim code for an event (answered once, in that \
+                       step), and read it back. Each step goes through this bridge's policy \
+                       under its own operation; the flow stops at the first step that is \
+                       refused and reports how far it got.",
+        annotations(
+            title = "Create a badge",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn badge_create(
+        &self,
+        Parameters(p): Parameters<BadgeCreateParams>,
+        peer: Peer<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let args = json!({
+            "kind": p.create["kind"],
+            "image": p.image.is_some(),
+            "offer": p.offer.is_some(),
+            "claimCode": p.claim_code.is_some(),
+        });
+        self.workflow("badge_create", args, peer, |peer| async move {
+            self.run_badge_create(p, Some(&peer)).await
+        })
+        .await
+    }
+
+    #[tool(
         description = "Grant an entry administration: read the subject's current entry (and \
                        stop if one exists — change it instead), send `acl/grant`, and when the \
                        grant parks for other administrators, read the action it waits as so \
@@ -1090,7 +1263,10 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => outcome(client.list_actions(&view, p.cursor.as_deref()).await),
+            Ok(client) => outcome(
+                self.health
+                    .observe(client.list_actions(&view, p.cursor.as_deref()).await),
+            ),
             Err(e) => Err(e),
         };
         call.finish(result)
@@ -1127,7 +1303,7 @@ impl VtcMcp {
             Err(refused) => return *refused,
         };
         let result = match self.client() {
-            Ok(client) => outcome(client.show_action(&p.action_id).await).map(|action| {
+            Ok(client) => outcome(self.health.observe(client.show_action(&p.action_id).await)).map(|action| {
                 let action = &action;
                 let verified = vtc_client::actions::verify_action(action);
                 json!({
@@ -1215,9 +1391,11 @@ impl VtcMcp {
         };
         let result = match self.client() {
             Ok(client) => outcome(
-                client
-                    .cancel_action(&p.action_id, p.reason.as_deref())
-                    .await,
+                self.health.observe(
+                    client
+                        .cancel_action(&p.action_id, p.reason.as_deref())
+                        .await,
+                ),
             ),
             Err(e) => Err(e),
         };
@@ -1334,6 +1512,8 @@ mod tests {
                 agent_did: Some("did:key:zAgent".into()),
                 vtc_did: Some(VTC_DID.into()),
                 transport_choice: "rest".into(),
+                reuse_warning: None,
+                serving: "stdio".into(),
             },
             guard,
             Arc::new(Recorder::default()),
@@ -1429,6 +1609,110 @@ mod tests {
         assert_eq!(sent[1]["payload"]["reason"], "the allotment working group");
         assert_eq!(sent[2]["payload"]["groupId"], "grp_0123456789abcdef");
         assert!(sent.iter().all(|d| d["proof"].is_object()));
+    }
+
+    #[tokio::test]
+    async fn a_badge_is_created_from_its_uploaded_picture_offered_and_given_a_claim_code() {
+        const BADGE: &str = "bdg_0123456789abcdefgh";
+        let sha = "ab".repeat(32);
+        let badge = json!({ "badgeId": BADGE, "kind": "community", "name": "Host" });
+        let (base, served) = scripted_vtc(vec![
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::BADGES_IMAGES_UPLOAD),
+                    json!({ "image": { "sha256": sha, "mediaType": "image/png" },
+                        "expiresAt": "2026-11-07T00:00:00Z" }),
+                ),
+            ),
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::BADGES_CREATE),
+                    json!({ "badge": badge }),
+                ),
+            ),
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::BADGES_AWARDS_OFFER),
+                    json!({ "offered": ["dir_aaaaaaaaaaaaaaaa"] }),
+                ),
+            ),
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::BADGES_CLAIMS_CREATE),
+                    json!({ "claim": { "badgeId": BADGE, "claimId": "bcl_0123456789abcdef" },
+                        "code": "the-code" }),
+                ),
+            ),
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::BADGES_SHOW),
+                    json!({ "badge": badge }),
+                ),
+            ),
+        ])
+        .await;
+        let bridge = bridge_at(
+            &base,
+            Guard {
+                confirm: ConfirmLevel::Never,
+                ..Guard::default()
+            },
+        );
+        let report = bridge
+            .run_badge_create(
+                BadgeCreateParams {
+                    create: json!({
+                        "kind": "community",
+                        "name": "Host",
+                        "description": "Hosted a workshop",
+                        "image": { "sha256": "00".repeat(32) },
+                        "reason": "workshops",
+                    }),
+                    image: Some(json!({ "mediaType": "image/png", "data": "iVBORw0KGgo" })),
+                    offer: Some(json!({ "to": ["dir_aaaaaaaaaaaaaaaa"] })),
+                    claim_code: Some(json!({
+                        "label": "Spring meetup",
+                        "validUntil": "2026-11-20T00:00:00Z",
+                        "limit": 40,
+                    })),
+                },
+                None,
+            )
+            .await;
+        assert_eq!(report["outcome"], "completed", "{report}");
+        assert_eq!(report["badgeId"], BADGE);
+        let tasks: Vec<&str> = report["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["task"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tasks,
+            vec![
+                "vtc/badges/images/upload",
+                "vtc/badges/create",
+                "vtc/badges/awards/offer",
+                "vtc/badges/claims/create",
+                "vtc/badges/show"
+            ]
+        );
+        // The code is answered once, in the claim step's own answer.
+        assert_eq!(report["steps"][3]["detail"]["code"], "the-code");
+        let sent = served.await.unwrap();
+        // The create names the picture by the digest the upload answered,
+        // whatever the payload carried.
+        assert_eq!(sent[1]["payload"]["image"], json!({ "sha256": sha }));
+        assert_eq!(sent[2]["payload"]["badgeId"], BADGE);
+        assert_eq!(sent[2]["payload"]["to"], json!(["dir_aaaaaaaaaaaaaaaa"]));
+        assert_eq!(sent[3]["payload"]["badgeId"], BADGE);
+        assert_eq!(sent[3]["payload"]["limit"], 40);
+        assert_eq!(sent[4]["payload"], json!({ "badgeId": BADGE }));
     }
 
     #[tokio::test]

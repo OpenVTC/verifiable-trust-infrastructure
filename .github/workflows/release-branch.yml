@@ -39,22 +39,45 @@ jobs:
           # Tags: every crate's last release is found by its `<crate>-v<version>` tag.
           fetch-depth: 0
           persist-credentials: false
+      # Before the long part: a bad token fails here by name, not after an
+      # hour of semver checks (#2646).
+      - name: Release token
+        id: token
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
       - name: Install system dependencies
         run: bash scripts/install-build-deps.sh libtss2-dev
-      - name: Install the Rust toolchain
+      # Stable, deliberately, not rust-toolchain.toml's pin: cargo-semver-checks
+      # (installed below at its latest release) reads rustdoc JSON, whose format
+      # changes with every Rust release, and supports a window of recent
+      # formats rather than whatever the pin is. RUSTUP_TOOLCHAIN overrides the
+      # toolchain file for every later step.
+      - name: Install the Rust toolchain (stable, for cargo-semver-checks)
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+          echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: cargo-semver-checks,git-cliff
       - name: Bump changed crates, write changelogs, move RELEASE
         env:
           KIND: ${{ inputs.kind }}
         run: python3 scripts/prepare-release-branch.py --kind "$KIND" --pr-body "$RUNNER_TEMP/body.md"
+      # Minted again: the semver checks above can outlast an App installation
+      # token's one-hour life.
+      - name: Release token (for the push)
+        id: push-token
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
       - name: Open the PR
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          GH_TOKEN: ${{ steps.push-token.outputs.token }}
           BASE: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |

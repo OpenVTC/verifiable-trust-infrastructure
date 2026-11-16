@@ -218,6 +218,11 @@ pub async fn cmd_context_get(
     id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.get_context(id).await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
     render_context_record(&resp);
     Ok(())
 }
@@ -407,7 +412,7 @@ pub async fn cmd_context_update(
 /// Clear a context's DID (`vta/contexts/update-did/1.1`, `did: null`).
 ///
 /// The context is left with no identity of its own; the DID is not deleted.
-/// This is the step `pnm webvh delete-did` asks for when the DID is the last
+/// This is the step `pnm did-mgmt dids delete` asks for when the DID is the last
 /// one a context acts as and there is nothing to reassign it to.
 pub async fn cmd_context_clear_did(
     client: &VtaClient,

@@ -166,6 +166,8 @@ spec_types! {
     VetterShow01Response(vetters::show::v0_1::Response);
     /// `vtc/vetting/vetters/resend/0.2#response`.
     VetterResend02Response(vetters::resend::v0_2::Response);
+    /// `vtc/endorsement-types/register/0.1` payload.
+    EndorsementTypeRegister01Payload(endorsement_types::register::v0_1::Payload);
     /// `vtc/endorsement-types/delete/0.1#response`.
     EndorsementTypeDelete01Response(endorsement_types::delete::v0_1::Response);
     /// `vtc/vetting/vetters/profile/0.1`'s `VettingMethod`.
@@ -531,6 +533,30 @@ spec_types! {
     BadgesAwardsRevoke01Payload(badges::awards::revoke::v0_1::Payload);
     /// `vtc/badges/awards/revoke/0.1#response`.
     BadgesAwardsRevoke01Response(badges::awards::revoke::v0_1::Response);
+    /// `vtc/badges/claims/create/0.1` payload — issuing a claim code for an event.
+    BadgesClaimsCreate01Payload(badges::claims::create::v0_1::Payload);
+    /// `vtc/badges/claims/create/0.1#response`.
+    BadgesClaimsCreate01Response(badges::claims::create::v0_1::Response);
+    /// `vtc/badges/claims/list/0.1` payload — a badge's claim codes, never a code.
+    BadgesClaimsList01Payload(badges::claims::list::v0_1::Payload);
+    /// `vtc/badges/claims/list/0.1#response`.
+    BadgesClaimsList01Response(badges::claims::list::v0_1::Response);
+    /// `vtc/badges/claims/withdraw/0.1` payload — a claim code admits no one more.
+    BadgesClaimsWithdraw01Payload(badges::claims::withdraw::v0_1::Payload);
+    /// `vtc/badges/claims/withdraw/0.1#response`.
+    BadgesClaimsWithdraw01Response(badges::claims::withdraw::v0_1::Response);
+    /// `vtc/badges/claims/redeem/0.1` payload — a member claims the badge with a code.
+    BadgesClaimsRedeem01Payload(badges::claims::redeem::v0_1::Payload);
+    /// `vtc/badges/claims/redeem/0.1#response`.
+    BadgesClaimsRedeem01Response(badges::claims::redeem::v0_1::Response);
+    /// `vtc/badges/awards/share/0.1` payload — the holder shows an award outside.
+    BadgesAwardsShare01Payload(badges::awards::share::v0_1::Payload);
+    /// `vtc/badges/awards/share/0.1#response`.
+    BadgesAwardsShare01Response(badges::awards::share::v0_1::Response);
+    /// `vtc/badges/awards/unshare/0.1` payload — the holder stops showing it.
+    BadgesAwardsUnshare01Payload(badges::awards::unshare::v0_1::Payload);
+    /// `vtc/badges/awards/unshare/0.1#response`.
+    BadgesAwardsUnshare01Response(badges::awards::unshare::v0_1::Response);
     /// `vtc/badges/awards/list/0.1` payload — a badge's awards, to its owners.
     BadgesAwardsList01Payload(badges::awards::list::v0_1::Payload);
     /// `vtc/badges/awards/list/0.1#response`.
@@ -1103,6 +1129,18 @@ mod tests {
         check::<BadgesAwardsWithdraw01Response>();
         check::<BadgesAwardsRevoke01Payload>();
         check::<BadgesAwardsRevoke01Response>();
+        check::<BadgesClaimsCreate01Payload>();
+        check::<BadgesClaimsCreate01Response>();
+        check::<BadgesClaimsList01Payload>();
+        check::<BadgesClaimsList01Response>();
+        check::<BadgesClaimsWithdraw01Payload>();
+        check::<BadgesClaimsWithdraw01Response>();
+        check::<BadgesClaimsRedeem01Payload>();
+        check::<BadgesClaimsRedeem01Response>();
+        check::<BadgesAwardsShare01Payload>();
+        check::<BadgesAwardsShare01Response>();
+        check::<BadgesAwardsUnshare01Payload>();
+        check::<BadgesAwardsUnshare01Response>();
         check::<BadgesAwardsList01Payload>();
         check::<BadgesAwardsList01Response>();
         check::<BadgesHoldersList01Payload>();

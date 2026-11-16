@@ -45,7 +45,7 @@ use tracing::{debug, warn};
 use vti_common::error::AppError;
 
 use crate::ceremony::{CredentialStatus, Invitation, Presentation};
-use crate::routes::join_requests::manifest::{ServedCriterion, manifest_criterion};
+use crate::join::ops::manifest::{ServedCriterion, manifest_criterion};
 use crate::schemas::accepts::{
     AcceptsCriterion, Admission, CredentialIssuers, published_criteria, superseded_version,
 };
@@ -269,7 +269,7 @@ pub async fn issuer_admitted(
         CredentialIssuers::Community => own,
         CredentialIssuers::Recognised => {
             if own
-                || crate::routes::join_requests::present::issuer_trusted(
+                || crate::join::ops::present::issuer_trusted(
                     state.registry_client.as_deref(),
                     own_did,
                     issuer,
@@ -724,7 +724,7 @@ pub async fn verify_embedded_credentials(
         return Ok(Vec::new());
     }
     let resolver = crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone());
-    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
+    let fetcher = crate::join::ops::present::credential_status_fetcher(state);
     let aliases = type_aliases(state).await?;
     // A VWC counts toward a criterion only on the host's full verdict
     // (`credentials::witness::assess`). The join submission has no carriage
@@ -849,7 +849,7 @@ async fn verify_one_credential(
     crate::credentials::ingress::check_validity_window(vc, now, "credential")
         .map_err(|e| e.to_string())?;
     crate::credentials::proof_set::verify_issued(vc, &issuer, resolver).await?;
-    match crate::routes::join_requests::present::resolve_presented_status(
+    match crate::join::ops::present::resolve_presented_status(
         vc.get("credentialStatus"),
         Some(&issuer),
         fetcher,

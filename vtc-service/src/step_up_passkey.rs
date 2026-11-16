@@ -66,7 +66,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, StepUpPasskeyData};
+use vtc_audit::{AuditEvent, StepUpPasskeyData};
 use vti_common::auth::passkey::store::{
     PasskeyUser, get_passkey_user_by_cred, get_passkey_user_by_did, store_credential_mapping,
     store_passkey_user,
@@ -318,7 +318,7 @@ pub async fn record_use(
 ///
 /// A full scan of the sessions keyspace: sessions are keyed by session id,
 /// not by subject, and this fires once per enrolment rather than on a hot
-/// path, the same trade-off [`crate::routes::members::rotate`] and
+/// path, the same trade-off [`crate::members::ops::rotate`] and
 /// `crate::emergency` make revoking a DID's sessions.
 pub(crate) async fn revoke_session_elevation(
     sessions: &KeyspaceHandle,
@@ -360,7 +360,7 @@ pub(crate) async fn revoke_session_elevation(
 /// invite is touched.
 pub async fn admin_list(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor: &crate::acl::AdminActor,
     payload: &admin_list::Payload,
 ) -> Result<admin_list::Response, TaskError> {
     use admin_list::error_codes as codes;

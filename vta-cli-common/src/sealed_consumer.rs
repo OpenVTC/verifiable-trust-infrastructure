@@ -366,41 +366,46 @@ pub fn extract_admin_credential(
         SealedPayloadV1::RawPrivateKey(_) => Err(
             "cannot install a RawPrivateKey bundle as an admin credential".into(),
         ),
-        SealedPayloadV1::TemplateBootstrap(_) => Err(
+        SealedPayloadV1::TemplateBootstrap(_) => Err(format!(
             "TemplateBootstrap payloads carry a VC-issued admin authorization, not a \
-             CredentialBundle — open via `pnm bootstrap open` and use the provision-integration \
-             flow to install"
-                .into(),
-        ),
-        SealedPayloadV1::TemplateBootstrapV2(_) => Err(
+             CredentialBundle — open via `{bin} bootstrap open` and use the provision-integration \
+             flow to install",
+            bin = crate::render::bin_name()
+        )
+        .into()),
+        SealedPayloadV1::TemplateBootstrapV2(_) => Err(format!(
             "TemplateBootstrapV2 payloads carry a VC-issued admin authorization, not a \
-             CredentialBundle — open via `pnm bootstrap open` and use the provision-integration \
-             flow to install"
-                .into(),
-        ),
-        SealedPayloadV1::AdminRotation(_) => Err(
+             CredentialBundle — open via `{bin} bootstrap open` and use the provision-integration \
+             flow to install",
+            bin = crate::render::bin_name()
+        )
+        .into()),
+        SealedPayloadV1::AdminRotation(_) => Err(format!(
             "AdminRotation payloads carry a VC-issued admin authorization, not a \
-             CredentialBundle — open via `pnm bootstrap open` and use the provision-integration \
-             flow to install"
-                .into(),
-        ),
+             CredentialBundle — open via `{bin} bootstrap open` and use the provision-integration \
+             flow to install",
+            bin = crate::render::bin_name()
+        )
+        .into()),
         SealedPayloadV1::IssuedCredential(_) => Err(
             "IssuedCredential payloads carry a holder credential, not an admin CredentialBundle \
              — receive it into the holder vault via the credential-exchange flow"
                 .into(),
         ),
-        SealedPayloadV1::MessagingBridgeCredentials(_) => Err(
+        SealedPayloadV1::MessagingBridgeCredentials(_) => Err(format!(
             "MessagingBridgeCredentials payloads carry a connector's platform secrets, not an \
-             admin CredentialBundle — open via `pnm bootstrap open` and load them into the \
-             connector's secret store"
-                .into(),
-        ),
-        SealedPayloadV1::SeedMnemonic(_) => Err(
+             admin CredentialBundle — open via `{bin} bootstrap open` and load them into the \
+             connector's secret store",
+            bin = crate::render::bin_name()
+        )
+        .into()),
+        SealedPayloadV1::SeedMnemonic(_) => Err(format!(
             "SeedMnemonic payloads carry a VTA's seed mnemonic for an offline backup, not an \
-             admin CredentialBundle — open via `pnm bootstrap open` without --out and write the \
-             words down offline"
-                .into(),
-        ),
+             admin CredentialBundle — open via `{bin} bootstrap open` without --out and write the \
+             words down offline",
+            bin = crate::render::bin_name()
+        )
+        .into()),
         SealedPayloadV1::ExternalSecret(_) => Err(
             "ExternalSecret payloads carry an external account's provider secret on its way to \
              a VTA (external/accounts/secret/set), not an admin CredentialBundle"
@@ -597,11 +602,19 @@ pub fn verify_admin_bundle(
             }
         }
         VerifiedAssertion::AttestedNeedsNitroCheck(_) => {
-            return Err(
+            // Attested bootstrap is pnm's (`pnm bootstrap connect`); cnm has
+            // no such command, so it is named only where it can be run (#2586).
+            let how = match crate::render::bin_name() {
+                "pnm" => "use `pnm bootstrap connect` for attested bootstrap".to_string(),
+                _ => "attested bootstrap is the personal network manager's \
+                      bootstrap connect"
+                    .to_string(),
+            };
+            return Err(format!(
                 "the bundle carries a TEE attestation, which is not verified when installing \
-                 a credential from a file; use `pnm bootstrap connect` for attested bootstrap"
-                    .into(),
-            );
+                 a credential from a file; {how}"
+            )
+            .into());
         }
     }
 

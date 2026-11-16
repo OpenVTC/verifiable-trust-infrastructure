@@ -32,11 +32,12 @@
 //! login page) — [`SessionAudience`]. A member request's responses carry no
 //! extension, exactly as before the extension existed.
 
+use super::routing::{Routes, on};
 use std::net::IpAddr;
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use vti_common::audit::{AuditEvent, MemberWalletSignInData};
+use vtc_audit::{AuditEvent, MemberWalletSignInData};
 use vti_common::auth::session::{
     Session, SessionState, now_epoch, store_refresh_index, store_session,
 };
@@ -52,9 +53,10 @@ use crate::member_portal::oob::{self, NOT_AN_ADMIN, SessionAudience};
 use crate::member_portal::{MemberAuthBackend, active_member, cookies};
 use crate::server::AppState;
 
-/// Exactly what [`dispatch`] routes. `identify` and `grant` are not here: they
-/// are only ever carried inside `prove` and `respond`, and one sent by itself
-/// is refused as an unsupported type.
+/// The sign-in tasks, as `vti_oob_server` names them (the admission layer's
+/// closed set). `identify` and `grant` are not here: they are only ever
+/// carried inside `prove` and `respond`, and one sent by itself is refused as
+/// an unsupported type.
 pub(crate) use vti_oob_server::URIS;
 
 /// The task families a member-portal sign-in offers to let `K_b` sign for as
@@ -88,15 +90,24 @@ pub(super) fn precheck(doc: &TrustTask<Value>, type_uri: &str) -> Option<TrustTa
     vti_oob_server::precheck(doc, type_uri)
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
+/// Register every sign-in task (#2579), each handed to `vti_oob_server`.
+pub(super) fn register(routes: Routes) -> Routes {
+    use vti_specs::auth::oob;
+    let routes = on!(routes, oob::request::v0_2::Payload => run);
+    let routes = on!(routes, oob::claim::v0_2::Payload => run);
+    let routes = on!(routes, oob::prove::v0_3::Payload => run);
+    let routes = on!(routes, oob::respond::v0_3::Payload => run);
+    let routes = on!(routes, oob::redeem::v0_2::Payload => run);
+    on!(routes, oob::cancel::v0_1::Payload => run)
+}
+
+async fn run(state: &AppState, ctx: &JoinAuthCtx, doc: TrustTask<Value>) -> TrustTaskOutcome {
     // The spine verified the proof against `issuer`; `precheck` required one.
     let signer = ctx.verified_signer.clone().unwrap_or_default();
-    vti_oob_server::dispatch(&VtcOobHost::new(state), doc, type_uri, signer).await
+    let type_uri = doc.type_uri.for_routing().to_string();
+    vti_oob_server::dispatch(&VtcOobHost::new(state), doc, &type_uri, signer)
+        .await
+        .expect("registered only for the sign-in tasks vti_oob_server routes")
 }
 
 /// The community, as the `auth/oob` handlers see it.

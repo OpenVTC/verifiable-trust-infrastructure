@@ -124,7 +124,7 @@ export type EndorsementType = Schemas["EndorsementType"];
 export type EndorsementTypesPage = Schemas["Paginated_EndorsementType"];
 /** `{ endorsementType: … }`, what `endorsement-types/register/0.1` publishes. */
 export type EndorsementTypeRegistered = Schemas["RegisterResponse"];
-export type RegisterEndorsementTypeBody = Schemas["RegisterBody"];
+export type RegisterEndorsementTypeBody = Schemas["VtcEndorsementTypesRegisterV0_1Payload"];
 /** `{ typeUri }`, what `endorsement-types/delete/0.1` publishes. */
 export type EndorsementTypeDeleted = Schemas["VtcEndorsementTypesDeleteV0_1Response"];
 
@@ -427,6 +427,12 @@ export type BadgeHoldersListResponse = Schemas["VtcBadgesHoldersListV0_1Response
 export type BadgeWallShowResponse = Schemas["VtcBadgesWallShowV0_1Response"];
 export type BadgeMineListResponse = Schemas["VtcBadgesMineListV0_1Response"];
 export type BadgeMineAcceptResponse = Schemas["VtcBadgesMineAcceptV0_1Response"];
+export type BadgeAwardsShareResponse = Schemas["VtcBadgesAwardsShareV0_1Response"];
+export type BadgeClaimsCreateResponse = Schemas["VtcBadgesClaimsCreateV0_1Response"];
+export type BadgeClaimsListResponse = Schemas["VtcBadgesClaimsListV0_1Response"];
+export type BadgeClaimsWithdrawResponse = Schemas["VtcBadgesClaimsWithdrawV0_1Response"];
+export type BadgeClaimsRedeemResponse = Schemas["VtcBadgesClaimsRedeemV0_1Response"];
+export type BadgeAwardsUnshareResponse = Schemas["VtcBadgesAwardsUnshareV0_1Response"];
 export type BadgeMineDeclineResponse = Schemas["VtcBadgesMineDeclineV0_1Response"];
 export type BadgeMineHideResponse = Schemas["VtcBadgesMineHideV0_1Response"];
 export type BadgeMineShowResponse = Schemas["VtcBadgesMineShowV0_1Response"];

@@ -61,14 +61,35 @@ use std::sync::{Arc, Mutex};
 const UNRETRIEVABLE: &str = "the signer's key could not be retrieved: ";
 
 /// A refusal meaning the signer's key could not be retrieved (see
-/// [`UNRETRIEVABLE`]).
-fn unretrievable(detail: impl std::fmt::Display) -> DataIntegrityError {
+/// [`UNRETRIEVABLE`]): no resolver for the method, or the DID did not resolve.
+/// Public so a resolver wrapping this one can say the same, and a test can.
+pub fn unretrievable(detail: impl std::fmt::Display) -> DataIntegrityError {
     DataIntegrityError::Resolver(format!("{UNRETRIEVABLE}{detail}"))
+}
+
+/// Prefix of the refusal for a signer whose DID method this build does not
+/// resolve (VTI-KEY-009); the method follows it.
+const UNSUPPORTED_METHOD: &str = "the signer's DID method is not one this party resolves: ";
+
+/// The method of a refusal for a DID method this build does not resolve, if
+/// `e` is one.
+pub(crate) fn unsupported_method(e: &DataIntegrityError) -> Option<&str> {
+    match e {
+        DataIntegrityError::Resolver(msg) => msg.strip_prefix(UNSUPPORTED_METHOD),
+        _ => None,
+    }
 }
 
 /// Whether `e` means the signer's key could not be retrieved, as opposed to
 /// the proof being wrong.
-pub(crate) fn is_unretrievable(e: &DataIntegrityError) -> bool {
+///
+/// Every other [`DataIntegrityError::Resolver`] this resolver returns — a key
+/// not listed under the proof's purpose, a controller mismatch, a `did:key`
+/// fragment that does not match, a malformed method, an unsupported key type —
+/// is a verdict on the proof. A caller that treats retrieval failures more
+/// leniently than verdicts (a retry, a separate budget) must ask this, never
+/// match the variant.
+pub fn is_unretrievable(e: &DataIntegrityError) -> bool {
     matches!(e, DataIntegrityError::Resolver(msg) if msg.starts_with(UNRETRIEVABLE))
 }
 
@@ -194,6 +215,19 @@ impl TrustTaskVmResolver {
         // need, and accept the exposure that flag exists to gate.
         if base_did.starts_with("did:peer:") {
             return resolve_did_peer(vm, base_did, purpose);
+        }
+
+        // VTI-KEY-009: material that can be relied on only by resolving a
+        // method this party does not resolve is refused as that, by name,
+        // before any resolver is asked — never as a lookup that happened to
+        // fail. The method is in the identifier, so naming it discloses
+        // nothing the producer did not send.
+        if let Some(method) = crate::resolved_methods::method_name(base_did)
+            && !crate::resolved_methods::resolves(method)
+        {
+            return Err(DataIntegrityError::Resolver(format!(
+                "{UNSUPPORTED_METHOD}{method}"
+            )));
         }
 
         let resolver = self.resolver.as_ref().ok_or_else(|| {
@@ -595,8 +629,8 @@ mod tests {
         let p256 = affinidi_crypto::p256::generate(Some(&[0x61; 32])).unwrap();
         let k256 = affinidi_crypto::secp256k1::generate(Some(&[0x62; 32])).unwrap();
         for (kt, public) in [
-            (KeyType::P256, p256.public_bytes),
-            (KeyType::Secp256k1, k256.public_bytes),
+            (KeyType::P256, p256.public_bytes.clone()),
+            (KeyType::Secp256k1, k256.public_bytes.clone()),
         ] {
             let key = JwsKey::from_resolved(&ResolvedKey::new(kt, public)).unwrap();
             let did = key.did_key();

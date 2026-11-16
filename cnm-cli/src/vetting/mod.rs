@@ -112,7 +112,9 @@ pub enum VetterCommands {
         member_did: String,
         /// How long the grant is valid: `N[s|m|h|d|w]`, one day to two years
         /// (e.g. `180d`). The community's default of one year when absent.
-        #[arg(long)]
+        /// `--expires`, as every lapsing grant spells it (#2589); `--validity`
+        /// is the older name.
+        #[arg(long = "expires", visible_alias = "validity", value_name = "DURATION")]
         validity: Option<String>,
     },
     /// Withdraw a vetter grant. The vetter's statements stop counting and
@@ -500,7 +502,7 @@ pub(crate) fn grant_payload(
 
 async fn cmd_vetters_grant(vtc: &VtcClient, member_did: &str, validity: Option<&str>) -> CliResult {
     let validity_seconds = validity
-        .map(|v| parse_grant_validity("--validity", v))
+        .map(|v| parse_grant_validity("--expires", v))
         .transpose()?;
     let result = vtc
         .grant_vetter(&grant_payload(member_did, validity_seconds)?)

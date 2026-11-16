@@ -2,7 +2,7 @@
 // four-dot bootstrap indicator, and the dialog that signs and sends a change —
 // or hands it to the administrator where this browser cannot sign.
 
-import { Fragment, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fingerprint, KeyRound, ShieldAlert, SquareTerminal, Siren, UserCheck } from "lucide-react";
@@ -35,7 +35,10 @@ import {
   type GitNsSelfGrantWaived,
   type Tone,
 } from "./model";
-import { Protected, activeElementOf } from "@/components/Protected";
+import { Protected } from "@/components/Protected";
+import { useModal } from "@/components/useModal";
+import { formatDate } from "@/lib/format";
+import { messageOf } from "@/lib/messages";
 
 /** Where the plugin is mounted (`src/plugins/index.ts`). */
 export const REPOS_PATH = "/repos";
@@ -166,9 +169,7 @@ export function refusalHint(err: unknown, singleAdmin = false): string | null {
 }
 
 export function formatDay(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+  return iso ? formatDate(iso) : "—";
 }
 
 /** The code of a signed read's refusal, where the answer was a
@@ -201,11 +202,7 @@ export function errorMessage(err: unknown): string {
   if (errorCode(err)?.endsWith(":notCommunityAdministrator")) {
     return "only a community administrator (an admin not limited to some contexts) can read this";
   }
-  if (err && typeof err === "object" && "message" in err) {
-    const message = (err as { message: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return String(err);
+  return messageOf(err);
 }
 
 export function errorStatus(err: unknown): number | undefined {
@@ -305,65 +302,9 @@ const CONSENT_MEANS: Record<SignedTask["consent"], string> = {
 /** Where an operator enables signing in this browser (`plugins/index.ts`). */
 export const CONSOLE_KEYS_PATH = "/console-keys";
 
-/**
- * The modal contract every Repos dialog keeps, as the confirmation dialog
- * does: focus moves in on open (the first field or button), Tab and Shift-Tab
- * stay inside, Escape closes — unless `locked`, while something is in flight —
- * and focus goes back to whatever opened the dialog when it closes.
- */
-export function useModal(
-  surfaceRef: RefObject<HTMLElement | null>,
-  onClose: () => void,
-  locked = false,
-) {
-  const lockedRef = useRef(locked);
-  lockedRef.current = locked;
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useEffect(() => {
-    // The dialog is drawn in a shadow tree (out of the theme's reach), where
-    // `document.activeElement` can be a host rather than the opener.
-    const opener = (
-      surfaceRef.current ? activeElementOf(surfaceRef.current) : document.activeElement
-    ) as HTMLElement | null;
-    surfaceRef.current
-      ?.querySelector<HTMLElement>("select, input, textarea, button")
-      ?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        if (!lockedRef.current) closeRef.current();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const tabbable = surfaceRef.current?.querySelectorAll<HTMLElement>(
-        "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], summary, [tabindex]:not([tabindex='-1'])",
-      );
-      if (!tabbable || tabbable.length === 0) return;
-      const first = tabbable[0]!;
-      const last = tabbable[tabbable.length - 1]!;
-      const active = activeElementOf(first);
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      if (opener && opener.isConnected) opener.focus();
-    };
-  }, [surfaceRef]);
-
-  /** For the scrim: a click on it closes, unless locked. */
-  return () => {
-    if (!lockedRef.current) closeRef.current();
-  };
-}
+/** The modal contract every Repos dialog keeps, now shared by every dialog
+ *  in the console and the portal (`components/useModal.ts`, #2610). */
+export { useModal };
 
 /**
  * A change the console has built, to sign and send from this browser — or,

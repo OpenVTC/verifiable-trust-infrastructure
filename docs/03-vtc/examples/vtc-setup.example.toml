@@ -35,6 +35,13 @@ setup_key_file = "/srv/vtc/setup-key.json"   # persisted + ACL-granted (see abov
 # ── Optional top-level ──────────────────────────────────────────────────
 context = "default"   # the VTA context this community provisions under
 
+# The method of the community's own DID: "webvh" (default) or "webs", a
+# level-1 did:webs (alpha) from the `vtc-host-classical` template — one
+# signing key, no post-quantum key, no did.jsonl. "webs" requires
+# [webvh] server_id below (no serverless did:webs) and the VTA's
+# `[dids] webs_enabled` + `webs_service_dids`. See docs/02-vta/did-webs.md.
+# identity_method = "webs"
+
 # The trust registry authoritative for this community, if it has one.
 # Publishes a TrustRegistry referral in the VTC's DID document, so a client
 # holding only this community's DID resolves one hop to the registry instead

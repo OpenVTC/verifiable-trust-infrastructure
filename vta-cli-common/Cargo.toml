@@ -2,7 +2,7 @@
 name = "vta-cli-common"
 description = "Shared CLI command handlers and rendering helpers for VTA CLIs"
 readme = "README.md"
-version = "0.58.0"
+version = "0.63.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -21,10 +21,10 @@ agent-names = ["vta-sdk/agent-names"]
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.10" }
+vti-specs = { path = "../vti-specs", version = "0.15" }
 # `time` for the consent loop's bounded wait between polls.
 tokio = { workspace = true, features = ["time"] }
-vta-sdk = { path = "../vta-sdk", version = "0.85", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = [
   "client",
   "session",
   "sealed-transfer",
@@ -34,16 +34,16 @@ vta-sdk = { path = "../vta-sdk", version = "0.85", features = [
   "acl-setup",
 ] }
 # Owner-only file-permission helper (`secure_file`), shared workspace-wide.
-vti-common = { path = "../vti-common", version = "0.61" }
+vti-common = { path = "../vti-common", version = "0.66" }
 # The room client. Named for the VTC, but host-neutral by construction: a room's
 # protocol is the same whether a community or a standalone `room-host` serves it,
 # and `room-host`'s own example drives itself with this crate. Taking a second
 # copy of the `rooms/*` wire types into this crate is what the type duplication
 # in `vtc-client` was deleted to avoid.
-vtc-client = { path = "../vtc-client", version = "0.40" }
+vtc-client = { path = "../vtc-client", version = "0.45" }
 # `pnm rooms file …`: a file's STREAM sealing, without the group layer. The key
 # comes from the operator's VTA (`rooms/keys/file-key/0.2`), so OpenMLS is not needed.
-vti-rooms = { path = "../vti-rooms", version = "0.32", default-features = false, features = [
+vti-rooms = { path = "../vti-rooms", version = "0.37", default-features = false, features = [
   "files",
 ] }
 affinidi-crypto = { workspace = true }
@@ -52,20 +52,17 @@ ed25519-dalek = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The CLIs' TOML profiles (`config_file`): a corrupt one is fatal, a save is atomic.
+toml = { workspace = true }
+# `completions <shell>` for both CLIs (`startup::print_completions`).
+clap = { workspace = true }
+clap_complete = { workspace = true }
 # Wipes an external account secret read at the terminal (`pnm external secret-set`).
-zeroize = "1"
+zeroize = { workspace = true }
 multibase = { workspace = true }
-x25519-dalek = { workspace = true }
 sha2 = { workspace = true }
-hkdf = { workspace = true }
-aes-gcm = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
-# Thin HTTP client used by the `webvh did-log` CLI command to hit the
-# public `GET /did/{did}/log` endpoint. VtaClient handles authenticated
-# endpoints; this one is public so a bare reqwest call is simpler than
-# threading it through VtaClient.
-reqwest = { workspace = true }
 # Interactive prompts ($EDITOR, Confirm, Input) for the
 # `webvh edit-did` command. Already present transitively via
 # vta-service; declaring it here so vta-cli-common can use it directly
@@ -74,7 +71,7 @@ dialoguer = { workspace = true }
 thiserror = { workspace = true }
 # `pnm vta qr`: a DID as a terminal or SVG QR code. SVG only — the default
 # `image` feature would pull the whole `image` crate in for nothing.
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+qrcode = { workspace = true }
 
 [dev-dependencies]
 # `test-util` for `#[tokio::test(start_paused = true)]`: the consent loop sleeps

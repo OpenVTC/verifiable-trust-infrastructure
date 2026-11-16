@@ -3412,6 +3412,13 @@ mod tests {
 
         let signer = Es256CoseSigner::generate();
         let issued = affinidi_mdoc::MdocBuilder::new(doc_type)
+            // affinidi-mdoc 0.6: a device (holder) key is required.
+            .device_key({
+                let pk = affinidi_mdoc::es256_cose::Es256CoseSigner::generate().public_key_bytes();
+                affinidi_mdoc::CoseKey::new_p256(pk[1..33].to_vec(), pk[33..65].to_vec())
+                    .unwrap()
+                    .to_cbor_value()
+            })
             .validity(ValidityInfo {
                 signed: "2026-01-01T00:00:00Z".into(),
                 valid_from: "2026-01-01T00:00:00Z".into(),

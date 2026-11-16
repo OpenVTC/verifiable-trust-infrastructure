@@ -44,6 +44,15 @@ A path dependency with no `version` (`req == "*"`) is skipped and is not a
 defect: a dev-dependency deliberately carries no version so release-plz does not
 count the edge when ordering publishes.
 
+## Crypto floors (#2657)
+
+CLAUDE.md: crypto deps (`ed25519-dalek`, `hpke`, `jsonwebtoken`, `aes-gcm`,
+`aws-lc-rs`) "pin a minimum patch". Until #2657 none of them did — the
+manifests said `"3"`, `"11"`, `"0.11"`, `"0.15"` and `"1.16"`, so the rule was
+neither true nor checked. Every requirement any member places on one of these
+crates must now name a full `major.minor.patch` floor (`^3.0.0`), so a resolve
+cannot land below a release the workspace was built against.
+
 ## Why `cargo metadata --no-deps`
 
 Because it does not resolve the graph, it still works on exactly the broken tree
@@ -78,6 +87,17 @@ def caret_ok(req, version):
     return v < upper
 
 
+# CLAUDE.md "Versioning & publishing": crypto deps pin a minimum patch.
+CRYPTO_FLOORS = ("ed25519-dalek", "hpke", "jsonwebtoken", "aes-gcm", "aws-lc-rs")
+
+
+def full_patch_floor(req):
+    """`^X.Y.Z` (Cargo's rendering of `"X.Y.Z"`), with nothing else."""
+    if not req.startswith("^") or "," in req:
+        return False
+    return len(req[1:].split("-")[0].split(".")) == 3
+
+
 def main():
     out = subprocess.run(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"],
@@ -110,6 +130,25 @@ def main():
                     (pkg["name"], name, req, versions[name], dep.get("optional", False))
                 )
 
+    floors = []
+    for pkg in meta["packages"]:
+        for dep in pkg["dependencies"]:
+            if dep["name"] in CRYPTO_FLOORS and not full_patch_floor(dep["req"]):
+                floors.append((pkg["name"], dep["name"], dep["req"]))
+
+    if floors:
+        print("A crypto dependency without a minimum-patch floor:\n", file=sys.stderr)
+        for who, dep, req in floors:
+            print(f"  {who} -> {dep} = \"{req}\"", file=sys.stderr)
+        print(
+            "\nCLAUDE.md: crypto deps pin a minimum patch, so a resolve can never land\n"
+            "below a release the workspace was built against. Declare it once in the\n"
+            "root Cargo.toml's [workspace.dependencies] as \"major.minor.patch\" (the\n"
+            "patch Cargo.lock holds) and inherit it with `{ workspace = true }`.",
+            file=sys.stderr,
+        )
+        return 1
+
     if unknown:
         print("Requirement forms this guard does not understand:\n", file=sys.stderr)
         for who, dep, req in unknown:
@@ -139,7 +178,10 @@ def main():
         )
         return 1
 
-    print(f"Workspace version requirements agree ({len(versions)} members).")
+    print(
+        f"Workspace version requirements agree ({len(versions)} members);"
+        f" crypto deps carry patch floors ({', '.join(CRYPTO_FLOORS)})."
+    )
     return 0
 
 

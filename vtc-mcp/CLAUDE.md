@@ -6,7 +6,7 @@ Crate guidance. The workspace `CLAUDE.md` applies too.
 
 (The crate's full entry from the workspace `CLAUDE.md` crate map.)
 
-MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a member's or an administrator's AI assistant. A native Trust Task client: every tool call is one signed document `vtc-client` sends in-process over the transport the community's DID document advertises (TSP > DIDComm > HTTPS, `VtcClient::connect_resolved`) — never a `cnm`/`pnm` subprocess, never a CLI's stored login. Two generic tools (`vtc_list_operations`, catalogued from the pinned specification bundles; `vtc_call`) plus discovery, whoami and status. Runs every call through the guard and recorder in `vti-mcp-common`. Docs: `docs/03-vtc/vtc-mcp.md` (operator page), `docs/05-design-notes/vtc-mcp.md` (design); the Claude Code skill is `skills/vtc-community/SKILL.md`. `publish = false`
+MCP server bridging a Verifiable Trust Community to MCP tools over stdio (or, with `--listen`, loopback HTTP shared by every host on the machine), for a member's or an administrator's AI assistant. A native Trust Task client: every tool call is one signed document `vtc-client` sends in-process over the transport the community's DID document advertises (TSP > DIDComm > HTTPS, `VtcClient::connect_resolved`) — never a `cnm`/`pnm` subprocess, never a CLI's stored login. Two generic tools (`vtc_list_operations`, catalogued from the pinned specification bundles; `vtc_call`) plus discovery, whoami and status. Runs every call through the guard and recorder in `vti-mcp-common`. Docs: `docs/03-vtc/vtc-mcp.md` (operator page), `docs/05-design-notes/vtc-mcp.md` (design); the Claude Code skill is `skills/vtc-community/SKILL.md`. `publish = false`
 
 ## Rules
 
@@ -22,6 +22,11 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
 - **A session the community advertises is never replaced by HTTPS.** `auto`
   errors with what was advertised and what failed; `--transport rest` is the
   operator's explicit way to post signed documents for a diagnosis.
+- **A refusal is a tool result, not a protocol error** (#2594):
+  `server::outcome` turns `VtcError::Refused` into a `ToolError` of kind
+  `refused` carrying the community's code and document, and `vtc_call`
+  refuses a URI the community's discovery answer does not list (`notServed`)
+  before sending. `ErrorData` is only for an argument outside its domain.
 - **A parked operation is an outcome.** `VtcError::Parked` becomes a
   successful result with `status: "parked"` naming the action; it is never
   an error and never resent.
@@ -60,11 +65,33 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio, for a 
 - **An administrator's standing is a signing-key delegation**
   (`vtc_enrol_signing_key`): the bridge sends `auth/signing-key/enroll/0.2`
   signed by its own key, carrying the identity's signed
-  `auth/signing-key/authorize/0.1` (`cnm access authorize-key`) whose payload
+  `auth/signing-key/authorize/0.1` (the console's *Authorize another key*, signed through the wallet, or
+  `cnm access authorize-key`) whose payload
   is exactly the enrolment's terms. It refuses an authorization naming another
   key before sending, never builds or alters the terms, and holds no
   authorization after use. The delegation never answers a step-up or signs a
   `task-consent/decision` — those stay with the person's own factor.
+- **A step-up is handed to the person, never answered.** A refusal carrying
+  `details.stepUpHandoff` becomes a successful result with `status:
+  "stepUpRequired"` and the `step-up` link (`vtc_client::step_up`,
+  VTI-LNK-127), its contact the community that issued the refusal. The result
+  carries the link, the subject and the community's reason — never the
+  inline request's challenge or binding as something to approve. A workflow
+  stops at that step. The bridge never reads the handle itself.
+- **An agent key reused at a second community is warned about, never refused**
+  (`src/key_reuse.rs`, VTI-KEY-005, VTI-KEY-006): the bridge keeps an owner-only local note
+  of the communities each agent DID signed in to and reports a reuse as
+  `keyReuseWarning` in `vtc_whoami` / `vtc_status`. Only the key holder can see
+  reuse; a community knows only its own records.
+- **`--listen` is loopback, a token, and no browsers — none of it optional**
+  (`vti_mcp_common::listen`, named for this bridge in `src/listen.rs`; design note D7). The endpoint speaks with the bridge's
+  standing, so: `check_loopback` before binding, with no flag to widen it; a
+  bearer token on every request, compared in constant time, its file
+  owner-only and refused otherwise; `Origin` refused and `Host` loopback. One
+  process serves every host because the mediator holds one socket per DID —
+  never answer "two sessions" by starting two bridges on one key. State that
+  must be per host (an elicitation) goes on the calling session's peer, never
+  on the shared bridge.
 - **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
   the action's summary from the payload that would run (`verify_action`),
   refuses on any mismatch, and puts the summary and match code in front of

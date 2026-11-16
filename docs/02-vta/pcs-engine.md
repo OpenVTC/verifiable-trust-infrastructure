@@ -281,7 +281,7 @@ with it.
 ## Clients
 
 - Rust: `VtaClient::pcs_*` (`vta_sdk::client`), taking and returning the generated
-  `trust_tasks_rs::specs::vta::pcs` types.
+  `vti_specs::vta::pcs` types (re-exported as `vta_sdk::specs::vta::pcs`).
 - Mobile: `vta_mobile_core::pcs::{build_pcs_task, parse_pcs_response}` — one
   builder and one parser over a `PcsTask` enum; the payload is checked against its
   generated type before anything is signed.

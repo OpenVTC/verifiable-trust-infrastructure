@@ -618,7 +618,7 @@ fn only_the_label_and_list_tasks_read_a_label() {
     assert_eq!(
         readers,
         vec![
-            "operations/room_groups.rs",
+            "operations/room_groups/personal.rs",
             "trust_tasks/room_label.rs",
             "trust_tasks/room_label_tests.rs",
         ],

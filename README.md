@@ -60,35 +60,45 @@ host many VTCs.
 
 ## Workspace layout
 
+The workspace has 47 crates. The spine most of them sit on, each arrow
+pointing from a dependency to the crate that depends on it:
+
 ```mermaid
 graph LR
-    vti-common --> vta-sdk
-    vti-common --> vta-service
+    vti-specs --> vta-sdk
+    vta-sdk --> vti-common
+    vti-common --> vta-subsystems["vta-* subsystem crates"]
+    vta-subsystems --> vta-service
+    vta-sdk --> vtc-client
+    vtc-client --> vta-cli-common
     vti-common --> vtc-service
-    vta-sdk --> vta-cli-common
-    vta-sdk --> vta-service
-    vta-sdk --> vtc-service
-    vta-sdk --> pnm-cli
-    vta-sdk --> cnm-cli
+    vti-common --> vti-rooms
+    vti-rooms --> vtc-service
+    vti-rooms --> vta-service
     vta-cli-common --> vta-service
     vta-cli-common --> pnm-cli
     vta-cli-common --> cnm-cli
     vta-service --> vta-enclave["vta-enclave (TEE binary)"]
 ```
 
-Dependencies flow strictly downward — no cycles.
+Dependencies flow strictly downward — no cycles. The complete map — every
+crate, its layer and its internal dependencies, generated from the manifests
+and checked in CI — and a one-line role for each crate are in
+[CLAUDE.md § Workspace layout](CLAUDE.md#workspace-layout).
+
+The crates an operator meets first:
 
 | Crate | Role |
 |---|---|
 | **vti-common** | Shared foundation: JWT auth, ACL, `Store`/`KeyspaceHandle`, error types, config, telemetry sink, audit envelopes. |
-| **vta-sdk** | Public SDK: types, REST + DIDComm client, sealed-transfer, DID-template engine, attestation verification. |
+| **vta-sdk** | Public SDK: types, the Trust Task client over TSP / DIDComm / HTTPS, sealed-transfer, DID-template engine, attestation verification. |
 | **vta-cli-common** | Shared CLI command implementations used by both `pnm` and `cnm`. |
-| **vta-service** | VTA library + local/dev binary (`vta`). Routes, operations, setup wizards, DIDComm protocol management. |
+| **vta-service** | VTA library + local/dev binary (`vta`): the Trust Task spine, operations, setup wizards. |
 | **vta-enclave** | VTA binary for AWS Nitro Enclaves (TEE bootstrap, KMS, vsock-store, attestation). Linux-only. |
 | **vtc-service** | VTC binary (`vtc`) — community lifecycle, policies, credentials, public website, admin UX. |
 | **pnm-cli** | Personal Network Manager — single-VTA operator CLI (`pnm`). |
 | **cnm-cli** | Community Network Manager — multi-community operator CLI (`cnm`). |
-| **didcomm-test** | Standalone DIDComm connectivity test harness. Not published. |
+| **vti-witness**, **vti-voting-service**, **room-host** | Host services: witnesses, ballot boxes, data-room storage. |
 
 ## Quick start
 
@@ -136,18 +146,19 @@ The documentation tree is split by audience:
 
 - **[docs/README.md](docs/README.md)** — full index with topic search.
 - **[docs/01-concepts/](docs/01-concepts/)** — shared concepts that
-  apply to both VTA and VTC (overview, architecture, security model,
-  sealed-transfer).
+  apply to both VTA and VTC (overview, architecture, security model).
 - **[docs/02-vta/](docs/02-vta/)** — VTA operator + integrator
-  documentation (cold-start, secret backends, TEE deployment, DIDComm,
-  provision-integration, runtime service management).
+  documentation (cold-start, secret backends, TEE deployment, TSP,
+  provision-integration, runtime service management, data rooms).
 - **[docs/03-vtc/](docs/03-vtc/)** — VTC operator + integrator
   documentation (getting started, community lifecycle, credentials,
   trust-registry, website, admin UX).
 - **[docs/04-reference/](docs/04-reference/)** — reference material
-  (BIP-32 paths, CLI conventions).
+  (BIP-32 paths, CLI conventions, workspace engineering notes).
 - **[docs/05-design-notes/](docs/05-design-notes/)** — design
-  history and implementation notes (including the VTC MVP spec).
+  history and implementation notes, each with a status line.
+- **[docs/06-witness/](docs/06-witness/)** — the witness host service.
+- **[docs/07-voting/](docs/07-voting/)** — community voting and the ballot-box service.
 - **[First Person Project White Paper](https://www.firstperson.network/white-paper)**
   — the broader research context.
 
@@ -155,8 +166,8 @@ The documentation tree is split by audience:
 
 | Path | Contents |
 |---|---|
-| `vti-common/`, `vta-sdk/`, `vta-cli-common/`, `vta-service/`, `vta-enclave/`, `vtc-service/` | Service + library crates (see the layout diagram above). |
-| `pnm-cli/`, `cnm-cli/`, `didcomm-test/` | Binary crates. |
+| `vt*-*/`, `room-host/`, `pnm-cli/`, `cnm-cli/`, `didcomm-test/` | The workspace's crates, one directory each (the full list and roles: [CLAUDE.md](CLAUDE.md#workspace-layout)). |
+| `vti-specs-*/trust-tasks/` | The pinned Trust Task specification bundles the generated wire types are built from. |
 | `docs/` | Documentation tree (this section). |
 | `trust-tasks/` | Trust Task spec + schema files. Every wire op binds to a versioned task; the `index.json` manifest lists all of them. |
 | `deploy/nitro/` | Nitro Enclave deployment scaffolding. |

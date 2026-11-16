@@ -67,7 +67,7 @@ fn write_new(path: &Path, contents: &[u8]) -> CmdResult {
     Ok(())
 }
 
-/// Resolve `--valid-until <RFC 3339>` / `--valid-for <duration>` into an instant.
+/// Resolve `--valid-until <RFC 3339>` / `--expires <duration>` into an instant.
 ///
 /// At most one is given (clap enforces it); neither is `None`, and the caller
 /// decides whether that is allowed.
@@ -76,7 +76,7 @@ pub fn validity(
     valid_for: Option<&str>,
 ) -> Result<Option<DateTime<Utc>>, Box<dyn std::error::Error>> {
     match (valid_until, valid_for) {
-        (Some(_), Some(_)) => Err("give --valid-until or --valid-for, not both".into()),
+        (Some(_), Some(_)) => Err("give --valid-until or --expires, not both".into()),
         (Some(t), None) => {
             let at = DateTime::parse_from_rfc3339(t)
                 .map_err(|e| {
@@ -92,11 +92,11 @@ pub fn validity(
         }
         (None, Some(d)) => {
             let secs = crate::duration::parse_duration_secs(d)?;
-            let secs = i64::try_from(secs).map_err(|_| format!("--valid-for `{d}` is too long"))?;
+            let secs = i64::try_from(secs).map_err(|_| format!("--expires `{d}` is too long"))?;
             Ok(Some(
                 Utc::now()
                     + chrono::Duration::try_seconds(secs)
-                        .ok_or_else(|| format!("--valid-for `{d}` is too long"))?,
+                        .ok_or_else(|| format!("--expires `{d}` is too long"))?,
             ))
         }
         (None, None) => Ok(None),
@@ -121,10 +121,80 @@ pub fn parse_actions(actions: &[String]) -> Result<Vec<RoomAction>, Box<dyn std:
 
 // ─── Owner ───────────────────────────────────────────────────────────────
 
+/// What `rooms owner register` states about the room beyond 0.2's terms: its record
+/// retention and signal delay (`rooms/owner/register/0.3`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoomSettings<'a> {
+    /// The conversation preset ([`CHAT_TOMBSTONE_DAYS`], [`CHAT_RECORD_DAYS`], signal delay
+    /// `none`), each overridden by the member given beside it.
+    pub chat: bool,
+    /// `randomised` or `none`.
+    pub signal_delay: Option<&'a str>,
+    /// Days a retracted record's tombstone is kept.
+    pub tombstone_days: Option<u64>,
+    /// Days a record is kept after it last changed, pinned ones excepted.
+    pub record_days: Option<u64>,
+}
+
+/// The conversation preset's tombstone days: a retracted message's tombstone goes after a
+/// week, long enough for every member's client to have seen the retraction.
+pub const CHAT_TOMBSTONE_DAYS: u64 = 7;
+/// The conversation preset's record days: a message is kept a year after it last changed,
+/// unless pinned.
+pub const CHAT_RECORD_DAYS: u64 = 365;
+
+/// The record retention and signal delay a registration states.
+type StatedSettings = (
+    Option<vta_sdk::client::RoomRecordRetention>,
+    Option<vta_sdk::client::RoomSignalDelay>,
+);
+
+impl RoomSettings<'_> {
+    /// The record retention and signal delay to state, after the preset; `None` for each the
+    /// request leaves unstated.
+    pub fn resolve(&self) -> Result<StatedSettings, Box<dyn std::error::Error>> {
+        let signal_delay = match self.signal_delay {
+            Some(d) => Some(d),
+            None if self.chat => Some("none"),
+            None => None,
+        };
+        let signal_delay = match signal_delay {
+            Some(d) => Some(
+                d.parse()
+                    .map_err(|_| "--signal-delay must be `randomised` or `none`")?,
+            ),
+            None => None,
+        };
+        let tombstone = self
+            .tombstone_days
+            .or(self.chat.then_some(CHAT_TOMBSTONE_DAYS));
+        let records = self.record_days.or(self.chat.then_some(CHAT_RECORD_DAYS));
+        let mut r = serde_json::Map::new();
+        for (flag, name, days) in [
+            ("--tombstone-days", "tombstoneDays", tombstone),
+            ("--record-days", "recordDays", records),
+        ] {
+            if let Some(d) = days {
+                if !(1..=36_500).contains(&d) {
+                    return Err(format!("{flag} must be 1 to 36500 days").into());
+                }
+                r.insert(name.into(), serde_json::json!(d));
+            }
+        }
+        let record_retention = if r.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_value(serde_json::Value::Object(r))?)
+        };
+        Ok((record_retention, signal_delay))
+    }
+}
+
 /// `rooms owner register` — have this VTA register the room with its host
-/// (`rooms/owner/register/0.2`, falling back to 0.1 on a VTA that does not serve it),
-/// signing `rooms/create` as `owner`, and say plainly when the room's revocation list is
-/// not in force there.
+/// (`rooms/owner/register/0.3` when a record retention or signal delay is stated, 0.2
+/// otherwise), signing `rooms/create` as `owner`, and say plainly when the room's
+/// revocation list is not in force there.
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_rooms_owner_register(
     client: &VtaClient,
     room_id: &str,
@@ -133,7 +203,16 @@ pub async fn cmd_rooms_owner_register(
     visibility: &str,
     retention_days: Option<u64>,
     retention_policy: Option<&str>,
+    settings: RoomSettings<'_>,
 ) -> CmdResult {
+    let (record_retention, signal_delay) = settings.resolve()?;
+    let states_none = signal_delay
+        .as_ref()
+        .is_some_and(|d| serde_json::to_value(d).ok() == Some(serde_json::json!("none")));
+    if states_none {
+        eprintln!("{}\n", super::rooms::SIGNAL_DELAY_NONE_TRADE_OFF);
+    }
+    let states_settings = record_retention.is_some() || signal_delay.is_some();
     let visibility = visibility
         .parse()
         .map_err(|_| "--visibility must be one of: open, attributed, private")?;
@@ -157,9 +236,29 @@ pub async fn cmd_rooms_owner_register(
             owner_did: Some(owner),
             retention_days,
             retention_policy,
+            record_retention,
+            signal_delay,
         })
         .await
         .map_err(|e| {
+            if states_settings && matches!(e, vta_sdk::error::VtaError::UnsupportedTaskType { .. })
+            {
+                return format!(
+                    "{e}\n\nThis VTA predates rooms/owner/register/0.3, so it cannot pass a \
+                     record retention or signal delay to the host. Upgrade it, or register \
+                     without --chat, --signal-delay, --tombstone-days and --record-days and \
+                     set them afterwards with `pnm rooms records retention set` and `pnm \
+                     rooms signal-delay set`."
+                );
+            }
+            if states_settings && e.to_string().contains("hostRefused") {
+                return format!(
+                    "{e}\n\nA host that does not accept rooms/create 0.3 cannot record the \
+                     record retention or signal delay asked for, and the room was not \
+                     registered. On such a host, register without --chat, --signal-delay, \
+                     --tombstone-days and --record-days: its rooms keep the randomised delay."
+                );
+            }
             format!(
                 "{e}\n\n`permissionDenied` means this VTA holds no signing key for `{owner}` in \
                  a context you act in. {PERSONA_HINT} On a community (VTC) host the owner must \
@@ -203,6 +302,20 @@ pub async fn cmd_rooms_owner_register(
                 resp.host
             ),
         }
+    }
+    if settings.chat {
+        // The room's record members are its profile's, written inside the room once the
+        // group exists (`rooms/keys/profile/write`); `rooms/create` has no member for them.
+        println!(
+            "  As a conversation: no signal delay; tombstones kept {} days, messages {} days \
+             unless pinned. Once the group exists, let members name themselves and mark their \
+             messages with `pnm rooms profile set --room {} --host-did {} --record-members \
+             kind,inReplyTo,writtenAt,editedAt,memberProfile`.",
+            settings.tombstone_days.unwrap_or(CHAT_TOMBSTONE_DAYS),
+            settings.record_days.unwrap_or(CHAT_RECORD_DAYS),
+            resp.room_id,
+            resp.host
+        );
     }
     println!(
         "  Next: issue {owner} the room's credentials — `pnm rooms owner issue-membership` and \
@@ -360,6 +473,7 @@ pub async fn cmd_rooms_owner_issue_membership(
 
 /// `rooms owner issue-authority` — mint a VAC root conferring `actions`.
 #[allow(clippy::too_many_arguments)]
+#[allow(deprecated)] // a grant stating no purposes, which 0.2 issues
 pub async fn cmd_rooms_owner_issue_authority(
     client: &VtaClient,
     room_id: &str,
@@ -373,7 +487,7 @@ pub async fn cmd_rooms_owner_issue_authority(
     // Required by the specification and never defaulted: a root is the grant
     // nothing else withdraws, so its expiry is a number the owner must choose.
     let valid_until = valid_until.ok_or(
-        "an authority credential needs an expiry: pass --valid-for <duration> (e.g. 90d) or \
+        "an authority credential needs an expiry: pass --expires <duration> (e.g. 90d) or \
          --valid-until <RFC 3339 time>. A chain root is withdrawn by nothing else.",
     )?;
     require_destination(&output)?;
@@ -684,7 +798,7 @@ pub async fn cmd_rooms_keys_list(client: &VtaClient) -> CmdResult {
 /// `rooms keys list --host-did` — [`cmd_rooms_keys_list`], with each room's own name read
 /// from that host (`rooms/keys/profile/read`), as the member each entry is held as.
 pub async fn cmd_rooms_keys_list_named(client: &VtaClient, host_did: Option<&str>) -> CmdResult {
-    let list = client.room_list(true).await?;
+    let list = client.room_list_v0_3(true).await?;
     if crate::render::is_json_output() {
         crate::render::print_json(&list.rooms)?;
         return Ok(());
@@ -734,6 +848,10 @@ pub async fn cmd_rooms_keys_list_named(client: &VtaClient, host_did: Option<&str
             "    epoch {}, reads back to epoch {}",
             r.epoch, r.earliest_readable_epoch
         );
+        match &r.read_marker {
+            Some(m) => println!("    {}", read_marker_line(m.version, m.created_at.as_ref())),
+            None => println!("    no read marker: each device counts unread on its own"),
+        }
         if let Some(p) = personal {
             if let Some(d) = &p.description {
                 println!("    your description: {}", indent(&as_text(d)));
@@ -828,6 +946,69 @@ pub async fn cmd_rooms_keys_label(
             if let Some(n) = &p.notes {
                 println!("  notes: {}", indent(&as_text(n)));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Where a read marker stands, in words: what a device counts unread after.
+fn read_marker_line<T: std::fmt::Display>(version: u64, created_at: Option<T>) -> String {
+    match (version, created_at) {
+        (0, None) => "read marker: nothing seen — every message is unread".to_string(),
+        (v, None) => format!("read to version {v}: messages after it are unread"),
+        (v, Some(t)) => {
+            format!("read to version {v} (newest seen stored {t}): messages after it are unread")
+        }
+    }
+}
+
+/// `rooms keys mark-read` — move the member's read marker for a room
+/// (`rooms/keys/read-marker/set/0.1`): forward only, unless `rewind` ("mark unread").
+/// Idempotent: asking again changes nothing and says so.
+pub async fn cmd_rooms_keys_mark_read(
+    client: &VtaClient,
+    room_id: &str,
+    member: &str,
+    version: u64,
+    created_at: Option<&str>,
+    rewind: bool,
+) -> CmdResult {
+    let resp = match client
+        .room_read_marker_set(room_id, member, version, created_at, rewind)
+        .await
+    {
+        Ok(r) => r,
+        Err(vta_sdk::error::VtaError::Rejected { code, .. })
+            if code == "rooms/keys/read-marker/set:notHeld" =>
+        {
+            return Err(format!(
+                "this VTA holds no group for room `{room_id}` as `{member}`, or you do not act \
+                 as that member. `pnm rooms keys list` shows each room with the member it is \
+                 held as — pass that DID as --member."
+            )
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
+    let now = read_marker_line(
+        resp.read_marker.version,
+        resp.read_marker.created_at.as_ref(),
+    );
+    match (resp.moved, rewind) {
+        (true, true) => println!("{room_id}: marked unread on every device; {now}."),
+        (true, false) => println!("{room_id}: marked read on every device; {now}."),
+        (false, true) => println!("{room_id}: the marker already stands there; {now}."),
+        (false, false) => {
+            println!("{room_id}: another device has read as far or further; {now}.");
+            println!(
+                "  To mark it unread from an earlier message, run:\n    \
+                 pnm rooms keys mark-read {room_id} --member {member} --version <before it> \
+                 --unread"
+            );
         }
     }
     Ok(())
@@ -1064,7 +1245,7 @@ fn profile_refusal(e: vta_sdk::error::VtaError, room_id: &str) -> Box<dyn std::e
         return format!(
             "{text}\n\nNaming a room takes `write` and `curate` or `admin` in it; clearing takes \
              `curate`. The room's owner grants them with `pnm rooms owner issue-authority --room \
-             {room_id} --subject <your persona DID> --action write,curate --valid-for 90d --store`."
+             {room_id} --subject <your persona DID> --action write,curate --expires 90d --store`."
         )
         .into();
     }

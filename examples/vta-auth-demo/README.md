@@ -34,7 +34,7 @@ returns a new refresh token and the old one is single-use.
 - The VTA's `[server] cors_origins` must include this page's origin
   (default `http://localhost:8000`). See "Configuring the VTA" below.
 - A WebVH-managed DID where you want to enrol a passkey VM. Easiest
-  option: mint one with `pnm webvh create-did --context <ctx>` and
+  option: mint one with `pnm did-mgmt dids create --context <ctx>` and
   grant it admin role with `pnm acl create --did <new-did> --role admin
   --contexts <ctx>`. You can also use an existing one.
 - A static-file server. Anything will do. Two easy options:
@@ -156,7 +156,7 @@ needed.
 
 8. **Step 8 — DIDComm-packed `/auth/` end-to-end**:
    - Paste the VTA's DID (the one served by the running VTA —
-     e.g. from `pnm webvh list-dids`).
+     e.g. from `pnm did-mgmt dids list`).
    - Click "Generate ephemeral client DID". The demo prints the
      `did:key:z…` it minted along with the exact `pnm acl create`
      command you need to run (the `/auth/challenge` handler
@@ -185,7 +185,7 @@ needed.
 9. **Step 9 — DIDComm via mediator** (the VTA-not-reachable path):
    - Reuses the Step 8 ephemeral client DID (generate it there first).
    - Enter the VTA DID; leave the mediator DID blank to auto-derive it
-     from the VTA's `#vta-didcomm` service endpoint.
+     from the VTA's `DIDCommMessaging` service endpoint.
    - Click "Connect via mediator + trust-ping". The demo:
      - authenticates to the mediator (challenge → authcrypt response →
        mediator JWT),

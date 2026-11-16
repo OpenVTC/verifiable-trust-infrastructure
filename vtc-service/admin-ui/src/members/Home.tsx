@@ -49,6 +49,7 @@ import { MemberAvatar, nameOf, text } from "./member-card";
 import { Passkeys } from "./Passkeys";
 import { walletElections } from "./wallet-elections";
 import { walletRooms } from "./wallet-rooms";
+import { formatDate, shortenDid } from "@/lib/format";
 
 const STALE = 30_000;
 
@@ -141,7 +142,7 @@ export function Home({ me }: { me: MemberMe }) {
           </div>
           <div>
             <dt>Member since</dt>
-            <dd>{new Date(me.joinedAt).toLocaleDateString(undefined, { dateStyle: "medium" })}</dd>
+            <dd>{formatDate(me.joinedAt)}</dd>
           </div>
           <div>
             <dt>Signed in with</dt>
@@ -281,7 +282,7 @@ function DidChip({ did }: { did: string }) {
   };
   return (
     <span className="ph-did">
-      <code title={did}>{did}</code>
+      <code title={did}>{shortenDid(did)}</code>
       <button type="button" className="btn btn-ghost btn-sm" onClick={copy} aria-label="Copy your DID">
         {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
       </button>
@@ -318,5 +319,5 @@ function visibilityLine(
 export function signInMethod(amr: string[]): string {
   if (amr.includes("passkey")) return "Passkey";
   if (amr.includes("oob")) return "Your wallet";
-  return "Your VTA (SIOPv2)";
+  return "Your VTA";
 }

@@ -402,8 +402,10 @@ pub(super) async fn handle_chain_v0_2(
         return r;
     }
 
-    use trust_tasks_rs::validate::ValidatedPayload as _;
-    if let Err(e) = vti_specs::rooms::keys::chain::v0_2::Payload::validate_value(&doc.payload) {
+    if let Err(e) = vta_sdk::schema_cache::check_payload::<
+        vti_specs::rooms::keys::chain::v0_2::Payload,
+    >(&doc.payload)
+    {
         return super::helpers::malformed_request_response(format!(
             "payload refused by its schema: {}",
             e.messages().join("; ")
@@ -1042,10 +1044,37 @@ pub(super) async fn handle_browse_v0_4(
     browse_at(state, auth, doc, BrowseVersion::V0_4).await
 }
 
+/// `rooms/keys/browse/0.5`: 0.4, and `order` passed through to the host's
+/// `rooms/records/list/0.7`, `maxPages` to stop early, and `cursor` / `nextCursor` to come
+/// back for the next page — how a member's surface opens a conversation at its newest
+/// records (trust-tasks-tf #1088, *Order and paging*).
+pub(super) async fn handle_browse_v0_5(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    browse_at(state, auth, doc, BrowseVersion::V0_5).await
+}
+
+/// `rooms/keys/browse/0.6`: 0.5, and `beforeVersion` passed through to the host's
+/// `rooms/records/list/0.8` — how a member's surface loads older records from the lowest
+/// version it holds, without the host's short-lived cursor (trust-tasks-tf #1289). A host
+/// that does not serve list/0.8 is `hostRefused` for a browse naming `beforeVersion`, never
+/// listed without the bound; without it, the browse falls back as 0.5's does.
+pub(super) async fn handle_browse_v0_6(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    browse_at(state, auth, doc, BrowseVersion::V0_6).await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrowseVersion {
     V0_3,
     V0_4,
+    V0_5,
+    V0_6,
 }
 
 /// The request members `browse` reads.
@@ -1055,12 +1084,27 @@ struct BrowseRequest {
     prefix: Option<String>,
     since_version: Option<u64>,
     limit: Option<u64>,
+    /// 0.5: the order as the caller gave it (`oldestFirst` / `newestFirst`), absent where
+    /// the caller omitted it — passed through exactly so (*Order and paging* item 1).
+    order: Option<&'static str>,
+    /// 0.5: the most host pages to read.
+    max_pages: Option<u64>,
+    /// 0.5: the host's cursor, passed through on the first page, never read here.
+    cursor: Option<String>,
+    /// 0.6: the exclusive upper bound on `version`, passed through to list/0.8.
+    before_version: Option<u64>,
 }
+
+/// The most host pages one browse reads of its own accord, whatever the caller asked.
+const BROWSE_MAX_PAGES: usize = 64;
 
 /// `rooms/keys/browse/0.3` lists with `rooms/records/list/0.5` (*The room's prunes*): a
 /// host that predates it is not read from. 0.4 lists with `rooms/records/list/0.6` where
-/// the host serves it, else 0.5. 0.1 and 0.2 are not served.
-#[allow(deprecated)] // browse/0.3 and list/0.5 are still served and read beside browse/0.4 and list/0.6
+/// the host serves it, else 0.5. 0.5 lists with `rooms/records/list/0.7` where the host
+/// serves it; else, for a request that does not ask for `newestFirst`, as 0.4 does — and
+/// for one that does, it answers `hostRefused` rather than list oldest first. 0.1 and 0.2
+/// are not served.
+#[allow(deprecated)] // browse/0.3–0.5 and list/0.5–0.7 are still served and read beside browse/0.6 and list/0.8
 async fn browse_at(
     state: &AppState,
     auth: &AuthClaims,
@@ -1087,6 +1131,10 @@ async fn browse_at(
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
                 limit: r.limit.map(u64::from),
+                order: None,
+                max_pages: None,
+                cursor: None,
+                before_version: None,
             }),
         BrowseVersion::V0_4 => parse_payload::<vti_specs::rooms::keys::browse::v0_4::Payload>(&doc)
             .map(|r| BrowseRequest {
@@ -1095,7 +1143,77 @@ async fn browse_at(
                 prefix: r.prefix.map(|p| p.to_string()),
                 since_version: r.since_version,
                 limit: r.limit.map(u64::from),
+                order: None,
+                max_pages: None,
+                cursor: None,
+                before_version: None,
             }),
+        BrowseVersion::V0_5 => {
+            use vti_specs::rooms::keys::browse::v0_5 as browse;
+            match parse_payload::<browse::Payload>(&doc) {
+                Ok(r) => {
+                    let order = match r.order {
+                        None => Ok(None),
+                        Some(browse::ListOrder::OldestFirst) => Ok(Some("oldestFirst")),
+                        Some(browse::ListOrder::NewestFirst) => Ok(Some("newestFirst")),
+                        Some(other) => Err(other),
+                    };
+                    match order {
+                        Ok(order) => Ok(BrowseRequest {
+                            room_id: r.room_id.to_string(),
+                            host: r.host.to_string(),
+                            prefix: r.prefix.map(|p| p.to_string()),
+                            since_version: r.since_version,
+                            limit: r.limit.map(u64::from),
+                            order,
+                            max_pages: r.max_pages.map(u64::from),
+                            cursor: r.cursor.map(|c| c.to_string()),
+                            before_version: None,
+                        }),
+                        Err(other) => Err(app_error_to_reject(
+                            &doc,
+                            vti_common::error::AppError::Validation(format!(
+                                "`order` {other} is not one this agent lists in"
+                            )),
+                        )),
+                    }
+                }
+                Err(resp) => Err(resp),
+            }
+        }
+        BrowseVersion::V0_6 => {
+            use vti_specs::rooms::keys::browse::v0_6 as browse;
+            match parse_payload::<browse::Payload>(&doc) {
+                Ok(r) => {
+                    let order = match r.order {
+                        None => Ok(None),
+                        Some(browse::ListOrder::OldestFirst) => Ok(Some("oldestFirst")),
+                        Some(browse::ListOrder::NewestFirst) => Ok(Some("newestFirst")),
+                        Some(other) => Err(other),
+                    };
+                    match order {
+                        Ok(order) => Ok(BrowseRequest {
+                            room_id: r.room_id.to_string(),
+                            host: r.host.to_string(),
+                            prefix: r.prefix.map(|p| p.to_string()),
+                            since_version: r.since_version,
+                            limit: r.limit.map(u64::from),
+                            order,
+                            max_pages: r.max_pages.map(u64::from),
+                            cursor: r.cursor.map(|c| c.to_string()),
+                            before_version: r.before_version.map(|b| b.get()),
+                        }),
+                        Err(other) => Err(app_error_to_reject(
+                            &doc,
+                            vti_common::error::AppError::Validation(format!(
+                                "`order` {other} is not one this agent lists in"
+                            )),
+                        )),
+                    }
+                }
+                Err(resp) => Err(resp),
+            }
+        }
     };
     let req = match parsed {
         Ok(r) => r,
@@ -1116,12 +1234,17 @@ async fn browse_at(
         Ok(v) => v,
         // 0.4 answers a principal holding nothing this room issued with its declared code;
         // 0.3 keeps the refusal it has always given.
-        Err(vti_common::error::AppError::NotFound(why)) if version == BrowseVersion::V0_4 => {
-            return super::helpers::reject_declared(
-                &doc,
-                vti_specs::rooms::keys::browse::v0_4::error_codes::NOT_A_MEMBER,
-                why,
-            );
+        Err(vti_common::error::AppError::NotFound(why)) if version != BrowseVersion::V0_3 => {
+            let code = match version {
+                BrowseVersion::V0_6 => {
+                    vti_specs::rooms::keys::browse::v0_6::error_codes::NOT_A_MEMBER
+                }
+                BrowseVersion::V0_5 => {
+                    vti_specs::rooms::keys::browse::v0_5::error_codes::NOT_A_MEMBER
+                }
+                _ => vti_specs::rooms::keys::browse::v0_4::error_codes::NOT_A_MEMBER,
+            };
+            return super::helpers::reject_declared(&doc, code, why);
         }
         Err(e) => return app_error_to_reject(&doc, e),
     };
@@ -1131,19 +1254,31 @@ async fn browse_at(
     let mut list_task = match version {
         BrowseVersion::V0_3 => vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
         BrowseVersion::V0_4 => vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE,
+        BrowseVersion::V0_5 => vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE,
+        BrowseVersion::V0_6 => vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE,
     };
+    let newest_first = req.order == Some("newestFirst");
 
     let mut records: Vec<Value> = Vec::new();
-    let mut cursor: Option<String> = None;
+    // On the first page, the caller's cursor (0.5 item 5) — the host's, never read here.
+    let mut cursor: Option<String> = req.cursor.clone();
     let mut head: Option<Value> = None;
     let mut complete = false;
     // The host's `lastPrune`, exactly as served.
     let mut last_prune: Option<Value> = None;
     // A listing is read to its END, and absence of the cursor is the only thing
     // that says so. A short page says nothing — which is exactly why the count
-    // check below is conditioned on having reached the end.
-    const MAX_PAGES: usize = 64;
-    for page in 0..MAX_PAGES {
+    // check below is conditioned on having reached the end. 0.5's `maxPages` stops it
+    // sooner, where the caller asks (item 3).
+    let max_pages = req
+        .max_pages
+        .map_or(BROWSE_MAX_PAGES, |m| {
+            usize::try_from(m)
+                .unwrap_or(usize::MAX)
+                .min(BROWSE_MAX_PAGES)
+        })
+        .max(1);
+    for page in 0..max_pages {
         let mut payload = serde_json::json!({ "roomId": req.room_id });
         if let Some(p) = &req.prefix {
             payload["prefix"] = serde_json::json!(p);
@@ -1157,6 +1292,16 @@ async fn browse_at(
         if let Some(c) = &cursor {
             payload["cursor"] = serde_json::json!(c);
         }
+        let ordered = list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE
+            || list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE;
+        if ordered && let Some(o) = req.order {
+            payload["order"] = serde_json::json!(o);
+        }
+        if list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE
+            && let Some(b) = req.before_version
+        {
+            payload["beforeVersion"] = serde_json::json!(b);
+        }
 
         let mut sent = send_as_member_typed(
             state,
@@ -1168,13 +1313,59 @@ async fn browse_at(
             payload.clone(),
         )
         .await;
-        if let Err(MemberSendError::Host(crate::operations::room_host::RoomTaskError::Refused {
-            code,
-            ..
-        })) = &sent
-            && code == "unsupportedType"
+        // A host predating the version asked is listed with the one before it — only on
+        // the first page, since a listing is answered at one version throughout — except
+        // that a `newestFirst` browse is never answered oldest first (0.5 item 1).
+        let unsupported = |sent: &Result<Value, MemberSendError>| {
+            matches!(
+                sent,
+                Err(MemberSendError::Host(
+                    crate::operations::room_host::RoomTaskError::Refused { code, .. }
+                )) if code == "unsupportedType"
+            )
+        };
+        // 0.6: a host without list/0.8 is asked list/0.7 only for a browse that names no
+        // `beforeVersion` — one that does is `hostRefused`, never listed without its bound.
+        if page == 0
+            && unsupported(&sent)
+            && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE
+            && req.before_version.is_none()
+        {
+            list_task = vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE;
+            sent = send_as_member_typed(
+                state,
+                auth,
+                &presenting,
+                &resolver,
+                &req.host,
+                list_task,
+                payload.clone(),
+            )
+            .await;
+        }
+        if page == 0
+            && unsupported(&sent)
+            && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE
+            && !newest_first
+        {
+            list_task = vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE;
+            if let Some(obj) = payload.as_object_mut() {
+                obj.remove("order");
+            }
+            sent = send_as_member_typed(
+                state,
+                auth,
+                &presenting,
+                &resolver,
+                &req.host,
+                list_task,
+                payload.clone(),
+            )
+            .await;
+        }
+        if page == 0
+            && unsupported(&sent)
             && list_task == vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE
-            && page == 0
         {
             list_task = vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE;
             sent = send_as_member_typed(
@@ -1193,6 +1384,26 @@ async fn browse_at(
             (Err(e), BrowseVersion::V0_3) => return app_error_to_reject(&doc, e.into_app_error()),
             (Err(e), BrowseVersion::V0_4) => {
                 use vti_specs::rooms::keys::browse::v0_4::error_codes as codes;
+                return host_failure(
+                    &doc,
+                    e,
+                    &req.host,
+                    codes::HOST_UNREACHABLE,
+                    codes::HOST_REFUSED,
+                );
+            }
+            (Err(e), BrowseVersion::V0_6) => {
+                use vti_specs::rooms::keys::browse::v0_6::error_codes as codes;
+                return host_failure(
+                    &doc,
+                    e,
+                    &req.host,
+                    codes::HOST_UNREACHABLE,
+                    codes::HOST_REFUSED,
+                );
+            }
+            (Err(e), BrowseVersion::V0_5) => {
+                use vti_specs::rooms::keys::browse::v0_5::error_codes as codes;
                 return host_failure(
                     &doc,
                     e,
@@ -1240,22 +1451,27 @@ async fn browse_at(
         match listing.cursor {
             Some(next) => cursor = Some(next),
             None => {
+                cursor = None;
                 complete = true;
                 break;
             }
         }
-        // Stopping of this agent's own accord is not the end of the listing, and
-        // saying otherwise would turn a page bound into a withheld record.
-        if page + 1 == MAX_PAGES {
-            break;
-        }
+        // Stopping — at the caller's `maxPages` or of this agent's own accord — is not the
+        // end of the listing, and saying otherwise would turn a page bound into a withheld
+        // record. The loop ends with the host's cursor in hand.
     }
 
     // The one check a listing can make with no anchor and no second party — and
     // it is only meaningful against a complete, unfiltered listing. Anything
     // else legitimately holds fewer, and comparing it is a discrepancy the
-    // reader manufactured.
-    let filtered = req.prefix.is_some() || req.since_version.is_some();
+    // reader manufactured. A listing resumed from a cursor did not start at the room's
+    // first record in its order, however it ends (0.5 item 6); the order itself does not
+    // matter — a whole room read newest first holds what one read oldest first does.
+    // `beforeVersion` bounds the listing above, so it is never comparable either (0.6).
+    let filtered = req.prefix.is_some()
+        || req.since_version.is_some()
+        || req.before_version.is_some()
+        || req.cursor.is_some();
     let count = match (&head, complete, filtered) {
         (None, _, _) => "notOffered",
         (Some(_), false, _) | (Some(_), _, true) => "notComparable",
@@ -1298,16 +1514,127 @@ async fn browse_at(
     if let Some(mark) = last_prune {
         body["lastPrune"] = mark;
     }
+    // 0.5 item 4: the host's continuation, unchanged, exactly when the listing is not
+    // complete. Earlier versions carry none.
+    if matches!(version, BrowseVersion::V0_5 | BrowseVersion::V0_6)
+        && !complete
+        && let Some(next) = cursor
+    {
+        body["nextCursor"] = serde_json::json!(next);
+    }
     success_response(&doc, body)
 }
 
 /// `rooms/keys/open/0.2`: decrypt one sealed record; the key never crosses.
 /// `unknownEpoch`'s `details` say why a record did not open — `notDelivered`, `removed`
 /// or `beyondChain` for an older epoch the retained chain does not reach.
+///
+/// Purpose-bound like every opening (VTI-ACL-102), and naming no purpose: served under an
+/// entry stating `any` or listing one, refused as `taskFailed` under one listing more.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub(super) async fn handle_open_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    open_record(state, auth, doc, None, None).await
+}
+
+/// `rooms/keys/open/0.3`: 0.2's open, for the `purpose` the caller names
+/// (VTI-ACL-103); a purpose not granted is `purposeNotGranted`, and nothing is opened.
+pub(super) async fn handle_open_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vti_specs::rooms::keys::open::v0_3 as spec;
+    if let Err(resp) = parse_payload::<spec::Payload>(&doc) {
+        return resp;
+    }
+    let (doc, requested) = take_member(doc, "purpose");
+    open_record(
+        state,
+        auth,
+        doc,
+        requested,
+        Some(spec::error_codes::PURPOSE_NOT_GRANTED),
+    )
+    .await
+}
+
+/// `doc` without its `member`, and the member's string value: a 0.3 request is its 0.2
+/// predecessor's payload plus that one member (`extends`).
+fn take_member(mut doc: TrustTask<Value>, member: &str) -> (TrustTask<Value>, Option<String>) {
+    let value = doc
+        .payload
+        .as_object_mut()
+        .and_then(|m| m.remove(member))
+        .and_then(|v| v.as_str().map(str::to_string));
+    (doc, value)
+}
+
+/// Hold an opening to the caller's purposes (VTI-ACL-103 – 106): the decision to record
+/// with it, or the refusal, which is recorded too. The principal's room authority states no
+/// purposes yet — credentials cannot carry them until the VAC defines the member — so it
+/// grants `any`, and the caller's ACL entry is what narrows.
+pub(super) async fn admit_room_purpose(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    action: &str,
+    room_id: &str,
+    requested: Option<&str>,
+    code: Option<trust_tasks_rs::DeclaredErrorCode>,
+) -> Result<vti_common::acl::PurposeDecision, TrustTaskOutcome> {
+    let decision = super::helpers::decide_purpose(state, auth, requested).await;
+    if decision.is_granted() {
+        return Ok(decision);
+    }
+    record_purpose(state, action, auth, room_id, &decision, "denied").await;
+    Err(super::helpers::purpose_refusal(doc, &decision, code))
+}
+
+/// A room-holder audit row carrying the purpose an opening was made for (VTI-ACL-106).
+pub(super) async fn record_purpose(
+    state: &AppState,
+    action: &str,
+    auth: &AuthClaims,
+    room_id: &str,
+    decision: &vti_common::acl::PurposeDecision,
+    outcome: &str,
+) {
+    let detail = if decision.is_granted() {
+        format!("purpose={}", decision.audit_label())
+    } else {
+        format!(
+            "refused=purposeNotGranted purpose={}",
+            decision.audit_label()
+        )
+    };
+    if let Err(e) = vta_audit::record_with_detail(
+        &state.audit_sink,
+        action,
+        &auth.did,
+        Some(room_id),
+        outcome,
+        Some(TRANSPORT_TRUST_TASK),
+        None,
+        Some(&detail),
+    )
+    .await
+    {
+        tracing::error!(error = %e, action, "failed to record a room-group audit entry");
+    }
+}
+
+/// [`handle_open_v0_2`] and [`handle_open_v0_3`].
+#[allow(deprecated)] // the 0.2 payload type reads 0.3's too (`extends`)
+async fn open_record(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    requested: Option<String>,
+    purpose_code: Option<trust_tasks_rs::DeclaredErrorCode>,
 ) -> TrustTaskOutcome {
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -1337,6 +1664,20 @@ pub(super) async fn handle_open_v0_2(
         Ok(m) => m,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let decision = match admit_room_purpose(
+        state,
+        auth,
+        &doc,
+        "rooms.keys.open",
+        &room_id,
+        requested.as_deref(),
+        purpose_code,
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
     // `version` is where the caller believes the body was sealed: `sealed.version` from the
     // host where it served one, else the record's own. A record curated by a host that
     // predates `sealed.version` opens at neither, so earlier versions are searched — and the
@@ -1358,7 +1699,15 @@ pub(super) async fn handle_open_v0_2(
         Err(e) => return open_refused(&doc, e),
     };
 
-    record(state, "rooms.keys.open", auth, &room_id).await;
+    record_purpose(
+        state,
+        "rooms.keys.open",
+        auth,
+        &room_id,
+        &decision,
+        "success",
+    )
+    .await;
     let mut payload = serde_json::json!({
         "plaintext": base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -1384,10 +1733,46 @@ pub(super) async fn handle_open_v0_2(
 /// Gated on `RoomOpen` for both purposes, as `seal` and `open` are: a sealing key opens the
 /// file it seals. A file sealed at or after the member's removal is `unknownEpoch` reason
 /// `removed`.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub(super) async fn handle_file_key_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    file_key(state, auth, doc, None, None).await
+}
+
+/// `rooms/keys/file-key/0.3`: 0.2's, for the `purposeOfUse` the caller names. Only a key
+/// to **open** a file discloses content, so only that is held to it (VTI-ACL-102); a
+/// sealing key is for content the caller is adding.
+pub(super) async fn handle_file_key_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use vti_specs::rooms::keys::file_key::v0_3 as spec;
+    if let Err(resp) = parse_payload::<spec::Payload>(&doc) {
+        return resp;
+    }
+    let (doc, requested) = take_member(doc, "purposeOfUse");
+    file_key(
+        state,
+        auth,
+        doc,
+        requested,
+        Some(spec::error_codes::PURPOSE_NOT_GRANTED),
+    )
+    .await
+}
+
+/// [`handle_file_key_v0_2`] and [`handle_file_key_v0_3`].
+#[allow(deprecated)] // the 0.2 payload type reads 0.3's too (`extends`)
+async fn file_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    requested: Option<String>,
+    purpose_code: Option<trust_tasks_rs::DeclaredErrorCode>,
 ) -> TrustTaskOutcome {
     use vti_specs::rooms::keys::file_key::v0_2 as spec;
 
@@ -1469,6 +1854,24 @@ pub(super) async fn handle_file_key_v0_2(
         }
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    let decision = if purpose == "open" {
+        match admit_room_purpose(
+            state,
+            auth,
+            &doc,
+            "rooms.keys.file-key",
+            &req.room_id,
+            requested.as_deref(),
+            purpose_code,
+        )
+        .await
+        {
+            Ok(d) => Some(d),
+            Err(r) => return r,
+        }
+    } else {
+        None
+    };
     let (key, epoch) =
         match room_groups::file_key(&state.room_groups_ks, &member, &file_id, open_epoch).await {
             Ok(k) => k,
@@ -1542,8 +1945,12 @@ pub(super) async fn handle_file_key_v0_2(
         Some(TRANSPORT_TRUST_TASK),
         None,
         Some(&format!(
-            "fileId={} purpose={purpose} epoch={epoch}",
-            req.file_id.as_str()
+            "fileId={} purpose={purpose} epoch={epoch}{}",
+            req.file_id.as_str(),
+            decision
+                .as_ref()
+                .map(|d| format!(" purposeOfUse={}", d.audit_label()))
+                .unwrap_or_default(),
         )),
     )
     .await
@@ -1852,6 +2259,126 @@ mod file_key_refusal_tests {
         body(handle_open_v0_2(state, &auth, doc).await)
     }
 
+    /// The super admin's stored entry, narrowed to `purposes`.
+    async fn narrow(state: &AppState, purposes: &[&str]) {
+        let did = crate::test_support::super_admin_claims().did;
+        let mut entry = crate::acl::get_acl_entry(&state.acl_ks, &did)
+            .await
+            .unwrap()
+            .expect("the super admin's entry");
+        entry.purposes = vti_common::acl::PurposeScope::listed(purposes.iter().copied()).unwrap();
+        crate::acl::store_acl_entry(&state.acl_ks, &entry)
+            .await
+            .unwrap();
+    }
+
+    /// `rooms/keys/open/0.3` (VTI-ACL-102 – 104): an opening is held to the caller's
+    /// purposes before anything is decrypted; 0.2 names none.
+    #[tokio::test]
+    async fn open_0_3_is_held_to_the_callers_purposes() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        narrow(&state, &["personalisation", "taskExecution"]).await;
+        let auth = crate::test_support::super_admin_claims();
+        let open3 = |purpose: &str| {
+            let payload = serde_json::json!({
+                "roomId": ROOM,
+                "key": "k",
+                "version": 1,
+                "sealed": { "ciphertext": "AAAAAAAAAAAAAAAAAAAAAA", "nonce": "AAAAAAAAAAAAAAAA", "epoch": 2 },
+                "purpose": purpose,
+            });
+            request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_OPEN_0_3, payload)
+        };
+
+        let out = body(handle_open_v0_3(&state, &auth, open3("analytics")).await);
+        assert_eq!(
+            out["payload"]["code"], "rooms/keys/open:purposeNotGranted",
+            "{out}"
+        );
+        assert_eq!(
+            out["payload"]["details"],
+            serde_json::json!({ "purposeNamed": true, "purpose": "analytics" })
+        );
+
+        // Granted, so it goes on to the decryption, which this ciphertext fails.
+        let out = body(handle_open_v0_3(&state, &auth, open3("taskExecution")).await);
+        assert_ne!(
+            out["payload"]["code"], "rooms/keys/open:purposeNotGranted",
+            "{out}"
+        );
+
+        let out = open_at_epoch(&state, 2).await;
+        assert_eq!(
+            out["payload"]["code"], "taskFailed",
+            "0.2 names none: {out}"
+        );
+        assert_eq!(
+            out["payload"]["details"],
+            serde_json::json!({ "purposeNamed": false })
+        );
+    }
+
+    /// `rooms/keys/file-key/0.3`: a key to open a file is held to the caller's purposes;
+    /// a sealing key is not, since sealing discloses nothing.
+    #[tokio::test]
+    async fn file_key_0_3_holds_an_opening_key_to_its_purpose_and_not_a_sealing_one() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        hold_room_at_epoch_2(&state).await;
+        narrow(&state, &["personalisation"]).await;
+        let auth = crate::test_support::super_admin_claims();
+        let ask3 = |payload: Value| {
+            request_at(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_3, payload)
+        };
+
+        let out = body(
+            handle_file_key_v0_3(
+                &state,
+                &auth,
+                ask3(serde_json::json!({
+                    "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 2,
+                    "purposeOfUse": "analytics",
+                })),
+            )
+            .await,
+        );
+        assert_eq!(
+            out["payload"]["code"], "rooms/keys/file-key:purposeNotGranted",
+            "{out}"
+        );
+
+        let out = body(
+            handle_file_key_v0_3(
+                &state,
+                &auth,
+                ask3(serde_json::json!({
+                    "roomId": ROOM, "fileId": FILE_ID, "purpose": "seal",
+                    "purposeOfUse": "analytics",
+                })),
+            )
+            .await,
+        );
+        assert!(
+            out["payload"]["key"].is_string(),
+            "a sealing key is not purpose-bound: {out}"
+        );
+
+        let out = body(
+            handle_file_key_v0_3(
+                &state,
+                &auth,
+                ask3(serde_json::json!({
+                    "roomId": ROOM, "fileId": FILE_ID, "purpose": "open", "epoch": 2,
+                })),
+            )
+            .await,
+        );
+        assert!(
+            out["payload"]["key"].is_string(),
+            "the one listed purpose applies: {out}"
+        );
+    }
+
     /// `rooms/keys/file-key/0.2` oracle item 4: a file sealed at or after the member's
     /// removal is `removed`, with `removedAtEpoch` — never `notDelivered`, whose remedy
     /// (catch up) cannot work.
@@ -2006,6 +2533,7 @@ mod file_key_refusal_tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)] // file-key 0.2 is still served, and this names no purpose of use
     async fn a_held_room_releases_a_sealing_key_under_its_current_epoch() {
         let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
         hold_room_at_epoch_2(&state).await;

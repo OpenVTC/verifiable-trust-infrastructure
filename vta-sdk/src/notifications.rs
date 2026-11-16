@@ -286,8 +286,7 @@ async fn check_layer(
     let type_uri = doc.type_uri.to_string();
     let schema = vti_specs::schema_index::schema_for(&type_uri)
         .ok_or_else(|| invalid(format!("`{type_uri}` is not pinned by this build")))?;
-    trust_tasks_rs::validate::against_schema(schema, &doc.payload)
-        .map_err(|e| invalid(e.to_string()))?;
+    crate::schema_cache::check(schema, &doc.payload).map_err(|e| invalid(e.to_string()))?;
     let issuer = doc
         .issuer
         .as_deref()

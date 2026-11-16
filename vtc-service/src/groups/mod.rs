@@ -41,7 +41,7 @@ pub mod managers;
 pub mod policy;
 pub mod renewal;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -474,6 +474,22 @@ pub async fn groups_of(ks: &KeyspaceHandle, entry_id: &str) -> Result<Vec<Member
     Ok(out)
 }
 
+/// Every entry's active group memberships, by entry identifier, from one scan
+/// of the `mg:` index — what [`groups_of`] reads one entry at a time.
+pub async fn active_groups_by_entry(
+    ks: &KeyspaceHandle,
+) -> Result<HashMap<String, BTreeSet<String>>, AppError> {
+    let mut out: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for (_, raw) in ks.prefix_iter_raw(b"mg:".to_vec()).await? {
+        if let Ok(m) = serde_json::from_slice::<Membership>(&raw)
+            && m.state == "active"
+        {
+            out.entry(m.entry_id).or_default().insert(m.group_id);
+        }
+    }
+    Ok(out)
+}
+
 /// One entry's membership of one group.
 pub async fn membership(
     ks: &KeyspaceHandle,
@@ -532,7 +548,11 @@ impl Standing {
         let active_member = crate::member_portal::active::active_member(state, did)
             .await?
             .is_some();
-        let administrator = entry.as_ref().is_some_and(|e| e.is_administrator());
+        // A suspended administrator may read the action list and nothing else
+        // (`vtc-action-list.md` §8.2), so it reads groups as nobody does.
+        let administrator = entry
+            .as_ref()
+            .is_some_and(|e| e.is_administrator() && !e.is_suspended());
         let manages_all = entry
             .as_ref()
             .is_some_and(|e| e.can(Capability::GroupsManage, None));
@@ -736,6 +756,23 @@ pub fn check_rule(
     rule: &Value,
     schema: &[crate::directory::model::FieldDef],
 ) -> Result<(), RuleError> {
+    check_rule_reading(rule, schema, false)
+}
+
+/// [`check_rule`] for a badge group's rule, which may also read the counts of
+/// VTI-BDG-015 with `atLeast`.
+pub fn check_badge_rule(
+    rule: &Value,
+    schema: &[crate::directory::model::FieldDef],
+) -> Result<(), RuleError> {
+    check_rule_reading(rule, schema, true)
+}
+
+fn check_rule_reading(
+    rule: &Value,
+    schema: &[crate::directory::model::FieldDef],
+    counts: bool,
+) -> Result<(), RuleError> {
     use crate::directory::model::{FieldSource, FieldState, FieldType};
     let bad = |field: Option<&str>, reason: &str| RuleError {
         field: field.map(str::to_string),
@@ -751,6 +788,14 @@ pub fn check_rule(
         let op = c.get("op").and_then(Value::as_str).unwrap_or_default();
         let field = c.get("field").and_then(Value::as_str);
         let mut date = fact == "joinedAt";
+        let count = dynamic::COUNT_FACTS.contains(&fact);
+        if count && !counts {
+            return Err(bad(
+                None,
+                "only a badge's group reads kudosReceived, ideasSelected or electionTickets \
+                 (VTI-BDG-015)",
+            ));
+        }
         match (fact, field) {
             ("field", Some(key)) => {
                 let def = schema
@@ -770,6 +815,7 @@ pub fn check_rule(
                 return Err(bad(Some(key), "only a `field` condition names a field"));
             }
             ("role" | "personhood" | "joinedAt", None) => {}
+            (_, None) if count => {}
             _ => return Err(bad(None, "an unknown fact")),
         }
         let value = c.get("value");
@@ -779,8 +825,25 @@ pub fn check_rule(
             "oneOf" => value.is_none() && values.is_some(),
             "exists" => value.is_none() && values.is_none(),
             "before" | "after" => date && value.is_some_and(Value::is_string) && values.is_none(),
+            "atLeast" => {
+                count
+                    && c.get("count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|v| v >= 1)
+                    && value.is_none()
+                    && values.is_none()
+            }
             _ => false,
         };
+        if count && op != "atLeast" {
+            return Err(bad(None, "a count is compared with `atLeast`"));
+        }
+        if !count && c.get("count").is_some() {
+            return Err(bad(
+                field,
+                "`count` goes only with a count fact and `atLeast`",
+            ));
+        }
         if !ok {
             return Err(bad(
                 field,

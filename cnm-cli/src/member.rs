@@ -66,7 +66,9 @@ pub enum MemberCommands {
         #[arg(long)]
         claim: String,
         /// Override the community's default validity (30 days): N[s|m|h|d|w].
-        #[arg(long)]
+        /// `--expires`, as every lapsing grant spells it (#2589); `--valid-for`
+        /// is the older name.
+        #[arg(long = "expires", visible_alias = "valid-for", value_name = "DURATION")]
         valid_for: Option<String>,
         /// With `--type …/vetted/1`: the person's uniqueness pseudonym, bound
         /// to the subject server-side (`ext.org.openvtc.uniqueness`) so the

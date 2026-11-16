@@ -1,5 +1,7 @@
 # Trusted Publishing to crates.io
 
+Status: **current** — how `.github/workflows/publish.yml` publishes.
+
 The workspace publishes its crates to crates.io using **Trusted Publishing**
 — crates.io accepts the GitHub Actions OIDC identity of the
 `.github/workflows/publish.yml` workflow instead of a stored API token.

@@ -169,7 +169,9 @@ const MAX_ARRAY: usize = 8;
 /// A call to a task whose payload is text a person wrote for themselves keeps **no**
 /// string at all — a member's personal label for a room (`rooms/keys/label`), whose own
 /// `label` is exactly the safe key a display name rides under elsewhere. Its text is never logged
-/// (`rooms/keys/label/0.1` recipient item 10, which binds a client too).
+/// (`rooms/keys/label/0.1` recipient item 10, which binds a client too). A read marker
+/// (`rooms/keys/read-marker/*`) keeps none either: its `createdAt` is when the member's
+/// newest seen message was stored.
 pub fn redact_call(operation: Option<&str>, value: &Value) -> Value {
     let safe = if carries_personal_text(operation) {
         &[]
@@ -181,7 +183,9 @@ pub fn redact_call(operation: Option<&str>, value: &Value) -> Value {
 
 /// Whether a call to `operation` carries a member's personal label for a room.
 pub fn carries_personal_text(operation: Option<&str>) -> bool {
-    operation.is_some_and(|uri| uri.contains("/rooms/keys/label/"))
+    operation.is_some_and(|uri| {
+        uri.contains("/rooms/keys/label/") || uri.contains("/rooms/keys/read-marker/")
+    })
 }
 
 fn redact_at(value: &Value, depth: usize, key_is_safe: bool, safe_keys: &[&str]) -> Value {

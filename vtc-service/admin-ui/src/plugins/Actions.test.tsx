@@ -29,6 +29,7 @@ import {
   taskRoute,
   type RecordedRequest,
 } from "@/test/render";
+import { formatDateTime } from "@/lib/format";
 
 // Reads and cancel are console-key documents; the stand-in sends them
 // unsigned. `postSignedDocument` (what a wallet-signed decision goes through)
@@ -597,7 +598,7 @@ describe("a cooling-off", () => {
     render();
     const card = await screen.findByRole("article", { name: "Action cool-1" });
     const lands = within(card).getByText(/Lands by itself at/);
-    expect(lands.textContent).toContain(new Date(LANDS_AT).toLocaleString());
+    expect(lands.textContent).toContain(formatDateTime(LANDS_AT));
     expect(lands.textContent).toMatch(/unless .* cancels it\./);
     expect(within(card).getByText("lands in 2 d 4 h")).toBeTruthy();
     expect(within(card).getByText(/None needed/)).toBeTruthy();

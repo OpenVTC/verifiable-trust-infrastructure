@@ -42,10 +42,7 @@ jobs:
       # offers only branch refs, so there is nothing immutable to pin. See the
       # longer note in ci.yml.
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update \
-            --target aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh --target aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
 
       # Deliberately NO actions/cache here any more. A cache entry is writable
       # by any job on any branch of this repo, and there is no way to tell a

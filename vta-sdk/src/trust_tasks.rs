@@ -60,7 +60,7 @@
 // trusttasks-tf registry. VTA was the first implementer. The long-pending
 // `_1_0` → actual-version rename pass landed with #854: every constant's
 // suffix now matches its URI's version, and the constant's verb stem matches
-// the canonical slug (`TASK_ACL_GRANT_0_2` for `acl/grant/0.2`, not the old
+// the canonical slug (`TASK_ACL_GRANT_0_3` for `acl/grant/0.3`, not the old
 // `TASK_ACL_CREATE_1_0`). A `tests::constant_suffix_matches_uri_version`
 // guard keeps it that way.
 
@@ -168,47 +168,47 @@ pub const TASK_DEVICE_SET_WAKE_0_2: &str = "https://trusttasks.org/spec/device/s
 
 // ─── ACL slice (canonical spec/acl/*) ────────────────────────────────────
 
-/// `acl/list/0.3` — list ACL entries (AclEntry 0.2), filtered by role,
+/// `acl/list/0.4` — list ACL entries (AclEntry 0.3), filtered by role,
 /// context (with an explicit `direction`), capability or subject prefix, and
 /// paged by `limit` / `nextCursor`. Payload:
 /// [`crate::protocols::acl_management::v0_2::ListBody`].
-pub const TASK_ACL_LIST_0_3: &str = "https://trusttasks.org/spec/acl/list/0.3";
+pub const TASK_ACL_LIST_0_4: &str = "https://trusttasks.org/spec/acl/list/0.4";
 
-/// `acl/grant/0.2` — add an ACL entry, every authority axis stated
+/// `acl/grant/0.3` — add an ACL entry, every authority axis stated
 /// explicitly. Payload: [`crate::protocols::acl_management::v0_2::GrantBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_GRANT_0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+pub const TASK_ACL_GRANT_0_3: &str = "https://trusttasks.org/spec/acl/grant/0.3";
 
-/// `acl/show/0.2` — retrieve a single entry, or `entry: null`. Payload:
+/// `acl/show/0.3` — retrieve a single entry, or `entry: null`. Payload:
 /// [`crate::protocols::acl_management::v0_2::ShowBody`].
-pub const TASK_ACL_SHOW_0_2: &str = "https://trusttasks.org/spec/acl/show/0.2";
+pub const TASK_ACL_SHOW_0_3: &str = "https://trusttasks.org/spec/acl/show/0.3";
 
-/// `acl/update/0.2` — replace axes of an existing entry. Payload:
+/// `acl/update/0.3` — replace axes of an existing entry. Payload:
 /// [`crate::protocols::acl_management::v0_2::UpdateBody`]. Auth: Admin only.
 ///
-/// **Does not change roles** ([`TASK_ACL_CHANGE_ROLE_0_2`]) and **does not
-/// narrow `act`** ([`TASK_ACL_REVOKE_0_2`]); it does narrow capabilities,
+/// **Does not change roles** ([`TASK_ACL_CHANGE_ROLE_0_3`]) and **does not
+/// narrow `act`** ([`TASK_ACL_REVOKE_0_3`]); it does narrow capabilities,
 /// keys and approve authority, each audited as a reduction.
-pub const TASK_ACL_UPDATE_0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
+pub const TASK_ACL_UPDATE_0_3: &str = "https://trusttasks.org/spec/acl/update/0.3";
 
-/// `acl/change-role/0.2` — transition a subject's role, guarded by a
+/// `acl/change-role/0.3` — transition a subject's role, guarded by a
 /// compare-and-swap on their current one. Payload:
 /// [`crate::protocols::acl_management::change_role::ChangeRoleBody`].
 /// Auth: Admin only.
 ///
-/// Separate from [`TASK_ACL_UPDATE_0_2`] because role is the one
+/// Separate from [`TASK_ACL_UPDATE_0_3`] because role is the one
 /// attribute where losing an update is a privilege change: two admins
 /// editing concurrently could otherwise silently overwrite each other,
 /// and the loser's intent — say a demotion — would vanish with no
 /// error. The producer declares `fromRole`; a mismatch against the
 /// stored role is rejected instead of applied.
-pub const TASK_ACL_CHANGE_ROLE_0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
+pub const TASK_ACL_CHANGE_ROLE_0_3: &str = "https://trusttasks.org/spec/acl/change-role/0.3";
 
-/// `acl/revoke/0.2` — remove an entry (`{kind: entry}`) or narrow its act
+/// `acl/revoke/0.3` — remove an entry (`{kind: entry}`) or narrow its act
 /// scope (`{kind: act}`). Payload:
 /// [`crate::protocols::acl_management::v0_2::RevokeBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_REVOKE_0_2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
+pub const TASK_ACL_REVOKE_0_3: &str = "https://trusttasks.org/spec/acl/revoke/0.3";
 
 /// `spec/acl/swap-key/0.1` — self-service rotation of the caller's own ACL
 /// entry onto a new subject DID, proven by a `link_proof` VP-JWT. Payload:
@@ -847,6 +847,56 @@ pub const TASK_VTA_MEMORY_PUT_0_1: &str = "https://trusttasks.org/spec/vta/memor
 /// access. Payload: [`crate::protocols::memory::MemoryListBody`].
 pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memory/list/0.1";
 
+/// `spec/vta/memory/put/0.2` — store a memory item, optionally conditional on
+/// the version last read (`expectedVersion`, 0 = create only); a failed
+/// precondition is `versionConflict` carrying the current version and value
+/// (#2115). Auth: `memoryWrite` + context access.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent
+pub const TASK_VTA_MEMORY_PUT_0_2: &str =
+    <vti_specs::vta::memory::put::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/delete/0.2` — forget a memory item, leaving a tombstone the
+/// change feed carries; optionally conditional on its version. Auth:
+/// `memoryWrite` + context access.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent
+pub const TASK_VTA_MEMORY_DELETE_0_2: &str =
+    <vti_specs::vta::memory::delete::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/list/0.2` — a page of a context's memory: a snapshot
+/// (prefix, cursor) or the change feed from `sinceVersion`, tombstones
+/// included. Auth: `memoryRead` + context access.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent
+pub const TASK_VTA_MEMORY_LIST_0_2: &str =
+    <vti_specs::vta::memory::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/get/0.1` — up to 256 named memory items, each answered in
+/// `items`, `missing` or `deferred`. Auth: `memoryRead` + context access.
+#[allow(deprecated)] // superseded by 0.2, and still served and sent
+pub const TASK_VTA_MEMORY_GET_0_1: &str =
+    <vti_specs::vta::memory::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/put/0.3` — 0.2's put, with the `purpose` the caller will
+/// use a conflict's disclosed value for (VTI-ACL-100 – 110); a purpose its
+/// entry does not grant is `purposeNotGranted`.
+pub const TASK_VTA_MEMORY_PUT_0_3: &str =
+    <vti_specs::vta::memory::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/delete/0.3` — 0.2's delete, with a `purpose` as
+/// [`TASK_VTA_MEMORY_PUT_0_3`].
+pub const TASK_VTA_MEMORY_DELETE_0_3: &str =
+    <vti_specs::vta::memory::delete::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/list/0.3` — 0.2's list, with the `purpose` the caller will
+/// use the values for; a listing with values is refused for a purpose the
+/// caller's entry does not grant.
+pub const TASK_VTA_MEMORY_LIST_0_3: &str =
+    <vti_specs::vta::memory::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/memory/get/0.2` — 0.1's get, with the `purpose` the caller will
+/// use the items for; every recall is purpose-bound.
+pub const TASK_VTA_MEMORY_GET_0_2: &str =
+    <vti_specs::vta::memory::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/rooms/keys/present/0.2` — an agent asks the VTA holding its
 /// principal's room credentials to mint a presentation for **one** room
 /// operation. The credentials never cross to the agent; only the presentation
@@ -860,8 +910,15 @@ pub const TASK_ROOMS_KEYS_PRESENT_0_2: &str = "https://trusttasks.org/spec/rooms
 /// `reason` is `notDelivered` (catch up and retry), `beyondChain` (the retained
 /// chain does not reach the epoch) or `removed` (never retry).
 /// Auth: `roomOpen` capability.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub const TASK_ROOMS_KEYS_OPEN_0_2: &str =
     <vti_specs::rooms::keys::open::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/open/0.3` — 0.2's, with the `purpose` the caller will use what
+/// it opens for (VTI-ACL-100 – 110); a purpose its entry does not grant is
+/// `purposeNotGranted`.
+pub const TASK_ROOMS_KEYS_OPEN_0_3: &str =
+    <vti_specs::rooms::keys::open::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/key-package/0.2` — mint an MLS KeyPackage so a room's owner has
 /// something to add; the KeyPackage already held for the same room, member and
@@ -916,8 +973,15 @@ pub const TASK_ROOMS_KEYS_READ_0_1: &str = "https://trusttasks.org/spec/rooms/ke
 /// `results` — a record or that key's own error, `notAttempted` for a key not come to
 /// within the response's size or time budget. Repairs are made once per request. Auth:
 /// `roomOpen` capability. The version this SDK sends.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub const TASK_ROOMS_KEYS_READ_0_2: &str =
     <vti_specs::rooms::keys::read::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read/0.3` — 0.2's, with the `purpose` the caller will use what
+/// it opens for (VTI-ACL-100 – 110); a purpose its entry does not grant is
+/// `purposeNotGranted`.
+pub const TASK_ROOMS_KEYS_READ_0_3: &str =
+    <vti_specs::rooms::keys::read::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/browse/0.3` — list a room's records at its host, and check the
 /// listing against what the host committed to, with the room's `lastPrune` passed through
@@ -933,9 +997,27 @@ pub const TASK_ROOMS_KEYS_BROWSE_0_3: &str =
 /// `spec/rooms/keys/browse/0.4` — [`TASK_ROOMS_KEYS_BROWSE_0_3`], its rows the
 /// `RecordMetadataV3` the host's `rooms/records/list/0.6` serves, passed through exactly as
 /// served: `createdAt` and `bodyStoredAt`, `createdBy` (`open` and `attributed`), `kind`
-/// (`open`) and `blobs`. Auth: `roomOpen` capability. The version this SDK sends.
+/// (`open`) and `blobs`. Auth: `roomOpen` capability.
+#[allow(deprecated)] // superseded by 0.5, and still served
 pub const TASK_ROOMS_KEYS_BROWSE_0_4: &str =
     <vti_specs::rooms::keys::browse::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/browse/0.5` — [`TASK_ROOMS_KEYS_BROWSE_0_4`], and `order` passed
+/// through to the host's `rooms/records/list/0.7` (`newestFirst` opens a conversation at
+/// its head), `maxPages` to stop after so many host pages, and `cursor` / `nextCursor` to
+/// come back for the next (trust-tasks-tf #1088). Auth: `roomOpen` capability. Sent to a
+/// VTA that predates 0.6.
+#[allow(deprecated)] // superseded by 0.6, and still served
+pub const TASK_ROOMS_KEYS_BROWSE_0_5: &str =
+    <vti_specs::rooms::keys::browse::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/browse/0.6` — [`TASK_ROOMS_KEYS_BROWSE_0_5`], and `beforeVersion`
+/// passed through to the host's `rooms/records/list/0.8`: an exclusive upper bound on
+/// `version`, so a surface loads older records from the lowest version it holds without
+/// keeping the host's cursor (trust-tasks-tf #1289). A host that cannot apply it is
+/// `hostRefused`. Auth: `roomOpen` capability. The version this SDK sends.
+pub const TASK_ROOMS_KEYS_BROWSE_0_6: &str =
+    <vti_specs::rooms::keys::browse::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/seal/0.2` — seal one record body with the room's current epoch key;
 /// it does not write. With `signAsPrincipal` the VTA signs the
@@ -1003,8 +1085,17 @@ pub const TASK_ROOMS_KEYS_ACT_0_12: &str =
 /// at one host for it: the VTA arms `rooms/watch/0.1` at the host for each room as the
 /// member, at an address of its own used for that one watch, and passes each signal on to
 /// the client with [`TASK_ROOMS_KEYS_CHANGED_0_1`]. One outcome per room.
+#[allow(deprecated)] // superseded by 0.2, and still served and sent for one-shot watches
 pub const TASK_ROOMS_KEYS_WATCH_0_1: &str =
     <vti_specs::rooms::keys::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/watch/0.2` — [`TASK_ROOMS_KEYS_WATCH_0_1`], and `live: true`: the VTA
+/// arms `rooms/watch/0.2` live at the host and passes on **every** signal, not just the
+/// first, while the client renews it (about once a minute; the host leases at most 120 s).
+/// Only on a room whose signal delay is `none`; the host's refusal is reported as
+/// `hostRefused` with `hostCode` `rooms/watch:liveNotPermitted` (trust-tasks-tf #1087).
+pub const TASK_ROOMS_KEYS_WATCH_0_2: &str =
+    <vti_specs::rooms::keys::watch::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/changed/0.1` — the VTA passes a room host's signal on to the client that
 /// armed the watch with [`TASK_ROOMS_KEYS_WATCH_0_1`]: the room, the member, the host and the
@@ -1025,8 +1116,15 @@ pub const TASK_ROOMS_CHANGED_0_1: &str =
 /// `unknownEpoch` reason, `removed` (with `removedAtEpoch`), marks a file sealed at or
 /// after the member's removal, which no commit will make derivable. Auth: `roomOpen`
 /// capability.
+#[allow(deprecated)] // superseded by 0.3, and still served
 pub const TASK_ROOMS_KEYS_FILE_KEY_0_2: &str =
     <vti_specs::rooms::keys::file_key::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/file-key/0.3` — 0.2's, with the `purposeOfUse` the caller will use what
+/// it opens for (VTI-ACL-100 – 110); a purpose its entry does not grant is
+/// `purposeNotGranted`.
+pub const TASK_ROOMS_KEYS_FILE_KEY_0_3: &str =
+    <vti_specs::rooms::keys::file_key::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/list/0.2` — which rooms this VTA can open, and how far back each
 /// reads: one entry per room **and member** (each names its `member`), for the members
@@ -1034,6 +1132,28 @@ pub const TASK_ROOMS_KEYS_FILE_KEY_0_2: &str =
 /// (`rooms/keys/label/0.1`). Auth: `roomOpen` capability.
 pub const TASK_ROOMS_KEYS_LIST_0_2: &str =
     <vti_specs::rooms::keys::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/list/0.3` — [`TASK_ROOMS_KEYS_LIST_0_2`], with `includePersonal` also
+/// adding each entry's read marker ([`TASK_ROOMS_KEYS_READ_MARKER_SET_0_1`]) where one is
+/// held. Auth: `roomOpen` capability.
+pub const TASK_ROOMS_KEYS_LIST_0_3: &str =
+    <vti_specs::rooms::keys::list::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read-marker/set/0.1` — tell the VTA where the member has now seen one
+/// room's conversation up to, so every one of their devices agrees on what is unread. Only
+/// forward (the greater `version`, then the later `createdAt`) unless `rewind`; answers the
+/// marker in force and whether it `moved`. Kept beside the group state, sent to nobody but
+/// the member's own clients. Auth: `roomOpen` capability, and acting as the named `member`;
+/// a delegate is refused.
+pub const TASK_ROOMS_KEYS_READ_MARKER_SET_0_1: &str =
+    <vti_specs::rooms::keys::read_marker::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/keys/read-marker/moved/0.1` — the VTA tells the member's other clients
+/// watching a room ([`TASK_ROOMS_KEYS_WATCH_0_1`]) that the member's read marker moved: the
+/// room, the member and the marker in force, no response. Not in [`ALL_URIS`]: a VTA sends
+/// it and serves nothing under it.
+pub const TASK_ROOMS_KEYS_READ_MARKER_MOVED_0_1: &str =
+    <vti_specs::rooms::keys::read_marker::moved::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/keys/label/0.1` — set, change or remove the member's own private
 /// name, description, notes and tags for one room they hold, kept by this VTA
@@ -1068,8 +1188,17 @@ pub const TASK_ROOMS_OWNER_INVITE_0_1: &str = "https://trusttasks.org/spec/rooms
 /// with success whatever became of the room's revocation list, reported in `revocation`
 /// (`inForce`, `pending` or `refused`). Anything but `inForce` is a room its host serves
 /// without its withdrawals; the agent goes on delivering a `pending` list on its own.
+#[allow(deprecated)] // superseded by 0.3, and still served and sent when 0.3 adds nothing
 pub const TASK_ROOMS_OWNER_REGISTER_0_2: &str =
     <vti_specs::rooms::owner::register::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/rooms/owner/register/0.3` — [`TASK_ROOMS_OWNER_REGISTER_0_2`], with the room's
+/// `recordRetention` and `signalDelay` passed through to the host's `rooms/create` 0.3, so
+/// a room meant as a conversation states `signalDelay: none` from its first message. An
+/// agent whose host does not accept `rooms/create` 0.3 refuses `hostRefused` rather than
+/// register the room without them (trust-tasks-tf #1084).
+pub const TASK_ROOMS_OWNER_REGISTER_0_3: &str =
+    <vti_specs::rooms::owner::register::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/rooms/owner/issue-membership/0.1` — mint the membership credential a member
 /// presents on every subsequent room operation. The room has no roster; this
@@ -1087,6 +1216,13 @@ pub const TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1: &str =
 /// naming the room's signing key.
 pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2: &str =
     "https://trusttasks.org/spec/rooms/owner/issue-authority/0.2";
+
+/// `spec/rooms/owner/issue-authority/0.3` — 0.2, and the `purposes` the credential grants
+/// its subject (VTI-ACL-110), stated in it unchanged; absent, it states none, which grants
+/// `any`. Purposes wider than the caller's own entry are refused (VTI-ACL-107).
+/// Auth: as 0.2.
+pub const TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3: &str =
+    "https://trusttasks.org/spec/rooms/owner/issue-authority/0.3";
 
 /// `spec/rooms/owner/group/create/0.1` — found a sealed room's MLS group with the owner
 /// as its only member, at room epoch 1. Every other member joins by a Welcome; nobody can
@@ -1760,6 +1896,40 @@ pub const TASK_WEBVH_DIDS_UPDATE_1_1: &str =
 /// Auth: Admin role on the DID's context.
 pub const TASK_WEBVH_DIDS_ROTATE_KEYS_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0";
+
+// ─── did:webs DIDs (`vta/webs/dids/*/0.1`, trust-tasks-tf #1082) ──────────
+// A did:webs relationship, persona or (0.2, when enabled) service DID the VTA
+// creates, hosts, updates, rotates, deactivates and acts as (level 1). Docs:
+// docs/02-vta/did-webs.md.
+
+/// `vta/webs/dids/create/0.1` — derive the keys, incept a did:webs (KERI v2), designate its aliases, key agreement key and services, and publish it to a did-hosting server.
+#[allow(deprecated)] // superseded by 0.2, still served
+pub const TASK_VTA_WEBS_DIDS_CREATE_0_1: &str =
+    <vti_specs::vta::webs::dids::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/create/0.2` — create a did:webs relationship, persona or service DID in a stated class, from explicit members or a DID template, and publish it to a did-hosting server.
+pub const TASK_VTA_WEBS_DIDS_CREATE_0_2: &str =
+    <vti_specs::vta::webs::dids::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/get/0.1` — the VTA's record of one did:webs it holds, optionally with its `keri.cesr`.
+pub const TASK_VTA_WEBS_DIDS_GET_0_1: &str =
+    <vti_specs::vta::webs::dids::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/list/0.1` — the did:webs records the caller may see, paged.
+pub const TASK_VTA_WEBS_DIDS_LIST_0_1: &str =
+    <vti_specs::vta::webs::dids::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/update/0.1` — replace a did:webs DID's designated services, key agreement key or aliases, without changing its keys.
+pub const TASK_VTA_WEBS_DIDS_UPDATE_0_1: &str =
+    <vti_specs::vta::webs::dids::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/rotate-keys/0.1` — rotate a did:webs DID to its committed successor key and commit a fresh one.
+pub const TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1: &str =
+    <vti_specs::vta::webs::dids::rotate_keys::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/webs/dids/delete/0.1` — deactivate a did:webs DID (a rotation to no next keys) and remove its slot from the host.
+pub const TASK_VTA_WEBS_DIDS_DELETE_0_1: &str =
+    <vti_specs::vta::webs::dids::delete::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/webvh/dids/realign-keys/1.0` — rename a DID's key
 /// records onto the verification-method ids its published document
@@ -2587,12 +2757,12 @@ pub const ALL_URIS: &[&str] = &[
     // Messaging slice
     TASK_MESSAGING_PING_0_2,
     // ACL slice
-    TASK_ACL_LIST_0_3,
-    TASK_ACL_GRANT_0_2,
-    TASK_ACL_SHOW_0_2,
-    TASK_ACL_UPDATE_0_2,
-    TASK_ACL_CHANGE_ROLE_0_2,
-    TASK_ACL_REVOKE_0_2,
+    TASK_ACL_LIST_0_4,
+    TASK_ACL_GRANT_0_3,
+    TASK_ACL_SHOW_0_3,
+    TASK_ACL_UPDATE_0_3,
+    TASK_ACL_CHANGE_ROLE_0_3,
+    TASK_ACL_REVOKE_0_3,
     TASK_ACL_SWAP_KEY_0_1,
     // Contexts slice
     TASK_CONTEXTS_LIST_1_0,
@@ -2705,6 +2875,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_UPDATE_1_0,
     TASK_WEBVH_DIDS_UPDATE_1_1,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+    TASK_VTA_WEBS_DIDS_CREATE_0_1,
+    TASK_VTA_WEBS_DIDS_CREATE_0_2,
+    TASK_VTA_WEBS_DIDS_GET_0_1,
+    TASK_VTA_WEBS_DIDS_LIST_0_1,
+    TASK_VTA_WEBS_DIDS_UPDATE_0_1,
+    TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1,
+    TASK_VTA_WEBS_DIDS_DELETE_0_1,
     TASK_WEBVH_DIDS_REALIGN_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     TASK_WEBVH_AGENT_NAME_LIST_1_1,
@@ -2761,8 +2938,17 @@ pub const ALL_URIS: &[&str] = &[
     // Agent-memory slice (spec/vta/memory/*)
     TASK_VTA_MEMORY_PUT_0_1,
     TASK_VTA_MEMORY_LIST_0_1,
+    TASK_VTA_MEMORY_PUT_0_2,
+    TASK_VTA_MEMORY_DELETE_0_2,
+    TASK_VTA_MEMORY_LIST_0_2,
+    TASK_VTA_MEMORY_GET_0_1,
+    TASK_VTA_MEMORY_PUT_0_3,
+    TASK_VTA_MEMORY_DELETE_0_3,
+    TASK_VTA_MEMORY_LIST_0_3,
+    TASK_VTA_MEMORY_GET_0_2,
     TASK_ROOMS_KEYS_PRESENT_0_2,
     TASK_ROOMS_KEYS_OPEN_0_2,
+    TASK_ROOMS_KEYS_OPEN_0_3,
     TASK_ROOMS_KEYS_KEY_PACKAGE_0_2,
     TASK_ROOMS_KEYS_WELCOME_0_1,
     TASK_ROOMS_KEYS_COMMIT_0_1,
@@ -2770,8 +2956,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_BACKFILL_0_2,
     TASK_ROOMS_KEYS_READ_0_1,
     TASK_ROOMS_KEYS_READ_0_2,
+    TASK_ROOMS_KEYS_READ_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_3,
     TASK_ROOMS_KEYS_BROWSE_0_4,
+    TASK_ROOMS_KEYS_BROWSE_0_5,
+    TASK_ROOMS_KEYS_BROWSE_0_6,
     TASK_ROOMS_KEYS_SEAL_0_2,
     TASK_ROOMS_KEYS_SEAL_0_3,
     TASK_ROOMS_KEYS_ACT_0_8,
@@ -2780,17 +2969,23 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ROOMS_KEYS_ACT_0_11,
     TASK_ROOMS_KEYS_ACT_0_12,
     TASK_ROOMS_KEYS_WATCH_0_1,
+    TASK_ROOMS_KEYS_WATCH_0_2,
     TASK_ROOMS_CHANGED_0_1,
     TASK_ROOMS_KEYS_FILE_KEY_0_2,
+    TASK_ROOMS_KEYS_FILE_KEY_0_3,
     TASK_ROOMS_KEYS_LIST_0_2,
+    TASK_ROOMS_KEYS_LIST_0_3,
     TASK_ROOMS_KEYS_LABEL_0_1,
+    TASK_ROOMS_KEYS_READ_MARKER_SET_0_1,
     TASK_ROOMS_KEYS_PROFILE_READ_0_1,
     TASK_ROOMS_KEYS_PROFILE_WRITE_0_1,
     TASK_ROOMS_OWNER_INVITE_0_1,
     TASK_ROOMS_OWNER_REGISTER_0_2,
+    TASK_ROOMS_OWNER_REGISTER_0_3,
     TASK_ROOMS_OWNER_ANCHOR_0_1,
     TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1,
     TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
+    TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3,
     TASK_ROOMS_OWNER_GROUP_CREATE_0_1,
     TASK_ROOMS_OWNER_GROUP_ADD_0_3,
     TASK_ROOMS_OWNER_GROUP_REMOVE_0_4,

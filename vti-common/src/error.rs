@@ -114,6 +114,17 @@ pub enum AppError {
     #[error("{0}")]
     NoMatchingProtocol(Box<NoMatchingProtocol>),
 
+    /// The request can be relied on only by resolving an identifier of a
+    /// method this service does not resolve, so it was refused unprocessed
+    /// (VTI-KEY-009). Rendered as **401** (a proof that cannot be checked)
+    /// with the discriminator `unsupportedDidMethod` and the method — which
+    /// is the requester's own identifier's, so naming it reveals nothing.
+    #[error("did:{method} is not a DID method this service resolves (VTI-KEY-009)")]
+    UnsupportedDidMethod {
+        /// The method-name component of the identifier.
+        method: String,
+    },
+
     /// The request did not carry a required `Trust-Task` header. Routes
     /// registered via [`crate::trust_task::TrustTaskRouter::route_with_task`]
     /// reject missing headers with this variant (400). Only `/health` is
@@ -332,6 +343,7 @@ impl IntoResponse for AppError {
             AppError::ApprovalRequired { .. } => StatusCode::FORBIDDEN,
             AppError::Validation(_) => StatusCode::BAD_REQUEST,
             AppError::NoMatchingProtocol(_) => StatusCode::BAD_GATEWAY,
+            AppError::UnsupportedDidMethod { .. } => StatusCode::UNAUTHORIZED,
             AppError::TrustTaskMissing => StatusCode::BAD_REQUEST,
             AppError::TrustTaskMismatch { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::TrustTaskMalformed(_) => StatusCode::BAD_REQUEST,
@@ -398,6 +410,12 @@ impl IntoResponse for AppError {
                 "counterpartyDid": e.peer,
                 "ours": e.ours,
                 "theirs": e.theirs,
+            }),
+            // VTI-KEY-009's discriminator, with the method it names.
+            AppError::UnsupportedDidMethod { method } => serde_json::json!({
+                "error": vta_sdk::protocols::trust_task_reject_reasons::UNSUPPORTED_DID_METHOD,
+                "message": self.to_string(),
+                "method": method,
             }),
             _ => serde_json::json!({ "error": self.to_string() }),
         };

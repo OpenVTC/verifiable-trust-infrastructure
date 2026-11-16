@@ -669,7 +669,7 @@ mod catalog_wire_shape {
     /// never mints** — it is self-issued by a person under a persona DID, and
     /// the community signer has no business asserting someone's persona. So
     /// there is no `issue_persona`, and this test mints one only to pin the
-    /// shape `routes::relationships::check_vpc_shape` validates against.
+    /// shape `relationships::ops::check_vpc_shape` validates against.
     ///
     /// That makes the pin more load-bearing here than for the credentials
     /// above, not less: for a VMC a catalog drift changes what we emit and we

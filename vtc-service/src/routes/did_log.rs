@@ -1,10 +1,13 @@
 //! `did:webvh` log publication route.
 //!
-//! The VTC's identity is a `did:webvh` provisioned by the VTA's
-//! `vtc-host` template (see `tasks/vtc-mvp/vta-driven-keys.md` §10).
-//! Every `did:webvh` resolver that wants to verify a VC the VTC
-//! signs needs to fetch the canonical `did.jsonl` log; this route
-//! serves it.
+//! A `did:webvh` VTC's identity is provisioned by the VTA's `vtc-host`
+//! template (see `tasks/vtc-mvp/vta-driven-keys.md` §10). Every
+//! `did:webvh` resolver that wants to verify a VC the VTC signs needs
+//! to fetch the canonical `did.jsonl` log; this route serves it.
+//!
+//! A VTC whose DID is of another method has no log here: a `did:webs`
+//! VTC's document is published by the VTA that holds it to its host,
+//! so this route answers `404` for it, as for a VTC not yet set up.
 //!
 //! ## Wire shape
 //!
@@ -202,6 +205,8 @@ mod tests {
             Some("vtc.example.com")
         );
         assert!(did_log_label("did:scid:vh:1:abc123").is_none());
+        // A did:webs VTC: its VTA publishes it to its host; nothing here.
+        assert!(did_log_label("did:webs:vtc.example.com:EAbc").is_none());
         assert!(did_log_label("not a did").is_none());
     }
 

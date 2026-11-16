@@ -43,7 +43,7 @@ pub fn pending_outcome(
     prior: &VtcAclEntry,
 ) -> (&'static str, Option<String>) {
     // The administrative role, as the reduced notice names it.
-    let prior_role = crate::routes::acl::role_string(prior);
+    let prior_role = crate::acl::ops::role_string(prior);
     // A payload naming the role the entry already holds — or the 0.1 wire's
     // `admin`, which spells every administrative role — keeps it: narrowed.
     let lands_as = |role: Option<&str>| match role.filter(|r| !r.is_empty()) {
@@ -73,11 +73,11 @@ pub fn pending_outcome(
             .and_then(|r| r.parse::<crate::acl::VtcRole>().ok())
     {
         let mut next = prior.clone();
-        if crate::routes::acl::expressible_in_v0_1(prior) {
+        if crate::acl::ops::expressible_in_v0_1(prior) {
             next.admin = to.implied_authority();
         }
         next.role = to;
-        let resulting = crate::routes::acl::role_string(&next);
+        let resulting = crate::acl::ops::role_string(&next);
         return if resulting != prior_role {
             ("demoted", Some(resulting))
         } else {

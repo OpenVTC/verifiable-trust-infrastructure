@@ -1,5 +1,5 @@
 pub mod acl;
-pub mod acl_v0_2;
+pub mod acl_v0_3;
 /// Versioned, namespaced application state. Backs the
 /// `vta/app-state/{get,put,list,delete,get-many,put-many}/1.0` Trust Tasks.
 /// Records are keyed `app:<contextId>:<namespace>:<key>` in the
@@ -27,6 +27,10 @@ pub mod credentials;
 pub mod device;
 pub mod did_peer;
 pub mod did_templates;
+/// `did:webs` persona, relationship and integration DIDs
+/// (`docs/05-design-notes/did-webs-in-the-vta.md`).
+#[cfg(feature = "webs")]
+pub mod did_webs;
 #[cfg(feature = "webvh")]
 pub mod did_webvh;
 /// Offline state-assembly helpers: read the VTA's local store and
@@ -138,6 +142,7 @@ pub fn keyspaces_from_app_state(s: &crate::server::AppState) -> Keyspaces<'_> {
         collection: &s.collection_ks,
         #[cfg(feature = "webvh")]
         webvh: &s.webvh_ks,
+        webs: &s.webs_ks,
     }
 }
 

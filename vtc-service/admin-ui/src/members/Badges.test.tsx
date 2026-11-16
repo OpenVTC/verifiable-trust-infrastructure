@@ -3,7 +3,8 @@
 // Every read and write goes through this browser's portal key (`send`, mocked per task).
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const send = vi.fn();
@@ -12,13 +13,28 @@ vi.mock("./directory-api", async (orig) => ({
   send: (...a: unknown[]) => send(...a),
 }));
 
-import { BadgePage, BadgesPage } from "./Badges";
+// jsdom draws nothing on a canvas: the builder's drawing answers four PNG bytes.
+vi.mock("@/components/BadgeBuilder", async (original) => {
+  const m = await original<typeof import("@/components/BadgeBuilder")>();
+  const { createElement } = await import("react");
+  const draw = async () => new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+  return { ...m, BadgeBuilder: (p: Parameters<typeof m.BadgeBuilder>[0]) => createElement(m.BadgeBuilder, { ...p, draw }) };
+});
+
+import { BadgePage, BadgesPage, MakeBadgePage, WallSection } from "./Badges";
+import { earnedWords } from "./badge-card";
 import {
+  AWARDS_SHARE_TASK,
+  AWARDS_UNSHARE_TASK,
+  BADGES_CREATE_TASK,
+  BADGES_IMAGES_UPLOAD_TASK,
   BADGES_HOLDERS_TASK,
   BADGES_IMAGES_GET_TASK,
   BADGES_LIST_TASK,
   BADGES_SETTINGS_TASK,
   BADGES_SHOW_TASK,
+  BADGES_WALL_TASK,
+  CLAIMS_REDEEM_TASK,
   MINE_ACCEPT_TASK,
   MINE_ARRANGE_TASK,
   MINE_DECLINE_TASK,
@@ -97,7 +113,7 @@ function sent(type: string): unknown[] {
 
 function renderPage(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">{ui}</ConfirmDialogProvider></QueryClientProvider>);
 }
 
 const BASE = {
@@ -130,6 +146,12 @@ describe("the portal's badges page", () => {
     answer({ ...BASE, [MINE_LIST_TASK]: mine(), [MINE_DECLINE_TASK]: { award: { state: "declined" } } });
     renderPage(<BadgesPage />);
     fireEvent.click(await screen.findByRole("button", { name: /Decline/ }));
+    // Declining is confirmed first (#2607); backing out sends nothing.
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(sent(MINE_DECLINE_TASK)).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: /Decline/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Decline" }));
     await waitFor(() => expect(sent(MINE_DECLINE_TASK)).toEqual([{ awardId: "awd_W5k2N8xRb3Qz7TpLAAAAAA" }]));
     expect(await screen.findByText(/Declined. Nobody is told/)).toBeTruthy();
   });
@@ -159,11 +181,93 @@ describe("the portal's badges page", () => {
     expect(await screen.findByText(/Hidden from your card/)).toBeTruthy();
   });
 
+  it("claims a badge with an event's code, and says when a code admits no one", async () => {
+    const { DirectoryError } = await import("./directory-api");
+    let claimed = false;
+    answer({
+      ...BASE,
+      [MINE_LIST_TASK]: () => mine(),
+      [CLAIMS_REDEEM_TASK]: (p: unknown) => {
+        if ((p as { code: string }).code !== "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua") {
+          throw new DirectoryError("vtc/badges/claims/redeem:codeInvalid", "no");
+        }
+        claimed = true;
+        return { award: { awardId: "awd_C7mT9pQx2Lw8Rv5NAAAA", badgeId: BADGE_ID, entryId: ENTRY, state: "accepted", offeredAt: "2026-11-08T11:30:00Z" } };
+      },
+    });
+    renderPage(<BadgesPage />);
+    const input = await screen.findByLabelText("Claim code");
+    fireEvent.change(input, { target: { value: "nonsense-code-0000000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Claim the badge" }));
+    expect(await screen.findByText(/That code admits no one/)).toBeTruthy();
+    fireEvent.change(input, { target: { value: "  Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua " } });
+    fireEvent.click(screen.getByRole("button", { name: "Claim the badge" }));
+    expect(await screen.findByText(/Claimed. The badge is yours/)).toBeTruthy();
+    expect(claimed).toBe(true);
+    expect(sent(CLAIMS_REDEEM_TASK).at(-1)).toEqual({ code: "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua" });
+  });
+
   it("shows nothing but a line when the community has badges off", async () => {
     answer({ ...BASE, [BADGES_SETTINGS_TASK]: { settings: { ...SETTINGS, enabled: false } }, [MINE_LIST_TASK]: mine() });
     renderPage(<BadgesPage />);
     expect(await screen.findByText("This community has badges turned off for now.")).toBeTruthy();
     expect(screen.queryByText("Waiting for you")).toBeNull();
+  });
+});
+
+describe("a member's badges on their card", () => {
+  const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+
+  it("says when each badge was earned, and since when for one held more than once", async () => {
+    answer({
+      ...BASE,
+      [BADGES_WALL_TASK]: {
+        entries: [
+          { badge: KUDOS, count: 3, since: "2026-03-03T09:00:00Z", latestAt: "2026-11-01T09:00:00Z", pinned: true },
+          { badge: badge(), count: 1, since: "2026-11-08T22:42:06Z", latestAt: "2026-11-08T22:42:06Z", pinned: false },
+        ],
+        visibility: "members",
+      },
+    });
+    renderPage(<WallSection entryId={ENTRY} name="Carol" own />);
+    expect(await screen.findByText(`Earned ${day("2026-11-08T22:42:06Z")}`)).toBeTruthy();
+    const repeat = screen.getByText(`Since ${day("2026-03-03T09:00:00Z")}`);
+    expect(repeat.getAttribute("title")).toBe(
+      `First earned ${day("2026-03-03T09:00:00Z")}, most recently ${day("2026-11-01T09:00:00Z")}`,
+    );
+  });
+
+  it("says nothing of a date the wall did not name", () => {
+    expect(earnedWords(1, undefined, undefined)).toBeNull();
+    expect(earnedWords(undefined, undefined, "2026-11-01T09:00:00Z")?.text.startsWith("Earned ")).toBe(true);
+  });
+});
+
+describe("making a badge in the portal", () => {
+  it("builds the picture from a colour and an icon, and makes a kudos badge with it", async () => {
+    answer({
+      ...BASE,
+      [BADGES_IMAGES_UPLOAD_TASK]: { image: { sha256: SHA, mediaType: "image/png", size: 4 }, expiresAt: "2026-11-09T09:00:00Z" },
+      [BADGES_CREATE_TASK]: { badge: KUDOS },
+    });
+    vi.stubGlobal("URL", { ...URL, createObjectURL: () => "blob:x", revokeObjectURL: () => undefined });
+    renderPage(<MakeBadgePage />);
+    fireEvent.change(screen.getByLabelText(/^Name/), { target: { value: "Clamp whisperer" } });
+    fireEvent.change(screen.getByLabelText("What it is for"), { target: { value: "Fixed the clamps." } });
+    fireEvent.click(screen.getByLabelText("Build one from a colour and an icon"));
+    expect(screen.getByRole("img", { name: "Preview: Clamp whisperer" })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Tools"));
+    fireEvent.click(screen.getByRole("button", { name: "Use this picture" }));
+    await waitFor(() => expect(sent(BADGES_IMAGES_UPLOAD_TASK)).toEqual([{ mediaType: "image/png", data: "iVBORw" }]));
+    // Back on the upload view, with the built picture shown and the builder closed.
+    expect(screen.getByLabelText("Upload my own picture")).toHaveProperty("checked", true);
+    fireEvent.click(screen.getByRole("button", { name: "Create badge" }));
+    await waitFor(() =>
+      expect(sent(BADGES_CREATE_TASK)).toEqual([
+        { kind: "kudos", name: "Clamp whisperer", description: "Fixed the clamps.", image: { sha256: SHA }, reason: "made in the portal" },
+      ]),
+    );
+    vi.unstubAllGlobals();
   });
 });
 
@@ -190,6 +294,58 @@ describe("one badge in the portal", () => {
       expect(sent(GROUPS_JOIN_TASK)).toEqual([{ groupId: GROUP_ID, message: "I ran the sharpening session." }]),
     );
     expect(await screen.findByText(/The badge's owners decide/)).toBeTruthy();
+  });
+
+  it("shows the member's own awards outside the community, one by one, and stops", async () => {
+    const AWARD = "awd_S5k2N8xRb3Qz7TpLAAAAAA";
+    const own = { awardId: AWARD, badgeId: BADGE_ID, entryId: ENTRY, state: "accepted", offeredAt: "2026-11-01T09:00:00Z", decidedAt: "2026-11-02T09:00:00Z" };
+    const SHARED = {
+      verificationUrl: "https://vtc.example.com/badges/shared/T0k3n",
+      bakedImageUrl: "https://vtc.example.com/badges/shared/T0k3n/image.png",
+      since: "2026-11-08T09:00:00Z",
+    };
+    let shared = false;
+    answer({
+      ...BASE,
+      [BADGES_SHOW_TASK]: () => ({
+        badge: badge({ shareableOutside: true }),
+        myState: "holder",
+        myCount: 1,
+        credentialRegime: "outside",
+        owners: [],
+        myAwards: [shared ? { ...own, shared: SHARED } : own],
+      }),
+      [BADGES_HOLDERS_TASK]: { total: 0, items: [] },
+      [AWARDS_SHARE_TASK]: () => {
+        shared = true;
+        return { award: { ...own, shared: SHARED } };
+      },
+      [AWARDS_UNSHARE_TASK]: () => {
+        shared = false;
+        return { award: own };
+      },
+    });
+    renderPage(<BadgePage badgeId={BADGE_ID} />);
+    expect(await screen.findByRole("heading", { name: "Show it outside the community" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Share outside" }));
+    await waitFor(() => expect(sent(AWARDS_SHARE_TASK)).toEqual([{ awardId: AWARD }]));
+    const link = await screen.findByRole("link", { name: "Link to check it" });
+    expect(link.getAttribute("href")).toBe(SHARED.verificationUrl);
+    expect(screen.getByRole("link", { name: "Picture with the credential" }).getAttribute("href")).toBe(SHARED.bakedImageUrl);
+    fireEvent.click(screen.getByRole("button", { name: "Stop sharing" }));
+    await waitFor(() => expect(sent(AWARDS_UNSHARE_TASK)).toEqual([{ awardId: AWARD }]));
+    expect(await screen.findByRole("button", { name: "Share outside" })).toBeTruthy();
+  });
+
+  it("offers no sharing for a badge kept inside", async () => {
+    answer({
+      ...BASE,
+      [BADGES_SHOW_TASK]: { badge: badge(), myState: "holder", myCount: 1, credentialRegime: "inside", owners: [] },
+      [BADGES_HOLDERS_TASK]: { total: 0, items: [] },
+    });
+    renderPage(<BadgePage badgeId={BADGE_ID} />);
+    expect(await screen.findByRole("heading", { name: "Workshop host" })).toBeTruthy();
+    expect(screen.queryByText("Show it outside the community")).toBeNull();
   });
 
   it("is not found when the member may not see it", async () => {

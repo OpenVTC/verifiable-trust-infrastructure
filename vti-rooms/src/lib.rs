@@ -121,6 +121,8 @@ pub mod profile;
 /// be used for, and when it lapses (trust-tasks-tf #865). Display and weighting, never
 /// authority; expiry is a reader's rule.
 pub mod provenance;
+/// What an authority chain grants room content to be used for (VTI-ACL-100 – 110).
+pub mod purpose;
 /// A record's kind, what it answers, when it was written and edited, and an image's size and
 /// preview — the members a room's profile governs (`recordMembers`, trust-tasks-tf #1027).
 /// Description, never authority; whether a writer may use them is the writer's rule.
@@ -143,6 +145,7 @@ pub mod revocation;
 pub mod revocation_tasks;
 #[cfg(feature = "mls")]
 pub mod sealed;
+pub mod signal_delay;
 /// The room and record keyspaces, behind the `host` feature.
 #[cfg(feature = "host")]
 pub mod storage;
@@ -378,6 +381,20 @@ pub struct Room {
     /// `headVersion` so a root before a prune and a root after it are never labelled alike.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_prune: Option<record_retention::RecordPrune>,
+
+    /// Whether this host waits a randomised interval before the room's `rooms/changed`
+    /// signals ([`signal_delay::SignalDelay`]; trust-tasks-tf #1084). Set at `rooms/create`
+    /// 0.3, changed by `rooms/signal-delay/set`, served by `rooms/info` 0.4, and applied by
+    /// [`watch::RoomWatches`] to every signal it sends for the room.
+    ///
+    /// Absent — every room stored before this existed, and every room created at
+    /// `rooms/create` 0.2 — is `randomised`, so an upgraded host keeps every room's wait
+    /// and needs no migration.
+    #[serde(
+        default,
+        skip_serializing_if = "signal_delay::SignalDelay::is_randomised"
+    )]
+    pub signal_delay: signal_delay::SignalDelay,
 
     /// The room's **epoch floor** (`rooms/_shared/0.1` `EpochFloor`; trust-tasks-tf #869):
     /// the earliest epoch whose key the room still lets anybody derive. Raised by every

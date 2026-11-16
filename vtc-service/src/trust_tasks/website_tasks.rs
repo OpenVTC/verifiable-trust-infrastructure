@@ -29,12 +29,13 @@
 //! `files/show` response declare their `maxDocumentBytes`, which the spine
 //! admits for a signer with standing ([`super::size`]).
 
+use super::routing::{Routes, on};
 use base64::Engine as _;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
 use vti_common::backup_transfer::bundle_store::{self, BundleState};
 use vti_common::backup_transfer::chunked::{self, ChunkRateLimiter, ChunkWrite, ChunkedError};
@@ -58,30 +59,15 @@ use crate::error::AppError;
 use crate::server::AppState;
 use crate::website::paths::{PathError, canonical_within_root, canonical_within_root_for_create};
 
-pub(crate) const BEGIN_TYPE: &str = <upload_begin::Payload as Payload>::TYPE_URI;
-pub(crate) const CHUNK_TYPE: &str = <upload_chunk::Payload as Payload>::TYPE_URI;
-pub(crate) const COMMIT_TYPE: &str = <upload_commit::Payload as Payload>::TYPE_URI;
-pub(crate) const ABORT_TYPE: &str = <upload_abort::Payload as Payload>::TYPE_URI;
-pub(crate) const DEPLOY_TYPE: &str = <deploy::Payload as Payload>::TYPE_URI;
-pub(crate) const FILES_SHOW_TYPE: &str = <files_show::Payload as Payload>::TYPE_URI;
-pub(crate) const FILES_LIST_TYPE: &str = <files_list::Payload as Payload>::TYPE_URI;
-pub(crate) const FILES_DELETE_TYPE: &str = <files_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const GENERATIONS_LIST_TYPE: &str = <generations_list::Payload as Payload>::TYPE_URI;
-pub(crate) const ROLLBACK_TYPE: &str = <rollback::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const GENERATIONS_LIST_TYPE: &str =
+    <generations_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    BEGIN_TYPE,
-    CHUNK_TYPE,
-    COMMIT_TYPE,
-    ABORT_TYPE,
-    DEPLOY_TYPE,
-    FILES_SHOW_TYPE,
-    FILES_LIST_TYPE,
-    FILES_DELETE_TYPE,
-    GENERATIONS_LIST_TYPE,
-    ROLLBACK_TYPE,
-];
+#[cfg(test)]
+pub(crate) const FILES_SHOW_TYPE: &str = <files_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const FILES_LIST_TYPE: &str = <files_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The largest chunk an upload may use, and the largest range a read returns.
 pub(crate) const MAX_CHUNK_SIZE: u64 = 256 * 1024;
@@ -117,17 +103,53 @@ pub(crate) const SHOW_ERR_CHANGED: &str = files_show::error_codes::CHANGED.code;
 pub(crate) const SHOW_ERR_RANGE_OUT_OF_BOUNDS: &str =
     files_show::error_codes::RANGE_OUT_OF_BOUNDS.code;
 // `files/delete`'s, `generations/list`'s and `rollback`'s declared codes are
-// used where they are raised — inside `routes::website::{files::delete,
+// used where they are raised — inside `website::ops::{files::delete,
 // generations::{list,rollback}}` — and not read again here, so they stay
 // `pub const` there rather than growing a second binding this module never
 // reads.
 
-pub(super) async fn dispatch(
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, upload_begin::Payload => |state, ctx, doc| run(state, ctx, doc, Op::Begin));
+    let routes =
+        on!(routes, upload_chunk::Payload => |state, ctx, doc| run(state, ctx, doc, Op::Chunk));
+    let routes =
+        on!(routes, upload_commit::Payload => |state, ctx, doc| run(state, ctx, doc, Op::Commit));
+    let routes =
+        on!(routes, upload_abort::Payload => |state, ctx, doc| run(state, ctx, doc, Op::Abort));
+    let routes = on!(routes, deploy::Payload => |state, ctx, doc| run(state, ctx, doc, Op::Deploy));
+    let routes =
+        on!(routes, files_show::Payload => |state, ctx, doc| run(state, ctx, doc, Op::FilesShow));
+    let routes =
+        on!(routes, files_list::Payload => |state, ctx, doc| run(state, ctx, doc, Op::FilesList));
+    let routes = on!(routes, files_delete::Payload => |state, ctx, doc| run(state, ctx, doc, Op::FilesDelete));
+    let routes = on!(routes, generations_list::Payload => |state, ctx, doc| run(state, ctx, doc, Op::GenerationsList));
+    on!(routes, rollback::Payload => |state, ctx, doc| run(state, ctx, doc, Op::Rollback))
+}
+
+/// Which website task a document is.
+#[derive(Clone, Copy)]
+enum Op {
+    Begin,
+    Chunk,
+    Commit,
+    Abort,
+    Deploy,
+    FilesShow,
+    FilesList,
+    FilesDelete,
+    GenerationsList,
+    Rollback,
+}
+
+/// Run one website document as `op`, once its signer holds the surface.
+async fn run(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
+    op: Op,
+) -> TrustTaskOutcome {
     // The website is part of the community's public surface
     // (`vtc.surface.admin`, vtc-admin-roles.md §4).
     let actor =
@@ -135,21 +157,20 @@ pub(super) async fn dispatch(
             .await
         {
             Ok(a) => a.did,
-            Err(reject) => return Some(reject),
+            Err(reject) => return reject,
         };
-    Some(match type_uri {
-        BEGIN_TYPE => handle_begin(state, &actor, doc).await,
-        CHUNK_TYPE => handle_chunk(state, &actor, doc).await,
-        COMMIT_TYPE => handle_commit(state, &actor, doc).await,
-        ABORT_TYPE => handle_abort(state, &actor, doc).await,
-        DEPLOY_TYPE => handle_deploy(state, &actor, doc).await,
-        FILES_SHOW_TYPE => handle_files_show(state, doc).await,
-        FILES_LIST_TYPE => handle_files_list(state, doc).await,
-        FILES_DELETE_TYPE => handle_files_delete(state, &actor, doc).await,
-        GENERATIONS_LIST_TYPE => handle_generations_list(state, doc).await,
-        ROLLBACK_TYPE => handle_rollback(state, &actor, doc).await,
-        _ => return None,
-    })
+    match op {
+        Op::Begin => handle_begin(state, &actor, doc).await,
+        Op::Chunk => handle_chunk(state, &actor, doc).await,
+        Op::Commit => handle_commit(state, &actor, doc).await,
+        Op::Abort => handle_abort(state, &actor, doc).await,
+        Op::Deploy => handle_deploy(state, &actor, doc).await,
+        Op::FilesShow => handle_files_show(state, doc).await,
+        Op::FilesList => handle_files_list(state, doc).await,
+        Op::FilesDelete => handle_files_delete(state, &actor, doc).await,
+        Op::GenerationsList => handle_generations_list(state, doc).await,
+        Op::Rollback => handle_rollback(state, &actor, doc).await,
+    }
 }
 
 // ─── the upload's own record ─────────────────────────────────────────────
@@ -597,7 +618,7 @@ async fn handle_commit(state: &AppState, actor: &str, doc: TrustTask<Value>) -> 
                 Ok(b) => b,
                 Err(e) => return app_error_to_reject(&doc, &AppError::Io(e)),
             };
-            match crate::routes::website::files::write_file(
+            match crate::website::ops::files::write_file(
                 state,
                 actor,
                 &path,
@@ -622,13 +643,13 @@ async fn handle_commit(state: &AppState, actor: &str, doc: TrustTask<Value>) -> 
                     });
                     success_response(&doc, body)
                 }
-                Err(crate::routes::website::files::WriteError::Precondition(m)) => {
+                Err(crate::website::ops::files::WriteError::Precondition(m)) => {
                     declared(&doc, COMMIT_ERR_PRECONDITION_FAILED, m)
                 }
-                Err(crate::routes::website::files::WriteError::Path(m)) => {
+                Err(crate::website::ops::files::WriteError::Path(m)) => {
                     declared(&doc, COMMIT_ERR_PATH_REFUSED, m)
                 }
-                Err(crate::routes::website::files::WriteError::App(e)) => {
+                Err(crate::website::ops::files::WriteError::App(e)) => {
                     app_error_to_reject(&doc, &e)
                 }
             }
@@ -706,7 +727,7 @@ async fn handle_deploy(state: &AppState, actor: &str, doc: TrustTask<Value>) -> 
             "the staged bundle no longer matches its committed SHA-256",
         );
     }
-    match crate::routes::website::deploy::deploy_inner(state, actor, &bytes).await {
+    match crate::website::ops::deploy::deploy_inner(state, actor, &bytes).await {
         Ok(response) => {
             record.phase = Phase::Done;
             if let Err(e) = store_record(state, &record).await {
@@ -810,7 +831,7 @@ async fn handle_files_list(state: &AppState, doc: TrustTask<Value>) -> TrustTask
     };
     let cursor = payload.cursor.map(|c| c.to_string());
     let limit = payload.limit.map(|n| n.get() as u32);
-    match crate::routes::website::files::list(state, cursor, limit).await {
+    match crate::website::ops::files::list(state, cursor, limit).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -828,7 +849,7 @@ async fn handle_files_delete(
         Err(reject) => return reject,
     };
     let path = payload.path.to_string();
-    match crate::routes::website::files::delete(state, actor, path).await {
+    match crate::website::ops::files::delete(state, actor, path).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => super::helpers::task_error_to_reject(&doc, &e),
     }
@@ -840,7 +861,7 @@ async fn handle_generations_list(state: &AppState, doc: TrustTask<Value>) -> Tru
     if let Err(reject) = parse_spec_payload::<generations_list::Payload>(&doc) {
         return reject;
     }
-    match crate::routes::website::generations::list(state).await {
+    match crate::website::ops::generations::list(state).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => super::helpers::task_error_to_reject(&doc, &e),
     }
@@ -848,7 +869,7 @@ async fn handle_generations_list(state: &AppState, doc: TrustTask<Value>) -> Tru
 
 /// `vtc/website/rollback/0.1` — the managed-mode rollback
 /// `POST /v1/website/rollback/{gen_num}` used to serve. `generation` is a
-/// decimal string, matching the wire convention `routes::website::
+/// decimal string, matching the wire convention `website::ops::
 /// generations` already established (not `gen-N`, the directory name).
 async fn handle_rollback(state: &AppState, actor: &str, doc: TrustTask<Value>) -> TrustTaskOutcome {
     let payload: rollback::Payload = match parse_spec_payload(&doc) {
@@ -866,7 +887,7 @@ async fn handle_rollback(state: &AppState, actor: &str, doc: TrustTask<Value>) -
             },
         );
     };
-    match crate::routes::website::generations::rollback(state, actor, gen_num).await {
+    match crate::website::ops::generations::rollback(state, actor, gen_num).await {
         Ok(resp) => success_response(&doc, resp),
         Err(e) => super::helpers::task_error_to_reject(&doc, &e),
     }

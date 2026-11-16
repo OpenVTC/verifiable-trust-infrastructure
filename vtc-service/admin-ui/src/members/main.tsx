@@ -8,6 +8,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ThemePreviewBar } from "@/components/ThemePreviewBar";
 import { applyStoredCommunityTheme } from "@/lib/community-theme";
 import { applyStoredTheme } from "@/lib/theme";
@@ -61,9 +63,15 @@ if (!root) throw new Error("member portal: #root missing");
 
 createRoot(root).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      {isThemePreview() && <ThemePreviewBar controls={<PreviewViewSwitch />} />}
-      <Portal />
-    </QueryClientProvider>
+    {/* The last resort: each signed-in page has its own boundary (`Portal`). */}
+    <ErrorBoundary what="The member portal" variant="alert">
+      <QueryClientProvider client={queryClient}>
+        {/* Confirmations before a member's hard-to-undo acts (#2607). */}
+        <ConfirmDialogProvider look="portal">
+          {isThemePreview() && <ThemePreviewBar controls={<PreviewViewSwitch />} />}
+          <Portal />
+        </ConfirmDialogProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

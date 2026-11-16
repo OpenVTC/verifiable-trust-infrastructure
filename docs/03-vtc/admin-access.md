@@ -218,6 +218,13 @@ after sign-in), approved in your wallet or with your passkey:
 A console key proves only that you have the browser. The protections in §3
 never accept it as a second factor or as an approval.
 
+The same delegation can go to a key you hold elsewhere, such as your
+assistant's (`vtc-mcp`, `docs/03-vtc/vtc-mcp.md` §3.0): **Console signing keys →
+Authorize another key** has your wallet sign the authorization as you for the
+`did:key` you name, and you hand it to that key's holder, which enrols itself
+with it. Nothing is sent from the console. It is listed and revoked with your
+other signing keys, and is held to the same limits.
+
 ### 1.4 Rolling your own entry to a new key
 
 `acl/swap-key/0.1` moves **your own** entry to a new key, with its authority
@@ -502,6 +509,19 @@ Nobody invites themselves. An approver DID is bound to one subject, once: a
 revoked one can never be bound again. A subject holds at most five. Revoking
 the last one is allowed — it costs the ability to step up with it, not the
 subject's authority — and is recovered through another invite.
+
+**Use a different approver key in every community.** An approver DID is given
+to the community it is enrolled at and lands in its records and audit trail.
+Two communities holding the same approver DID — or the same administrator
+`did:key`, or the same delegated signing key — can tell that one person stands
+behind both just by comparing what each recorded. That is a correlation
+attack, and neither community can see it coming: each knows only its own
+records. The VTA browser plugin already mints a fresh approver key for each
+community and refuses to reuse one, and a passkey is bound to one site. The
+risk is a key carried by hand: a `did:key` used as an administrator, an
+approver device enrolled with `enrol-approver --did`, or a `vtc-mcp` agent key
+at more than one community. Give each community its own (VTI-KEY-005, VTI-KEY-006); a VTA
+persona per community does that for the identity itself.
 
 Every administrator made by a completed action (§3.2: an `acl/grant`,
 `acl/update`, `acl/change-role` or `vtc/members/role/set` to community-admin) is issued an approver

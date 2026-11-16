@@ -422,7 +422,19 @@ pub async fn serve(
                     // The document is the answer, and it is self-describing. The status
                     // `dispatch` derived is HTTP's way of saying the same thing and is dropped
                     // here.
-                    None => crate::dispatch(&state, &envelope).await.document,
+                    //
+                    // The carrier's sender goes with it: the spine requires a messaging
+                    // document to carry a proof, and that proof to be the sender's
+                    // (VTI-OPS-021/093).
+                    None => {
+                        crate::dispatch_from(
+                            &state,
+                            &carrier(frame.message.protocol, &sender),
+                            &envelope,
+                        )
+                        .await
+                        .document
+                    }
                 };
 
             let sent = match frame.message.protocol {
@@ -597,6 +609,21 @@ fn unwrap_request(protocol: Protocol, payload: &[u8]) -> Option<Request> {
     }
 }
 
+/// The spine's view of a frame's carrier: the transport, and the sender it authenticated —
+/// DIDComm's as the bare DID (a `sender_kid` names a key), TSP's VID exactly.
+fn carrier(protocol: Protocol, sender: &str) -> vti_trust_task_server::ArrivalCtx {
+    match protocol {
+        Protocol::TSP => vti_trust_task_server::ArrivalCtx {
+            transport: vti_trust_task_server::Transport::Tsp,
+            sender_did: Some(sender.to_string()),
+            verified_signer: None,
+        },
+        _ => vti_trust_task_server::ArrivalCtx::didcomm(
+            sender.split('#').next().unwrap_or(sender).to_string(),
+        ),
+    }
+}
+
 /// The binding's refusal of a document whose parties disagree with the carrier's, if any.
 ///
 /// # A carrier that authenticates its sender is a cross-check, not a bystander
@@ -765,6 +792,7 @@ mod tests {
         let identity = HostIdentity::from_vta(did.clone(), secrets);
         let dir = tempfile::tempdir().unwrap();
         let state = crate::open_state(dir.path()).expect("a host");
+        state.set_room_creation(crate::creation::RoomCreation::any_creator());
         let body = serde_json::to_vec(&document()).unwrap();
 
         let unsigned = crate::dispatch(&state, &body).await.document;

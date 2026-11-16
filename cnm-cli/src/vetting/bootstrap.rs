@@ -60,8 +60,9 @@ pub struct BootstrapPgpArgs {
     pub dry_run: bool,
 
     /// Validity of each grant: `N[s|m|h|d|w]`, one day to two years. The
-    /// community's default of one year when absent.
-    #[arg(long)]
+    /// community's default of one year when absent. `--expires`, as every
+    /// lapsing grant spells it (#2589); `--validity` is the older name.
+    #[arg(long = "expires", visible_alias = "validity", value_name = "DURATION")]
     pub validity: Option<String>,
 }
 
@@ -119,7 +120,7 @@ pub(super) async fn run(
     let validity = args
         .validity
         .as_deref()
-        .map(|v| parse_grant_validity("--validity", v))
+        .map(|v| parse_grant_validity("--expires", v))
         .transpose()?;
     let now = unix_now();
 

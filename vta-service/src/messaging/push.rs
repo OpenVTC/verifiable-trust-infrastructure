@@ -149,13 +149,13 @@ pub(crate) fn register_transports(
 ) {
     #[cfg(feature = "tsp")]
     if let Some(primary) = service.primary_transport() {
-        let tsp: Arc<dyn MessageTransport> = Arc::new(trust_task_push::TspPushTransport {
-            atm: atm.clone(),
-            profile: profile.clone(),
-            mediator_did: mediator_did.to_string(),
-            pushes: pushes.clone(),
-            conn: primary.connection_state(),
-        });
+        let tsp: Arc<dyn MessageTransport> = Arc::new(trust_task_push::TspPushTransport::new(
+            atm.clone(),
+            profile.clone(),
+            mediator_did.to_string(),
+            pushes.clone(),
+            primary.connection_state(),
+        ));
         service.add_transport(trust_task_push::TSP_TRANSPORT_ID.into(), tsp.clone());
         tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
             outbox.clone(),
@@ -164,9 +164,17 @@ pub(crate) fn register_transports(
             DRAIN_INTERVAL,
         ));
     }
+    // A recipient's REST endpoint comes from its DID document: the URL guard
+    // and the client's resolver both hold it to this process's endpoint
+    // policy (loopback and private networks only with
+    // `VTA_ALLOW_PRIVATE_ENDPOINTS`).
+    let push_policy = vta_sdk::http::EndpointPolicy::process_default();
     let rest: Arc<dyn MessageTransport> = Arc::new(trust_task_push::RestPushTransport::new(
         pushes,
-        vta_sdk::http::foreign_fetch_client(),
+        vta_sdk::http::foreign_fetch_client_for(push_policy),
+        Arc::new(move |url: &str| {
+            vta_sdk::http::guard_peer_endpoint(url, push_policy).map_err(|e| e.to_string())
+        }),
     ));
     service.add_transport(trust_task_push::REST_TRANSPORT_ID.into(), rest.clone());
     tokio::spawn(affinidi_messaging_delivery::drain_loop_via(

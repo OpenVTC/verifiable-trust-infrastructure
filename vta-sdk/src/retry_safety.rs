@@ -131,14 +131,14 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Messaging ───────────────────────────────────────────────────────
     (trust_tasks::TASK_MESSAGING_PING_0_2, ReadOnly),
     // ── ACL ─────────────────────────────────────────────────────────────
-    (trust_tasks::TASK_ACL_LIST_0_3, ReadOnly),
+    (trust_tasks::TASK_ACL_LIST_0_4, ReadOnly),
     // Grant is addressed by subject DID + context, so a repeat overwrites the
     // same entry rather than adding a second.
-    (trust_tasks::TASK_ACL_GRANT_0_2, RetrySafe),
-    (trust_tasks::TASK_ACL_SHOW_0_2, ReadOnly),
-    (trust_tasks::TASK_ACL_UPDATE_0_2, RetrySafe),
-    (trust_tasks::TASK_ACL_CHANGE_ROLE_0_2, RetrySafe),
-    (trust_tasks::TASK_ACL_REVOKE_0_2, RetrySafe),
+    (trust_tasks::TASK_ACL_GRANT_0_3, RetrySafe),
+    (trust_tasks::TASK_ACL_SHOW_0_3, ReadOnly),
+    (trust_tasks::TASK_ACL_UPDATE_0_3, RetrySafe),
+    (trust_tasks::TASK_ACL_CHANGE_ROLE_0_3, RetrySafe),
+    (trust_tasks::TASK_ACL_REVOKE_0_3, RetrySafe),
     // Swap deletes the current subject's entry as it creates the new one. A lost
     // reply strands the caller: old entry gone, new one unknown to them. This is
     // remediation-plan F6 seen from the wire.
@@ -376,6 +376,19 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_1, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0, Keyed),
+    // ── did:webs DIDs ───────────────────────────────────────────────────
+    // Every create incepts a new AID: a retried one is a second DID.
+    (trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_2, Keyed),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1, ReadOnly),
+    // Each update and rotation appends events to the key event log; two append
+    // two (a second rotation installs a key the first committed).
+    (trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1, Keyed),
+    (trust_tasks::TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1, Keyed),
+    // A repeated delete finds the DID deactivated, publishes nothing and only
+    // retries the slot removal: it converges.
+    (trust_tasks::TASK_VTA_WEBS_DIDS_DELETE_0_1, RetrySafe),
     // `RetrySafe` where its two neighbours above are `Keyed`, and the difference
     // is convergence rather than caution. `update` and `rotate-keys` append a
     // log entry, so a second execution leaves a second durable artefact. A
@@ -466,6 +479,19 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Memory ──────────────────────────────────────────────────────────
     (trust_tasks::TASK_VTA_MEMORY_PUT_0_1, RetrySafe),
     (trust_tasks::TASK_VTA_MEMORY_LIST_0_1, ReadOnly),
+    // 0.2 is versioned (#2115): a replayed unconditional put takes a second
+    // version, so a device syncing the context sees a change that never
+    // happened — `Keyed`, like `vta/app-state/put`. (A conditional one
+    // converges on its own, but the class is per task type.) 0.1 keeps its
+    // class: its clients have no change feed to mislead.
+    (trust_tasks::TASK_VTA_MEMORY_PUT_0_2, Keyed),
+    (trust_tasks::TASK_VTA_MEMORY_DELETE_0_2, RetrySafe),
+    (trust_tasks::TASK_VTA_MEMORY_LIST_0_2, ReadOnly),
+    (trust_tasks::TASK_VTA_MEMORY_GET_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_MEMORY_PUT_0_3, Keyed),
+    (trust_tasks::TASK_VTA_MEMORY_DELETE_0_3, RetrySafe),
+    (trust_tasks::TASK_VTA_MEMORY_LIST_0_3, ReadOnly),
+    (trust_tasks::TASK_VTA_MEMORY_GET_0_2, ReadOnly),
     // ── Hidden-vetting PCS engine (`vta/pcs/*`) ─────────────────────────
     // A second create is a second application with a second key.
     (trust_tasks::TASK_VTA_PCS_APPLICATIONS_CREATE_0_1, Keyed),
@@ -648,9 +674,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Reads group state and returns plaintext. Nothing is written, and a second
     // execution is indistinguishable from one.
     (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_2, ReadOnly),
+    (trust_tasks::TASK_ROOMS_KEYS_OPEN_0_3, ReadOnly),
     // A pure derivation: the same request yields the same key, and nothing is
     // stored but the audit line.
     (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_2, ReadOnly),
+    (trust_tasks::TASK_ROOMS_KEYS_FILE_KEY_0_3, ReadOnly),
     // Converges: a repeat for the same room, member and invitation returns the
     // KeyPackage the first one minted (recipient item 3), and leaves nothing behind.
     (trust_tasks::TASK_ROOMS_KEYS_KEY_PACKAGE_0_2, RetrySafe),
@@ -691,6 +719,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // 0.1 for each of up to 32 keys. The repair it may make applies the commits and keeps
     // the links the host relays — a retry finds them applied and fetches nothing.
     (trust_tasks::TASK_ROOMS_KEYS_READ_0_2, RetrySafe),
+    (trust_tasks::TASK_ROOMS_KEYS_READ_0_3, RetrySafe),
     // Same, over a listing. The room may have moved between attempts, so two
     // tries can differ — that is the room changing, not the task misbehaving,
     // and `headVersion` is what tells them apart.
@@ -698,6 +727,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3, RetrySafe),
     // 0.3 over list/0.6's rows: still a read, stores nothing.
     (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4, RetrySafe),
+    // 0.4, in either order and a page at a time: still a read, stores nothing. A resend
+    // with the same cursor reads the same position again.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5, RetrySafe),
+    // 0.5 within an exclusive `beforeVersion`: still a read, stores nothing.
+    (trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_6, RetrySafe),
     // Sealing is a pure function of the key and the bytes, and it stores nothing:
     // a lost reply costs the caller a round trip, never any state. Re-sealing the
     // same body yields a different nonce, which is correct and changes nothing. The
@@ -723,6 +757,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // armed at the same watermark keeps its address and answers the same; cancelling one
     // the VTA does not hold answers `armed: false` (VTI-OPS-060's second class).
     (trust_tasks::TASK_ROOMS_KEYS_WATCH_0_1, RetrySafe),
+    // A live renewal extends the lease of the same watch at the same address; a repeat is
+    // harmless (rooms/keys/watch/0.2, *A repeated request*).
+    (trust_tasks::TASK_ROOMS_KEYS_WATCH_0_2, RetrySafe),
     // A one-way signal: the VTA passes it on once to the client that armed the watch and
     // forgets the watch, which a repeat finds gone and drops.
     (trust_tasks::TASK_ROOMS_CHANGED_0_1, RetrySafe),
@@ -732,6 +769,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // replaced, not appended, so a repeat leaves the label as the first left it and answers
     // `changed: false`. No key needed — there is nothing a repeat could duplicate.
     (trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1, RetrySafe),
+    // 0.2's read, which can also carry the member's read markers.
+    (trust_tasks::TASK_ROOMS_KEYS_LIST_0_3, RetrySafe),
+    // Idempotent by specification (`rooms/keys/read-marker/set/0.1` *Retry safety*,
+    // VTI-OPS-060's second class): a repeated forward set finds the marker where it put it
+    // and answers `moved: false`; a repeated rewind finds it equal. A late forward set after
+    // a rewind is the client's to avoid (it SHOULD NOT retry one issued before a rewind).
+    (trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1, RetrySafe),
+    // `rooms/keys/read-marker/moved/0.1` is not here: the VTA sends it and serves nothing
+    // under it, as `rooms/keys/changed/0.1`, so it is not in `ALL_URIS`.
     // A read, as `rooms/keys/read` is: the host serves the same records and this agent
     // opens and judges them again. A retry costs another disclosure of the presentation.
     (trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1, RetrySafe),
@@ -762,8 +808,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // a host answers as accepted. Its `revocation` reports the list at the host *now*, so a
     // retry's answer is the more current one, not a worse one.
     (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, RetrySafe),
+    // 0.2's, with the room's record retention and signal delay passed to the host's
+    // create: a repeat names the same settings, and a host holding the room already
+    // answers as above.
+    (trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3, RetrySafe),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_MEMBERSHIP_0_1, Keyed),
     (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2, Keyed),
+    (trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3, Keyed),
     // Founding converges: a second execution is refused `alreadyExists` and
     // changes nothing, so a retry after a lost reply reports a refusal over a
     // group that in fact exists — a worse message, not a worse world.

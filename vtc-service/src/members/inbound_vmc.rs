@@ -21,7 +21,7 @@ use serde_json::Value as JsonValue;
 use tracing::info;
 use uuid::Uuid;
 
-use vti_common::audit::{AuditEvent, MembershipReciprocatedData};
+use vtc_audit::{AuditEvent, MembershipReciprocatedData};
 use vti_common::error::AppError;
 
 use vta_sdk::protocols::members::MEMBERSHIP_CREDENTIAL_TYPE;

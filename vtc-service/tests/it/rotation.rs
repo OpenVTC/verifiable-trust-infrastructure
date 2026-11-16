@@ -57,10 +57,17 @@ fn party_from_seed(seed: [u8; 32]) -> vti_rooms_dtg::test_support::Party {
 }
 
 async fn build_fixture() -> Fixture {
+    build_fixture_with_resolver(false).await
+}
+
+/// The fixture, with a local DID resolver attached when `resolver` is set: a
+/// test puts the documents it needs into its cache, so nothing is fetched.
+async fn build_fixture_with_resolver(resolver: bool) -> Fixture {
     // The fixture verifies re-issued VMC/VAC against this signer, so the
     // AppState must issue with this exact instance.
     let signer = Arc::new(LocalSigner::from_ed25519_seed(VTC_DID.into(), &[0xCC; 32]));
     let vtc = TestVtc::builder()
+        .with_did_resolver(resolver)
         .with_audit(true)
         .with_public_url(PUBLIC_URL)
         .with_credential_signer(signer.clone())
@@ -421,6 +428,204 @@ async fn rotation_did_webvh_requires_did_resolver() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
 }
 
+/// A did:webs document as the resolver hands it over (`affinidi-did-webs`'
+/// `into_document`): each key of the key state a `JsonWebKey` whose id is the
+/// subject plus the key's CESR fragment, all of them in `authentication`, and
+/// the `ConditionalProof2022` that states the threshold.
+fn did_webs_document(did: &str, keys: &[&SigningKey]) -> Value {
+    use base64::Engine as _;
+    let methods: Vec<Value> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            json!({
+                "id": format!("{did}#DKey{i}"),
+                "type": "JsonWebKey",
+                "controller": did,
+                "publicKeyJwk": {
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "x": base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .encode(key.verifying_key().to_bytes()),
+                },
+            })
+        })
+        .collect();
+    let mut referenced: Vec<Value> = methods.iter().map(|m| m["id"].clone()).collect();
+    let proof_id = format!("{did}#EAid");
+    referenced.push(json!(proof_id));
+    let mut all = methods;
+    all.push(json!({
+        "id": proof_id,
+        "type": "ConditionalProof2022",
+        "controller": did,
+        "threshold": 1,
+        "conditionThreshold": referenced[..keys.len()].to_vec(),
+    }));
+    json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": did,
+        "verificationMethod": all,
+        "authentication": referenced,
+        "assertionMethod": referenced,
+    })
+}
+
+/// Rotate onto `did`, whose document is `doc`, signing the new side with
+/// `signer`.
+async fn rotate_onto_did_webs(
+    fix: &Fixture,
+    did: &str,
+    doc: Value,
+    signer: &SigningKey,
+) -> (StatusCode, Value) {
+    let mut resolver = fix
+        ._vtc
+        .state
+        .did_resolver
+        .clone()
+        .expect("resolver attached");
+    resolver
+        .add_did_document(did, serde_json::from_value(doc).expect("a DID document"))
+        .await;
+
+    let (rotation_id, expires_at) = mint_challenge(fix).await;
+    let payload = signing_bytes(&rotation_id, &fix.member_did, did, expires_at);
+    let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
+    let new_sig = hex::encode(signer.sign(&payload).to_bytes());
+    finish_rotate(
+        fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await
+}
+
+const WEBS_DID: &str = "did:webs:members.example.com:ENro7uf0ePmiK3jdTo2YCdXLqW7z7xoP6qhhBou6gBLe";
+
+/// A member rotates onto a did:webs (VTI-KEY-003). Its document has no
+/// `#key-0`: any key of its current key state proves control (VTI-MEM-041),
+/// here the second of two, and the membership moves with it.
+#[tokio::test]
+async fn rotation_onto_a_did_webs_with_any_current_key() {
+    let fix = build_fixture_with_resolver(true).await;
+    let first = SigningKey::from_bytes(&[0xB1; 32]);
+    let second = SigningKey::from_bytes(&[0xB2; 32]);
+    let doc = did_webs_document(WEBS_DID, &[&first, &second]);
+
+    let (status, body) = rotate_onto_did_webs(&fix, WEBS_DID, doc, &second).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["newDid"], WEBS_DID);
+    assert_eq!(body["method"], "did:webs");
+    assert!(
+        get_acl_entry(&fix.acl_ks, WEBS_DID)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        get_member(&fix.members_ks, WEBS_DID)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        get_member(&fix.members_ks, &fix.member_did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A member who rotated off did:key can rotate again: the old DID's signature
+/// is verified by its own method, here by a key of the did:webs's key state,
+/// and the member signs the request as the did:webs it now is.
+#[tokio::test]
+async fn a_member_on_a_did_webs_can_rotate_again() {
+    let fix = build_fixture_with_resolver(true).await;
+    let webs_seed = [0xB2; 32];
+    let webs_key = SigningKey::from_bytes(&webs_seed);
+    let doc = did_webs_document(WEBS_DID, &[&webs_key]);
+    let (status, body) = rotate_onto_did_webs(&fix, WEBS_DID, doc, &webs_key).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The member now signs as the did:webs, with the key its document lists.
+    let webs_member = vti_rooms_dtg::test_support::Party {
+        secret: affinidi_secrets_resolver::secrets::Secret::generate_ed25519(
+            Some(&format!("{WEBS_DID}#DKey0")),
+            Some(&webs_seed),
+        ),
+        secret_multibase: multibase::encode(multibase::Base::Base58Btc, webs_seed),
+        did: WEBS_DID.to_string(),
+    };
+    let (status, challenge) =
+        crate::common::signed::call(&fix._vtc, &webs_member, CHALLENGE_TASK, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{challenge}");
+    let rotation_id = challenge["payload"]["rotationId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let expires_at =
+        chrono::DateTime::parse_from_rfc3339(challenge["payload"]["expiresAt"].as_str().unwrap())
+            .unwrap()
+            .timestamp();
+
+    let next_key = SigningKey::from_bytes(&[0xB3; 32]);
+    let next_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(&next_key.verifying_key().to_bytes());
+    let payload = signing_bytes(&rotation_id, WEBS_DID, &next_did, expires_at);
+    let (status, reply) = crate::common::signed::call(
+        &fix._vtc,
+        &webs_member,
+        ROTATE_TASK,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": WEBS_DID,
+            "newDid": next_did,
+            "oldSignature": hex::encode(webs_key.sign(&payload).to_bytes()),
+            "newSignature": hex::encode(next_key.sign(&payload).to_bytes()),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(
+        get_member(&fix.members_ks, &next_did)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        get_member(&fix.members_ks, WEBS_DID)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A signature by a key the did:webs document does not list proves nothing.
+#[tokio::test]
+async fn rotation_onto_a_did_webs_refuses_a_key_outside_its_document() {
+    let fix = build_fixture_with_resolver(true).await;
+    let listed = SigningKey::from_bytes(&[0xB1; 32]);
+    let outsider = SigningKey::from_bytes(&[0xDE; 32]);
+    let doc = did_webs_document(WEBS_DID, &[&listed]);
+
+    let (status, body) = rotate_onto_did_webs(&fix, WEBS_DID, doc, &outsider).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        get_member(&fix.members_ks, &fix.member_did)
+            .await
+            .unwrap()
+            .is_some(),
+        "the membership stays where it was"
+    );
+}
+
 #[tokio::test]
 async fn rotation_rejects_unknown_did_method() {
     let fix = build_fixture().await;
@@ -519,7 +724,7 @@ async fn rotation_id_is_single_use() {
 /// finish request, because the rotation signatures do not cover it.
 #[tokio::test]
 async fn rotation_reason_reaches_the_audit_envelope() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent, DidRotationReason};
+    use vtc_audit::{AuditEnvelope, AuditEvent, DidRotationReason};
 
     let fix = build_fixture().await;
 
@@ -570,7 +775,7 @@ async fn rotation_reason_reaches_the_audit_envelope() {
 /// something that reads as a claim the member never made.
 #[tokio::test]
 async fn rotation_without_a_reason_records_none() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent};
+    use vtc_audit::{AuditEnvelope, AuditEvent};
 
     let fix = build_fixture().await;
 

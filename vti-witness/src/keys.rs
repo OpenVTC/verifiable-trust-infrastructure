@@ -10,8 +10,7 @@
 //! provisioning bundle at setup.
 
 use serde::{Deserialize, Serialize};
-use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
-use vta_sdk::sealed_transfer::DidKeyMaterialV2;
+use vta_sdk::did_secrets::DidSecretsBundle;
 use vti_common::seed_store::SeedStore;
 
 /// The stored shape. Versioned so a later layout can be told apart from this one.
@@ -109,30 +108,10 @@ impl WitnessKeyring {
     }
 }
 
-/// The working copy of one identity's keys, from the sealed provisioning
-/// bundle's key material: the primary signing key and the key-agreement key,
-/// each under the verification-method id the DID document publishes.
-///
-/// Extra signing keys are carried too, though the `dtg-witness` template declares
-/// none — dropping a key the VTA minted and published would be a silent
-/// divergence from the document.
-pub fn bundle_from_material(material: &DidKeyMaterialV2) -> DidSecretsBundle {
-    let entry = |key: &vta_sdk::sealed_transfer::SlotKeyPair| SecretEntry {
-        key_id: key.key_id.clone(),
-        key_type: key.key_type.clone(),
-        private_key_multibase: key.private_key_multibase.clone(),
-    };
-    let mut secrets = vec![entry(&material.signing_key), entry(&material.ka_key)];
-    secrets.extend(material.additional_signing_keys.iter().map(entry));
-    DidSecretsBundle {
-        did: material.did.clone(),
-        secrets,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vta_sdk::did_secrets::SecretEntry;
     use vta_sdk::keys::KeyType;
 
     fn bundle(did: &str) -> DidSecretsBundle {

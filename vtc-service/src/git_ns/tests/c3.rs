@@ -98,18 +98,18 @@ async fn vti_vtc_020_a_grant_is_a_qualified_capability_on_the_holders_entry() {
     let mut rewritten = carol.clone();
     rewritten.label = Some("renamed".into());
     rewritten.resource_grants.clear();
-    let planned = crate::routes::acl::plan_write(
+    let planned = crate::acl::ops::plan_write(
         &f.vtc.state,
         &f.admin.did,
         rewritten,
         Some(carol.clone()),
-        crate::routes::acl::PlanEvent::Updated,
+        crate::acl::ops::PlanEvent::Updated,
         None,
     )
     .await
     .map_err(|_| ())
     .expect("a label change plans");
-    crate::routes::acl::commit_grant(&f.vtc.state, &f.admin.did, planned)
+    crate::acl::ops::commit_grant(&f.vtc.state, &f.admin.did, planned)
         .await
         .unwrap();
     let after = entry(&f, &f.carol.did).await.unwrap();

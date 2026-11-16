@@ -28,13 +28,15 @@
 //! for the member reads it. Its text is never logged or audited (item 10) — the audit row
 //! says that a label for a room and member was written, and whether it changed — and the
 //! dispatch spine neither logs it in a schema error nor keeps either response for
-//! redelivery (`carries_personal_text`).
+//! redelivery (`carries_personal_state`).
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vti_common::acl::Capability;
 use vti_common::error::AppError;
-use vti_specs::rooms::keys::{label::v0_1 as label_spec, list::v0_2 as list_spec};
+use vti_specs::rooms::keys::{
+    label::v0_1 as label_spec, list::v0_2 as list_spec, list::v0_3 as list_v0_3,
+};
 
 use crate::auth::AuthClaims;
 use crate::operations::{room_groups, room_member};
@@ -276,12 +278,72 @@ pub(super) async fn handle_list_v0_2(
     {
         return r;
     }
-    let req: list_spec::Payload = match parse_payload(&doc) {
-        Ok(r) => r,
+    let include_personal = match parse_payload::<list_spec::Payload>(&doc) {
+        Ok(r) => r.include_personal == Some(true),
         Err(resp) => return resp,
     };
-    let include_personal = req.include_personal == Some(true);
+    match list_rooms(state, auth, &doc, include_personal, false).await {
+        Ok(payload) => respond::<list_spec::Response>(&doc, payload),
+        Err(r) => r,
+    }
+}
 
+/// `rooms/keys/list/0.3` (trust-tasks-tf #1086).
+///
+/// 0.2's answer, with — under the same `includePersonal`, and only then — each entry's read
+/// marker (`rooms/keys/read-marker/set/0.1`) where one is held, which has the label's
+/// audience: the caller acting as the member, and nobody else.
+pub(super) async fn handle_list_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = super::helpers::require_capability(
+        state,
+        auth,
+        &doc,
+        Capability::RoomOpen,
+        "listing the rooms this VTA holds keys for",
+    )
+    .await
+    {
+        return r;
+    }
+    let include_personal = match parse_payload::<list_v0_3::Payload>(&doc) {
+        Ok(r) => r.include_personal == Some(true),
+        Err(resp) => return resp,
+    };
+    match list_rooms(state, auth, &doc, include_personal, include_personal).await {
+        Ok(payload) => respond::<list_v0_3::Response>(&doc, payload),
+        Err(r) => r,
+    }
+}
+
+/// The response, checked against the version's generated type and sent as built: the
+/// generated type reparses a read marker's `createdAt`, which goes back exactly as it was
+/// received (`rooms/keys/read-marker/set/0.1` recipient item 5).
+fn respond<R>(doc: &TrustTask<Value>, payload: Value) -> TrustTaskOutcome
+where
+    R: serde::de::DeserializeOwned,
+{
+    match serde_json::from_value::<R>(payload.clone()) {
+        Ok(_) => success_response(doc, payload),
+        Err(e) => app_error_to_reject(
+            doc,
+            AppError::Internal(format!("the list response does not fit its schema: {e}")),
+        ),
+    }
+}
+
+/// The entries every served `rooms/keys/list` version shares, with the member's label when
+/// `with_label` and their read marker when `with_marker`.
+async fn list_rooms(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    with_label: bool,
+    with_marker: bool,
+) -> Result<Value, TrustTaskOutcome> {
     let delegate = match super::room_act::is_delegate(state, auth).await {
         Ok(d) => d,
         Err(e) => {
@@ -292,37 +354,37 @@ pub(super) async fn handle_list_v0_2(
     let members = if delegate {
         Vec::new()
     } else {
-        match room_member::held_by_caller(state, auth).await {
-            Ok(m) => m,
-            Err(e) => return app_error_to_reject(&doc, e),
-        }
+        room_member::held_by_caller(state, auth)
+            .await
+            .map_err(|e| app_error_to_reject(doc, e))?
     };
 
     let mut rooms = Vec::with_capacity(members.len());
     for m in &members {
-        let held = match room_groups::held_room(&state.room_groups_ks, m).await {
-            Ok(r) => r,
-            Err(e) => return app_error_to_reject(&doc, e),
-        };
+        let held = room_groups::held_room(&state.room_groups_ks, m)
+            .await
+            .map_err(|e| app_error_to_reject(doc, e))?;
         let mut entry = serde_json::json!({
             "roomId": held.room_id,
             "member": m.persona(),
             "epoch": held.epoch,
             "earliestReadableEpoch": held.earliest_readable_epoch,
         });
-        if include_personal {
-            match room_groups::personal_label(&state.room_groups_ks, m).await {
-                Ok(Some(label)) => {
-                    entry["personal"] = match serde_json::to_value(&label) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return app_error_to_reject(&doc, AppError::Internal(e.to_string()));
-                        }
-                    };
-                }
-                Ok(None) => {}
-                Err(e) => return app_error_to_reject(&doc, e),
-            }
+        if with_label
+            && let Some(label) = room_groups::personal_label(&state.room_groups_ks, m)
+                .await
+                .map_err(|e| app_error_to_reject(doc, e))?
+        {
+            entry["personal"] = serde_json::to_value(&label)
+                .map_err(|e| app_error_to_reject(doc, AppError::Internal(e.to_string())))?;
+        }
+        if with_marker
+            && let Some(marker) = room_groups::read_marker(&state.room_groups_ks, m)
+                .await
+                .map_err(|e| app_error_to_reject(doc, e))?
+        {
+            entry["readMarker"] = serde_json::to_value(&marker)
+                .map_err(|e| app_error_to_reject(doc, AppError::Internal(e.to_string())))?;
         }
         rooms.push((entry, super::room_group::held_by(state, auth, m).await));
     }
@@ -339,13 +401,7 @@ pub(super) async fn handle_list_v0_2(
     if !held.is_empty() {
         payload["ext"] = serde_json::json!({ room_member::MEMBER_EXT: { "held": held } });
     }
-    match serde_json::from_value::<list_spec::Response>(payload) {
-        Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(
-            &doc,
-            AppError::Internal(format!("the list response does not fit its schema: {e}")),
-        ),
-    }
+    Ok(payload)
 }
 
 #[cfg(test)]

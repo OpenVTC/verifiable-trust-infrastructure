@@ -406,6 +406,19 @@ fn okp_jwk(vk: &VerifyingKey) -> Value {
 /// and present it. Returns `(issuer_did, vp_token)`. With `with_kb`, the
 /// presentation carries a holder kb-jwt bound to `aud` + `nonce`.
 fn make_presentation(aud: &str, nonce: &str, iat: u64, exp: i64, with_kb: bool) -> (String, Value) {
+    make_presentation_kb_at(aud, nonce, iat, exp, with_kb, iat)
+}
+
+/// [`make_presentation`] with the kb-jwt made at `kb_iat` rather than at the
+/// credential's `iat`.
+fn make_presentation_kb_at(
+    aud: &str,
+    nonce: &str,
+    iat: u64,
+    exp: i64,
+    with_kb: bool,
+    kb_iat: u64,
+) -> (String, Value) {
     use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
 
     let issuer = SigningKey::from_bytes(&[9u8; 32]);
@@ -442,7 +455,7 @@ fn make_presentation(aud: &str, nonce: &str, iat: u64, exp: i64, with_kb: bool) 
         audience: aud,
         nonce,
         signer: &holder_signer,
-        iat,
+        iat: kb_iat,
     };
     let presentation = present(
         &sd,
@@ -960,13 +973,40 @@ async fn rejects_an_expired_presentation() {
     let now = Utc::now();
     let iat = (now - Duration::hours(3)).timestamp() as u64;
     let exp = (now - Duration::hours(2)).timestamp();
-    let (_did, vp) = make_presentation("did:web:vtc.example", "n", iat, exp, true);
+    // A fresh kb-jwt over an expired credential: the credential's own window
+    // is what refuses it.
+    let (_did, vp) = make_presentation_kb_at(
+        "did:web:vtc.example",
+        "n",
+        iat,
+        exp,
+        true,
+        now.timestamp() as u64,
+    );
 
     let err = verify_presentation(&vp, "did:web:vtc.example", "n", None, now)
         .await
         .unwrap_err();
     assert!(
         matches!(&err, AppError::Validation(m) if m.contains("expired")),
+        "{err:?}"
+    );
+}
+
+/// RFC 9901 §7.3: a kb-jwt made long before it reached us is refused, however
+/// valid the credential (affinidi-sd-jwt 0.2's `KbFreshness`; 600 s here).
+#[tokio::test]
+async fn rejects_a_stale_kb_jwt() {
+    let now = Utc::now();
+    let iat = now.timestamp() as u64;
+    let exp = (now + Duration::hours(1)).timestamp();
+    let stale = (now - Duration::minutes(11)).timestamp() as u64;
+    let (_did, vp) = make_presentation_kb_at("did:web:vtc.example", "n", iat, exp, true, stale);
+    let err = verify_presentation(&vp, "did:web:vtc.example", "n", None, now)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("KB-JWT is older")),
         "{err:?}"
     );
 }
@@ -1325,7 +1365,7 @@ fn p256(seed: u8) -> (Vec<u8>, Value, String) {
     let mut jwk = serde_json::to_value(&kp.jwk).unwrap();
     jwk.as_object_mut().unwrap().remove("d");
     let did = vta_sdk::jws::JwsKey::from_jwk(&jwk).unwrap().did_key();
-    (kp.private_bytes, jwk, did)
+    (kp.private_bytes.clone(), jwk, did)
 }
 
 /// An SD-JWT-VC from `iss` (signed by a P-256 key, header `kid` = `issuer_kid`),

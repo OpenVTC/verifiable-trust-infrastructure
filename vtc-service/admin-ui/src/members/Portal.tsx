@@ -5,7 +5,14 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut } from "lucide-react";
 
-import { MemberApiError, memberFetch, postMember, vtcDid, type MemberMe } from "./api";
+import {
+  MEMBER_SESSION_EVENT,
+  MemberApiError,
+  memberFetch,
+  postMember,
+  vtcDid,
+  type MemberMe,
+} from "./api";
 import { DirectoryPage, EntryPage, MyCardPage } from "./Directory";
 import { GroupPage, GroupsPage } from "./Groups";
 import { Home } from "./Home";
@@ -14,10 +21,12 @@ import { ElectionPage, ElectionsPage } from "./Elections";
 import { BadgePage, BadgesPage, MakeBadgePage } from "./Badges";
 import { BoardPage, BoardsPage } from "./Boards";
 import { RoomPage, RoomsPage } from "./Rooms";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { forgetMemberSessionKey } from "@/lib/console-key";
 import { forgetSessionKey } from "./oob";
 import { SignIn, isJoinIntent } from "./SignIn";
 import { CommunityTopbar, fetchCommunityProfile } from "../signin/SignInLayout";
+import { shortenDid } from "@/lib/format";
 
 async function fetchMe(): Promise<MemberMe | null> {
   try {
@@ -97,12 +106,9 @@ function useRoute(): Route {
   return route;
 }
 
-function shortDid(did: string): string {
-  return did.length > 34 ? `${did.slice(0, 20)}…${did.slice(-8)}` : did;
-}
-
 export function Portal() {
   const qc = useQueryClient();
+  const route = useRoute();
   const me = useQuery({ queryKey: ["member-me"], queryFn: fetchMe });
   const profile = useQuery({
     queryKey: ["community-profile"],
@@ -122,6 +128,29 @@ export function Portal() {
     }
   };
 
+  // A member route refused this session (#2612): re-read who is signed in. If
+  // the session is gone, `fetchMe` answers null and sign-in shows, saying why.
+  // Only while signed in, so a refusal on the sign-in page reads nothing.
+  const [sessionEnded, setSessionEnded] = useState(false);
+  const signedIn = Boolean(me.data);
+  useEffect(() => {
+    if (!signedIn) return;
+    const recheck = () => {
+      void (async () => {
+        await qc.invalidateQueries({ queryKey: ["member-me"] });
+        if (!qc.getQueryData(["member-me"])) {
+          setSessionEnded(true);
+          qc.removeQueries({ queryKey: ["member-passkeys"] });
+        }
+      })();
+    };
+    window.addEventListener(MEMBER_SESSION_EVENT, recheck);
+    return () => window.removeEventListener(MEMBER_SESSION_EVENT, recheck);
+  }, [signedIn, qc]);
+  useEffect(() => {
+    if (signedIn) setSessionEnded(false);
+  }, [signedIn]);
+
   const communityName = me.data?.community.name ?? profile.data?.name;
   const logoUrl = me.data?.community.logoUrl ?? profile.data?.logoUrl;
 
@@ -133,7 +162,7 @@ export function Portal() {
       <CommunityTopbar communityName={communityName} logoUrl={logoUrl} tag="Members">
         {me.data && (
           <div className="topbar-user">
-            <code title={me.data.did}>{shortDid(me.data.did)}</code>
+            <code title={me.data.did}>{shortenDid(me.data.did)}</code>
             <button type="button" className="btn btn-ghost btn-sm" onClick={signOut}>
               <LogOut size={14} aria-hidden="true" /> Sign out
             </button>
@@ -155,9 +184,13 @@ export function Portal() {
       ) : !me.data || isJoinIntent() ? (
         // The join page shows even to a signed-in member: joining again with a
         // separate identity starts here, and only the wallet can offer it.
-        <SignIn communityName={communityName} signedInAs={me.data?.did} />
+        <SignIn communityName={communityName} signedInAs={me.data?.did} sessionEnded={sessionEnded} />
       ) : (
-        <SignedIn me={me.data} />
+        // A render-time throw on one page draws an alert in its place under a
+        // top bar that still works; moving to another page clears it (#2605).
+        <ErrorBoundary resetKey={route} variant="alert">
+          <SignedIn me={me.data} route={route} />
+        </ErrorBoundary>
       )}
     </>
   );
@@ -166,8 +199,7 @@ export function Portal() {
 /** A signed-in member's pages. The room and repository pages need the
  *  community's DID: the member's wallet holds them to the portal that DID's
  *  document names. */
-function SignedIn({ me }: { me: MemberMe }) {
-  const route = useRoute();
+function SignedIn({ me, route }: { me: MemberMe; route: Route }) {
   const walletPage =
     route.page === "rooms" ||
     route.page === "room" ||

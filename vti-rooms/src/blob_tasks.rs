@@ -36,6 +36,7 @@ use crate::blobs::{
 };
 use crate::{Room, Visibility};
 
+pub use crate::wire::ROOMS_RECORDS_GET_V4_TYPE as GET_V4_TYPE;
 /// The URIs these tasks are dispatched under, from [`crate::wire`].
 pub use crate::wire::{
     ROOMS_BLOBS_CHUNK_TYPE as DOWNLOAD_CHUNK_TYPE, ROOMS_RECORDS_GET_V2_TYPE as GET_V2_TYPE,
@@ -92,6 +93,39 @@ pub(crate) fn declared(
         code,
         message: message.into(),
         details,
+    }
+}
+
+/// Take a `rooms/records/get/0.4` request's `purpose` out of `payload`, leaving get/0.3's
+/// members, after checking the whole request against get/0.4's schema.
+pub fn get_v4_purpose(payload: &mut Value) -> Result<Option<String>, Refusal> {
+    parse::<vti_specs_rooms::rooms::records::get::v0_4::Payload>(payload)?;
+    Ok(payload
+        .as_object_mut()
+        .and_then(|o| o.remove("purpose"))
+        .and_then(|p| p.as_str().map(str::to_string)))
+}
+
+/// The refusal of a read whose purpose the presented chain does not grant (VTI-ACL-110),
+/// after the chain verified and before any record is read, so it says nothing about
+/// whether the record exists.
+///
+/// `rooms/records/get/0.4` declares `purposeNotGranted`, with whether the request named a
+/// purpose, and which. An earlier version, which cannot name one, is refused only where the
+/// chain lists more than one, and declares no code for it: the framework's
+/// `permissionDenied`.
+pub fn read_purpose_refused(
+    decision: &crate::purpose::PurposeDecision,
+    declares_purpose: bool,
+) -> Refusal {
+    if declares_purpose {
+        declared(
+            vti_specs_rooms::rooms::records::get::v0_4::error_codes::PURPOSE_NOT_GRANTED,
+            decision.refusal_message(),
+            decision.refusal_details(),
+        )
+    } else {
+        Refusal::App(AppError::Forbidden(decision.refusal_message()))
     }
 }
 
@@ -801,6 +835,7 @@ pub async fn get_v2_response(
 ///
 /// None is committed: the response's leaf is the record with these removed, as `blobs` is,
 /// so the leaf and the trace are get/0.2's unchanged.
+#[allow(deprecated)] // get/0.3 is still served beside get/0.4, which waits on credential purposes
 pub async fn get_v3_response(
     snapshot: &ReadSnapshot<'_>,
     room: &Room,
@@ -882,6 +917,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }

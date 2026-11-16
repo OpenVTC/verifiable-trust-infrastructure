@@ -39,4 +39,5 @@ pub(crate) mod services;
 pub(crate) mod setup;
 pub(crate) mod vault;
 pub(crate) mod vta;
+pub(crate) mod webs;
 pub(crate) mod webvh;

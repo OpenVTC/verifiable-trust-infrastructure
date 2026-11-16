@@ -24,6 +24,7 @@ import {
 } from "react";
 
 import type { ApiError } from "@/lib/api";
+import { messageOf } from "@/lib/messages";
 import { parkedOf } from "@/lib/parked-action";
 
 export type ToastKind = "success" | "info" | "error";
@@ -39,6 +40,17 @@ export interface Toast {
   readonly kind: ToastKind;
   readonly message: string;
   readonly link?: ToastLink;
+  /** Shown on hover only: the HTTP status, which means nothing to most
+   *  readers but helps whoever reports the problem (#2617). */
+  readonly title?: string;
+}
+
+/** How a toast is shown, beyond its words. */
+interface ToastOptions {
+  readonly link?: ToastLink;
+  readonly title?: string;
+  /** Stays until dismissed, as an error does. */
+  readonly sticky?: boolean;
 }
 
 export interface ToastApi {
@@ -66,32 +78,48 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const push = useCallback(
-    (kind: ToastKind, message: string, link?: ToastLink) => {
+  const show = useCallback(
+    (kind: ToastKind, message: string, options: ToastOptions = {}) => {
       const id = nextId.current++;
-      setToasts((prev) => [...prev, link ? { id, kind, message, link } : { id, kind, message }]);
-      // Auto-dismiss success + info; errors stick.
-      if (kind !== "error") {
+      const { link, title, sticky } = options;
+      setToasts((prev) => [
+        ...prev,
+        { id, kind, message, ...(link ? { link } : {}), ...(title ? { title } : {}) },
+      ]);
+      // Auto-dismiss success + info; errors, and what is asked to, stick.
+      if (kind !== "error" && !sticky) {
         setTimeout(() => dismiss(id), link ? LINK_DISMISS_MS : DEFAULT_DISMISS_MS);
       }
     },
     [dismiss],
   );
 
+  const push = useCallback(
+    (kind: ToastKind, message: string, link?: ToastLink) => show(kind, message, { link }),
+    [show],
+  );
+
   const pushFromError = useCallback(
     (err: unknown, prefix?: string) => {
       const parked = parkedOf(err);
       if (parked) {
-        push("success", parked.message, { href: parked.path, label: "View the action" });
+        // Kept until dismissed: a requester's own parked request is not in
+        // their "waiting for you" count, so on a screen that toasts rather
+        // than draws `<ErrorOrParked>` this is its only trace (#2617).
+        show("success", parked.message, {
+          link: { href: parked.path, label: "View the action" },
+          sticky: true,
+        });
         return;
       }
       const apiErr = err as Partial<ApiError> | undefined;
-      const detail = apiErr?.message ?? (err instanceof Error ? err.message : String(err));
-      const status = apiErr?.status ? ` (${apiErr.status})` : "";
-      const message = prefix ? `${prefix}: ${detail}${status}` : `${detail}${status}`;
-      push("error", message);
+      const detail = messageOf(err);
+      // The bare status ("(403)") means nothing to a community administrator;
+      // it stays on hover for whoever reports the problem (#2617).
+      const title = apiErr?.status ? `HTTP ${apiErr.status}` : undefined;
+      show("error", prefix ? `${prefix}: ${detail}` : detail, { title });
     },
-    [push],
+    [show],
   );
 
   const api = useMemo<ToastApi>(
@@ -136,7 +164,9 @@ function ToastViewport({
   toasts: ReadonlyArray<Toast>;
   dismiss: (id: number) => void;
 }) {
-  if (toasts.length === 0) return null;
+  // Always mounted, even empty: screen readers announce changes to a live
+  // region that is already there, and may miss one mounted with its first
+  // message (#2617).
   return (
     <div
       className="toast-viewport"
@@ -149,6 +179,7 @@ function ToastViewport({
           key={t.id}
           className={`toast toast-${t.kind}`}
           role={t.kind === "error" ? "alert" : "status"}
+          title={t.title}
         >
           <span className="toast-message">
             {t.message}

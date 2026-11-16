@@ -216,8 +216,8 @@ async fn audited(vtc: &TestVtc) -> Vec<(String, Option<String>)> {
         .unwrap();
     let mut out = Vec::new();
     for (_, value) in rows {
-        if let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&value)
-            && let vti_common::audit::AuditEvent::StepUpApproverChanged(d) = env.event
+        if let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&value)
+            && let vtc_audit::AuditEvent::StepUpApproverChanged(d) = env.event
         {
             out.push((env.timestamp, d.stage, d.enrolled_via));
         }
@@ -1198,9 +1198,9 @@ async fn vti_apv_016_an_offline_invite_is_audited_at_boot_and_redeems_as_offline
         .await
         .unwrap();
     let marker = rows.iter().find_map(|(_, v)| {
-        let env: vti_common::audit::AuditEnvelope = serde_json::from_slice(v).ok()?;
+        let env: vtc_audit::AuditEnvelope = serde_json::from_slice(v).ok()?;
         match env.event {
-            vti_common::audit::AuditEvent::AclBreakGlassWritten(d) => Some(d),
+            vtc_audit::AuditEvent::AclBreakGlassWritten(d) => Some(d),
             _ => None,
         }
     });

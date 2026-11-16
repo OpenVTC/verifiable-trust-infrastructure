@@ -120,10 +120,45 @@ fn test(got: Option<&Value>, op: &str, value: Option<&Value>, values: Option<&Va
     }
 }
 
+/// The counts a badge group's rule may read (VTI-BDG-015), each from the
+/// community's own records: kudos the member accepted, ideas of theirs a board
+/// selected, elections it issued them a ticket in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub kudos_received: u64,
+    pub ideas_selected: u64,
+    pub election_tickets: u64,
+}
+
+/// The facts only a badge group's rule reads (VTI-BDG-015).
+pub const COUNT_FACTS: [&str; 3] = ["kudosReceived", "ideasSelected", "electionTickets"];
+
+/// Whether `rule` reads any of [`COUNT_FACTS`].
+pub fn reads_counts(rule: &Value) -> bool {
+    rule.get("all").and_then(Value::as_array).is_some_and(|cs| {
+        cs.iter().any(|c| {
+            c.get("fact")
+                .and_then(Value::as_str)
+                .is_some_and(|f| COUNT_FACTS.contains(&f))
+        })
+    })
+}
+
 /// Whether `rule` admits `subject` now, reading the field schema as it stands:
 /// a condition on a field that is no longer an active `admin`- or
-/// `credential`-sourced one holds for nobody. A malformed rule admits nobody.
+/// `credential`-sourced one holds for nobody. A malformed rule admits nobody, and
+/// a count holds for nobody here: only [`admits_counting`] reads one.
 pub fn admits(rule: &Value, subject: &Subject, schema: &[FieldDef]) -> bool {
+    admits_counting(rule, subject, schema, None)
+}
+
+/// [`admits`], with the subject's badge counts where the group is a badge's.
+pub fn admits_counting(
+    rule: &Value,
+    subject: &Subject,
+    schema: &[FieldDef],
+    counts: Option<&Counts>,
+) -> bool {
     let Some(conditions) = rule
         .get("all")
         .and_then(Value::as_array)
@@ -154,6 +189,20 @@ pub fn admits(rule: &Value, subject: &Subject, schema: &[FieldDef]) -> bool {
                     return subject.personhood;
                 }
                 Some(&personhood)
+            }
+            Some(fact @ ("kudosReceived" | "ideasSelected" | "electionTickets")) => {
+                let Some(counts) = counts else {
+                    return false;
+                };
+                let n = match fact {
+                    "kudosReceived" => counts.kudos_received,
+                    "ideasSelected" => counts.ideas_selected,
+                    _ => counts.election_tickets,
+                };
+                return op == "atLeast"
+                    && c.get("count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|v| n >= v);
             }
             Some("field") => {
                 let key = c.get("field").and_then(Value::as_str).unwrap_or_default();
@@ -308,6 +357,23 @@ pub async fn recompute(
     group: &Group,
     now: DateTime<Utc>,
 ) -> Result<Report, AppError> {
+    if group.kind != GroupKind::Dynamic || group.rule.is_none() {
+        return Ok(Report::default());
+    }
+    let subjects = crate::directory::read::subjects(state).await?;
+    recompute_over(state, group, &subjects, now).await
+}
+
+/// [`recompute`] over `subjects` read once for a whole pass, so a pass over G
+/// dynamic groups reads every member once rather than G times (#2600). The
+/// pass is short next to the sweeper's tick, and a fact that moves during it
+/// moves the bus and wakes the next pass.
+async fn recompute_over(
+    state: &AppState,
+    group: &Group,
+    subjects: &[crate::directory::project::Subject],
+    now: DateTime<Utc>,
+) -> Result<Report, AppError> {
     let mut report = Report::default();
     let (GroupKind::Dynamic, Some(rule)) = (group.kind, &group.rule) else {
         return Ok(report);
@@ -315,11 +381,19 @@ pub async fn recompute(
     let ks = state.directory.ks();
     let schema = crate::directory::fields::schema(ks).await?;
     let excluded = opt_outs(ks, &group.group_id).await?;
-    let subjects = crate::directory::read::subjects(state).await?;
+    // A badge group's rule may read counts of the community's own records (VTI-BDG-015).
+    let counts = if group.badge_id.is_some() && reads_counts(rule) {
+        crate::badges::rule_counts(state, subjects).await?
+    } else {
+        HashMap::new()
+    };
     let wanted: BTreeSet<String> = subjects
         .iter()
         .filter(|s| s.active && !excluded.contains(&s.card.entry_id))
-        .filter(|s| admits(rule, s, &schema))
+        .filter(|s| {
+            let c = counts.get(&s.card.entry_id).copied().unwrap_or_default();
+            admits_counting(rule, s, &schema, Some(&c))
+        })
         .map(|s| s.card.entry_id.clone())
         .collect();
     let held: HashMap<String, Membership> = super::members_of(ks, &group.group_id)
@@ -368,6 +442,26 @@ pub async fn recompute(
             report.ended.push(entry_id.clone());
         }
     }
+    // An automatic badge's holding ends with the rule's admission (VTI-BDG-013, 063).
+    if group.badge_id.is_some() {
+        let actor = state
+            .config
+            .read()
+            .await
+            .vtc_did
+            .clone()
+            .unwrap_or_default();
+        for entry_id in &report.ended {
+            crate::badges::on_group_exit(
+                state,
+                group,
+                entry_id,
+                &actor,
+                crate::badges::GroupExit::Removed,
+            )
+            .await?;
+        }
+    }
     if !report.admitted.is_empty() || !report.ended.is_empty() {
         audit(state, group, &report).await;
         super::bindings::kick();
@@ -386,7 +480,7 @@ pub async fn admit(
     now: DateTime<Utc>,
 ) -> Result<bool, AppError> {
     let issued = if group.issues_credentials {
-        let issued = super::credential::issue(state, group, did)
+        let issued = super::credential::issue_admitting(state, group, did, entry_id, None)
             .await
             .map_err(|f| match f {
                 super::identity::Failure::Local(e) => e,
@@ -443,14 +537,13 @@ async fn audit(state: &AppState, group: &Group, report: &Report) {
         .map(|e| (e, "ruleAdmitted"))
         .chain(report.ended.iter().map(|e| (e, "ruleEnded")));
     for (entry_id, change) in rows {
-        let event = vti_common::audit::AuditEvent::GroupMembershipChanged(
-            vti_common::audit::GroupMembershipChangedData {
+        let event =
+            vtc_audit::AuditEvent::GroupMembershipChanged(vtc_audit::GroupMembershipChangedData {
                 group_id: group.group_id.clone(),
                 entry_id: entry_id.clone(),
                 change: change.into(),
                 reason: None,
-            },
-        );
+            });
         if let Err(e) = writer.write(&community, None, event).await {
             tracing::warn!(error = %e, "a dynamic group's membership change could not be audited");
         }
@@ -458,11 +551,21 @@ async fn audit(state: &AppState, group: &Group, report: &Report) {
 }
 
 /// [`recompute`] every dynamic group.
+///
+/// The members are read once for the pass ([`recompute_over`]), and not at
+/// all while no dynamic group exists.
 pub async fn recompute_all(state: &AppState, now: DateTime<Utc>) -> Result<(), AppError> {
-    for group in super::all(state.directory.ks()).await? {
-        if group.kind == GroupKind::Dynamic
-            && let Err(e) = recompute(state, &group, now).await
-        {
+    let dynamic: Vec<Group> = super::all(state.directory.ks())
+        .await?
+        .into_iter()
+        .filter(|g| g.kind == GroupKind::Dynamic)
+        .collect();
+    if dynamic.is_empty() {
+        return Ok(());
+    }
+    let subjects = crate::directory::read::subjects(state).await?;
+    for group in &dynamic {
+        if let Err(e) = recompute_over(state, group, &subjects, now).await {
             tracing::warn!(group = %group.group_id, error = %e, "a dynamic group could not be recomputed");
         }
     }
@@ -470,6 +573,11 @@ pub async fn recompute_all(state: &AppState, now: DateTime<Utc>) -> Result<(), A
 }
 
 static WAKE: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+/// How long a kicked sweeper waits before its pass, so a burst of writes (a
+/// bulk admission writes a member, an ACL entry and a card per admission) is
+/// one recompute rather than one per write (#2600).
+const KICK_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// Wake the sweeper: something a rule reads may have changed.
 pub fn kick() {
@@ -482,10 +590,23 @@ pub fn spawn(state: AppState, mut shutdown: tokio::sync::watch::Receiver<bool>) 
     tokio::spawn(async move {
         let mut wait = FIRST_PASS;
         loop {
-            tokio::select! {
+            let kicked = tokio::select! {
                 _ = shutdown.changed() => return,
-                _ = tokio::time::sleep(wait) => {}
-                _ = WAKE.notified() => {}
+                _ = tokio::time::sleep(wait) => false,
+                _ = WAKE.notified() => true,
+            };
+            if kicked {
+                // Coalesce the burst: wait a moment, then take the permit any
+                // kick in that moment left, which this pass answers too.
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(KICK_DEBOUNCE) => {}
+                }
+                tokio::select! {
+                    biased;
+                    _ = WAKE.notified() => {}
+                    _ = std::future::ready(()) => {}
+                }
             }
             wait = TICK;
             if let Err(e) = recompute_all(&state, Utc::now()).await {

@@ -14,12 +14,7 @@
 use tracing::{debug, info, warn};
 
 use vti_common::error::AppError;
-use vti_common::idempotency::CacheEntry;
 use vti_common::store::KeyspaceHandle;
-
-/// Storage-key prefix every idempotency record shares. Must match
-/// `vti_common::idempotency::store::storage_key`.
-const RECORD_PREFIX: &str = "idem:";
 
 /// Delete every record past its `expires_at`.
 ///
@@ -28,29 +23,24 @@ const RECORD_PREFIX: &str = "idem:";
 /// — so leaving it in place keeps a row that is permanently dead weight *and*
 /// permanently blocks its key, because a claim on that key reads it, fails to
 /// decode, and surfaces as a store error.
+///
+/// Through the records' expiry index, in bounded pages — never one read of
+/// every record, each of which holds a whole response, and which over vsock
+/// is one frame that stops fitting (#2626).
 pub async fn sweep_expired(idempotency_ks: &KeyspaceHandle) -> Result<(), AppError> {
-    let now = chrono::Utc::now();
-    let mut pruned = 0usize;
-    let mut unreadable = 0usize;
-
-    for (key, value) in idempotency_ks.prefix_iter_raw(RECORD_PREFIX).await? {
-        match serde_json::from_slice::<CacheEntry>(&value) {
-            Ok(entry) => {
-                if entry.is_expired(now) {
-                    idempotency_ks.remove(key).await?;
-                    pruned += 1;
-                }
-            }
-            Err(e) => {
-                debug!(error = %e, "idempotency sweeper: removing an unreadable record");
-                idempotency_ks.remove(key).await?;
-                unreadable += 1;
-            }
-        }
+    let count = vti_common::idempotency::sweep_expired(idempotency_ks, chrono::Utc::now()).await?;
+    if count.unreadable > 0 {
+        debug!(
+            unreadable = count.unreadable,
+            "idempotency sweeper: removed unreadable records"
+        );
     }
-
-    if pruned > 0 || unreadable > 0 {
-        info!(pruned, unreadable, "idempotency sweeper pruned records");
+    if count.purged > 0 || count.unreadable > 0 {
+        info!(
+            pruned = count.purged,
+            unreadable = count.unreadable,
+            "idempotency sweeper pruned records"
+        );
     }
     Ok(())
 }
@@ -70,8 +60,11 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use vti_common::config::StoreConfig;
-    use vti_common::idempotency::{EntryState, IdempotencyClass};
+    use vti_common::idempotency::{CacheEntry, EntryState, IdempotencyClass};
     use vti_common::store::Store;
+
+    /// The prefix `vti_common::idempotency`'s records are stored under.
+    const RECORD_PREFIX: &str = "idem:";
 
     fn temp_ks() -> (KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");

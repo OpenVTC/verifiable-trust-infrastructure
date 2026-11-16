@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.61.0"
+version = "0.66.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -39,7 +39,7 @@ cli-synthesis = []
 # emit. Also `store::test_fixture`, which opens test stores from a pre-built
 # template instead of creating (and fsyncing) every keyspace. NEVER enable in a
 # production build.
-test-support = []
+test-support = ["dep:log"]
 # Shared WebAuthn / passkey infrastructure (types + storage). Services
 # (VTA, VTC) implement the `auth::passkey::PasskeyState` trait on their
 # `AppState` and gain reusable enrolment + login storage primitives. The
@@ -74,8 +74,16 @@ blob-gcs = ["dep:object_store", "object_store/gcp"]
 # the store holds no credential, and asks a `Presigner` (a community's VTA
 # external account) for one request per operation.
 blob-presigned = ["reqwest/stream", "dep:quick-xml"]
+# The bounded regorus (Rego) engine both services evaluate policy with
+# (`policy_engine`): compile, the input-size cap and the CPU-time budget, in
+# one place (#2577). Off by default — only `vta-policy` and `vtc-service` turn
+# it on, and nothing else should pay for an interpreter.
+policy = ["dep:regorus"]
 
 [dependencies]
+# Rego interpreter behind `policy_engine` (feature `policy`). Workspace defaults
+# include `arc`, so a compiled `Engine` is `Send + Sync` and cheap to clone.
+regorus = { workspace = true, optional = true }
 # vta-sdk for the canonical auth wire shapes
 # (`protocols::auth::ChallengeResponse`, `AuthenticateResponse`,
 # `TokenBundle`). These are SIOPv2 / RFC 6749-shaped public types
@@ -86,11 +94,11 @@ blob-presigned = ["reqwest/stream", "dep:quick-xml"]
 # `default-features = false` skips the optional client transports
 # (didcomm, sealed-transfer, etc.); we only consume the type
 # definitions in the default feature set.
-vta-sdk = { path = "../vta-sdk", version = "0.85", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.90", default-features = false, features = [
   # The Trust-Task proof verifier lives there now; this crate re-exports it.
   "proof-verify",
 ] }
-async-trait = "0.1"
+async-trait = { workspace = true }
 # Durable OutboxStore backend (`outbox_store::VtiOutboxStore`) for the D1
 # delivery layer — the Guaranteed-send outbox, persisted via `store::Store`.
 affinidi-messaging-delivery = { workspace = true }
@@ -116,7 +124,7 @@ jsonwebtoken = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util", "signal", "macros"] }
 # `CancellationToken` in `sender_order`.
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -134,16 +142,14 @@ base64 = { workspace = true }
 hex = { workspace = true }
 # Idempotency middleware buffers request + response bodies (bounded by
 # `MAX_BODY_BYTES`) so it can hash inputs + cache outputs.
-http-body-util = "0.1"
-bytes = "1"
+http-body-util = { workspace = true }
 # `audit::writer::AUDIT_CHAIN_RECOVERY_FAILURES` — same pattern and version as
 # `vta_audit::AUDIT_WRITE_FAILURES`, so the two counters compose on one
 # dashboard without a version mismatch between exporters.
-metrics = "0.24"
+metrics = { workspace = true }
 
 # Secrets resolver (for error type)
 affinidi-tdk = { workspace = true }
-affinidi-data-integrity = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 trust-tasks-rs = { workspace = true }
 trust-tasks-capability-client = { workspace = true }
@@ -158,7 +164,7 @@ multibase = { workspace = true }
 aes-gcm = { workspace = true, optional = true }
 # Non-optional: `slip10` wipes every intermediate HMAC block, and that must not
 # depend on whether a consumer happens to enable `encryption`.
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 
 # Vsock storage proxy client (feature-gated, Linux only)
 tokio-vsock = { workspace = true, optional = true }
@@ -181,32 +187,37 @@ url = { workspace = true, optional = true }
 dialoguer = { workspace = true, optional = true }
 
 ipnetwork = { workspace = true, optional = true }
-affinidi-rate-limit = { version = "0.1.4", optional = true }
+affinidi-rate-limit = { workspace = true, optional = true }
 # Object-store backends for `blob_store` (S3, GCS). One crate for both, and it
 # takes a custom credential provider, which is where VTA-issued, room-scoped
 # credentials plug in later (data-rooms-files.md §7.4).
-object_store = { version = "0.14", default-features = false, optional = true }
+object_store = { workspace = true, optional = true }
 # S3's XML answers to the multipart and listing requests a direct upload's
 # verification reads (`blob_store::presigned`). Already in the graph through
 # `object_store`.
 quick-xml = { version = "0.42", features = ["serialize"], optional = true }
 
+# Only for `store::test_fixture`'s stderr logger (feature `test-support`):
+# fjall reports why it poisoned a database through `log`, which tests
+# otherwise never print.
+log = { version = "0.4", optional = true }
+
 [dev-dependencies]
+log = "0.4"
 # `blob_store::presigned` also compiles for this crate's own tests without the
 # `blob-presigned` feature, and reads S3's XML answers.
 quick-xml = { version = "0.42", features = ["serialize"] }
 # Parses the config fixtures in the VaultConfig tests.
 toml = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 # `base64` is now in the main `[dependencies]` (audit envelope encodes
 # 32-byte hashes as base64url strings).
 # Drives Router::oneshot in the trust_task router tests. Same pattern
 # vtc-service / vta-service use for integration tests.
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
 # Paused time for the rate-limit sweep test.
 tokio = { workspace = true, features = ["test-util"] }
-http-body-util = "0.1"
-bytes = "1"
+http-body-util = { workspace = true }
 # `blob_store::presigned` streams a staged file as a request body; its tests
 # run without the `blob-presigned` feature, so they ask for the same here.
 reqwest = { workspace = true, features = ["stream"] }
@@ -220,5 +231,15 @@ metrics-util = { version = "0.20", features = ["debugging"] }
 # of the process file-creation mask.
 libc = { workspace = true }
 
-[lints]
-workspace = true
+# The workspace lint table with `unsafe_code` at `deny`, not `forbid` (#2658):
+# this crate needs `unsafe` for `libc::umask` and `std::env::set_var` in its tests. Each such
+# statement carries `#[allow(unsafe_code)]` beside its SAFETY comment.
+# `scripts/check-workspace-lints.py` holds this table to `[workspace.lints]`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"

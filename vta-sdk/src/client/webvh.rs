@@ -43,7 +43,7 @@ impl VtaClient {
 
     /// Fetch the registered hosting server's `did-management/me/domains`
     /// view (caller-scoped subset of hosting domains, with the system
-    /// default flagged). Used by `pnm did-mgmt list-domains` and the
+    /// default flagged). Used by `pnm did-mgmt dids list-domains` and the
     /// interactive `--domain` prompt in `create-did` /
     /// `register-did`. The VTA asks the server with a Trust Task signed
     /// by its own operational key.
@@ -312,7 +312,7 @@ impl VtaClient {
     ///
     /// The canonical task keys on the DID, not `(context_id, scid)` — which is
     /// what kept this call on the legacy message after #861. Callers already
-    /// hold the DID; `pnm did-mgmt dids update` was fetching the record purely
+    /// hold the DID; `pnm did-mgmt dids edit` was fetching the record purely
     /// to translate it into the pair this method no longer needs.
     pub async fn update_did_webvh_by_did(
         &self,

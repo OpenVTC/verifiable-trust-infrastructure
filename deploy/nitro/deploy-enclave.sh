@@ -169,6 +169,23 @@ fi
 ok "EIF:    $EIF_PATH"
 ok "Config: $CONFIG_PATH"
 
+# --pcr0 / --pcr8: the measurements the caller expects this EIF to have. They
+# were parsed and then never read, so a caller who passed them got no check at
+# all (found by shellcheck, #2659). Now the EIF's own measurements must match
+# before anything is started; a mismatch is the wrong image, or one whose PCR0
+# the KMS key policy will not accept.
+for expected in "PCR0=$PCR0_OVERRIDE" "PCR8=$PCR8_OVERRIDE"; do
+    pcr=${expected%%=*}
+    want=${expected#*=}
+    [ -n "$want" ] || continue
+    got=$(nitro-cli describe-eif --eif-path "$EIF_PATH" | jq -r ".Measurements.$pcr // empty")
+    if [ "$got" != "$want" ]; then
+        err "$pcr of $EIF_PATH is ${got:-<none>}, expected $want"
+        exit 1
+    fi
+    ok "$pcr matches the expected value"
+done
+
 # Read manifest if present
 MANIFEST="${BUNDLE_DIR:+$BUNDLE_DIR/manifest.json}"
 # Bake mode as recorded by build-vta.sh: "true" (baked/self-host), "false"

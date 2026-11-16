@@ -27,8 +27,9 @@
 //! one. An intrinsic-sender session — DIDComm or TSP — has none, never has a
 //! bound key, and is not answered here.
 
+use super::routing::{Routes, on};
 use serde_json::Value;
-use trust_tasks_rs::{Payload, RejectReason, StandardCode, TrustTask, TrustTaskCode};
+use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::session::{Session, SessionState, list_sessions, now_epoch};
 use vti_specs::auth::whoami::v0_1 as whoami;
 
@@ -38,21 +39,9 @@ use super::helpers::{
 use super::{JoinAuthCtx, parse_spec_payload};
 use crate::server::AppState;
 
-pub(crate) const WHOAMI_TYPE: &str = <whoami::Payload as Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[WHOAMI_TYPE];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    if type_uri != WHOAMI_TYPE {
-        return None;
-    }
-    Some(handle(state, ctx, doc).await)
+/// Register the task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    on!(routes, whoami::Payload => handle)
 }
 
 fn refused(doc: &TrustTask<Value>, message: &str) -> TrustTaskOutcome {

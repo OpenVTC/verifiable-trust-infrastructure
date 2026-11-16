@@ -46,6 +46,10 @@ pub fn parse_payload<T: serde::de::DeserializeOwned>(
 ///   [`vta_sdk::protocols::trust_task_reject_reasons`] so a client recovers
 ///   the typed variant
 /// - `ApprovalRequired` → `taskFailed` with its code as `details.reason`
+/// - `NoMatchingProtocol` → `taskFailed`, discriminated
+///   (`no_matching_protocol`) with what it names
+/// - `UnsupportedDidMethod` → `proofInvalid`, `details.reason`
+///   `unsupportedDidMethod` and the `method` (VTI-KEY-009)
 /// - everything else → `internalError`, with the cause logged and **not** sent
 ///   ([`OPAQUE_INTERNAL_ERROR`])
 ///
@@ -74,6 +78,32 @@ pub fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> TrustTaskOu
             task_failed_because(message, reasons::CONFLICT)
         }
         AppError::Gone(_) => task_failed_because(message, reasons::GONE),
+        // No transport in common with a peer this service had to reach: the
+        // same `taskFailed` and `details` the VTA answers with, so the SDK
+        // reads both back into `VtaError::NoMatchingProtocol`.
+        AppError::NoMatchingProtocol(refusal) => RejectReason::TaskFailed {
+            reason: message,
+            details: Some(serde_json::json!({
+                "reason": reasons::NO_MATCHING_PROTOCOL,
+                "counterpartyDid": refusal.peer,
+                "ours": refusal.ours,
+                "theirs": refusal.theirs,
+            })),
+        },
+        // VTI-KEY-009, receiving side: the proof needs a method this service
+        // does not resolve. `proofInvalid` is what it is; the discriminator
+        // and the method say why.
+        AppError::UnsupportedDidMethod { method } => {
+            return reject_with_code(
+                doc,
+                TrustTaskCode::Standard(StandardCode::ProofInvalid),
+                message,
+                Some(serde_json::json!({
+                    "reason": reasons::UNSUPPORTED_DID_METHOD,
+                    "method": method,
+                })),
+            );
+        }
         // A decision the caller can still obtain — another party's consent
         // (VTI-APV-002), said the way the VTA's gate says it.
         AppError::ApprovalRequired { code, details } => {
@@ -179,28 +209,81 @@ pub const DETAILS_MAX_JCS_BYTES: usize = 4096;
 /// Companion to [`DETAILS_MAX_JCS_BYTES`].
 pub const DETAILS_MAX_MEMBERS: usize = 16;
 
-/// Drop a `details` annex that exceeds the framework's bound, keeping the code.
+/// Members a `details` may shed, in this order, before the whole of it is
+/// dropped — each paired with the member that replaces it and says how many
+/// items went (an array's length; `1` for anything else).
 ///
-/// An oversized `details` is **ignored, never grounds to discard the `code`**:
-/// the code is what the receiving party needs.
-fn bound_details(details: Option<Value>) -> Option<Value> {
-    let details = details?;
+/// A member belongs here when it is a *convenience* the receiver can do
+/// without, and the rest of the `details` is what it cannot. The one entry:
+/// `auth:consent_required` carries one signed `task-consent/request` per
+/// approver so a requester can relay them where the service has no route. Each
+/// is around a kilobyte, so three approvers pass the default bound — and
+/// without shedding the whole annex went, taking the digest, correlator and
+/// challenge with it: the requester was told consent was required and given
+/// nothing to act on (Keyring VTI-37). Shedding the requests keeps the
+/// ceremony's coordinates on the wire; the count tells the requester the relay
+/// copies exist and did not fit, rather than that there were none.
+///
+/// Whole or not at all: a partial list would read as "these are the approvers",
+/// and a requester relaying to the ones it was given would silently skip the
+/// rest. Matched by member name on every bounded `details`.
+pub const SHEDDABLE_DETAILS_MEMBERS: &[(&str, &str)] =
+    &[("consentRequests", "consentRequestsOmitted")];
+
+/// Is `details` within the framework's default bound? Uncanonicalisable is
+/// out of bound: it cannot be measured, so it does not go out.
+pub fn details_within_bound(details: &Value) -> bool {
     let too_many_members = details
         .as_object()
         .is_some_and(|o| o.len() > DETAILS_MAX_MEMBERS);
-    let too_large = serde_json_canonicalizer::to_string(&details)
+    let too_large = serde_json_canonicalizer::to_string(details)
         .map(|jcs| jcs.len() > DETAILS_MAX_JCS_BYTES)
-        // Uncanonicalisable is worse than oversized: it cannot be bounded, so
-        // it does not go out.
         .unwrap_or(true);
-    if too_many_members || too_large {
-        tracing::warn!(
-            members = details.as_object().map(serde_json::Map::len),
-            "error `details` exceeds the framework bound and was dropped; the code still went out"
-        );
-        return None;
+    !too_many_members && !too_large
+}
+
+/// Bring a `details` within the framework's bound, keeping the code.
+///
+/// An oversized `details` first sheds the members in
+/// [`SHEDDABLE_DETAILS_MEMBERS`], in order, until it fits; if it still does
+/// not, it is **ignored, never grounds to discard the `code`** — the code is
+/// what the receiving party needs. Omitting members to stay within the bound
+/// conforms; exceeding it does not.
+fn bound_details(details: Option<Value>) -> Option<Value> {
+    let mut details = details?;
+    if details_within_bound(&details) {
+        return Some(details);
     }
-    Some(details)
+    let original_members = details.as_object().map(serde_json::Map::len);
+
+    let mut shed: Vec<&str> = Vec::new();
+    for (member, marker) in SHEDDABLE_DETAILS_MEMBERS {
+        let Some(obj) = details.as_object_mut() else {
+            break;
+        };
+        let Some(removed) = obj.remove(*member) else {
+            continue;
+        };
+        let count = removed.as_array().map_or(1, Vec::len);
+        obj.insert((*marker).to_string(), Value::from(count));
+        shed.push(member);
+        if details_within_bound(&details) {
+            tracing::warn!(
+                shed = ?shed,
+                "error `details` exceeds the framework bound; shed the listed members \
+                 (their count went out in their place) and sent the rest with the code"
+            );
+            return Some(details);
+        }
+    }
+
+    tracing::warn!(
+        members = original_members,
+        shed = ?shed,
+        "error `details` exceeds the framework bound even after shedding; dropped the whole \
+         of it and the code still went out"
+    );
+    None
 }
 
 /// Build a routed refusal for `reason`; the status follows from its code.
@@ -411,6 +494,22 @@ mod tests {
             (AppError::Conflict("already open".into()), reasons::CONFLICT),
             (AppError::Gone("withdrawn".into()), reasons::GONE),
             (AppError::IdempotencyKeyConflict, reasons::CONFLICT),
+            (
+                vti_common::error::NoMatchingProtocol {
+                    peer: "did:webvh:Qm:peer.example".into(),
+                    ours: vec![],
+                    theirs: vec![],
+                    note: None,
+                }
+                .into(),
+                reasons::NO_MATCHING_PROTOCOL,
+            ),
+            (
+                AppError::UnsupportedDidMethod {
+                    method: "example".into(),
+                },
+                reasons::UNSUPPORTED_DID_METHOD,
+            ),
         ] {
             let out = app_error_to_reject(&doc(), &err);
             let body: Value = serde_json::from_slice(&out.body).expect("reject body is JSON");
@@ -421,6 +520,22 @@ mod tests {
                 "{err:?} must carry {want}: {body}"
             );
         }
+    }
+
+    /// VTI-KEY-009: a document relying on an unresolved method is
+    /// `proofInvalid`, naming the method; never `permissionDenied` or an
+    /// `internalError`.
+    #[test]
+    fn vti_key_009_an_unsupported_method_is_proof_invalid_naming_it() {
+        let out = app_error_to_reject(
+            &doc(),
+            &AppError::UnsupportedDidMethod {
+                method: "example".into(),
+            },
+        );
+        let body: Value = serde_json::from_slice(&out.body).expect("reject body is JSON");
+        assert_eq!(body["payload"]["code"], "proofInvalid", "{body}");
+        assert_eq!(body["payload"]["details"]["method"], "example", "{body}");
     }
 
     /// The unrouted error claims the same document type a routed one does.

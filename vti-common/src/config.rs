@@ -71,11 +71,12 @@ pub struct FjallTuning {
         deserialize_with = "deserialize_block_cache"
     )]
     pub block_cache: Option<u64>,
-    /// Maximum size of all active memtables across every keyspace this
-    /// process opens, in bytes
-    /// (`fjall::Database::builder(..).max_write_buffer_size(Some(..))`).
-    /// fjall's own default is unbounded. Env override:
-    /// `STORAGE_FJALL_WRITE_BUFFER`.
+    /// Maximum unflushed bytes held in memory across every keyspace this
+    /// process opens. fjall 3.1 stores but does not enforce its own
+    /// `max_write_buffer_size`, so the store's background flusher
+    /// ([`crate::store::flusher`]) enforces this value; unset, it uses
+    /// [`crate::store::flusher::DEFAULT_WRITE_BUFFER_LIMIT`] (8 MiB).
+    /// Env override: `STORAGE_FJALL_WRITE_BUFFER`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -85,7 +86,9 @@ pub struct FjallTuning {
     /// Maximum size of all journals — the write-ahead log fjall replays
     /// on startup — in bytes
     /// (`fjall::Database::builder(..).max_journaling_size(..)`). fjall's
-    /// own default is 512 MiB. Env override: `STORAGE_FJALL_MAX_JOURNAL`.
+    /// own default is 512 MiB. fjall only checks it while flushing, which
+    /// the store's background flusher now makes happen regularly. Env
+    /// override: `STORAGE_FJALL_MAX_JOURNAL`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -974,6 +977,7 @@ mod fjall_config_tests {
         // SAFETY: guarded by `ENV_LOCK`, held by every test in this module
         // that touches these vars — no other test in this crate reads or
         // writes the `STORAGE_FJALL_*` names.
+        #[allow(unsafe_code)]
         unsafe {
             for var in FJALL_ENV_VARS {
                 std::env::remove_var(var);
@@ -1156,6 +1160,7 @@ mod fjall_config_tests {
             max_journal: None,
         };
         // SAFETY: serialized by `ENV_LOCK`.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("STORAGE_FJALL_BLOCK_CACHE", "8MiB");
         }
@@ -1193,6 +1198,7 @@ mod fjall_config_tests {
         clear_fjall_env();
 
         // SAFETY: serialized by `ENV_LOCK`.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("STORAGE_FJALL_MAX_JOURNAL", "1KiB");
         }

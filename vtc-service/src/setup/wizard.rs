@@ -72,11 +72,31 @@ pub async fn run_setup_wizard(
     config_path: Option<PathBuf>,
     single_admin: bool,
 ) -> Result<(), AppError> {
+    require_terminal(std::io::IsTerminal::is_terminal(&std::io::stdin()))?;
     intro_banner();
     let plan = collect_interactive(config_path, single_admin).await?;
     let outcome = apply(plan).await?;
     print_setup_summary_interactive(&outcome)?;
     Ok(())
+}
+
+/// Refuse the interactive wizard without a terminal on stdin, naming the
+/// unattended path (#2593).
+///
+/// Without this, `vtc setup` in a Dockerfile, a systemd unit or CI dies at
+/// its first prompt with a terminal I/O error that says nothing about the
+/// two-phase `--setup-key-out` / `--from` flow that exists for exactly that.
+fn require_terminal(stdin_is_terminal: bool) -> Result<(), AppError> {
+    if stdin_is_terminal {
+        return Ok(());
+    }
+    Err(AppError::Config(
+        "`vtc setup` is interactive and stdin is not a terminal. For unattended setup run it \
+         in two phases: `vtc setup --setup-key-out <key-file>` (then authorise the printed DID \
+         at the VTA), and `vtc setup --from <setup.toml>`. See \
+         docs/03-vtc/non-interactive-setup.md."
+            .into(),
+    ))
 }
 
 /// Gather every operator decision interactively and assemble a
@@ -146,7 +166,7 @@ async fn collect_interactive(
     //    enumerate its did-hosting servers + tenant domains for an
     //    interactive picker. Done before the secrets prompt so any auth /
     //    listing failure surfaces while the operator is still engaged.
-    let webvh = select_webvh_target(resolved.as_ref(), &setup_key).await?;
+    let (identity_method, webvh) = select_webvh_target(resolved.as_ref(), &setup_key).await?;
 
     // 5. Pick a secrets-store backend. We delay this until after
     //    the ACL pause because the operator may want to interrupt
@@ -164,6 +184,7 @@ async fn collect_interactive(
         inputs: WizardInputs {
             transports,
             provision_transport,
+            identity_method,
             ..inputs
         },
         webvh,
@@ -193,6 +214,20 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     // event traffic so the setup UX stays terse — long-form progress UX
     // is for `pnm`, not the daemon setup flow.
     let provision = run_provision_quietly(&inputs, &webvh, messaging.as_ref(), &setup_key).await?;
+    persist_provisioned(config_path, inputs, secrets, messaging, provision).await
+}
+
+/// Everything [`apply`] does once the VTA has answered: the VTC's DID log (a
+/// did:webvh's) or nothing (a did:webs's), `config.toml`, the key bundle, the
+/// keyspaces and the install token. Split from the round-trip so a test can
+/// hand it what a VTA returns.
+pub(crate) async fn persist_provisioned(
+    config_path: PathBuf,
+    inputs: WizardInputs,
+    secrets: SecretsConfig,
+    messaging: Option<MessagingConfig>,
+    provision: ProvisionResultV2,
+) -> Result<SetupOutcome, AppError> {
     let integration_did = provision
         .integration_did()
         .ok_or_else(|| {
@@ -214,15 +249,34 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
 
     // 5. Persist the did.jsonl log so the daemon's `GET
     //    /.well-known/did.jsonl` route can serve it after restart.
-    let did_log = provision.webvh_log().ok_or_else(|| {
-        AppError::Internal(
-            "vtc-host template did not produce a did.jsonl output — the VTC must be a did:webvh"
-                .into(),
-        )
-    })?;
+    //
+    //    A did:webs has no log for the VTC to keep: its VTA published the key
+    //    event stream (`keri.cesr`) at the did-hosting server, which derives
+    //    `did.json` from it, and every later change to it is the VTA's
+    //    (`vta/webs/dids/update`). So nothing is written, and the bundle must
+    //    carry the stream instead — proof the VTA minted what was asked.
     let data_dir = default_data_dir_for(&config_path);
-    let label = did_log_label_or_err(&integration_did)?;
-    write_did_log(&data_dir, &label, did_log)?;
+    check_identity_matches(inputs.identity_method, &integration_did)?;
+    match inputs.identity_method {
+        IdentityMethod::Webvh => {
+            let did_log = provision.webvh_log().ok_or_else(|| {
+                AppError::Internal(format!(
+                    "the VTA did not return a did.jsonl for the VTC's DID {integration_did}"
+                ))
+            })?;
+            let label = did_log_label_or_err(&integration_did)?;
+            write_did_log(&data_dir, &label, did_log)?;
+        }
+        IdentityMethod::Webs => {
+            provision.webs_keri_cesr().ok_or_else(|| {
+                AppError::Internal(format!(
+                    "the VTA returned no key event stream (keri.cesr) for the VTC's DID \
+                     {integration_did}: a VTA older than did:webs provisioning (#2695) \
+                     cannot mint a did:webs VTC"
+                ))
+            })?;
+        }
+    }
 
     // 6. Materialise the config. We hold off writing it to disk until
     //    step 7 because the config-secret backend stores the key bundle
@@ -287,6 +341,14 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     //    to pay the partition-create cost.
     open_keyspaces(&app_config)?;
 
+    // 8b. Hand the long-term admin key over as an owner-only file in the data
+    // directory — never on a terminal (#2703). The integration key doesn't
+    // contain the admin private key; it comes from the provision result.
+    let admin_key_file = provision
+        .admin_key()
+        .map(|key| write_admin_key_file(&data_dir, key))
+        .transpose()?;
+
     // 9. Mint a one-shot install token. The operator claims the community
     //    with a passkey on the running daemon; the founder is that passkey's
     //    own `did:key`. The admin DID below — the rotated long-term DID the
@@ -311,15 +373,6 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     )
     .await?;
 
-    // Surface the long-term admin key material so the operator can
-    // save it for CLI use (the wizard doesn't yet write it to a
-    // keyring — manual handling is the MVP). The integration key
-    // doesn't contain the admin private key; we pull it from the
-    // provision result.
-    let admin_key_summary = provision
-        .admin_key()
-        .and_then(|k| serde_json::to_string_pretty(k).ok());
-
     Ok(SetupOutcome {
         vtc_did: integration_did,
         admin_did,
@@ -327,7 +380,7 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
         data_dir,
         install_url,
         claim_code,
-        admin_key_json: admin_key_summary,
+        admin_key_file,
         single_admin_mode: inputs.single_admin_mode,
     })
 }
@@ -346,9 +399,8 @@ pub(crate) fn single_admin_warning(inputs: &WizardInputs) -> Option<String> {
     })
 }
 
-/// Print the rich, interactive completion summary, gating the one-shot
-/// admin-key reveal behind an explicit confirm so the private key never
-/// spills into terminal scrollback unasked.
+/// Print the rich, interactive completion summary. The admin private key is
+/// never printed, only the owner-only file holding it (#2703).
 fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppError> {
     println!();
     println!("\x1b[1;32m✅ VTC setup complete.\x1b[0m");
@@ -364,27 +416,14 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
         );
     }
     println!();
-    if let Some(key_json) = outcome.admin_key_json.as_deref() {
-        // The admin private key lands in the terminal scrollback / any
-        // session recording the moment it's printed. Make the operator
-        // consciously reveal it rather than spilling it by default.
-        // TODO(keyring): write this to the OS keyring instead of stdout.
-        let reveal = Confirm::new()
-            .with_prompt(
-                "Display the admin private key now? It's needed for CLI access and is shown only once",
-            )
-            .default(false)
-            .interact()
-            .map_err(prompt_err)?;
-        if reveal {
-            println!("\x1b[1;33mAdmin key (save this — needed for CLI access):\x1b[0m");
-            println!("{key_json}");
-        } else {
-            println!(
-                "\x1b[1;33mAdmin key not displayed.\x1b[0m Re-run setup if you need it; it is \
-                 not persisted."
-            );
-        }
+    if let Some(key_file) = outcome.admin_key_file.as_deref() {
+        // Only the path: a key printed to a terminal lands in scrollback
+        // and any session recording (#2703).
+        println!(
+            "\x1b[1;33mAdmin key:\x1b[0m     {} (owner-only; needed for CLI access as the admin \
+             DID — move it to where that client keeps its keys, then delete this copy)",
+            key_file.display()
+        );
         println!();
     }
     println!("\x1b[1mInstall URL (one-shot, 15 min TTL):\x1b[0m");
@@ -411,6 +450,54 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
     println!("  {}", offline_acl_add_command(outcome));
     println!();
     Ok(())
+}
+
+/// Write the long-term admin key the VTA returned to
+/// `<data_dir>/keys/admin-key.json` (directory `0700`, file `0600`, created
+/// new) and return the path. The file is the [`DidKeyMaterialV2`] JSON the VTA
+/// sealed to the setup key.
+///
+/// This is the hand-over the rest of setup already uses for key material
+/// that must outlive the run (`--setup-key-out`, `vtc keys request`): an
+/// owner-only file, never a terminal (#2703). An existing `admin-key.json`
+/// (a re-run against the same data directory) is never overwritten — it may
+/// be the only copy of an earlier admin key — so the new one gets a
+/// timestamped name beside it.
+///
+/// [`DidKeyMaterialV2`]: vta_sdk::sealed_transfer::DidKeyMaterialV2
+pub(crate) fn write_admin_key_file(
+    data_dir: &std::path::Path,
+    key: &vta_sdk::sealed_transfer::DidKeyMaterialV2,
+) -> Result<PathBuf, AppError> {
+    let io_err = |what: &str, path: &std::path::Path, e: std::io::Error| {
+        AppError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{what} {}: {e}", path.display()),
+        ))
+    };
+    let dir = data_dir.join("keys");
+    std::fs::create_dir_all(&dir).map_err(|e| io_err("create key dir", &dir, e))?;
+    crate::secure_file::restrict_dir_to_owner(&dir)
+        .map_err(|e| io_err("harden key dir perms", &dir, e))?;
+
+    let json = zeroize::Zeroizing::new(
+        serde_json::to_vec_pretty(key)
+            .map_err(|e| AppError::Internal(format!("serialise admin key: {e}")))?,
+    );
+    let path = dir.join("admin-key.json");
+    match vti_common::secure_file::write_secret_file(&path, &json) {
+        Ok(()) => Ok(path),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let path = dir.join(format!(
+                "admin-key.{}.json",
+                Utc::now().format("%Y%m%dT%H%M%SZ")
+            ));
+            vti_common::secure_file::write_secret_file(&path, &json)
+                .map_err(|e| io_err("write admin key", &path, e))?;
+            Ok(path)
+        }
+        Err(e) => Err(io_err("write admin key", &path, e)),
+    }
 }
 
 /// The offline command that grants the setup's admin DID without the
@@ -487,6 +574,38 @@ pub(crate) struct WizardInputs {
     /// Whether the community's logs list their did:scid alias. `None` → the
     /// VTA's `[dids]`.
     pub(crate) scid_also_known_as: Option<bool>,
+    /// The method of the community's **own** DID: a `did:webvh` (the
+    /// default, presented per `did_method`) or a level-1 `did:webs`
+    /// (VTI-KEY-001, VTI-KEY-146). Distinct from `did_method`, which also
+    /// decides how the DIDs the community mints later are presented, and which
+    /// only a did:webvh log has.
+    pub(crate) identity_method: IdentityMethod,
+}
+
+/// The method of the VTC's own durable DID (VTI-KEY-001).
+///
+/// A `did:webs` VTC is provisioned from `vtc-host-classical` — `vtc-host`
+/// without its post-quantum second signing key, which a level-1 did:webs cannot
+/// hold (CONVENTIONS.md 0.2 §9.2) — with `DID_METHOD=webs`, and published by the
+/// VTA at a did-hosting server: it has no serverless mode and no `did.jsonl`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum IdentityMethod {
+    /// `did:webvh` (or its `did:scid` presentation), from `vtc-host`.
+    #[default]
+    Webvh,
+    /// A level-1 `did:webs`, from `vtc-host-classical`.
+    Webs,
+}
+
+impl IdentityMethod {
+    /// The DID template the VTC's identity is provisioned from.
+    pub(crate) fn template(self) -> &'static str {
+        match self {
+            Self::Webvh => "vtc-host",
+            Self::Webs => "vtc-host-classical",
+        }
+    }
 }
 
 /// The transport `vtc setup` provisions over, when the operator forces one.
@@ -615,9 +734,8 @@ pub(crate) struct WizardPlan {
 
 /// The facts [`apply`] produces once the VTC is provisioned and all
 /// on-disk state is written. The caller decides how to present them
-/// (the interactive wizard prints a rich summary with a one-shot
-/// admin-key reveal; `setup --from` prints a terse, scrape-friendly
-/// block).
+/// (the interactive wizard prints a rich summary; `setup --from` prints a
+/// terse, scrape-friendly block).
 pub(crate) struct SetupOutcome {
     pub(crate) vtc_did: String,
     pub(crate) admin_did: String,
@@ -625,10 +743,10 @@ pub(crate) struct SetupOutcome {
     pub(crate) data_dir: PathBuf,
     pub(crate) install_url: String,
     pub(crate) claim_code: String,
-    /// Pretty-printed JSON of the long-term admin key, when the VTA
-    /// returned one. Sensitive — the interactive path gates its display
-    /// behind a confirm; the non-interactive path never prints it.
-    pub(crate) admin_key_json: Option<String>,
+    /// The owner-only file holding the long-term admin key, when the VTA
+    /// returned one ([`write_admin_key_file`]). Both front-ends print only
+    /// this path, never the key (#2703).
+    pub(crate) admin_key_file: Option<PathBuf>,
     /// Whether the community was set up in single-administrator mode
     /// (VTI-APV-022).
     pub(crate) single_admin_mode: bool,
@@ -793,6 +911,7 @@ fn prompt_inputs(single_admin: bool) -> Result<WizardInputs, AppError> {
         // The VTA's `[dids]` decides; `vtc setup --from` can state them.
         did_method: None,
         scid_also_known_as: None,
+        identity_method: IdentityMethod::Webvh,
     })
 }
 
@@ -1015,7 +1134,7 @@ fn prompt_transports(mediator_did: &str) -> Result<Vec<Transport>, AppError> {
 async fn select_webvh_target(
     resolved: Option<&ResolvedVta>,
     setup_key: &EphemeralSetupKey,
-) -> Result<WebvhTarget, AppError> {
+) -> Result<(IdentityMethod, WebvhTarget), AppError> {
     println!();
     println!("\x1b[1mDID hosting\x1b[0m");
     println!("  Your community is identified by a `did:webvh` DID of the form:");
@@ -1030,6 +1149,11 @@ async fn select_webvh_target(
     println!("  Serverless instead drops the <path>: the VTC self-hosts its own");
     println!("  did.jsonl at <host>/.well-known/did.jsonl, served by this daemon — no");
     println!("  external did-hosting server required.");
+    println!();
+    println!("  Or a did:webs (alpha): did:webs:<host>:<path>:<AID>, a KERI identifier the");
+    println!("  VTA publishes at a did-hosting server built with did:webs hosting. It has");
+    println!("  one signing key (no post-quantum key), no serverless mode, and its services");
+    println!("  change only through the VTA. See docs/02-vta/did-webs.md.");
     println!();
 
     // Connect over whichever transport the VTA advertises so we can offer
@@ -1062,8 +1186,14 @@ async fn select_webvh_target(
         // We don't prompt for a path: it's only meaningful once a
         // hosting server is in play, and a serverless DID ignores it
         // entirely (it always resolves at `<host>/.well-known/`), so a
-        // prompt here would have unpredictable effect.
-        return Ok(WebvhTarget::default());
+        // prompt here would have unpredictable effect. A did:webs needs a
+        // named server, so without the catalogue it is not offered: `vtc
+        // setup --from` with `identity_method = "webs"` names one directly.
+        println!(
+            "  did:webs needs a did-hosting server picked from the VTA's catalogue; to set \
+             one up without it, use `vtc setup --from` with identity_method = \"webs\"."
+        );
+        return Ok((IdentityMethod::Webvh, WebvhTarget::default()));
     };
 
     // A DIDComm-connected client holds a live, auto-reconnecting session for
@@ -1079,8 +1209,11 @@ async fn select_webvh_target(
 /// The server, tenant-domain and path prompts, against a connected client.
 /// Split out of [`select_webvh_target`] so the client is shut down however
 /// these end.
-async fn prompt_webvh_target(client: &VtaClient) -> Result<WebvhTarget, AppError> {
-    let server_id = prompt_webvh_server(client).await?;
+async fn prompt_webvh_target(
+    client: &VtaClient,
+) -> Result<(IdentityMethod, WebvhTarget), AppError> {
+    let method = prompt_identity_method()?;
+    let server_id = prompt_webvh_server(client, method).await?;
     let (domain, path) = match server_id.as_deref() {
         // A hosting server is selected: the `<path>` is a real label
         // under that server, so offer it (and the tenant-domain picker).
@@ -1096,10 +1229,31 @@ async fn prompt_webvh_target(client: &VtaClient) -> Result<WebvhTarget, AppError
         None => (None, None),
     };
 
-    Ok(WebvhTarget {
-        server_id,
-        domain,
-        path,
+    Ok((
+        method,
+        WebvhTarget {
+            server_id,
+            domain,
+            path,
+        },
+    ))
+}
+
+/// did:webvh (the default) or a level-1 did:webs for the VTC's own DID.
+fn prompt_identity_method() -> Result<IdentityMethod, AppError> {
+    let idx = dialoguer::Select::new()
+        .with_prompt("DID method of the community's own DID")
+        .items([
+            "did:webvh (recommended; can carry a post-quantum key)",
+            "did:webs (alpha, KERI; one signing key; hosted only)",
+        ])
+        .default(0)
+        .interact()
+        .map_err(prompt_err)?;
+    Ok(if idx == 1 {
+        IdentityMethod::Webs
+    } else {
+        IdentityMethod::Webvh
     })
 }
 
@@ -1163,17 +1317,38 @@ async fn connect_setup_client(
 /// List the VTA's registered did-hosting servers and let the operator
 /// pick one — or choose serverless (self-hosted at the base URL). An
 /// empty catalogue or a listing error falls back to serverless (`None`).
-async fn prompt_webvh_server(client: &VtaClient) -> Result<Option<String>, AppError> {
+async fn prompt_webvh_server(
+    client: &VtaClient,
+    method: IdentityMethod,
+) -> Result<Option<String>, AppError> {
     use dialoguer::Select;
 
+    // A did:webs has no serverless mode: no server is a refusal, with the fix.
+    let no_webs_server = |why: String| {
+        AppError::Validation(format!(
+            "{why}; a did:webs VTC is published by one of the VTA's did-hosting servers, which \
+             must be built with did:webs hosting (`method-webs`). Register one (`pnm \
+             did-mgmt servers add`) and set up again, or choose did:webvh."
+        ))
+    };
     let servers = match client.list_webvh_servers().await {
         Ok(body) => body.servers,
+        Err(e) if method == IdentityMethod::Webs => {
+            return Err(no_webs_server(format!(
+                "could not list the VTA's did-hosting servers ({e})"
+            )));
+        }
         Err(e) => {
             println!("  Could not list did-hosting servers ({e}); defaulting to serverless.");
             return Ok(None);
         }
     };
 
+    if servers.is_empty() && method == IdentityMethod::Webs {
+        return Err(no_webs_server(
+            "no did-hosting servers are registered with this VTA".into(),
+        ));
+    }
     if servers.is_empty() {
         println!("  No did-hosting servers are registered with this VTA — the VTC will");
         println!("  self-host its `did.jsonl` at the base URL (serverless).");
@@ -1187,7 +1362,9 @@ async fn prompt_webvh_server(client: &VtaClient) -> Result<Option<String>, AppEr
             _ => format!("{}  ({})", s.id, s.did),
         })
         .collect();
-    labels.push("Serverless — self-host did.jsonl at the VTC base URL".to_string());
+    if method == IdentityMethod::Webvh {
+        labels.push("Serverless — self-host did.jsonl at the VTC base URL".to_string());
+    }
 
     let idx = Select::new()
         .with_prompt("Where should the VTC DID be published?")
@@ -1581,6 +1758,32 @@ async fn run_provision_quietly(
     messaging: Option<&MessagingConfig>,
     setup_key: &EphemeralSetupKey,
 ) -> Result<ProvisionResultV2, AppError> {
+    let ask = provision_ask(inputs, webvh, messaging)?;
+    let reply = drive_provision(
+        inputs.vta_did.clone(),
+        setup_key,
+        ask,
+        inputs.provision_transport.map(ProvisionTransport::protocol),
+    )
+    .await?;
+
+    match reply {
+        VtaReply::Full(result) => Ok(*result),
+        VtaReply::AdminOnly(_) => Err(AppError::Internal(
+            "VTA returned an admin-only reply but the vtc-host template requires a \
+             FullSetup reply"
+                .into(),
+        )),
+    }
+}
+
+/// What setup asks the VTA to provision: the template for the identity method
+/// and its variables.
+pub(crate) fn provision_ask(
+    inputs: &WizardInputs,
+    webvh: &WebvhTarget,
+    messaging: Option<&MessagingConfig>,
+) -> Result<ProvisionAsk, AppError> {
     let mut vars = BTreeMap::new();
     // The template appends both `REST_PATH` (default `/v1`) and
     // `STATUS_LIST_PATH` (default `/v1/status-lists`) to `URL`, so `URL` must
@@ -1664,34 +1867,31 @@ async fn run_provision_quietly(
     // How the community's DID is presented (VTI-VTC-004, VTI-VTA-036): the
     // VTA's provisioning takes it as template vars, and its `[dids]` decides
     // what is not stated.
-    if let Some(method) = inputs.did_method {
-        vars.insert(
-            "DID_METHOD".to_string(),
-            JsonValue::String(method.as_str().to_string()),
-        );
+    //
+    // A did:webs identity is chosen by the same var (`DID_METHOD=webs`, as
+    // provision-integration reads it); `did_method` then only shapes the DIDs
+    // the community mints later, and a key event log lists no did:scid alias.
+    match inputs.identity_method {
+        IdentityMethod::Webs => {
+            vars.insert("DID_METHOD".to_string(), JsonValue::String("webs".into()));
+        }
+        IdentityMethod::Webvh => {
+            if let Some(method) = inputs.did_method {
+                vars.insert(
+                    "DID_METHOD".to_string(),
+                    JsonValue::String(method.as_str().to_string()),
+                );
+            }
+            if let Some(alias) = inputs.scid_also_known_as {
+                vars.insert("SCID_ALSO_KNOWN_AS".to_string(), JsonValue::Bool(alias));
+            }
+        }
     }
-    if let Some(alias) = inputs.scid_also_known_as {
-        vars.insert("SCID_ALSO_KNOWN_AS".to_string(), JsonValue::Bool(alias));
-    }
-    let ask = ProvisionAsk::for_template("vtc-host", vars, inputs.context.clone())
-        .with_label("vtc-host integration");
-
-    let reply = drive_provision(
-        inputs.vta_did.clone(),
-        setup_key,
-        ask,
-        inputs.provision_transport.map(ProvisionTransport::protocol),
+    let template = inputs.identity_method.template();
+    Ok(
+        ProvisionAsk::for_template(template, vars, inputs.context.clone())
+            .with_label(format!("{template} integration")),
     )
-    .await?;
-
-    match reply {
-        VtaReply::Full(result) => Ok(*result),
-        VtaReply::AdminOnly(_) => Err(AppError::Internal(
-            "VTA returned an admin-only reply but the vtc-host template requires a \
-             FullSetup reply"
-                .into(),
-        )),
-    }
 }
 
 /// Drive the provision-integration workflow to completion, honouring the
@@ -2017,8 +2217,10 @@ async fn mint_initial_install_token(
     co_admin_did: Option<&str>,
     base_url: &str,
 ) -> Result<(String, String), AppError> {
-    let ed25519 = bundle.ed25519_private_bytes()?;
-    let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
+    // The daemon derives the install-token key from the derivation root
+    // (`server::init_auth`); a token minted under anything else never verifies.
+    let root = bundle.derivation_root()?;
+    let signer = InstallTokenSigner::from_master_seed(&*root)?;
     let minted = mint_passkey_install_token(
         &signer,
         &bundle.integration_did,
@@ -2113,6 +2315,24 @@ fn default_data_dir_for(config_path: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("data"))
 }
 
+/// The DID the VTA minted is of the method asked for. A VTA that does not read
+/// `DID_METHOD=webs` would otherwise hand back a did:webvh the operator did not
+/// choose, and a did:webs answer to a did:webvh ask is as wrong.
+fn check_identity_matches(method: IdentityMethod, did: &str) -> Result<(), AppError> {
+    let is_webs = did.starts_with("did:webs:");
+    match (method, is_webs) {
+        (IdentityMethod::Webs, false) => Err(AppError::Internal(format!(
+            "asked the VTA for a did:webs VTC and it minted {did}: the VTA does not provision \
+             did:webs integrations (it needs the `webs` feature, `[dids] webs_enabled` and \
+             `webs_service_dids`). Fix the VTA and set up again, or set up as did:webvh."
+        ))),
+        (IdentityMethod::Webvh, true) => Err(AppError::Internal(format!(
+            "asked the VTA for a did:webvh VTC and it minted the did:webs {did}"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Derive the on-disk log label for the VTC's own `did:webvh` — the
 /// final colon-separated component (for a serverless
 /// `did:webvh:<scid>:<host>` that's the host). This is purely a
@@ -2127,7 +2347,11 @@ fn did_log_label_or_err(did: &str) -> Result<String, AppError> {
     did.strip_prefix("did:webvh:")
         .and_then(|suffix| suffix.split(':').next_back())
         .map(str::to_string)
-        .ok_or_else(|| AppError::Internal(format!("VTA returned non-webvh DID: {did}")))
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "the VTA returned {did}, which is not a did:webvh, for a did:webvh VTC"
+            ))
+        })
 }
 
 fn prompt_err(e: dialoguer::Error) -> AppError {
@@ -2152,6 +2376,222 @@ fn secrets_prompt_err(e: SecretsPromptError) -> AppError {
 mod tests {
     use super::*;
 
+    /// #2593: without a terminal the wizard refuses before its first prompt,
+    /// naming both phases of the unattended setup.
+    #[test]
+    fn without_a_terminal_the_wizard_names_the_unattended_setup() {
+        assert!(require_terminal(true).is_ok());
+        let message = require_terminal(false).unwrap_err().to_string();
+        assert!(message.contains("vtc setup --setup-key-out"), "{message}");
+        assert!(message.contains("vtc setup --from"), "{message}");
+        assert!(
+            message.contains("docs/03-vtc/non-interactive-setup.md"),
+            "{message}"
+        );
+    }
+
+    fn webs_inputs(method: IdentityMethod) -> WizardInputs {
+        WizardInputs {
+            base_url: "https://vtc.example".into(),
+            vta_did: "did:webvh:QmVta:vta.example".into(),
+            context: "community".into(),
+            registry_did: None,
+            transports: vec![Transport::Tsp, Transport::Didcomm],
+            co_admin_did: None,
+            single_admin_mode: false,
+            provision_transport: None,
+            did_method: Some(vta_sdk::did_scid::DidMethod::Webvh),
+            scid_also_known_as: Some(true),
+            identity_method: method,
+        }
+    }
+
+    fn mediator() -> MessagingConfig {
+        MessagingConfig {
+            mediator_url: String::new(),
+            mediator_did: "did:webvh:QmMediator:mediator.example".into(),
+            mediator_host: None,
+            setup_acl: false,
+            drain_inbox_on_start: false,
+        }
+    }
+
+    /// VTI-KEY-001: a did:webs VTC is asked for as `vtc-host-classical` with
+    /// `DID_METHOD=webs` at the chosen server and slot, with its transports and
+    /// no did:scid alias; a did:webvh VTC is asked for exactly as before.
+    #[test]
+    fn vti_key_001_setup_asks_the_vta_for_a_did_webs_vtc() {
+        let target = WebvhTarget {
+            server_id: Some("host-1".into()),
+            domain: None,
+            path: Some("communities".into()),
+        };
+        let m = mediator();
+        let ask = provision_ask(&webs_inputs(IdentityMethod::Webs), &target, Some(&m)).unwrap();
+        assert_eq!(
+            ask.integration_template.as_deref(),
+            Some("vtc-host-classical")
+        );
+        let vars = &ask.integration_template_vars;
+        assert_eq!(vars["DID_METHOD"], "webs");
+        assert_eq!(vars["WEBVH_SERVER"], "host-1");
+        assert_eq!(vars["WEBVH_PATH"], "communities");
+        assert_eq!(vars["URL"], "https://vtc.example");
+        assert!(vars.contains_key(TSP_SERVICE_VAR) && vars.contains_key(DIDCOMM_SERVICE_VAR));
+        assert!(!vars.contains_key("SCID_ALSO_KNOWN_AS"));
+
+        let ask = provision_ask(&webs_inputs(IdentityMethod::Webvh), &target, Some(&m)).unwrap();
+        assert_eq!(ask.integration_template.as_deref(), Some("vtc-host"));
+        assert_eq!(ask.integration_template_vars["DID_METHOD"], "webvh");
+        assert_eq!(ask.integration_template_vars["SCID_ALSO_KNOWN_AS"], true);
+    }
+
+    /// What a VTA returns for a did:webs `vtc-host-classical`: the key-state
+    /// key and the designated key agreement key under the document's ids, the
+    /// derived document, and the stream in place of a did.jsonl.
+    fn webs_provision_result() -> (ProvisionResultV2, serde_json::Value) {
+        use crate::setup::bundle::level_one_tests::{KA, SIGNING, level_one_vtc_with_stream};
+        use affinidi_secrets_resolver::secrets::Secret;
+        use vta_sdk::sealed_transfer::template_bootstrap::{
+            DidKeyMaterialV2, SlotKeyPair, TemplateBootstrapConfig, TemplateBootstrapPayloadV2,
+            TemplateOutput, VtaTrustBundle,
+        };
+        let (did, document, stream) = level_one_vtc_with_stream();
+        let ids = vta_sdk::node_keys::NodeKeyIds::from_document(&did, &document).unwrap();
+        let signing = Secret::generate_ed25519(None, Some(&SIGNING));
+        let ka = Secret::generate_x25519(None, Some(&KA)).unwrap();
+        let pair = |slot: &str, key_type, key_id: &str, s: &Secret| SlotKeyPair {
+            slot: slot.into(),
+            key_type,
+            key_id: key_id.into(),
+            public_key_multibase: s.get_public_keymultibase().unwrap(),
+            private_key_multibase: s.get_private_keymultibase().unwrap(),
+        };
+        let material = DidKeyMaterialV2 {
+            did: did.clone(),
+            signing_key: pair(
+                "signing",
+                vta_sdk::keys::KeyType::Ed25519,
+                &ids.signing,
+                &signing,
+            ),
+            ka_key: pair(
+                "ka",
+                vta_sdk::keys::KeyType::X25519,
+                ids.key_agreement.as_deref().unwrap(),
+                &ka,
+            ),
+            additional_signing_keys: Vec::new(),
+        };
+        let summary = serde_json::from_value(serde_json::json!({
+            "clientDid": "did:key:z6MkSetup",
+            "adminDid": "did:key:z6MkAdmin",
+            "adminRolledOver": true,
+            "integrationDid": did,
+            "templateName": "vtc-host-classical",
+            "templateKind": "vtc-host",
+            "bundleIdHex": "00".repeat(16),
+            "secretCount": 1,
+            "outputCount": 1,
+            "webvhServerId": "host-1",
+        }))
+        .unwrap();
+        let result = ProvisionResultV2 {
+            bundle_id_hex: "00".repeat(16),
+            digest: "sha256:test".into(),
+            summary,
+            payload: TemplateBootstrapPayloadV2 {
+                authorization: serde_json::json!({}),
+                secrets: [(did.clone(), material)].into_iter().collect(),
+                config: TemplateBootstrapConfig {
+                    template_name: "vtc-host-classical".into(),
+                    template_kind: "vtc-host".into(),
+                    did_document: document.clone(),
+                    outputs: vec![TemplateOutput::WebsKeriCesr {
+                        did: did.clone(),
+                        keri_cesr: stream,
+                    }],
+                    vta_url: None,
+                    vta_trust: VtaTrustBundle {
+                        vta_did: "did:webvh:QmVta:vta.example".into(),
+                        vta_did_document: serde_json::json!({}),
+                        vta_did_log: None,
+                    },
+                },
+            },
+        };
+        (result, document)
+    }
+
+    fn inline_secrets() -> SecretsConfig {
+        let mut secrets: SecretsConfig = toml::from_str("").unwrap();
+        secrets.backend = Some(crate::config::SecretBackend::Config);
+        secrets
+    }
+
+    /// VTI-KEY-001: first-boot setup of a did:webs VTC, against what a VTA
+    /// returns. No did.jsonl is written (the VTA published the stream at its
+    /// host); the stored bundle names each key by the document's own id, so
+    /// the daemon signs and decrypts as its document says, with no `#key-0`.
+    #[tokio::test]
+    async fn vti_key_001_first_boot_setup_of_a_did_webs_vtc() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let (provision, document) = webs_provision_result();
+        let did = document["id"].as_str().unwrap().to_string();
+        let outcome = persist_provisioned(
+            config_path.clone(),
+            webs_inputs(IdentityMethod::Webs),
+            inline_secrets(),
+            Some(mediator()),
+            provision,
+        )
+        .await
+        .expect("setup completes");
+        assert_eq!(outcome.vtc_did, did);
+        assert!(
+            !outcome.data_dir.join("did").exists(),
+            "a did:webs VTC keeps no did.jsonl"
+        );
+
+        let config = AppConfig::load(Some(config_path)).unwrap();
+        assert_eq!(config.vtc_did.as_deref(), Some(did.as_str()));
+        let stored = hex::decode(config.secrets.secret.as_deref().unwrap()).unwrap();
+        let own = crate::setup::bundle::own_key_material(&did, &stored).unwrap();
+        let ids = vta_sdk::node_keys::NodeKeyIds::from_document(&did, &document).unwrap();
+        assert_eq!(own.key_role_ids, Some(ids.clone()));
+        let signer = crate::credentials::LocalSigner::for_own_keys(did.clone(), &own);
+        assert_eq!(signer.assertion_method_id(), ids.signing);
+        assert_eq!(signer.authentication_method_id(), ids.signing);
+        assert_eq!(signer.key_count(), 1);
+    }
+
+    /// A VTA that ignores `DID_METHOD=webs` and mints a did:webvh is refused,
+    /// with what to fix, before anything is written.
+    #[tokio::test]
+    async fn a_did_webvh_minted_for_a_did_webs_ask_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let (mut provision, _) = webs_provision_result();
+        provision.summary.integration_did = Some("did:webvh:QmScid:vtc.example".into());
+        let material = provision.payload.secrets.values().next().unwrap().clone();
+        provision.payload.secrets = [("did:webvh:QmScid:vtc.example".to_string(), material)]
+            .into_iter()
+            .collect();
+        let err = persist_provisioned(
+            config_path.clone(),
+            webs_inputs(IdentityMethod::Webs),
+            inline_secrets(),
+            None,
+            provision,
+        )
+        .await
+        .err()
+        .expect("refused");
+        assert!(err.to_string().contains("webs_service_dids"), "{err}");
+        assert!(!config_path.exists());
+    }
+
     #[test]
     fn did_log_label_is_the_final_component() {
         // Real did:webvh is `did:webvh:<scid>:<host>` — the wizard's
@@ -2164,7 +2604,9 @@ mod tests {
     #[test]
     fn did_log_label_refuses_non_webvh() {
         let err = did_log_label_or_err("did:key:z6Mk…").unwrap_err();
-        assert!(format!("{err}").contains("non-webvh"));
+        let msg = format!("{err}");
+        assert!(msg.contains("not a did:webvh"), "{msg}");
+        assert!(msg.contains("for a did:webvh VTC"), "{msg}");
     }
 
     #[test]
@@ -2288,6 +2730,7 @@ mod tests {
             provision_transport: None,
             did_method: None,
             scid_also_known_as: None,
+            identity_method: IdentityMethod::Webvh,
         };
         assert!(single_admin_warning(&inputs(true, None)).is_none());
         assert!(single_admin_warning(&inputs(false, Some("did:key:z6MkCo"))).is_none());
@@ -2349,5 +2792,56 @@ mod tests {
             "config.toml must be 0600, got {mode:o}"
         );
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn admin_key_material() -> vta_sdk::sealed_transfer::DidKeyMaterialV2 {
+        use vta_sdk::keys::KeyType;
+        use vta_sdk::sealed_transfer::{DidKeyMaterialV2, SlotKeyPair};
+        let pair = |slot: &str, key_type: KeyType| SlotKeyPair {
+            slot: slot.into(),
+            key_type,
+            key_id: format!("did:key:z6MkAdmin#{slot}"),
+            public_key_multibase: "z6MkPublic".into(),
+            private_key_multibase: "zPrivateSecretMaterial".into(),
+        };
+        DidKeyMaterialV2 {
+            did: "did:key:z6MkAdmin".into(),
+            signing_key: pair("signing", KeyType::Ed25519),
+            ka_key: pair("ka", KeyType::X25519),
+            additional_signing_keys: Vec::new(),
+        }
+    }
+
+    /// #2703: setup hands the admin key over as an owner-only file in the
+    /// data directory (never on a terminal), loadable as the material the VTA
+    /// returned, and never overwrites an earlier one.
+    #[test]
+    fn admin_key_is_written_owner_only_and_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = admin_key_material();
+
+        let first = write_admin_key_file(dir.path(), &key).expect("first write");
+        assert_eq!(first, dir.path().join("keys").join("admin-key.json"));
+        let read: vta_sdk::sealed_transfer::DidKeyMaterialV2 =
+            serde_json::from_slice(&std::fs::read(&first).unwrap()).unwrap();
+        assert_eq!(read.did, key.did);
+        assert_eq!(
+            read.signing_key.private_key_multibase,
+            key.signing_key.private_key_multibase
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode =
+                |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&first), 0o600, "admin key file must be 0600");
+            assert_eq!(mode(first.parent().unwrap()), 0o700, "key dir must be 0700");
+        }
+
+        let before = std::fs::read(&first).unwrap();
+        let second = write_admin_key_file(dir.path(), &key).expect("second write");
+        assert_ne!(second, first, "an existing admin key is never overwritten");
+        assert_eq!(std::fs::read(&first).unwrap(), before);
+        assert!(second.exists());
     }
 }

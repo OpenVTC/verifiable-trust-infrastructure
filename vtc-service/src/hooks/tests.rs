@@ -3,9 +3,7 @@
 use super::*;
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use vti_common::audit::{
-    AuditKeyStore, AuditWriter, MemberAddedData, MemberRemovedData, RoleChangedData,
-};
+use vtc_audit::{AuditKeyStore, AuditWriter, MemberAddedData, MemberRemovedData, RoleChangedData};
 use vti_common::config::StoreConfig;
 use vti_common::store::Store;
 

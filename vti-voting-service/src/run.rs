@@ -4,10 +4,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::boxes::Boxes;
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use tokio::sync::watch;
 use tracing::{info, warn};
-use vti_voting::service::BallotBox;
 
 use crate::config::VotingConfig;
 use crate::dispatch::AppState;
@@ -17,6 +17,9 @@ use crate::messaging::{BallotBoxResponder, IdentitySession, Shared, supervise_re
 
 /// The keyspace this service's TSP relationships are kept in, under `<data_dir>/store`.
 const TSP_RELATIONSHIPS: &str = "tsp_relationships";
+
+/// How often lapsed accepted-id records are dropped.
+const ACCEPTED_IDS_SWEEP: Duration = Duration::from_secs(300);
 
 /// How long a stop waits for the mediator session to close its socket.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(15);
@@ -75,7 +78,7 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
     let journal = Arc::new(FileJournal::open(&config.data_dir.join("journal"))?);
     let restored = journal.load()?;
     let elections = restored.len();
-    let ballot_box = BallotBox::restore(&identity.did, journal, restored)
+    let ballot_boxes = Boxes::restore(&identity.did, journal, restored)
         .map_err(|f| anyhow::anyhow!("restoring the journal: {} ({})", f.reason, f.local))?;
 
     if !config.communities.allow_any && config.communities.allowed.is_empty() {
@@ -84,11 +87,26 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
              this box serves in [communities] allowed"
         );
     }
+    // The service's store: the accepted-document-id record (VTI-OPS-025 … 029), and the TSP
+    // relationships when the identity reaches a mediator.
+    let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+        data_dir: config.data_dir.join("store"),
+    })
+    .map_err(|e| anyhow::anyhow!("open the service store: {e}"))?;
+    let accepted_ids = store
+        .keyspace(crate::dispatch::ACCEPTED_IDS_KEYSPACE)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "open keyspace {}: {e}",
+                crate::dispatch::ACCEPTED_IDS_KEYSPACE
+            )
+        })?;
     let mut state = AppState::new(
-        ballot_box,
+        ballot_boxes,
         identity,
         vti_common::auth::TrustTaskVmResolver::new(did_resolver.clone()),
         config.communities.clone(),
+        accepted_ids,
     );
     // Reported by the session's supervisor; read by `GET /health` and `GET /health/ready`.
     let (connected, connected_rx) = watch::channel(false);
@@ -104,10 +122,6 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
     // reconnect, which builds a fresh ATM) silently stopped every registration.
     let relationships = match &session_keys {
         Some(_) => {
-            let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
-                data_dir: config.data_dir.join("store"),
-            })
-            .map_err(|e| anyhow::anyhow!("open the relationship store: {e}"))?;
             let keyspace = store
                 .keyspace(TSP_RELATIONSHIPS)
                 .map_err(|e| anyhow::anyhow!("open keyspace {TSP_RELATIONSHIPS}: {e}"))?;
@@ -120,6 +134,24 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
         }
         None => None,
     };
+    // The accepted-id record is read-through-expiry; the sweep only bounds the keyspace.
+    {
+        let state = state.clone();
+        let mut stopped = stopped.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(ACCEPTED_IDS_SWEEP);
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        if let Err(e) = state.sweep_accepted_ids().await {
+                            warn!(error = %e, "could not sweep the accepted-id record");
+                        }
+                    }
+                    _ = stopped.changed() => break,
+                }
+            }
+        });
+    }
     let session = session_keys.map(|(mediator_did, secrets)| {
         let shared = Arc::new(Shared {
             did_resolver: did_resolver.clone(),
@@ -170,25 +202,4 @@ pub async fn run(config: VotingConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// SIGINT, or SIGTERM where there is one.
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
-                }
-            }
-            Err(_) => {
-                let _ = tokio::signal::ctrl_c().await;
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
-}
+use vti_common::runtime::shutdown_signal;

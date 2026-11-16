@@ -10,8 +10,6 @@ use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver, secrets::Secret};
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use hkdf::Hkdf;
 use sha2::Sha256;
 
@@ -31,7 +29,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
-use vti_common::audit::{AuditKeyStore, AuditWriter};
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::passkey::{PasskeyState, build_webauthn};
 use webauthn_rs::Webauthn;
 
@@ -230,6 +228,9 @@ pub struct AppState {
     /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
     /// written by the periodic `CheckpointEmitter`.
     pub audit_checkpoint_ks: KeyspaceHandle,
+    /// Secondary index over the audit log (`crate::audit_index`): derived,
+    /// caught up from the log before every read, never backed up.
+    pub audit_index_ks: KeyspaceHandle,
     /// Durable delivery-layer outbox (D2 P1a). Backs
     /// [`vti_common::outbox_store::VtiOutboxStore`] for the messaging
     /// service's `Guaranteed` sends so delivery-critical work survives a
@@ -324,6 +325,11 @@ pub struct AppState {
     /// default 64 KiB) a claimed — not yet verified — known issuer is granted
     /// a raised size limit for. See [`crate::trust_tasks::size`].
     pub large_document_budget: Arc<crate::trust_tasks::size::LargeDocumentBudget>,
+    /// The room budgets (`[rooms.rate_limits]`), one set charged by every
+    /// transport: the HTTPS door and DIDComm / TSP alike, so a presenter has one
+    /// budget per room whichever way it sends
+    /// (`crate::routing::trust_task_admission`). Built on first use.
+    pub room_limiters: crate::routing::trust_task_admission::SharedRoomLimiters,
     /// Whether the published DID document lets a wallet sign in
     /// (`TrustTaskHTTPS` + `SignInPortal`), checked at boot and lazily with a
     /// five-minute cache. Advisory and read-only.
@@ -589,6 +595,7 @@ pub async fn run(
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
     let audit_checkpoint_ks = store.keyspace(keyspaces::AUDIT_CHECKPOINT)?;
+    let audit_index_ks = store.keyspace(keyspaces::AUDIT_INDEX)?;
     let consumed_invitations_ks = store.keyspace(keyspaces::CONSUMED_INVITATIONS)?;
     let invitations_ks = store.keyspace(keyspaces::INVITATIONS)?;
     let outbox_ks = store.keyspace(keyspaces::OUTBOX)?;
@@ -983,11 +990,13 @@ pub async fn run(
     // `required`.
     if let (Some(signer), Some(key)) = (credential_signer.as_ref(), storage_key)
         && let Some(seed) = signer.ed25519_seed()
+        && let Some(root) = signer.derivation_root()
     {
         let sealed = crate::rooms::storage_credentials::SealedCredentials::new(
             store.keyspace(keyspaces::STORAGE_CREDENTIALS)?,
             key,
             &seed,
+            root.as_bytes(),
         );
         room_storage
             .set_sealed_credentials(Arc::new(sealed))
@@ -999,7 +1008,16 @@ pub async fn run(
     if let (Some(link), Some(vtc_did), Some(secrets)) =
         (vta_link, config.vtc_did.clone(), secrets_resolver.clone())
     {
-        let storage = crate::rooms::vta_storage::VtaStorage::new(link, vtc_did, secrets);
+        let local_ids = credential_signer
+            .as_ref()
+            .and_then(|s| s.key_role_ids().cloned());
+        let (_, ka_id) =
+            crate::messaging::vtc_key_ids(did_resolver.as_ref(), &vtc_did, local_ids.as_ref())
+                .await;
+        let mut storage = crate::rooms::vta_storage::VtaStorage::new(link, vtc_did, secrets);
+        if let Some(ka_id) = ka_id {
+            storage = storage.with_key_agreement_id(ka_id);
+        }
         room_storage.set_vta_storage(Arc::new(storage)).await?;
     }
 
@@ -1138,6 +1156,7 @@ pub async fn run(
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks: audit_checkpoint_ks.clone(),
+        audit_index_ks,
         outbox_ks,
         tsp_relationships_ks,
         consumed_invitations_ks,
@@ -1171,6 +1190,7 @@ pub async fn run(
         didcomm: didcomm_cell,
         git_ns,
         large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
+        room_limiters: Default::default(),
         did_self_check: Arc::new(crate::did_self_check::DidSelfCheck::new()),
     };
 
@@ -1183,6 +1203,22 @@ pub async fn run(
     // Any left in the old rights store move onto them now, before a git-ns
     // task is authorized from the entries (VTI-VTC-020).
     crate::git_ns::migrate::migrate_on_boot(&state).await?;
+    // The secondary indexes, backfilled for rows written before they existed
+    // (or by a version that did not keep them), before anything reads them:
+    // the ACL's authority holders (#2602) and the relationships' VRC digests
+    // (#2603).
+    let indexed = crate::acl::rebuild_authority_index(&state.acl_ks).await?;
+    tracing::debug!(indexed, "ACL authority index rebuilt");
+    let indexed =
+        crate::relationships::storage::rebuild_hash_index(&state.relationships_ks).await?;
+    tracing::debug!(indexed, "relationship digest index rebuilt");
+    // The audit index is caught up by every reader; doing it here moves the
+    // backfill of an existing log off the first request. Not fatal: a reader
+    // retries it.
+    match crate::audit_index::catch_up(&state.audit_ks, &state.audit_index_ks).await {
+        Ok(read) => tracing::debug!(read, "audit index caught up"),
+        Err(e) => warn!(error = %e, "audit index not caught up at boot; the first read will"),
+    }
     // Room rows in the earlier, ambiguous key layout move before a room is served (#2382).
     crate::rooms::migrate_room_keys(&state, "the boot migration").await?;
 
@@ -1644,6 +1680,39 @@ pub async fn run(
         });
     }
 
+    // Badge groups as issuers the community recognises (VTI-BDG-080), projected to the
+    // trust registry when a registry and this community's DID are both configured.
+    // Supervised like the projectors above.
+    if let (Some(client), Some(did)) = (state.registry_client.clone(), boot_cfg.vtc_did.clone()) {
+        let projector_state = state.clone();
+        let mut supervisor_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *supervisor_shutdown.borrow() {
+                    break;
+                }
+                let projector = crate::badges::registry::Projector::new(
+                    projector_state.clone(),
+                    client.clone(),
+                    did.clone(),
+                );
+                let run_shutdown = supervisor_shutdown.clone();
+                let child = tokio::spawn(async move { projector.run(run_shutdown).await });
+                match child.await {
+                    Ok(()) => break,
+                    Err(join_err) if join_err.is_panic() => {
+                        error!(error = %join_err, "badge issuer registry projector panicked — restarting after backoff");
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                            _ = supervisor_shutdown.changed() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     // P0.6: spawn the retention sweeper. It was defined but never spawned, so
     // terminal join requests (PII in the submitted VP), expired
     // present-challenge / credx-pending rows, and `Failed` registry sync jobs
@@ -1734,6 +1803,8 @@ pub async fn run(
         state.accepted_ids_ks.clone(),
         state.step_up_marks_ks.clone(),
         state.step_up_passkeys_ks.clone(),
+        state.passkey_ks.clone(),
+        state.member_passkey_ks.clone(),
         state.backup_bundles_ks.clone(),
         crate::trust_tasks::backup_tasks::blob_dir(&boot_cfg.store.data_dir),
         boot_cfg.join_requests.clone(),
@@ -1872,14 +1943,12 @@ pub async fn run(
             .write(
                 "daemon",
                 None,
-                vti_common::audit::AuditEvent::AdminUiServed(
-                    vti_common::audit::AdminUiServedData {
-                        index_sha256: (*info.index_sha256).clone(),
-                        file_count: info.file_count,
-                        mode: (*info.mode).clone(),
-                        daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                    },
-                ),
+                vtc_audit::AuditEvent::AdminUiServed(vtc_audit::AdminUiServedData {
+                    index_sha256: (*info.index_sha256).clone(),
+                    file_count: info.file_count,
+                    mode: (*info.mode).clone(),
+                    daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                }),
             )
             .await;
     }
@@ -2264,12 +2333,21 @@ fn run_rest_thread(
         let website_state = build_website_state(&state.config).await;
 
         let trust_xff_cidrs = state.config.read().await.server.trust_xff_cidrs.clone();
+        // HSTS from the declared public origin (#2661): the request itself
+        // cannot say whether the browser reached us over TLS.
+        let hsts = axum::middleware::from_fn_with_state(
+            crate::routing::security_headers::HstsPolicy::from_public_url(
+                state.config.read().await.public_url.as_deref(),
+            ),
+            crate::routing::security_headers::strict_transport_security,
+        );
         // `TimeoutLayer` is the outermost layer so the whole-request budget
         // (P0.10) covers every inner middleware + the handler.
         #[cfg(feature = "website")]
         let app = routes::router_with_xff(&routing, website_state, &trust_xff_cidrs)
             .with_state(state)
             .layer(host_layer)
+            .layer(hsts)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())
             .layer(TimeoutLayer::with_status_code(
@@ -2280,6 +2358,7 @@ fn run_rest_thread(
         let app = routes::router_with_xff(&routing, &trust_xff_cidrs)
             .with_state(state)
             .layer(host_layer)
+            .layer(hsts)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())
             .layer(TimeoutLayer::with_status_code(
@@ -2432,26 +2511,29 @@ async fn init_auth(
             Err(_) => Vec::new(),
         };
 
-    let (ed25519_bytes, x25519_bytes) =
-        match crate::setup::bundle::decode_secret_store_value(&vtc_did, &stored) {
-            Ok(pair) => pair,
-            Err(msg) => {
-                return Err(AppError::Config(format!(
-                    "vtc_did is configured ({vtc_did}) but the stored key material does not \
+    let own = match crate::setup::bundle::own_key_material(&vtc_did, &stored) {
+        Ok(own) => own,
+        Err(msg) => {
+            return Err(AppError::Config(format!(
+                "vtc_did is configured ({vtc_did}) but the stored key material does not \
                      match it: {msg}. This usually means the secret store holds a different \
                      identity's bundle; refusing to boot into an auth-dead state"
-                )));
-            }
-        };
+            )));
+        }
+    };
 
-    // P0.7: derive the at-rest storage-encryption key from the same 32-byte
-    // Ed25519 seed (HKDF-SHA256, info `vtc-storage-key/v1`). Domain-separated
-    // from the install-token (`vtc-install-jwt-key/v2`) and audit
-    // (`vtc-audit-key/v2`) derivations by its info string, so the same IKM
-    // yields three independent keys. `None` only on the (practically
-    // impossible) HKDF-expand failure, in which case keyspaces stay
-    // plaintext rather than the daemon refusing to boot.
-    let storage_key: Option<[u8; 32]> = derive_storage_key(&*ed25519_bytes);
+    let derivation_root = own.derivation_root.clone();
+
+    // P0.7: derive the at-rest storage-encryption key from the derivation root
+    // (HKDF-SHA256, info `vtc-storage-key/v1`) — the bundle's Ed25519 seed for
+    // every VTC that has no explicit root, so the key is what it always was,
+    // and a stored root once the signing key can rotate, so a rotation does not
+    // strand what is encrypted. Domain-separated from the install-token
+    // (`vtc-install-jwt-key/v2`) and audit (`vtc-audit-key/v2`) derivations by
+    // its info string, so the same IKM yields three independent keys. `None`
+    // only on the (practically impossible) HKDF-expand failure, in which case
+    // keyspaces stay plaintext rather than the daemon refusing to boot.
+    let storage_key: Option<[u8; 32]> = derive_storage_key(&*derivation_root);
 
     // M2.9 credential signer — wraps the same 32-byte Ed25519
     // seed in a [`LocalSigner`] handle so VMC / VAC / status-list
@@ -2463,10 +2545,21 @@ async fn init_auth(
     // has not migrated checks, the post-quantum one a verifier that has. A VTC
     // holding only `#key-0` adds nothing and issues exactly what it always did:
     // one key emits a proof object, several emit an array.
+    //
+    // Keys by role: a key-role identity (a did:webs VTC) signs credentials as
+    // the `attestation` method its bundle names and authenticates with its
+    // distinct `operational` key; a did:webvh VTC signs both as `#key-0`.
     let signer = additional_secrets.into_iter().fold(
-        crate::credentials::LocalSigner::from_ed25519_seed(vtc_did.clone(), &ed25519_bytes),
+        crate::credentials::LocalSigner::for_own_keys(vtc_did.clone(), &own),
         |signer, secret| signer.with_additional_key(secret),
     );
+    let crate::setup::bundle::OwnKeyMaterial {
+        ed25519: ed25519_bytes,
+        x25519: x25519_bytes,
+        authentication: authentication_secret,
+        key_role_ids,
+        ..
+    } = own;
     info!(
         vtc_did = %vtc_did,
         signing_keys = signer.key_count(),
@@ -2474,14 +2567,14 @@ async fn init_auth(
     );
     let credential_signer = Some(Arc::new(signer));
 
-    // Derive the install-token signer from the 32-byte Ed25519
-    // private. HKDF info is `vtc-install-jwt-key/v2` — bumped from
+    // Derive the install-token signer from the derivation root (the
+    // 32-byte Ed25519 private for every VTC without a stored root). HKDF info is `vtc-install-jwt-key/v2` — bumped from
     // /v1 alongside the VTA-driven-keys rework so any pre-rework
     // deployment that still feeds a BIP-39-derived 64-byte seed
     // derives a different signing key and fails token verification
     // loudly instead of silently accepting tokens minted under the
     // old derivation. See `tasks/vtc-mvp/vta-driven-keys.md` §5.2.
-    let install_signer = match InstallTokenSigner::from_master_seed(&*ed25519_bytes) {
+    let install_signer = match InstallTokenSigner::from_master_seed(&*derivation_root) {
         Ok(s) => Some(Arc::new(s)),
         Err(e) => {
             warn!("failed to derive install token signer: {e} — install routes disabled");
@@ -2514,12 +2607,13 @@ async fn init_auth(
         None => audit_key_ks,
     };
 
-    // Derive the HMAC audit key from the same 32 bytes. The
+    // Derive the initial HMAC audit key from the derivation root (it is
+    // persisted on first boot, encrypted under the storage key). The
     // `AuditKeyStore` info string is also bumped to /v2 in
     // vti-common — see the rework note there.
     let audit_writer = {
         let key_store = AuditKeyStore::new(audit_key_ks);
-        match key_store.ensure_initial(&*ed25519_bytes).await {
+        match key_store.ensure_initial(&*derivation_root).await {
             Ok(_) => Some(AuditWriter::new(audit_ks, key_store)),
             Err(e) => {
                 warn!("failed to derive initial audit key: {e} — audit-emitting routes disabled");
@@ -2563,16 +2657,58 @@ async fn init_auth(
             }
         };
 
+    // A did:webs VTC whose VTA rotated its key (`pnm webs rotate`) holds a key
+    // its document no longer lists, and a verifier refuses what that key signs
+    // (VTI-KEY-042): refuse to boot, naming `vtc keys request` / `refresh`. An
+    // unreachable host proves nothing, so it only warns.
+    if vtc_did.starts_with("did:webs:")
+        && let Ok(bundle) = crate::setup::bundle::VtcKeyBundle::from_secret_store_bytes(&stored)
+    {
+        match did_resolver.resolve(&vtc_did).await {
+            Ok(resolved) => {
+                if let Ok(document) = serde_json::to_value(&resolved.doc)
+                    && let Some(why) = crate::setup::refresh::stale_signing_key(&bundle, &document)
+                {
+                    return Err(AppError::Config(why));
+                }
+            }
+            Err(e) => warn!(
+                %vtc_did,
+                error = %e,
+                "could not resolve the VTC's did:webs to check its keys are current"
+            ),
+        }
+    }
+
     // 2. Secrets resolver with VTC's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
 
-    let mut signing_secret = Secret::generate_ed25519(None, Some(&*ed25519_bytes));
-    signing_secret.id = format!("{vtc_did}#key-0");
-    secrets_resolver.insert(signing_secret).await;
+    // Under the ids the VTC's own document gives its keys, by role
+    // (VTI-KEY-150; `#key-0` / `#key-1` on the VTC's own did:webvh).
+    let (signing_id, ka_id) =
+        crate::messaging::vtc_key_ids(Some(&did_resolver), &vtc_did, key_role_ids.as_ref()).await;
+    match authentication_secret {
+        // A key-role identity authenticates (DIDComm, mediator login) with its
+        // operational key; its attestation key is held too, under its own id.
+        Some(mut operational) => {
+            operational.id = signing_id;
+            secrets_resolver.insert(operational).await;
+            if let Some(ids) = key_role_ids.as_ref() {
+                let mut attestation = Secret::generate_ed25519(None, Some(&*ed25519_bytes));
+                attestation.id = ids.signing.clone();
+                secrets_resolver.insert(attestation).await;
+            }
+        }
+        None => {
+            let mut signing_secret = Secret::generate_ed25519(None, Some(&*ed25519_bytes));
+            signing_secret.id = signing_id;
+            secrets_resolver.insert(signing_secret).await;
+        }
+    }
 
     match Secret::generate_x25519(None, Some(&*x25519_bytes)) {
         Ok(mut ka_secret) => {
-            ka_secret.id = format!("{vtc_did}#key-1");
+            ka_secret.id = ka_id.unwrap_or_else(|| format!("{vtc_did}#key-1"));
             secrets_resolver.insert(ka_secret).await;
         }
         Err(e) => warn!("failed to create VTC key-agreement secret: {e}"),
@@ -2580,7 +2716,7 @@ async fn init_auth(
 
     // 3. JWT signing key from config (random key, not derived from VTC keys)
     let jwt_keys = match &config.auth.jwt_signing_key {
-        Some(b64) => match decode_jwt_key(b64) {
+        Some(b64) => match JwtKeys::from_base64_seed(b64, "VTC") {
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
@@ -2669,7 +2805,9 @@ async fn init_auth(
 
 /// Derive the at-rest storage-encryption key (P0.7).
 ///
-/// `HKDF-SHA256(IKM = bundle Ed25519 seed, info = b"vtc-storage-key/v1")`.
+/// `HKDF-SHA256(IKM = derivation root, info = b"vtc-storage-key/v1")`, where the
+/// root is the bundle's Ed25519 seed unless the bundle stores one
+/// ([`crate::setup::bundle::VtcKeyBundle::derivation_root`]).
 /// The info string domain-separates this key from the install-token signer
 /// (`vtc-install-jwt-key/v2`) and audit HMAC key (`vtc-audit-key/v2`) that
 /// share the same IKM. Returns `None` only if HKDF expand fails (it cannot
@@ -2691,15 +2829,14 @@ pub(crate) async fn offline_storage_key(config: &AppConfig) -> Result<[u8; 32], 
         .await
         .map_err(|e| AppError::Config(format!("the secret store failed to load: {e}")))?
         .ok_or_else(|| AppError::Config("the secret store holds no key bundle".into()))?;
-    let (ed25519, _) = crate::setup::bundle::decode_secret_store_value(vtc_did, &stored)
-        .map_err(AppError::Config)?;
-    derive_storage_key(&*ed25519)
+    let own = crate::setup::bundle::own_key_material(vtc_did, &stored).map_err(AppError::Config)?;
+    derive_storage_key(&*own.derivation_root)
         .ok_or_else(|| AppError::Internal("storage-key derivation failed".into()))
 }
 
-fn derive_storage_key(ed25519_seed: &[u8]) -> Option<[u8; 32]> {
+pub(crate) fn derive_storage_key(root: &[u8]) -> Option<[u8; 32]> {
     let mut key = [0u8; 32];
-    match Hkdf::<Sha256>::new(None, ed25519_seed).expand(b"vtc-storage-key/v1", &mut key) {
+    match Hkdf::<Sha256>::new(None, root).expand(b"vtc-storage-key/v1", &mut key) {
         Ok(()) => Some(key),
         Err(e) => {
             warn!("failed to derive storage-encryption key: {e} — keyspaces left unencrypted");
@@ -2709,18 +2846,6 @@ fn derive_storage_key(ed25519_seed: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.
-fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
-    let bytes = BASE64
-        .decode(b64)
-        .map_err(|e| AppError::Config(format!("invalid jwt_signing_key base64: {e}")))?;
-    let key_bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTC")?;
-    debug!("JWT signing key decoded successfully");
-    Ok(keys)
-}
-
 /// Construct the public-website state from operator config (Phase 5
 /// M5.4). Returns `None` when:
 ///
@@ -2767,29 +2892,7 @@ async fn build_website_state(
     })
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("received SIGINT"),
-        () = terminate => info!("received SIGTERM"),
-    }
-}
+use vti_common::runtime::shutdown_signal;
 
 /// How a wait for a background task's published handle ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2885,8 +2988,8 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                             .write(
                                 "did:key:vtc-emergency",
                                 None,
-                                vti_common::audit::AuditEvent::EmergencyBootstrapInvoked(
-                                    vti_common::audit::EmergencyBootstrapData {
+                                vtc_audit::AuditEvent::EmergencyBootstrapInvoked(
+                                    vtc_audit::EmergencyBootstrapData {
                                         operator_hostname: pending.operator_hostname.clone(),
                                         invoked_at: pending.invoked_at,
                                     },
@@ -2948,8 +3051,8 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                         .write(
                             "did:key:vtc-break-glass",
                             Some(&w.did),
-                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
-                                vti_common::audit::BreakGlassAclData {
+                            vtc_audit::AuditEvent::AclBreakGlassWritten(
+                                vtc_audit::BreakGlassAclData {
                                     command: w.command.clone(),
                                     action: w.action.clone(),
                                     did: w.did.clone(),

@@ -31,6 +31,9 @@ pub mod bundle;
 pub mod cache;
 #[cfg(feature = "website")]
 pub mod default_site;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+#[cfg(feature = "website")]
+pub(crate) mod ops;
 #[cfg(feature = "website")]
 pub mod paths;
 #[cfg(feature = "website")]

@@ -739,7 +739,7 @@ function SignInLoading({ message = "Checking session…" }: { message?: string }
   return (
     <section className="page login-page">
       <div className="login-card">
-        <h2>VTC Admin</h2>
+        <h2>Operator console</h2>
         <p className="lead">{message}</p>
       </div>
     </section>

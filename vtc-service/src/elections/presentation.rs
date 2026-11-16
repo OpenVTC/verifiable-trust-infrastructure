@@ -367,14 +367,8 @@ async fn status(state: &AppState, entry: Option<&Value>, issuer: Option<&str>) -
     if let Some(own) = own_status(state, entry).await {
         return if own { Step::Fail } else { Step::Pass };
     }
-    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
-    match crate::routes::join_requests::present::resolve_presented_status(
-        Some(entry),
-        issuer,
-        &fetcher,
-    )
-    .await
-    {
+    let fetcher = crate::join::ops::present::credential_status_fetcher(state);
+    match crate::join::ops::present::resolve_presented_status(Some(entry), issuer, &fetcher).await {
         CredentialStatus::Valid => Step::Pass,
         CredentialStatus::Revoked | CredentialStatus::Suspended => Step::Fail,
         CredentialStatus::Unknown => Step::Unknown("statusList"),

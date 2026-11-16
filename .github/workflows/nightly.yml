@@ -2,8 +2,9 @@ name: Nightly
 
 # Advances `nightly` to the newest main commit whose full CI run passed.
 #
-# main merges on a red suite as readily as a green one — DCO is the only
-# required check (CLAUDE.md, "A merge is not evidence that anything passed") —
+# main merges on a red suite as readily as a green one — only the cheap gates
+# are required checks, never the tests (CLAUDE.md, "A merge is not evidence
+# that anything passed") —
 # so main's tip is not something to build a nightly from, or to cut a named
 # release from. `nightly` is: a fast-forward-only pointer that moves only to a
 # commit every CI job passed on. RELEASES.md cuts release branches from it.
@@ -13,7 +14,8 @@ name: Nightly
 # answers `run=true` for any non-PR event), so a skipped job here is one that
 # is PR-only by design, never a filtered one.
 #
-# The ref is moved with RELEASE_PLZ_TOKEN, not GITHUB_TOKEN: a push made with
+# The ref is moved with the release token (.github/actions/release-token: the
+# release GitHub App when configured, else RELEASE_PLZ_TOKEN), not GITHUB_TOKEN: a push made with
 # GITHUB_TOKEN triggers no workflows, and the push to nightly is what runs
 # ci.yml and docker.yml on it.
 on:
@@ -37,9 +39,24 @@ jobs:
       contents: read
       actions: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions
+
+      # Validated first, so a bad token fails here by name rather than as a
+      # 401 from the middle of the script (#2646).
+      - name: Release token
+        id: token
+        uses: ./.github/actions/release-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          pat: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
       - name: Find the newest fully green main commit and fast-forward to it
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail

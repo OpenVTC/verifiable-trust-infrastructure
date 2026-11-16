@@ -34,7 +34,7 @@ use std::collections::BTreeSet;
 
 use chrono::Utc;
 use serde_json::Value;
-use vti_common::audit::{AuditEvent, GroupGrantsChangedData};
+use vtc_audit::{AuditEvent, GroupGrantsChangedData};
 use vti_common::error::AppError;
 
 use super::bindings::{self, Binding};

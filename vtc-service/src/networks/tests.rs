@@ -320,7 +320,7 @@ async fn audit_events(state: &AppState) -> Vec<NetworkMembershipChangedData> {
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter_map(|env| match env.event {
             AuditEvent::NetworkMembershipChanged(d) => Some(d),
             _ => None,

@@ -344,9 +344,15 @@ async fn open_session(state: &AppState, cand: &Candidate) -> Result<Arc<PersonaS
     };
     #[cfg(feature = "tsp")]
     let tsp = crate::messaging::tsp_transport::TspTransport::new((*atm).clone(), profile.clone());
-    let service = Arc::new(MessagingService::new(
+    // A notify / relay pushed to the persona may ask for a receipt; it is
+    // answered as the persona, whose session this is (VTI-TRN-061).
+    let service = Arc::new(MessagingService::with_receipts(
         transport.clone(),
         Arc::new(InMemoryOutboxStore::new()),
+        Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+            (*atm).clone(),
+            profile.clone(),
+        )),
     ));
 
     let cancel = CancellationToken::new();
@@ -360,6 +366,7 @@ async fn open_session(state: &AppState, cand: &Candidate) -> Result<Arc<PersonaS
         state: state.clone(),
         me,
         atm: Arc::clone(&atm),
+        #[cfg(feature = "tsp")]
         profile,
         service,
         #[cfg(feature = "tsp")]
@@ -399,6 +406,8 @@ struct SessionCtx {
     state: AppState,
     me: Arc<CollectedIdentity>,
     atm: Arc<ATM>,
+    /// The TSP relationship ops' handle; only TSP reads it.
+    #[cfg(feature = "tsp")]
     profile: Arc<ATMProfile>,
     service: Arc<MessagingService>,
     #[cfg(feature = "tsp")]

@@ -63,6 +63,8 @@
 //!   tail's last-seen timestamp so a daemon restart picks up
 //!   exactly where the prior run left off (M3.3).
 
+/// The registry syncer's administrative reads and job controls.
+pub(crate) mod admin;
 pub mod client;
 pub mod drift;
 pub mod health;

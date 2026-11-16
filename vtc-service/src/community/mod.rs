@@ -9,6 +9,8 @@
 
 pub mod branding;
 pub mod join_discovery;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod profile;
 pub mod requested_attributes;
 pub mod theme;

@@ -94,6 +94,10 @@ pub mod store;
 /// `vta-enclave` and every existing call site.
 #[cfg(feature = "tee")]
 pub use vta_tee as tee;
+/// A TEE VTA whose own identity is a `did:webs` (`[tee.kms] vta_did_webs`):
+/// the first-boot mint, through the create `vta setup` runs.
+#[cfg(feature = "tee")]
+pub mod tee_webs;
 /// Bridges the TEE first-boot DID auto-generation (`tee::did_autogen`) into the
 /// `webvh` keyspace so `list_services`, the self-DID resolver preload, and
 /// `/.well-known/did.jsonl` can find the serverless VTA's own DID record + log.
@@ -118,6 +122,9 @@ pub use vta_vault as vault;
 /// re-exported so every `crate::webvh_store::…` path is unchanged.
 #[cfg(feature = "webvh")]
 pub use vta_webvh::webvh_store;
+pub mod self_keys;
+/// `did:webs` DID records. The context purge is built in every build.
+pub mod webs_store;
 /// The Trust-Task client to a DID hosting service.
 #[cfg(feature = "webvh")]
 pub mod webvh_host;

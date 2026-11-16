@@ -141,7 +141,7 @@ pub enum SignInPoll {
 }
 
 /// Percent-encode `&`, `=`, `#` and `%`, and nothing else (contract C1).
-fn encode_from(did: &str) -> String {
+pub(crate) fn encode_from(did: &str) -> String {
     let mut out = String::with_capacity(did.len());
     for c in did.chars() {
         match c {

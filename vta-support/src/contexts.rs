@@ -122,9 +122,70 @@ pub async fn store_new_context(
     ks.insert_if_absent(ctx_key(&record.id), record).await
 }
 
-/// Delete a context by ID.
+fn provisioner_key(id: &str) -> String {
+    format!("ctx_provisioner:{id}")
+}
+
+/// [`store_new_context`], recording in the same atomic write that
+/// `provisioner` created the context under the `context-create` capability
+/// rather than as an administrator.
+///
+/// The record is what lets that provisioner later fill the context's unset
+/// DID, and nothing else: a provisioner may finish a context it created, never
+/// one an administrator created or another provisioner did. One batch, so a
+/// crash cannot leave a context without its provisioner (or a provisioner
+/// row without its context).
+pub async fn store_new_provisioned_context(
+    ks: &KeyspaceHandle,
+    record: &ContextRecord,
+    provisioner: &str,
+) -> Result<bool, AppError> {
+    let mut batch = vti_common::store::Batch::new();
+    batch
+        .require_absent(ctx_key(&record.id))
+        .insert(ctx_key(&record.id), record)?
+        .insert(provisioner_key(&record.id), &provisioner)?;
+    Ok(ks.apply_batch(batch).await?.is_applied())
+}
+
+/// The DID that created `id` under the `context-create` capability, or `None`
+/// when an administrator created it (or it predates the record).
+pub async fn context_provisioner(
+    ks: &KeyspaceHandle,
+    id: &str,
+) -> Result<Option<String>, AppError> {
+    ks.get(provisioner_key(id)).await
+}
+
+/// A context record as stored, for a later [`store_context_if_unchanged`].
+pub async fn get_context_raw(ks: &KeyspaceHandle, id: &str) -> Result<Option<Vec<u8>>, AppError> {
+    ks.get_raw(ctx_key(id)).await
+}
+
+/// Overwrite a context record only while it still holds exactly `expected`
+/// (its bytes from [`get_context_raw`]). Returns `false`, writing nothing,
+/// when another writer changed or removed it in between.
+///
+/// For a write whose permission was decided on what the record held — a
+/// check made on one read and a write made on another is a race, not a check.
+pub async fn store_context_if_unchanged(
+    ks: &KeyspaceHandle,
+    record: &ContextRecord,
+    expected: Vec<u8>,
+) -> Result<bool, AppError> {
+    let mut batch = vti_common::store::Batch::new();
+    batch
+        .require_unchanged(ctx_key(&record.id), expected)
+        .insert(ctx_key(&record.id), record)?;
+    Ok(ks.apply_batch(batch).await?.is_applied())
+}
+
+/// Delete a context by ID, with its provisioner record if it has one.
 pub async fn delete_context(ks: &KeyspaceHandle, id: &str) -> Result<(), AppError> {
-    ks.remove(ctx_key(id)).await
+    let mut batch = vti_common::store::Batch::new();
+    batch.remove(ctx_key(id)).remove(provisioner_key(id));
+    ks.apply_batch(batch).await?;
+    Ok(())
 }
 
 /// List all context records.
@@ -275,6 +336,53 @@ mod tests {
             store.keyspace(vta_keyspaces::CONTEXTS).expect("keyspace"),
             dir,
         )
+    }
+
+    /// The write a permission was decided on must fail once the record moved:
+    /// a DID set between the read and the write is not overwritten.
+    #[tokio::test]
+    async fn store_context_if_unchanged_refuses_a_record_that_moved() {
+        let (ks, _dir) = temp_ks();
+        let mut record = create_context(&ks, "agent", "Agent").await.unwrap();
+        let raw = get_context_raw(&ks, "agent").await.unwrap().unwrap();
+
+        // Someone else sets the DID in between.
+        let mut theirs = record.clone();
+        theirs.did = Some("did:web:admin.example".into());
+        store_context(&ks, &theirs).await.unwrap();
+
+        record.did = Some("did:key:zMine".into());
+        assert!(
+            !store_context_if_unchanged(&ks, &record, raw).await.unwrap(),
+            "a stale read must not win"
+        );
+        assert_eq!(
+            get_context(&ks, "agent")
+                .await
+                .unwrap()
+                .unwrap()
+                .did
+                .as_deref(),
+            Some("did:web:admin.example")
+        );
+
+        // Against what is there now, the write goes through.
+        let raw = get_context_raw(&ks, "agent").await.unwrap().unwrap();
+        assert!(store_context_if_unchanged(&ks, &record, raw).await.unwrap());
+    }
+
+    /// A provisioned create claims the id like any other: a taken id stores
+    /// nothing, provisioner record included.
+    #[tokio::test]
+    async fn store_new_provisioned_context_never_overwrites() {
+        let (ks, _dir) = temp_ks();
+        let record = create_context(&ks, "taken", "Taken").await.unwrap();
+        assert!(
+            !store_new_provisioned_context(&ks, &record, "did:key:zP")
+                .await
+                .unwrap()
+        );
+        assert_eq!(context_provisioner(&ks, "taken").await.unwrap(), None);
     }
 
     #[tokio::test]

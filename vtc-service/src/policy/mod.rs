@@ -42,6 +42,8 @@ pub mod default;
 pub mod engine;
 pub mod extract;
 pub mod model;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod storage;
 
 pub use engine::{CompiledPolicy, compile, evaluate, validate_purpose_package};

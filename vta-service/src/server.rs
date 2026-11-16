@@ -10,9 +10,6 @@ use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
 use vti_common::slip10::ExtendedSigningKey;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
-
 use crate::auth::AuthState;
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::cleanup_expired_sessions;
@@ -169,7 +166,7 @@ impl Drop for RestartOnDrop {
 /// Marking it non-exhaustive closes the class permanently rather than relying
 /// on any of that holding. Construction inside this crate is unaffected —
 /// both sites (`build_state` below and `test_support`) are in-crate, and
-/// `MockVta` is the supported entry point for consumers.
+/// `vta_test_support::MockVta` is the supported entry point for consumers.
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct AppState {
@@ -236,6 +233,9 @@ pub struct AppState {
     pub backup_blob_dir: std::path::PathBuf,
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    /// `did:webs` DID records (`crate::webs_store`). Opened in every build, so
+    /// a build without the `webs` feature still purges and backs them up.
+    pub webs_ks: KeyspaceHandle,
     /// IACA roots this VTA accepts as ISO 18013-5 mdoc issuers, parsed once at
     /// boot from `[vault] mdoc_iaca_trust_anchors`.
     ///
@@ -319,11 +319,19 @@ pub struct AppState {
     /// sequences of them). See `operations::app_state` for why this is sound
     /// for a single-writer VTA and what it does not cover.
     pub app_state_locks: crate::operations::app_state::NamespaceLocks,
+    /// The same, for agent memory (`operations::memory`), which keeps its items
+    /// in the application-state layout inside the memory keyspace. A map of its
+    /// own, because the keyspaces differ: an application namespace called
+    /// `memory` and the memory store must not share a lock or a counter.
+    pub memory_locks: crate::operations::app_state::NamespaceLocks,
     /// Rego policy modules for the Policy Decision Point (`policy/*`). One
     /// [`crate::policy::PolicyModule`] per id; the active set is every enabled
     /// row, priority-ordered. A migration-safe baseline is boot-installed if
     /// empty. Durable operator security config.
     pub policy_ks: KeyspaceHandle,
+    /// The compiled active policy set, kept until `policy_ks` is written again
+    /// (#2623) — the PDP no longer parses and compiles every module per task.
+    pub policy_cache: Arc<crate::policy::PolicyCache>,
     /// Task-execution consent: pending approvals + granted consents the PDP's
     /// `requireConsent` disposition uses. Distinct from `consent_ks` (messaging).
     pub task_consent_ks: KeyspaceHandle,
@@ -438,6 +446,11 @@ pub struct AppState {
     pub tee: Option<TeeContext>,
     /// Coordinates a reply-safe soft restart for this generation.
     pub restart_gate: Arc<RestartGate>,
+    /// Which peer endpoints an outbound Trust-Task REST send may dial
+    /// ([`vta_sdk::http::guard_peer_endpoint`]). The process policy at startup
+    /// (`VTA_ALLOW_PRIVATE_ENDPOINTS`); a test harness whose stand-in peers
+    /// listen on loopback states its own.
+    pub endpoint_policy: vta_sdk::http::EndpointPolicy,
     /// Prometheus metrics handle for rendering `/metrics` endpoint.
     #[cfg(feature = "rest")]
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
@@ -548,6 +561,9 @@ pub struct AppStateParts {
     /// Outbound mediator bridge. `None` → placeholder (no live service).
     #[cfg(any(feature = "didcomm", feature = "tsp"))]
     pub didcomm_bridge: Option<Arc<DIDCommBridge>>,
+    /// Peer endpoint policy for outbound sends. `None` →
+    /// [`vta_sdk::http::EndpointPolicy::process_default`].
+    pub endpoint_policy: Option<vta_sdk::http::EndpointPolicy>,
     /// Prometheus handle for `/metrics`. `None` → no metrics rendering.
     #[cfg(feature = "rest")]
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
@@ -620,6 +636,7 @@ pub async fn build_app_state(
     let backup_blob_dir = config.store.data_dir.join("backups");
     #[cfg(feature = "webvh")]
     let webvh_ks = apply_encryption(store.keyspace(crate::keyspaces::WEBVH)?);
+    let webs_ks = apply_encryption(store.keyspace(crate::keyspaces::WEBS)?);
     #[cfg(feature = "webvh")]
     let passkey_vms_ks = apply_encryption(store.keyspace(crate::keyspaces::PASSKEY_VMS)?);
     let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
@@ -679,6 +696,20 @@ pub async fn build_app_state(
         Err(e) => warn!(error = %e, "could not recover interrupted did:webvh key rotations"),
     }
 
+    // A staged did:webs rotation is finished by publishing it again, which
+    // needs its host: the next write to the DID does that before anything
+    // else (vta/webs/dids, CONVENTIONS §6). Say which are waiting.
+    #[cfg(feature = "webs")]
+    match crate::operations::did_webs::staged_webs_rotations(&webs_ks).await {
+        Ok(dids) if dids.is_empty() => {}
+        Ok(dids) => warn!(
+            ?dids,
+            "did:webs rotations are staged and not yet published; each completes on its \
+             next update, rotation or deletion"
+        ),
+        Err(e) => warn!(error = %e, "could not read staged did:webs rotations"),
+    }
+
     let auth = init_auth(
         &config,
         &*seed_store,
@@ -687,8 +718,22 @@ pub async fn build_app_state(
         Some(&webvh_ks),
         #[cfg(not(feature = "webvh"))]
         None,
+        Some(&webs_ks),
     )
     .await;
+
+    // Every entry states its purposes before anything is served (VTI-ACL-101):
+    // an entry written before they existed is rewritten with `any`, the
+    // authority it already held. A row that cannot be rewritten still reads as
+    // `any`, so a failure here is logged rather than fatal.
+    match vti_common::acl::state_purposes_on_every_entry(&acl_ks).await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            rewritten = n,
+            "ACL entries now state purposes: any (VTI-ACL-101)"
+        ),
+        Err(e) => warn!(error = %e, "ACL entries not rewritten with their purposes"),
+    }
 
     // The did:scid identities this VTA authorises resolve by their bare DID,
     // and refuse a log older than one verified before, from the first request
@@ -754,6 +799,7 @@ pub async fn build_app_state(
         backup_blob_dir,
         #[cfg(feature = "webvh")]
         webvh_ks,
+        webs_ks,
         #[cfg(feature = "webvh")]
         passkey_vms_ks,
         consent_ks,
@@ -782,7 +828,9 @@ pub async fn build_app_state(
         persona_ks,
         persona_correlation_key,
         app_state_locks: crate::operations::app_state::NamespaceLocks::default(),
+        memory_locks: crate::operations::app_state::NamespaceLocks::default(),
         policy_ks,
+        policy_cache: Arc::new(crate::policy::PolicyCache::new()),
         task_consent_ks,
         #[cfg(feature = "webvh")]
         drains_ks,
@@ -832,6 +880,9 @@ pub async fn build_app_state(
         atm: auth.atm,
         tee: tee_context,
         restart_gate,
+        endpoint_policy: parts
+            .endpoint_policy
+            .unwrap_or_else(vta_sdk::http::EndpointPolicy::process_default),
         #[cfg(feature = "rest")]
         metrics_handle: parts.metrics_handle,
     };
@@ -861,6 +912,18 @@ pub(crate) fn tsp_configured_but_unbuilt(configured: bool, built: bool) -> Optio
          cannot receive TSP. Rebuild with `--features tsp`, or set `services.tsp = false` \
          (and `pnm services tsp disable` if `#tsp` was already published).",
     )
+}
+
+/// Whether any transport will actually serve: REST, DIDComm or TSP, each built
+/// and enabled. TSP counts on its own (#937): its receive rides the mediator
+/// socket the connect supervisor opens for `services.didcomm || services.tsp`,
+/// so a TSP-only VTA is a complete one. `tsp_configured_but_unbuilt` has
+/// already refused a TSP setting the build cannot honour, but the `TSP_BUILT`
+/// AND keeps this answer right on its own.
+pub(crate) fn any_transport_enabled(services: &vta_config::ServicesConfig) -> bool {
+    cfg!(feature = "rest") && services.rest
+        || cfg!(feature = "didcomm") && services.didcomm
+        || TSP_BUILT && services.tsp
 }
 
 // `config` is only mutated when the `webvh` feature is on (mirror of
@@ -950,6 +1013,12 @@ pub async fn run(
                 .await?;
         config.services.didcomm =
             crate::operations::protocol::runtime_state::is_didcomm_enabled(&boot_service_state_ks)
+                .await?;
+        // TSP too: `pnm services tsp {enable,disable}` writes only the runtime
+        // state, so without this a restart forgot it, and a TSP-only VTA was
+        // judged by whatever `config.toml` last said.
+        config.services.tsp =
+            crate::operations::protocol::runtime_state::is_tsp_enabled(&boot_service_state_ks)
                 .await?;
     }
     #[cfg(not(feature = "webvh"))]
@@ -1054,9 +1123,8 @@ pub async fn run(
     // persisted runtime state, the latter set by `pnm services {kind}
     // {enable,disable}`).
     let rest_enabled = cfg!(feature = "rest") && config.services.rest;
-    let didcomm_enabled = cfg!(feature = "didcomm") && config.services.didcomm;
 
-    // `services.tsp` gets no silent `cfg!` AND like the two lines above, on
+    // `services.tsp` gets no silent `cfg!` AND like `rest_enabled` above, on
     // purpose. REST and DIDComm default to `true`, so a reduced build
     // (`--no-default-features --features rest`, which CI runs) depends on the
     // AND quietly dropping a transport it was never built with. `services.tsp`
@@ -1070,9 +1138,9 @@ pub async fn run(
         return Err(AppError::Config(reason.into()));
     }
 
-    if !rest_enabled && !didcomm_enabled {
+    if !any_transport_enabled(&config.services) {
         return Err(AppError::Config(
-            "no services enabled — enable at least one of REST or DIDComm \
+            "no services enabled — enable at least one of REST, DIDComm or TSP \
              (compile-time feature flags + `pnm services {kind} enable`)"
                 .into(),
         ));
@@ -1142,9 +1210,7 @@ pub async fn run(
         // recorder are bound once per process — so a reload that leaves nothing
         // enabled is reported rather than fatal. Killing a VTA that is already
         // serving, over an edited file, is the worse failure.
-        if !(cfg!(feature = "rest") && config.services.rest
-            || cfg!(feature = "didcomm") && config.services.didcomm)
-        {
+        if !any_transport_enabled(&config.services) {
             warn!(
                 "no services enabled — this VTA is running with no transport; \
                  enable one with `pnm services {{kind}} enable`"
@@ -1302,6 +1368,7 @@ pub async fn run(
                 drain_sweeper: Some(Arc::clone(&drain_sweeper)),
                 #[cfg(any(feature = "didcomm", feature = "tsp"))]
                 didcomm_bridge: Some(didcomm_bridge.clone()),
+                endpoint_policy: None,
                 #[cfg(feature = "rest")]
                 metrics_handle: metrics_handle.clone(), // installed once, before the loop
             };
@@ -1316,6 +1383,33 @@ pub async fn run(
             )
             .await?
         };
+
+        // A did:webs VTA minted by setup is published here, at its first boot:
+        // registered at its host on its own authority, before messaging starts
+        // and its readiness gate waits for the DID to resolve.
+        #[cfg(feature = "webs")]
+        publish_own_webs_identity(&app_state).await;
+
+        // Agent memory written by `vta/memory/*/0.1` before the store was
+        // versioned (#2115) moves into the versioned layout before anything is
+        // served, so both versions read one store from the first request.
+        // Idempotent, and one empty prefix scan once nothing is left to move —
+        // which also covers a restore carrying rows from an older VTA.
+        match crate::operations::memory::migrate_legacy(
+            &app_state.memory_ks,
+            &app_state.memory_locks,
+        )
+        .await
+        {
+            Ok(0) => {}
+            Ok(n) => info!(
+                moved = n,
+                "agent memory: moved 0.1 rows into the versioned store"
+            ),
+            Err(e) => {
+                warn!(error = %e, "agent memory: could not finish moving 0.1 rows; retried next boot")
+            }
+        }
 
         // VTI-VTA-051: a restore is recorded in the audit trail — by the first
         // boot with a sink, since the trail is part of what the restore replaced.
@@ -1386,6 +1480,8 @@ pub async fn run(
         // `#[non_exhaustive]`, unlike `AppState`), and the storage thread is
         // spawned after `build_app_state` anyway, so there is nothing to inject.
         let storage_app_state_locks = app_state.app_state_locks.clone();
+        let storage_memory_ks = app_state.memory_ks.clone();
+        let storage_memory_locks = app_state.memory_locks.clone();
         // The persona store the request path uses, so the expiry sweep writes
         // through the same keyspace (and at-rest encryption) and blinds with
         // the same correlation key.
@@ -1807,6 +1903,8 @@ pub async fn run(
                     storage_pcs_engine_ks,
                     storage_app_state_ks,
                     storage_app_state_locks,
+                    storage_memory_ks,
+                    storage_memory_locks,
                     storage_app_state_retention_days,
                     storage_persona,
                     storage_backup_bundles_ks,
@@ -1971,6 +2069,7 @@ async fn reload_config_for_restart(
         use crate::operations::protocol::runtime_state;
         reloaded.services.rest = runtime_state::is_rest_enabled(service_state_ks).await?;
         reloaded.services.didcomm = runtime_state::is_didcomm_enabled(service_state_ks).await?;
+        reloaded.services.tsp = runtime_state::is_tsp_enabled(service_state_ks).await?;
     }
 
     // Ask the generation being replaced, not the reload: the digest is
@@ -2017,6 +2116,8 @@ fn run_storage_thread(
     pcs_engine_ks: KeyspaceHandle,
     app_state_ks: KeyspaceHandle,
     app_state_locks: crate::operations::app_state::NamespaceLocks,
+    memory_ks: KeyspaceHandle,
+    memory_locks: crate::operations::app_state::NamespaceLocks,
     app_state_retention_days: u32,
     persona: vta_persona::PersonaStore,
     backup_bundles_ks_storage: KeyspaceHandle,
@@ -2259,6 +2360,24 @@ fn run_storage_thread(
                                 Ok(_) => {}
                                 Err(e) => warn!("app-state tombstone sweeper error: {e}"),
                             }
+                            // Agent memory's tombstones, on the same window: the
+                            // memory store is the same layout in its own
+                            // keyspace, and `vta/memory/list/0.2` reports this
+                            // retention to its change-feed callers.
+                            match crate::operations::app_state::sweep_expired_tombstones(
+                                &memory_ks,
+                                &memory_locks,
+                                &audit_sink,
+                                u64::from(app_state_retention_days) * 24 * 60 * 60,
+                            )
+                            .await
+                            {
+                                Ok(n) if n > 0 => {
+                                    info!(reaped = n, "agent-memory tombstone sweeper")
+                                }
+                                Ok(_) => {}
+                                Err(e) => warn!("agent-memory tombstone sweeper error: {e}"),
+                            }
                         }
                     }
                     _ = shutdown_rx.changed() => {
@@ -2382,6 +2501,7 @@ impl VsockRestListener {
         // `bind`/`try_clone` until the listener drops, and `as_raw_fd` always
         // returns that one descriptor. Moving it in makes the `AsyncFd` its sole
         // owner for as long as it is registered.
+        #[allow(unsafe_code)]
         let inner = unsafe { tokio::io::unix::AsyncFd::register(listener) }
             .map_err(|e| e.into_parts().1)?;
         Ok(Self {
@@ -2865,6 +2985,9 @@ async fn init_auth(
     // Always present in the signature; the caller passes `None` when the
     // `webvh` feature is off. Keeps the signature identical across feature sets.
     webvh_ks: Option<&KeyspaceHandle>,
+    // The `did:webs` records this VTA holds, for an identity that is one:
+    // `None` when the `webs` feature is off.
+    webs_ks: Option<&KeyspaceHandle>,
 ) -> AuthInit {
     let vta_did = match &config.vta_did {
         Some(did) => did.clone(),
@@ -2874,16 +2997,15 @@ async fn init_auth(
         }
     };
 
-    // The DID the VTA's key records are named under: its own, or — for a VTA
-    // presented as its did:scid — the did:webvh log that verifies it. Records
-    // keep the log's method ids; the secrets below are registered under the
-    // identity's own (VTI-KEY-161).
-    let key_record_did = key_record_did_for(&vta_did, webvh_ks).await;
+    // Which keys are which, read from this VTA's own document: by role, not by
+    // an assumed `#key-0` / `#key-1` (VTI-KEY-150). Records are named under the
+    // DID they were minted for — its own, or for a VTA presented as its did:scid
+    // the did:webvh log that verifies it — and the secrets below are registered
+    // under the identity's own (VTI-KEY-161).
+    let self_keys = crate::self_keys::self_keys(&vta_did, webvh_ks, webs_ks).await;
 
     // Look up VTA key paths from stored key records
-    let (signing_path, ka_path, vta_seed_id) = match find_vta_key_paths(&key_record_did, keys_ks)
-        .await
-    {
+    let (signing_path, ka_path, vta_seed_id) = match find_vta_key_paths(&self_keys, keys_ks).await {
         Ok(paths) => paths,
         Err(e) => {
             warn!(
@@ -2951,7 +3073,7 @@ async fn init_auth(
 
     // 1.2. Preload the VTA's DID document into the resolver so that DIDComm consumers
     // can resolve it without a network round-trip.
-    preload_self_did_document(&mut did_resolver, &vta_did, webvh_ks).await;
+    preload_self_did_document(&mut did_resolver, &vta_did, webvh_ks, webs_ks).await;
 
     // 2. Secrets resolver with VTA's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
@@ -2997,8 +3119,8 @@ async fn init_auth(
             Err(e) => warn!("failed to derive VTA signing key: {e}"),
         }
     } else {
-        // did:webvh / other methods: use #key-0 / #key-1 fragment convention
-        // with independently derived Ed25519 + X25519 keys.
+        // did:webvh, did:webs and other methods: independently derived Ed25519
+        // + X25519 keys, under the ids this VTA's own document gives them.
         let ka_path = match ka_path {
             Some(p) => p,
             None => {
@@ -3012,17 +3134,29 @@ async fn init_auth(
             }
         };
 
-        signing_vm_id = Some(format!("{vta_did}#key-0"));
-        ka_vm_id = Some(format!("{vta_did}#key-1"));
+        let Some(ka_key) = self_keys.key_agreement.clone() else {
+            warn!(
+                "this VTA's DID document lists no key-agreement key — auth endpoints will not \
+                 work"
+            );
+            return AuthInit {
+                did_resolver: Some(did_resolver),
+                ..AuthInit::empty()
+            };
+        };
+        // The authentication key: see `find_vta_key_paths`.
+        let signing_key = self_keys.authentication.clone();
+        signing_vm_id = Some(signing_key.vm_id.clone());
+        ka_vm_id = Some(ka_key.vm_id.clone());
 
         // Load stored key records for validation
         let stored_signing: Option<KeyRecord> = keys_ks
-            .get(crate::keys::store_key(&format!("{key_record_did}#key-0")))
+            .get(crate::keys::store_key(&signing_key.record_id))
             .await
             .ok()
             .flatten();
         let stored_ka: Option<KeyRecord> = keys_ks
-            .get(crate::keys::store_key(&format!("{key_record_did}#key-1")))
+            .get(crate::keys::store_key(&ka_key.record_id))
             .await
             .ok()
             .flatten();
@@ -3034,7 +3168,7 @@ async fn init_auth(
                     match signing_secret.get_public_keymultibase() {
                         Ok(runtime_pub) if runtime_pub != record.public_key => {
                             error!(
-                                key_id = %format!("{vta_did}#key-0"),
+                                key_id = %signing_key.vm_id,
                                 stored = %record.public_key,
                                 runtime = %runtime_pub,
                                 "SIGNING KEY MISMATCH: runtime-derived Ed25519 public key does not match \
@@ -3044,12 +3178,12 @@ async fn init_auth(
                             );
                         }
                         Ok(runtime_pub) => {
-                            info!(key_id = %format!("{vta_did}#key-0"), pub_key = %runtime_pub, "signing key validated");
+                            info!(key_id = %signing_key.vm_id, pub_key = %runtime_pub, "signing key validated");
                         }
                         Err(e) => warn!("could not extract signing public key for validation: {e}"),
                     }
                 }
-                for id in self_secret_ids(&vta_did, "key-0") {
+                for id in self_secret_ids(&vta_did, signing_key.fragment()) {
                     let mut secret = signing_secret.clone();
                     secret.id = id;
                     secrets_resolver.insert(secret).await;
@@ -3065,7 +3199,7 @@ async fn init_auth(
                     match ka_secret.get_public_keymultibase() {
                         Ok(runtime_pub) if runtime_pub != record.public_key => {
                             error!(
-                                key_id = %format!("{vta_did}#key-1"),
+                                key_id = %ka_key.vm_id,
                                 stored = %record.public_key,
                                 runtime = %runtime_pub,
                                 "KEY-AGREEMENT KEY MISMATCH: runtime-derived X25519 public key does not match \
@@ -3076,12 +3210,12 @@ async fn init_auth(
                             );
                         }
                         Ok(runtime_pub) => {
-                            info!(key_id = %format!("{vta_did}#key-1"), pub_key = %runtime_pub, "key-agreement key validated");
+                            info!(key_id = %ka_key.vm_id, pub_key = %runtime_pub, "key-agreement key validated");
                         }
                         Err(e) => warn!("could not extract KA public key for validation: {e}"),
                     }
                 }
-                for id in self_secret_ids(&vta_did, "key-1") {
+                for id in self_secret_ids(&vta_did, ka_key.fragment()) {
                     let mut secret = ka_secret.clone();
                     secret.id = id;
                     secrets_resolver.insert(secret).await;
@@ -3093,7 +3227,7 @@ async fn init_auth(
 
     // 3. JWT signing key from config (random key, not BIP-32 derived)
     let jwt_keys = match &config.auth.jwt_signing_key {
-        Some(b64) => match decode_jwt_key(b64) {
+        Some(b64) => match JwtKeys::from_base64_seed(b64, "VTA") {
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
@@ -3207,7 +3341,28 @@ pub(crate) async fn preload_self_did_document(
     did_resolver: &mut DIDCacheClient,
     vta_did: &str,
     webvh_ks: Option<&KeyspaceHandle>,
+    webs_ks: Option<&KeyspaceHandle>,
 ) {
+    // A did:webs VTA: its document is derived from the key event log it
+    // stores, exactly as its host serves it (design note did-webs-in-the-vta
+    // §4, S6), so the VTA resolves itself before — and without — the host.
+    if vta_did.starts_with("did:webs:") {
+        match crate::self_keys::own_document(vta_did, webvh_ks, webs_ks).await {
+            Some(value) => match serde_json::from_value(value) {
+                Ok(doc) => {
+                    did_resolver.add_did_document(vta_did, doc).await;
+                    info!(did = %vta_did, "preloaded VTA DID into resolver cache from its key event log");
+                }
+                Err(e) => {
+                    warn!(did = %vta_did, error = %e, "failed to decode DID document for resolver preload");
+                }
+            },
+            None => warn!(did = %vta_did, "no local key event log found for resolver preload"),
+        }
+        return;
+    }
+    let _ = webs_ks;
+
     #[cfg(not(feature = "webvh"))]
     {
         // Without the `webvh` feature there is no local webvh log to seed from;
@@ -3290,19 +3445,68 @@ pub(crate) async fn preload_self_did_document(
     }
 }
 
-/// The DID the VTA's own key records are named under: the VTA DID itself, or
-/// for a did:scid VTA DID, the did:webvh log recorded for it. Falls back to the
-/// VTA DID, whose lookup then fails with the usual "run setup first".
-async fn key_record_did_for(vta_did: &str, webvh_ks: Option<&KeyspaceHandle>) -> String {
-    #[cfg(feature = "webvh")]
-    if vta_sdk::did_scid::is_scid(vta_did)
-        && let Some(ks) = webvh_ks
-        && let Ok(Some(log_did)) = crate::webvh_store::log_did_for(ks, vta_did).await
-    {
-        return log_did;
+/// Publish this VTA's own did:webs if setup left it unpublished
+/// (`operations::did_webs::publish_own_identity`). Over the host's Trust Task
+/// HTTPS endpoint, since no mediator session exists yet, signed by the key the
+/// DID's own key event log establishes. A failure is logged and boot goes on:
+/// the readiness gate then reports the DID unresolved, and the next boot
+/// tries again.
+#[cfg(feature = "webs")]
+async fn publish_own_webs_identity(state: &AppState) {
+    let Some(vta_did) = state.config.read().await.vta_did.clone() else {
+        return;
+    };
+    if !vta_did.starts_with("did:webs:") {
+        return;
     }
-    let _ = webvh_ks;
-    vta_did.to_string()
+    let record = match crate::webs_store::get(&state.webs_ks, &vta_did).await {
+        Ok(Some(record)) if !record.published => record,
+        Ok(_) => return,
+        Err(e) => {
+            warn!(did = %vta_did, error = %e, "could not read this VTA's did:webs record");
+            return;
+        }
+    };
+    let Some(resolver) = state.did_resolver.as_ref() else {
+        warn!(did = %vta_did, "no DID resolver; this VTA's did:webs cannot be published yet");
+        return;
+    };
+    let server = match crate::webvh_store::get_server(&state.webvh_ks, &record.server_id).await {
+        Ok(Some(server)) => server,
+        Ok(None) => {
+            error!(
+                did = %vta_did,
+                server_id = %record.server_id,
+                "this VTA's did:webs names a hosting server that is not registered; register it \
+                 (`pnm did-mgmt servers add`) and restart"
+            );
+            return;
+        }
+        Err(e) => {
+            warn!(did = %vta_did, error = %e, "could not read this VTA's hosting server");
+            return;
+        }
+    };
+    let deps = crate::operations::did_webvh::WebvhDeps::from_app_state(state, resolver);
+    let host = match crate::operations::did_webvh::host::host_client(&deps, &vta_did, &server).await
+    {
+        Ok(host) => host,
+        Err(e) => {
+            error!(did = %vta_did, error = %e, "cannot reach this VTA's did:webs host");
+            return;
+        }
+    };
+    match crate::operations::did_webs::publish_own_identity(&state.webs_ks, &vta_did, &host).await {
+        Ok(true) => info!(did = %vta_did, "published this VTA's did:webs at its host"),
+        Ok(false) => {}
+        Err(e) => error!(
+            did = %vta_did,
+            server = %server.did,
+            error = %e,
+            "could not publish this VTA's did:webs; the host must allow self-registration on \
+             its domain (`[[hosting.webs_self_register]]`). Retried at the next boot"
+        ),
+    }
 }
 
 /// The ids the VTA registers one of its own secrets under: the method id in its
@@ -3329,21 +3533,27 @@ fn self_secret_ids(vta_did: &str, fragment: &str) -> Vec<String> {
 /// Returns `(signing_path, ka_path, seed_id)` where `ka_path` is `None` for
 /// `did:key` and `seed_id` comes from the signing key record.
 async fn find_vta_key_paths(
-    vta_did: &str,
+    self_keys: &crate::self_keys::SelfKeys,
     keys_ks: &KeyspaceHandle,
 ) -> Result<(String, Option<String>, Option<u32>), AppError> {
-    let signing_key_id = format!("{vta_did}#key-0");
-
+    // The resident key is the one this VTA authenticates with — its requests,
+    // responses and DIDComm sender all carry `proofPurpose: authentication` —
+    // which is a key-role identity's `operational` key and a webvh VTA's
+    // `#key-0` (VTI-KEY-072). Attestation artefacts load their key per use.
     let signing: KeyRecord = keys_ks
-        .get(crate::keys::store_key(&signing_key_id))
+        .get(crate::keys::store_key(&self_keys.authentication.record_id))
         .await?
         .ok_or_else(|| AppError::NotFound("VTA signing key not found".into()))?;
     require_active(&signing)?;
 
-    let ka_path = if vta_did.starts_with("did:key:") {
+    let ka_path = if self_keys.authentication.vm_id.starts_with("did:key:") {
         None
     } else {
-        let ka_key_id = format!("{vta_did}#key-1");
+        let ka_key_id = self_keys
+            .key_agreement
+            .as_ref()
+            .map(|k| k.record_id.clone())
+            .ok_or_else(|| AppError::NotFound("VTA key-agreement key not listed".into()))?;
         let ka: KeyRecord = keys_ks
             .get(crate::keys::store_key(&ka_key_id))
             .await?
@@ -3370,18 +3580,6 @@ fn require_active(record: &KeyRecord) -> Result<(), AppError> {
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.
-fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
-    let bytes = BASE64
-        .decode(b64)
-        .map_err(|e| AppError::Config(format!("invalid jwt_signing_key base64: {e}")))?;
-    let key_bytes: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
-    let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTA")?;
-    debug!("JWT signing key decoded successfully");
-    Ok(keys)
-}
-
 /// Mediator-connect supervisor: readiness gate, connect, and reconnect.
 ///
 /// Owns the whole mediator lifecycle that used to run inline once during
@@ -3857,29 +4055,7 @@ async fn flush_mediator_outbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> 
 // `DIDCommService`. Messaging connectivity is now read live (non-latched, R6.2)
 // off `MessagingService::status()` via `DIDCommBridge::messaging_status_str`.
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => info!("received SIGINT"),
-        () = terminate => info!("received SIGTERM"),
-    }
-}
+use vti_common::runtime::shutdown_signal;
 
 /// `VTA_REST_VSOCK_PORT` fails closed: it never falls back to TCP.
 #[cfg(all(test, feature = "rest"))]
@@ -4268,8 +4444,9 @@ mod tests {
         .await
         .unwrap();
 
-        let (signing_path, ka_path, seed_id) =
-            find_vta_key_paths(did, &keys_ks).await.expect("paths");
+        let (signing_path, ka_path, seed_id) = find_vta_key_paths(&test_self_keys(did), &keys_ks)
+            .await
+            .expect("paths");
 
         assert_eq!(signing_path, "m/44'/0'/0'");
         assert!(ka_path.is_none(), "did:key must not require #key-1 lookup");
@@ -4309,8 +4486,9 @@ mod tests {
         .await
         .unwrap();
 
-        let (signing_path, ka_path, _seed_id) =
-            find_vta_key_paths(did, &keys_ks).await.expect("paths");
+        let (signing_path, ka_path, _seed_id) = find_vta_key_paths(&test_self_keys(did), &keys_ks)
+            .await
+            .expect("paths");
 
         assert_eq!(signing_path, "m/44'/0'/0'");
         assert_eq!(ka_path.as_deref(), Some("m/44'/0'/1'"));
@@ -4339,11 +4517,50 @@ mod tests {
         .await
         .unwrap();
 
-        let result = find_vta_key_paths(did, &keys_ks).await;
+        let result = find_vta_key_paths(&test_self_keys(did), &keys_ks).await;
         assert!(
             matches!(result, Err(AppError::NotFound(_))),
             "expected NotFound for did:webvh missing #key-1, got {result:?}"
         );
+    }
+
+    /// S6: a did:webs VTA resolves its own DID from the key event log it
+    /// stores, before and without its host.
+    #[cfg(feature = "webs")]
+    #[tokio::test]
+    async fn a_did_webs_vta_preloads_its_own_document_from_its_key_event_log() {
+        let ts = crate::test_support::open_test_store().await;
+        let (did, record) = crate::self_keys::tests::key_role_webs_record();
+        crate::webs_store::put(&ts.webs_ks, &record).await.unwrap();
+        let mut resolver = DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .unwrap();
+        preload_self_did_document(&mut resolver, &did, None, Some(&ts.webs_ks)).await;
+        let resolved = resolver
+            .resolve(&did)
+            .await
+            .expect("resolves from the cache");
+        assert!(
+            resolved.cache_hit,
+            "served from the preload, not the network"
+        );
+        let doc = serde_json::to_value(&resolved.doc).unwrap();
+        assert!(doc.get("keyRoles").is_some(), "{doc}");
+    }
+
+    /// The keys a VTA whose own document is the `did:webvh` convention has.
+    fn test_self_keys(did: &str) -> crate::self_keys::SelfKeys {
+        if did.starts_with("did:key:") {
+            crate::self_keys::SelfKeys::did_key(did)
+        } else {
+            crate::self_keys::SelfKeys::from_ids(
+                did,
+                did,
+                &vta_sdk::node_keys::NodeKeyIds::conventional(did),
+            )
+        }
     }
 
     /// Build an `AppConfig` from a TOML snippet for the message tests.
@@ -4410,7 +4627,7 @@ mod tests {
             .await
             .expect("resolver init");
 
-        preload_self_did_document(&mut resolver, did, Some(&webvh_ks)).await;
+        preload_self_did_document(&mut resolver, did, Some(&webvh_ks), None).await;
 
         let resolved = resolver.resolve(did).await.expect("resolve preloaded did");
         assert!(
@@ -4445,7 +4662,7 @@ mod tests {
             .await
             .expect("resolver init");
 
-        preload_self_did_document(&mut resolver, did, Some(&webvh_ks)).await;
+        preload_self_did_document(&mut resolver, did, Some(&webvh_ks), None).await;
 
         let result = resolver.resolve(did).await;
         assert!(
@@ -4457,7 +4674,34 @@ mod tests {
 
 #[cfg(test)]
 mod tsp_build_tests {
-    use super::tsp_configured_but_unbuilt;
+    use super::{any_transport_enabled, tsp_configured_but_unbuilt};
+    use vta_config::ServicesConfig;
+
+    fn services(rest: bool, didcomm: bool, tsp: bool) -> ServicesConfig {
+        ServicesConfig {
+            rest,
+            didcomm,
+            webauthn: false,
+            tsp,
+        }
+    }
+
+    /// #937: a TSP-only VTA is a complete one, so boot must not refuse it as
+    /// having "no services enabled".
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_tsp_only_vta_has_a_transport() {
+        assert!(any_transport_enabled(&services(false, false, true)));
+    }
+
+    /// Nothing enabled is still refused, and WebAuthn alone is not a transport.
+    #[test]
+    fn nothing_enabled_has_no_transport() {
+        assert!(!any_transport_enabled(&services(false, false, false)));
+        let mut webauthn_only = services(false, false, false);
+        webauthn_only.webauthn = true;
+        assert!(!any_transport_enabled(&webauthn_only));
+    }
 
     /// Keyring VTI-34: asked for and not built is the one combination refused.
     #[test]
@@ -4508,7 +4752,7 @@ mod unenforced_policy_tests {
         vta_policy::seed_declarative_approvals(
             &ks,
             &[vta_sdk::approvals::ApprovalRule::reauth(
-                "https://trusttasks.org/spec/acl/grant/0.2",
+                "https://trusttasks.org/spec/acl/grant/0.3",
             )],
             &Default::default(),
             now,

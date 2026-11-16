@@ -30,6 +30,27 @@ pub struct Issued {
     pub credential: Value,
 }
 
+/// Issue `member_did` (at `entry_id`) its credential of `group` on **admission**: for a
+/// badge group, the admission also records the award the badge's holding is counted by
+/// (`crate::badges::credential::issue_admitting`, VTI-BDG-013 / 024); `given_by` is the
+/// owner who approved a request, absent for a rule. Renewal uses [`issue`].
+pub async fn issue_admitting(
+    state: &AppState,
+    group: &Group,
+    member_did: &str,
+    entry_id: &str,
+    given_by: Option<&str>,
+) -> Result<Issued, Failure> {
+    if group.badge_id.is_some()
+        && let Some(issued) =
+            crate::badges::credential::issue_admitting(state, group, member_did, entry_id, given_by)
+                .await?
+    {
+        return Ok(issued);
+    }
+    issue(state, group, member_did).await
+}
+
 /// Issue `member_did` its credential of `group`, signed by the VTA as the group.
 pub async fn issue(state: &AppState, group: &Group, member_did: &str) -> Result<Issued, Failure> {
     // A badge group issues the badge credential (VTI-BDG-060), never a membership one.

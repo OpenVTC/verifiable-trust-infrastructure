@@ -154,7 +154,7 @@ async fn member_portal_is_served_from_its_directory_when_configured() {
         .body(Body::empty())
         .unwrap();
     let (_, body) = request(&router, req).await;
-    assert!(String::from_utf8_lossy(&body).contains("VTC Admin"));
+    assert!(String::from_utf8_lossy(&body).contains("<title>Operator console</title>"));
 }
 
 #[tokio::test]
@@ -173,7 +173,7 @@ async fn path_mode_admin_bare_prefix_serves_admin_spa() {
     assert_eq!(status, StatusCode::OK, "/admin returned {status}");
     let html = String::from_utf8_lossy(&body);
     assert!(
-        html.contains("VTC Admin"),
+        html.contains("<title>Operator console</title>"),
         "/admin did not serve admin SPA — got first 200 chars: {}",
         &html[..html.len().min(200)]
     );
@@ -196,7 +196,7 @@ async fn path_mode_admin_trailing_slash_serves_admin_spa() {
     assert_eq!(status, StatusCode::OK, "/admin/ returned {status}");
     let html = String::from_utf8_lossy(&body);
     assert!(
-        html.contains("VTC Admin"),
+        html.contains("<title>Operator console</title>"),
         "/admin/ did not serve admin SPA — got first 200 chars: {}",
         &html[..html.len().min(200)]
     );

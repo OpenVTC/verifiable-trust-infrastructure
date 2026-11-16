@@ -51,7 +51,7 @@ use vta_sdk::protocols::vetting::{
     AutoGrantConfig, AutoGrantStatus, AutoGrantSweep, CheckShape, DEFAULT_AUTO_GRANT_SWEEP_MINUTES,
     DEFAULT_VETTER_GRANT_VALIDITY_SECONDS, GrantOrigin,
 };
-use vti_common::audit::{AuditEvent, VetterAutoGrantConfiguredData, VetterAutoGrantSweptData};
+use vtc_audit::{AuditEvent, VetterAutoGrantConfiguredData, VetterAutoGrantSweptData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 

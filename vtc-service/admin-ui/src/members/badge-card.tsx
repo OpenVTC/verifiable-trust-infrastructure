@@ -12,6 +12,7 @@ import { ShieldCheck } from "lucide-react";
 
 import { badgeHref, getBadgeImage, type Badge } from "./badges-api";
 import { pictureUrl } from "./picture";
+import { formatDate } from "@/lib/format";
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
@@ -48,21 +49,52 @@ export function BadgeArt({ badge, width = 120 }: { badge: Badge; width?: number 
   );
 }
 
-/** A badge on a wall: its picture, its name, how many times it is held, a
- *  pin, and the credential mark on a community badge. Links to the badge. */
+/** A date as a wall shows it: "8 Nov 2026". */
+function onDay(iso: string): string {
+  return formatDate(iso);
+}
+
+/**
+ * When a badge was earned, as a wall says it: "Earned 8 Nov 2026" for one award, "Since
+ * 3 Mar 2026" for a badge held more than once, with the latest in its title. `null` where
+ * the wall named no date.
+ */
+export function earnedWords(
+  count: number | undefined,
+  since: string | undefined,
+  latestAt: string | undefined,
+): { text: string; title: string } | null {
+  const first = since ?? latestAt;
+  if (!first) return null;
+  if ((count ?? 1) > 1) {
+    const latest = latestAt ?? first;
+    return { text: `Since ${onDay(first)}`, title: `First earned ${onDay(first)}, most recently ${onDay(latest)}` };
+  }
+  return { text: `Earned ${onDay(first)}`, title: `Earned ${onDay(first)}` };
+}
+
+/** A badge on a wall: its picture, its name, how many times it is held, when it was
+ *  earned, a pin, and the credential mark on a community badge. Links to the badge. */
 export function BadgeTile({
   badge,
   count,
   pinned,
+  since,
+  latestAt,
   width = 150,
   children,
 }: {
   badge: Badge;
   count?: number;
   pinned?: boolean;
+  /** When the member first accepted this badge. */
+  since?: string;
+  /** When they last accepted an award of it. */
+  latestAt?: string;
   width?: number;
   children?: React.ReactNode;
 }) {
+  const earned = earnedWords(count, since, latestAt);
   return (
     <div className={`bw-tile${pinned ? " bw-tile-pinned" : ""}`} style={{ width }}>
       <a className="bw-tile-link" href={badgeHref(badge.badgeId)} title={badge.description}>
@@ -76,6 +108,11 @@ export function BadgeTile({
           {typeof count === "number" && count > 1 && <span className="bw-count">×{count}</span>}
         </span>
         <span className="bw-tile-name">{badge.name}</span>
+        {earned && (
+          <span className="bw-tile-sub" title={earned.title}>
+            {earned.text}
+          </span>
+        )}
       </a>
       {children}
     </div>
@@ -101,5 +138,5 @@ export function ago(iso: string | undefined): string {
     return h <= 0 ? "just now" : `${h} hour${h === 1 ? "" : "s"} ago`;
   }
   if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
-  return new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
+  return formatDate(iso);
 }

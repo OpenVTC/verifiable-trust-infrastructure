@@ -341,6 +341,7 @@ These values are set in `config.toml` before building the EIF:
 |-------|----------|------|---------|
 | `tee.kms.key_arn` | Yes | Always | KMS key ARN for secret encryption/decryption |
 | `tee.kms.vta_did_template` | Recommended | Always | Template for auto-generating the VTA's did:webvh identity on first boot. Eliminates the manual DID creation / rebuild cycle. |
+| `tee.kms.vta_did_webs` | No (alpha) | Instead of the template | A key-role `did:webs` minted on first boot and registered at its host (`server_did`, `domain`, optional `path`). Needs an image built with the `webs` feature (`VTA_ENABLE_WEBS=true`) and `[dids] webs_enabled = true`. See `docs/02-vta/tee-architecture.md`, *A did:webs identity*. |
 | `public_url` | Only for REST | Profiles B, C | External HTTPS URL where the VTA is reachable. Used in DID documents for the TEE attestation service endpoint. **Not needed for DIDComm-only (Profile A)** — all communication goes through the mediator. |
 | `messaging.mediator_did` | Only for DIDComm | Profiles A, B | DIDComm mediator DID. The mediator URL is always `ws://127.0.0.1:4443` inside the enclave (vsock-proxied). |
 | `vta_name` | No | Optional | Human-readable name for the VTA |
@@ -445,7 +446,7 @@ sudo usermod -aG docker,ne $USER
 **Rust toolchain** (required on the parent EC2 instance):
 
 The `enclave-proxy` binary is built from source on the parent instance
-(see [Step 6](#step-6-start-the-parent-proxy-before-the-enclave)), and the
+(see [Step 6](#step-6-start-the-parent-side-services-before-the-enclave)), and the
 DID resolver sidecar is installed via `cargo install`
 (see [DID Resolution](#did-resolution)). Both require a working Rust
 toolchain — the `enclave-proxy` crate's MSRV is **Rust 1.91.0**.
@@ -1489,7 +1490,7 @@ nitro-cli console \
 > attach a console to an enclave that was started without it. Debug mode
 > enables the console output channel but also **zeros all PCR values** in
 > attestation documents, which breaks KMS attestation conditions. See the
-> warning in [Step 7](#step-7-launch-the-enclave) for the workaround.
+> warning in [Step 7](#step-7-start-the-enclave) for the workaround.
 
 ### Common startup errors
 
@@ -1714,8 +1715,8 @@ echo "$NEW_PCR0" > /opt/vta/last-pcr0.txt
 | Scenario | Recovery |
 |----------|----------|
 | Enclave restart | Automatic — KMS Decrypt retrieves seed from bootstrap keyspace |
-| EBS volume lost | Use mnemonic backup with `vta tee recover --mnemonic "..."` |
-| KMS key deleted | Use mnemonic to regenerate seed with a new KMS key |
+| EBS volume lost | Boot a fresh enclave VTA and restore the latest encrypted backup into it: `pnm backup import <file> --replace-identity` ([backup-restore.md](../../docs/02-vta/backup-restore.md)). There is no command that rebuilds a TEE VTA from the mnemonic alone |
+| KMS key deleted | As above, on a fresh enclave VTA bound to a new KMS key: the restore commits the backup's seed under the new key |
 | PCR0 mismatch after rebuild | Rolling upgrade with `--old-pcr0`, or fresh deploy |
 | Signing key lost | Generate new key, rebuild + re-sign EIF, update PCR8 in KMS policy |
 

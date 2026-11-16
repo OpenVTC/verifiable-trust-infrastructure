@@ -367,11 +367,11 @@ mod tests {
     fn lookup_returns_bytes_for_known_files() {
         let bytes = lookup("/index.html").expect("index.html");
         let body = std::str::from_utf8(bytes).unwrap();
-        // Vite's `index.html` shim has `<title>VTC Admin</title>`
+        // Vite's `index.html` shim has `<title>Operator console</title>`
         // and a `<div id="root">` mount point. Both are stable
         // build-tool output.
         assert!(
-            body.contains("<title>VTC Admin</title>"),
+            body.contains("<title>Operator console</title>"),
             "index.html title drifted: {body}"
         );
         assert!(

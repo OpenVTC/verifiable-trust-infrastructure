@@ -89,6 +89,12 @@ pub const GUIDES: &[Guide] = &[
         source: "docs/03-vtc/admin-access.md",
         text: include_str!("../../docs/03-vtc/admin-access.md"),
     },
+    Guide {
+        topic: "badges",
+        title: "Member badges",
+        source: "docs/03-vtc/badges.md",
+        text: include_str!("../../docs/03-vtc/badges.md"),
+    },
 ];
 
 /// The resource URI prefix every guide sits under.
@@ -549,6 +555,146 @@ pub const WORKFLOWS: &[Workflow] = &[
         ],
     },
     Workflow {
+        name: "create-badge",
+        title: "Create a member badge",
+        description: "Define a community or kudos badge with its picture, then give it: \
+                      offer it to members or a group, let members ask, give it by a rule, or \
+                      hand out a claim code at an event.",
+        preconditions: &[
+            "Badges are on (`vtc/badges/settings/show`); otherwise every badge task is \
+             refused `badgesOff`. Turning them on is `vtc/badges/settings/update`.",
+            "Defining a community badge takes `vtc.badges.admin`; a kudos badge, any \
+             active member the settings admit. A community badge is backed by a badge group \
+             whose DID the community's VTA mints, so the community needs `[groups]` and its \
+             VTA link, as a group does.",
+            "A badge that may be shown outside the community needs the community's public \
+             location; its picture and description are then public, its holders never.",
+        ],
+        steps: &[
+            Step {
+                task: "vtc/badges/images/upload",
+                what: "Upload the picture (`mediaType`, base64 `data`). The community \
+                       re-encodes it and answers its digest; `vtc/badges/create` names the \
+                       picture by that digest.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/create",
+                what: "Create it: `kind` (`community`: owners give it, backed by a badge \
+                       group, an Open Badges 3.0 credential per holder; `kudos`: any member \
+                       gives it, no credential), `name`, `description`, `image`, `reason`, and \
+                       for a community badge its `owners`, `criteria`, `requestable`, \
+                       `repeatable`, `shareableOutside`, or `automatic` with a rule (which may \
+                       count `kudosReceived`, `ideasSelected`, `electionTickets`). \
+                       `vtc/badges/promote` makes a kudos badge a community one later, \
+                       creating its group.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/awards/offer",
+                what: "Offer it to members by entry id (`to`) or to a `group`. An offer is \
+                       not a holding: nothing is issued until the member accepts. A \
+                       `requestable` badge is asked for with `vtc/groups/join` on its group \
+                       and decided with `vtc/groups/requests/decide`.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/claims/create",
+                what: "Optional, for an event: a claim code with a `label`, `validUntil` (at \
+                       most 90 days ahead) and a `limit`. The code is answered once and never \
+                       again; `vtc/badges/claims/list` shows its claims, \
+                       `vtc/badges/claims/withdraw` stops it.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/show",
+                what: "Read it back; `vtc/badges/holders/list` lists who holds it.",
+                parks: None,
+            },
+        ],
+        afterwards: &[
+            "A member sees an offer on the badges page of the member portal and accepts or \
+             declines it; an accepted community badge's credential is issued by the badge \
+             group and offered to their wallet.",
+            "Taking an award back is `vtc/badges/awards/revoke`; retiring the badge is \
+             `vtc/badges/retire`, which revokes every credential its group issued and \
+             withdraws its claim codes.",
+        ],
+        guides: &["badges", "groups"],
+        arguments: &[
+            Argument {
+                name: "name",
+                description: "The badge's name, if decided.",
+            },
+            Argument {
+                name: "kind",
+                description: "`community` or `kudos`.",
+            },
+        ],
+    },
+    Workflow {
+        name: "my-badges",
+        title: "Your badges",
+        description: "As a member: accept or decline what you were offered, arrange and hide \
+                      your wall, redeem a claim code, show an award outside, give kudos.",
+        preconditions: &[
+            "This is the member's own wall, so sign in as the member (`vtc_sign_in`, a member \
+             sign-in); an administrator's identity sees its own badges, not anyone else's.",
+            "Badges are on in the community (`vtc/badges/settings/show`).",
+        ],
+        steps: &[
+            Step {
+                task: "vtc/badges/mine/list",
+                what: "What you hold and what you were offered, with each award's state.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/mine/accept",
+                what: "Accept an offer: it becomes a holding, and for a community badge the \
+                       credential is issued and offered to your wallet. \
+                       `vtc/badges/mine/decline` refuses it instead.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/claims/redeem",
+                what: "Enter a claim code from an event: redeeming is your consent, and you \
+                       hold the badge at once.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/mine/arrange",
+                what: "Order and pin your wall. `vtc/badges/mine/hide` takes a holding off \
+                       your wall, the holder list and the counts — hidden is portal-only, and \
+                       the badge's owners still see you as a hidden holder; \
+                       `vtc/badges/mine/show` puts it back.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/awards/share",
+                what: "Show a community badge outside the community, where it allows: the \
+                       community serves your credential at a link you hand out, until \
+                       `vtc/badges/awards/unshare`.",
+                parks: None,
+            },
+            Step {
+                task: "vtc/badges/kudos/give",
+                what: "Thank another member with a kudos badge (`badgeId`, `to`, an optional \
+                       `note`); they accept it like any offer.",
+                parks: None,
+            },
+        ],
+        afterwards: &[
+            "Other members see your wall on your directory card, as you arranged it.",
+            "Leaving a badge's group, or the community, ends the holding: a share stops and \
+             the credential's status is revoked.",
+        ],
+        guides: &["badges"],
+        arguments: &[Argument {
+            name: "code",
+            description: "A claim code to redeem, if the member has one.",
+        }],
+    },
+    Workflow {
         name: "grant-administration",
         title: "Grant administration",
         description: "Give an entry an administrative role or capabilities, bounded by your \
@@ -812,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn names_are_unique_and_the_six_workflows_are_there() {
+    fn names_are_unique_and_the_workflows_are_there() {
         let names: BTreeSet<&str> = WORKFLOWS.iter().map(|w| w.name).collect();
         assert_eq!(names.len(), WORKFLOWS.len());
         for expected in [
@@ -822,6 +968,8 @@ mod tests {
             "open-data-room",
             "admit-member",
             "grant-administration",
+            "create-badge",
+            "my-badges",
         ] {
             assert!(workflow(expected).is_some(), "missing {expected}");
         }

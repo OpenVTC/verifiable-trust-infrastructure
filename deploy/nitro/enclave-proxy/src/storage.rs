@@ -44,6 +44,17 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
 
     info!("[storage] opened database at {}", data_dir.display());
 
+    // Without this, fjall 3.1 keeps every write in memory (see `flusher`).
+    // Lives as long as this function, which serves until the proxy exits.
+    let _flusher =
+        match crate::flusher::Flusher::spawn(db.clone(), crate::flusher::FlushPolicy::default()) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("[storage] failed to start the memtable flusher: {e}");
+                return;
+            }
+        };
+
     // On startup, check if a DID log was previously stored and write it to disk.
     // This ensures the file is always available even after proxy restarts.
     //

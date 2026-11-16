@@ -439,6 +439,7 @@ impl VtcClient {
     /// read to; `None` lets the host take the room's latest, which may miss a change made
     /// since the last listing. `lease_secs` (60 – 2592000) asks how long the watch lasts if
     /// it does not fire; the host may grant less and says what it granted in `expiresAt`.
+    #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
     pub async fn watch(
         &self,
         session: &RoomSession,
@@ -465,6 +466,7 @@ impl VtcClient {
 
     /// Cancel the watch on the room and `address` (`rooms/watch/0.1` with `cancel`). A watch
     /// the host does not hold answers `armed: false` too, so a retry is harmless.
+    #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
     pub async fn cancel_watch(
         &self,
         session: &RoomSession,
@@ -482,6 +484,7 @@ impl VtcClient {
             .await
     }
 
+    #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
     async fn watch_task(
         &self,
         payload: serde_json::Value,
@@ -500,6 +503,54 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("watch response is not a rooms/watch/0.1 response: {e}"),
+        })
+    }
+
+    /// Arm, or renew, a **live** watch on the room (`rooms/watch/0.2` with `live: true`,
+    /// trust-tasks-tf #1087): the host sends a `rooms/changed/0.1` to `address` each time the
+    /// room moves past the version it last signalled, coalesced to at most one a second,
+    /// until the lease — at most 120 seconds from this request — ends. Renew with the same
+    /// call about every 60 seconds while the room is on screen; `since_version` may be `None`
+    /// on a renewal, which keeps the version last signalled as the watermark. Cancel it with
+    /// [`Self::cancel_watch`] when the screen closes.
+    ///
+    /// Only on a room whose signal delay is `none`: the host refuses any other with
+    /// `rooms/watch:liveNotPermitted` (a [`VtcError`] carrying that code), leaving any watch
+    /// at `address` as it was. Treat the watch as live only when the response says
+    /// `live: true` — a host that implements only 0.1 arms a one-shot watch.
+    pub async fn watch_live(
+        &self,
+        session: &RoomSession,
+        address: &str,
+        since_version: Option<u64>,
+        lease_secs: Option<u64>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_2::Response, VtcError> {
+        use trust_tasks_rs::Payload as _;
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+            "address": address,
+            "live": true,
+        });
+        if let Some(v) = since_version {
+            payload["sinceVersion"] = serde_json::json!(v);
+        }
+        if let Some(l) = lease_secs {
+            payload["leaseSeconds"] = serde_json::json!(l);
+        }
+        let value = self
+            .room_task(
+                vti_specs::rooms::watch::v0_2::Payload::TYPE_URI,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("watch response is not a rooms/watch/0.2 response: {e}"),
         })
     }
 

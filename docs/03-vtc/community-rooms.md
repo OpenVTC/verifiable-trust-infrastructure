@@ -58,7 +58,7 @@ can be checked — the VTA verifies the community's own credentials as it stores
   the community mints, rooms and groups alike, without a restart
   ([groups](groups.md#where-group-identities-are-published-at-runtime)).
 - With `webvh_server`, the VTA publishes each room's log on that hosting server
-  (registered at the VTA with `pnm webvh servers register`).
+  (registered at the VTA with `pnm did-mgmt servers add`).
 - Without it, the room's DID is minted serverless at
   `<public_url>/room-dids/<id>/did.jsonl`, and **this VTC serves the log** there, on
   every host, like its own `/.well-known/did.jsonl`. `public_url` must be set.
@@ -173,8 +173,11 @@ only these versions; an older VTC that does not serve them answers `unsupportedT
 
 - **Only the label (`name`) and description.** Tags are the administrators' filing and never
   go into the room. They never go into the room's host record, a credential or
-  `rooms/owner/register` either. A write replaces the whole profile, so the tags, emoji and
-  `ext` a member holding `curate` may have set in the room are read back and kept.
+  `rooms/owner/register` either. A write replaces the whole profile, so everything else in
+  it — the tags, emoji, `recordMembers` and `ext` a member holding `curate` may have set in
+  the room — is read back and kept. If that read fails nothing is written and the profile
+  stays `pending`: a profile written without its `recordMembers` would stop the room's
+  members replying and reacting.
 - **Never the request's to fail.** The answer's `roomProfile` is `written` when the VTA wrote
   it, `pending` when it did not — the room is created, the change stands — and, for an update,
   `unchanged` when nothing asked for a write (a tags-only change). A pending profile is

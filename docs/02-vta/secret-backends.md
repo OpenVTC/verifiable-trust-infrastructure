@@ -85,7 +85,7 @@ testing only — never use it in production.
 In TEE mode (`vta-enclave`), the KMS-backed bootstrap path provides
 the seed directly via attested decryption; the table above is
 bypassed entirely. See
-[`../01-concepts/tee-architecture.md`](../01-concepts/tee-architecture.md).
+[`tee-architecture.md`](tee-architecture.md).
 
 ## Encoding
 
@@ -511,7 +511,7 @@ Instead, the enclave performs an **attested decryption** at boot:
 There is no operator-visible config for this backend beyond the
 upstream KMS key and the encrypted-seed ciphertext (provided via
 `vta-enclave`'s parent-instance bootstrap). See
-[`../01-concepts/tee-architecture.md`](../01-concepts/tee-architecture.md)
+[`tee-architecture.md`](tee-architecture.md)
 for the full design.
 
 ### OS keyring
@@ -877,6 +877,6 @@ your threat-model writeup and we can wire it up.
 - [`non-interactive-setup.md`](non-interactive-setup.md) —
   `vta setup --from <file>` with a TOML config that pre-selects the
   backend.
-- [`../01-concepts/tee-architecture.md`](../01-concepts/tee-architecture.md) —
+- [`tee-architecture.md`](tee-architecture.md) —
   Nitro Enclave / KMS bootstrap design, including the parent-side
   seed-encryption procedure.

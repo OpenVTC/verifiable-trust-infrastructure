@@ -1,6 +1,7 @@
 # Design note: enclave-side anti-rollback anchor (P0.2)
 
-Status: **Draft — for review** (no code yet)
+Status: **implemented** — `vta-tee/src/anchor.rs` (the DynamoDB anti-rollback
+anchor and its MAC). Originally a draft for review.
 Owner: Glenn Gore
 Last updated: 2026-06-11
 Tracking: Phase-0 hardening item **P0.2** (XL). Depends on **P0.1** (AAD

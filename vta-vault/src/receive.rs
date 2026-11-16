@@ -129,7 +129,6 @@ async fn verify_sd_jwt_issuer(
         &IssuerJwsVerifier { key },
         &hasher,
         &VerificationOptions::default(),
-        None,
     )
     .map_err(|e| AppError::Validation(format!("issuer signature verification failed: {e}")))?;
     if !result.is_verified() {
@@ -1496,6 +1495,13 @@ mod tests {
 
         let signer = Es256CoseSigner::generate();
         let issued = affinidi_mdoc::MdocBuilder::new("eu.europa.ec.eudi.pid.1")
+            // affinidi-mdoc 0.6: a device (holder) key is required.
+            .device_key({
+                let pk = affinidi_mdoc::es256_cose::Es256CoseSigner::generate().public_key_bytes();
+                affinidi_mdoc::CoseKey::new_p256(pk[1..33].to_vec(), pk[33..65].to_vec())
+                    .unwrap()
+                    .to_cbor_value()
+            })
             .validity(ValidityInfo {
                 signed: "2026-01-01T00:00:00Z".into(),
                 valid_from: "2026-01-01T00:00:00Z".into(),
@@ -1692,11 +1698,11 @@ mod tests {
         let kp = affinidi_crypto::p256::generate(Some(&[0x71; 32])).unwrap();
         let key = ResolvedKey::new(
             affinidi_secrets_resolver::secrets::KeyType::P256,
-            kp.public_bytes,
+            kp.public_bytes.clone(),
         );
         (
             Es256Signer {
-                private: kp.private_bytes,
+                private: kp.private_bytes.clone(),
                 kid: kid.map(str::to_string),
             },
             key,

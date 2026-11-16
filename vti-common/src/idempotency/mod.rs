@@ -54,5 +54,5 @@ pub use middleware::{
 };
 pub use store::{
     CacheEntry, ClaimOutcome, CompletedResponse, EntryState, IdempotencyStore, Principal,
-    principal_from_request,
+    principal_from_request, sweep_expired,
 };

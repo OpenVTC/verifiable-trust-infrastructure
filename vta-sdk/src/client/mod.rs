@@ -432,20 +432,23 @@ mod policy;
 mod rooms;
 mod rooms_records;
 mod rooms_watch;
+mod webs;
 mod witness;
 pub use rooms::{
-    RoomAction, RoomLabelEdit, RoomRegistration, RoomRetentionPolicy, RoomVisibility,
-    is_community_type, is_offer_type, room_label_payload, unsigned_community_request,
-    unsigned_room_request,
+    RoomAction, RoomLabelEdit, RoomRecordRetention, RoomRegistration, RoomRetentionPolicy,
+    RoomSignalDelay, RoomVisibility, is_community_type, is_offer_type, room_label_payload,
+    room_read_marker_payload, unsigned_community_request, unsigned_room_request,
 };
 pub use rooms_records::{
     MEMBER_PROFILE_KIND, RECORD_BODY_MEMBERS, RECORD_FILE_MEMBERS, RECORD_KIND_VALUES,
-    ROOM_READ_MAX_KEYS, RoomBrowse, check_record_members, record_members_permitted,
+    ROOM_READ_MAX_KEYS, RoomBrowse, RoomListOrder, check_record_members, record_members_permitted,
     record_members_used, unsigned_room_request_v0_11,
 };
 pub use rooms_watch::{
-    ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal, unsigned_room_request_v0_12,
+    LIVE_NOT_PERMITTED, LIVE_RENEW_EVERY, ROOM_WATCH_MAX_ROOMS, RoomWatch, room_changed_signal,
+    room_read_marker_moved, unsigned_room_request_v0_12,
 };
+pub use webs::webs_refusal_fix;
 mod secrets;
 mod vault;
 mod vta_management;
@@ -1856,7 +1859,7 @@ impl VtaClient {
         let Some(schema) = vti_specs::schema_index::schema_for(type_uri) else {
             return Ok(());
         };
-        trust_tasks_rs::validate::against_schema(schema, payload).map_err(|e| {
+        crate::schema_cache::check(schema, payload).map_err(|e| {
             VtaError::Protocol(format!(
                 "refusing to send a payload that does not conform to {type_uri}: {e}. \
                  The recipient would reject this as `malformedRequest`. An unset optional \
@@ -2595,6 +2598,14 @@ impl VtaClient {
                     if let Some(e) = payload
                         .get("details")
                         .and_then(VtaError::no_matching_protocol_from)
+                    {
+                        return Some(e);
+                    }
+                }
+                r::UNSUPPORTED_DID_METHOD => {
+                    if let Some(e) = payload
+                        .get("details")
+                        .and_then(VtaError::method_refusal_from)
                     {
                         return Some(e);
                     }
@@ -3847,10 +3858,11 @@ mod tests {
             allowed_keys: None,
             capabilities: Vec::new(),
             handoff: false,
+            purposes: Default::default(),
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire
-        // is canonical `acl/grant/0.2`: the entry is nested, uses `subject`, and
+        // is canonical `acl/grant/0.3`: the entry is nested, uses `subject`, and
         // states every authority axis explicitly.
         assert_eq!(json["entry"]["subject"], "did:key:z6Mk123");
         assert_eq!(json["entry"]["role"], "admin");
@@ -3915,6 +3927,7 @@ mod tests {
             approve_scope: None,
             allowed_keys: None,
             capabilities: None,
+            purposes: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();
@@ -3934,6 +3947,7 @@ mod tests {
             approve_scope: None,
             allowed_keys: None,
             capabilities: None,
+            purposes: None,
         };
 
         let set = UpdateAclRequest {
@@ -4415,7 +4429,7 @@ mod client_identity_tests {
         // wrong.
         const URIS: [&str; 3] = [
             trust_tasks::TASK_CONTEXTS_CREATE_1_0,
-            trust_tasks::TASK_ACL_GRANT_0_2,
+            trust_tasks::TASK_ACL_GRANT_0_3,
             trust_tasks::TASK_CONTEXTS_LIST_1_0,
         ];
 
