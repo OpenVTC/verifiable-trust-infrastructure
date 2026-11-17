@@ -125,14 +125,13 @@ dependencies = [
 
 [[package]]
 name = "affinidi-crypto"
-version = "0.3.1"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67192db4e6431009b43a3b1988983bd33ab3d61c1c7464389f65ca3c9402faa5"
+checksum = "91e3b81ce7f53f57e07d3b655e9a32818fea2c0227c4352014e0cd2848cd1cba"
 dependencies = [
  "aes 0.9.4",
  "aes-gcm 0.11.1",
  "affinidi-encoding",
- "base58",
  "base64 0.23.1",
  "cbc 0.2.1",
  "ed25519-dalek 3.0.0",
@@ -140,7 +139,6 @@ dependencies = [
  "hmac 0.13.0",
  "k256 0.14.0",
  "ml-dsa",
- "multibase",
  "p256 0.14.0",
  "p384 0.14.0",
  "p521 0.14.0",
@@ -206,9 +204,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-common"
-version = "0.4.7"
+version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c92b9883409431515c26345ab41ce773ee0b7daba7e5535fb4b50dda1b2ec546"
+checksum = "32678e8a0c49dd3bfe35b29ae2c0d51cb631fc2f7f2f4b9bff323ead0c804270"
 dependencies = [
  "affinidi-crypto",
  "affinidi-encoding",
@@ -283,9 +281,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-webs"
-version = "0.13.4"
+version = "0.13.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b56e5a59fef42b8d7b02158f2e38adb1230e7ac8af7b81c72f4fca85b3fda2a"
+checksum = "8a127c5150391846a622572de66b21506ea4544195e8e7395477f19d702670e5"
 dependencies = [
  "affinidi-cesr",
  "affinidi-crypto",
@@ -308,9 +306,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-encoding"
-version = "0.1.6"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e428b7606b29ff7a0549190e3189cb0cd4393eaf5d3cf4b570cbc8190e0a32ea"
+checksum = "4fee248d49b1920788a52a3a658bf60fb3172041b6471a856f3cf82e0668a493"
 dependencies = [
  "bs58",
  "serde",
@@ -3614,7 +3612,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.9",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -9671,7 +9669,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d43fb82d550b07e6f929a58d7d0935182602f48ddead875f5ee313c41c8f07fe"
 dependencies = [
  "annotate-snippets",
- "base64 0.23.1",
+ "base64 0.21.7",
  "encoding_rs_io",
  "granit-parser",
  "nohash-hasher",
@@ -10465,7 +10463,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
