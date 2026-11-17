@@ -1621,8 +1621,18 @@ async fn a_context_delete_is_refused_when_an_outside_context_acts_as_one_of_its_
         })
         .await
         .expect("create a sibling context");
+    // Through `contexts/update`, the super-admin's unchecked write:
+    // `update-did/1.2` refuses a DID the context does not hold, but a record
+    // written before it, or by that path, can still point here — and that is
+    // the state this blocker exists for.
     client
-        .update_context_did("other", &did)
+        .update_context(
+            "other",
+            vta_sdk::client::UpdateContextRequest {
+                did: Some(did.clone()),
+                ..Default::default()
+            },
+        )
         .await
         .expect("point it at ctx1's DID");
 

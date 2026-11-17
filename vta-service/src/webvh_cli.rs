@@ -471,6 +471,8 @@ pub async fn run_delete_did(
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
+        // Never compares a host's listing.
+        webs_ks: None,
         audit: &audit,
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
@@ -710,6 +712,8 @@ pub async fn run_edit_did(
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
+        // Never compares a host's listing.
+        webs_ks: None,
         audit: &audit,
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
@@ -878,6 +882,8 @@ pub async fn run_register_did(
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
+        // Never compares a host's listing.
+        webs_ks: None,
         audit: &audit,
         seed_store: &*seed_store,
         did_resolver: &did_resolver,

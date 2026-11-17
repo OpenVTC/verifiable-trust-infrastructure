@@ -83,7 +83,7 @@ async fn verifier() -> TrustTaskVmResolver {
 async fn signed_as(vm: &str, private: &str) -> Value {
     let key = HolderKey::new(vm, private).unwrap();
     let doc = build_signed_with(
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
+        vta_sdk::trust_tasks::TASK_VTA_DIDS_LIST_0_1,
         json!({}),
         &key,
         "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",

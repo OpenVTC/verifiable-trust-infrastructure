@@ -33,6 +33,9 @@ pub mod did_templates;
 pub mod did_webs;
 #[cfg(feature = "webvh")]
 pub mod did_webvh;
+/// Method-neutral DID questions: which identities, in which context, under
+/// one record (`docs/05-design-notes/did-management.md`).
+pub mod dids;
 /// Offline state-assembly helpers: read the VTA's local store and
 /// produce the same wire-shape bundles (`DidSecretsBundle`,
 /// `ContextProvisionBundle`) that the equivalent `VtaClient` flows

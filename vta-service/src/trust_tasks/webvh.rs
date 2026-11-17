@@ -46,7 +46,6 @@ use vta_sdk::protocols::did_management::{
     create::CreateDidWebvhBody,
     delete::DeleteDidWebvhBody,
     get::GetDidWebvhBody,
-    list::ListDidsWebvhBody,
     realign::RealignDidKeysBody,
     servers::{
         ListWebvhServerDomainsBody, ListWebvhServersBody, ReconcileWebvhServerDidsBody,
@@ -200,30 +199,6 @@ pub(super) async fn handle_servers_remove(
 }
 
 // ─── DID lifecycle ──────────────────────────────────────────────────────
-
-/// `webvh/dids/list/1.0` — list known DIDs, optionally filtered.
-pub(super) async fn handle_dids_list(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let req: ListDidsWebvhBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    match operations::did_webvh::list_dids_webvh(
-        &state.webvh_ks,
-        auth,
-        req.context_id.as_deref(),
-        req.server_id.as_deref(),
-        TRANSPORT_TRUST_TASK,
-    )
-    .await
-    {
-        Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
-    }
-}
 
 /// `webvh/dids/create/1.2` — mint a new DID, presented as its did:webvh or
 /// its did:scid:vh:1 DID, the response stating the form applied, the log and its

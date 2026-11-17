@@ -169,7 +169,7 @@ pub mod schema_index {
         #[test]
         fn a_pinned_version_answers_and_an_unpinned_one_does_not() {
             let uri =
-                <crate::vta::contexts::delete::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+                <crate::vta::contexts::delete::v1_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
             assert!(is_pinned(uri));
             assert!(spec_policy_for(uri).is_some());
             assert!(schema_for(uri).is_some());

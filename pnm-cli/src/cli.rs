@@ -3203,16 +3203,21 @@ pub(crate) enum WebvhCommands {
         #[arg(long)]
         server: String,
     },
-    /// List WebVH DIDs
+    /// List DIDs, of every method
     ListDids {
         /// FILTER: only show DIDs belonging to this context.
         #[arg(long)]
         context: Option<String>,
-        /// FILTER: only show DIDs hosted by this WebVH server.
+        /// FILTER: only show DIDs hosted by this server.
         #[arg(long)]
         server: Option<String>,
+        /// FILTER: only these methods (`webvh`, `scid:vh`, `webs`, `key`). Repeatable.
+        #[arg(long = "method")]
+        methods: Vec<String>,
     },
-    /// Get details of a WebVH DID
+    /// Which DID methods the VTA holds, lists and creates
+    DidMethods,
+    /// Get details of a DID, of any method
     GetDid {
         /// The DID to look up
         did: String,
@@ -3585,7 +3590,8 @@ pub(crate) enum DidMgmtDidCommands {
         #[arg(long)]
         domain: Option<String>,
     },
-    /// List DIDs.
+    /// List DIDs, of every method the VTA holds (did:webvh, did:scid,
+    /// did:webs, did:key).
     List {
         /// FILTER: only show DIDs belonging to this context.
         #[arg(long)]
@@ -3593,8 +3599,13 @@ pub(crate) enum DidMgmtDidCommands {
         /// FILTER: only show DIDs hosted by this DID-hosting server.
         #[arg(long)]
         server: Option<String>,
+        /// FILTER: only these methods (`webvh`, `scid:vh`, `webs`, `key`). Repeatable.
+        #[arg(long = "method")]
+        methods: Vec<String>,
     },
-    /// Get details of a single DID.
+    /// Which DID methods the VTA holds, lists and will create now.
+    Methods,
+    /// Get details of a single DID, of any method.
     Get {
         /// The DID to look up.
         did: String,
@@ -3780,9 +3791,16 @@ impl From<DidMgmtCommands> for WebvhCommands {
                     force,
                     domain,
                 },
-                DidMgmtDidCommands::List { context, server } => {
-                    WebvhCommands::ListDids { context, server }
-                }
+                DidMgmtDidCommands::List {
+                    context,
+                    server,
+                    methods,
+                } => WebvhCommands::ListDids {
+                    context,
+                    server,
+                    methods,
+                },
+                DidMgmtDidCommands::Methods => WebvhCommands::DidMethods,
                 DidMgmtDidCommands::Get { did } => WebvhCommands::GetDid { did },
                 DidMgmtDidCommands::Delete { did, yes } => WebvhCommands::DeleteDid { did, yes },
                 DidMgmtDidCommands::RealignKeys { did, dry_run } => {

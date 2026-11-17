@@ -25,7 +25,10 @@ pub async fn get_did_webvh(
     let record = webvh_store::get_did(webvh_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
-    auth.require_context(&record.context_id)?;
+    // NotFound, not Forbidden, for a DID in a context the caller cannot reach:
+    // the specification's answer "whether or not the VTA holds it", so a
+    // refusal does not confirm that it does.
+    super::hide_unreachable(auth, &record.context_id, did)?;
 
     // Read the log only when asked. It grows with every published
     // version, so a caller that just wants the record shouldn't pay to

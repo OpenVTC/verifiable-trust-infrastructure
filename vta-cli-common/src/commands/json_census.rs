@@ -26,6 +26,11 @@ const EXEMPT: &[(&str, &str, &str)] = &[
         "writes the file's bytes, not a description of them",
     ),
     (
+        "webs.rs",
+        "cmd_webs_list",
+        "delegates to dids::cmd_dids_list (the method-neutral listing), which is held here",
+    ),
+    (
         "rooms_custody.rs",
         "cmd_rooms_keys_list",
         "delegates to cmd_rooms_keys_list_named, which is held here",

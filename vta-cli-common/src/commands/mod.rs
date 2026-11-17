@@ -12,6 +12,7 @@ pub mod cred_vault;
 pub mod credentials;
 pub mod device;
 pub mod did_templates;
+pub mod dids;
 pub mod elections;
 pub mod elections_trustee;
 pub mod external;

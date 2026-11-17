@@ -166,9 +166,9 @@ digest = "sha256:e7f1ca1b742b15b33d908204e1ff41c2ef6c0167826c3b47743278d64b96f2f
 
 [[task]]
 slug = "vta/contexts/delete"
-version = "1.1"
-type_uri = "https://trusttasks.org/spec/vta/contexts/delete/1.1"
-digest = "sha256:b9938906cff67231ca2f8b8ffa7bf0b2d10fbeb5117444cb13a75e7034e38566"
+version = "1.2"
+type_uri = "https://trusttasks.org/spec/vta/contexts/delete/1.2"
+digest = "sha256:ef6e61a19d7b89681e9021081e5a759668592b00afbb307488a5a3bc09069655"
 
 [[task]]
 slug = "vta/contexts/get"
@@ -184,9 +184,9 @@ digest = "sha256:7d16f64b4085be05590b2cc3dedb4913c162fe0106c158333d5507e9dc42114
 
 [[task]]
 slug = "vta/contexts/preview-delete"
-version = "1.0"
-type_uri = "https://trusttasks.org/spec/vta/contexts/preview-delete/1.0"
-digest = "sha256:29a0509bd6694ae39572816b624a528addd35005a3ca91b5e28489a69ffe046c"
+version = "2.0"
+type_uri = "https://trusttasks.org/spec/vta/contexts/preview-delete/2.0"
+digest = "sha256:161dfc237f8c64f9046bc73e4f85bd9387019d33e9c4e8b1e93294508773a553"
 
 [[task]]
 slug = "vta/contexts/secrets"
@@ -202,9 +202,9 @@ digest = "sha256:c1a6d1409abc204dfcced6a131f70356806063788f2a3233ef8978d16c04277
 
 [[task]]
 slug = "vta/contexts/update-did"
-version = "1.1"
-type_uri = "https://trusttasks.org/spec/vta/contexts/update-did/1.1"
-digest = "sha256:b21385fd668fa2de5fa57498d8e080e215edded9c9752b321a47c565b35f2fee"
+version = "1.2"
+type_uri = "https://trusttasks.org/spec/vta/contexts/update-did/1.2"
+digest = "sha256:b7fb9e6f0c60d89f723338a12963db541348efcc9413218344b55af195eeb565"
 
 [[task]]
 slug = "vta/credentials/issue"
@@ -283,6 +283,24 @@ slug = "vta/did-templates/update"
 version = "3.1"
 type_uri = "https://trusttasks.org/spec/vta/did-templates/update/3.1"
 digest = "sha256:ea9acabd4051cd6b354af17008560a0935abcbb2c87c7940211730beec0babd9"
+
+[[task]]
+slug = "vta/dids/get"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/dids/get/0.1"
+digest = "sha256:b1484043d11505d6ba0d558d5dea25722a8f9fd0d4279086c2ee21a588c189ec"
+
+[[task]]
+slug = "vta/dids/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/dids/list/0.1"
+digest = "sha256:0e916d9b2b8826bfa65c9419beaf51a7dae2a087d9879e0b0747b5a70701a0ff"
+
+[[task]]
+slug = "vta/dids/methods/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/dids/methods/list/0.1"
+digest = "sha256:2a891b42dcbc9752e8d998316dbc3d7553f8a2b33506683fefab0a55a3cab6e7"
 
 [[task]]
 slug = "vta/health/details"
@@ -771,12 +789,6 @@ type_uri = "https://trusttasks.org/spec/vta/webs/dids/get/0.1"
 digest = "sha256:e57cfb7fa9ee0ab0baa3003f627bc36a919390b5a4f0081eb153f73d554ddcb7"
 
 [[task]]
-slug = "vta/webs/dids/list"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vta/webs/dids/list/0.1"
-digest = "sha256:8d221cf3780f2dee492e7a9ff51b1ef840555e61ecf3418fe9df46657b0f59e0"
-
-[[task]]
 slug = "vta/webs/dids/rotate-keys"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/webs/dids/rotate-keys/0.1"
@@ -841,12 +853,6 @@ slug = "vta/webvh/dids/get"
 version = "1.0"
 type_uri = "https://trusttasks.org/spec/vta/webvh/dids/get/1.0"
 digest = "sha256:c1e7aa9ab2d68e8da7a54e9bf53ba390dc47f273d9db1cbfeacbfd96cdb01ade"
-
-[[task]]
-slug = "vta/webvh/dids/list"
-version = "1.0"
-type_uri = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0"
-digest = "sha256:e30893801ab7d83f3409e8cfa67333ded6ed19a0a40ec044839c1d9086d47deb"
 
 [[task]]
 slug = "vta/webvh/dids/realign-keys"

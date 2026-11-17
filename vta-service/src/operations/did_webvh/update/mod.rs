@@ -740,6 +740,7 @@ mod pre_rotation_e2e_tests {
             imported_ks: &ts.imported_ks,
             contexts_ks: &ts.contexts_ks,
             webvh_ks: &ts.webvh_ks,
+            webs_ks: None,
             audit: &ts.audit,
             seed_store,
             did_resolver: resolver,

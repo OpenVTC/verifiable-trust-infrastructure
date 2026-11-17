@@ -138,10 +138,28 @@ pub(crate) async fn run(
             };
             webvh::cmd_webvh_did_register_server(client, &did, &server, force, domain).await
         }
-        WebvhCommands::ListDids { context, server } => {
-            webvh::cmd_webvh_did_list(client, context.as_deref(), server.as_deref()).await
+        WebvhCommands::ListDids {
+            context,
+            server,
+            methods,
+        } => {
+            vta_cli_common::commands::dids::cmd_dids_list(
+                client,
+                &vta_sdk::client::DidListFilter {
+                    context_id: context,
+                    server_id: server,
+                    methods: (!methods.is_empty()).then_some(methods),
+                    ..Default::default()
+                },
+            )
+            .await
         }
-        WebvhCommands::GetDid { did } => webvh::cmd_webvh_did_get(client, &did).await,
+        WebvhCommands::DidMethods => {
+            vta_cli_common::commands::dids::cmd_dids_methods_list(client).await
+        }
+        WebvhCommands::GetDid { did } => {
+            vta_cli_common::commands::dids::cmd_dids_get(client, &did).await
+        }
         WebvhCommands::DeleteDid { did, yes } => {
             if !confirm_or_cancel(&format!("delete {did} and its keys"), yes)? {
                 return Ok(());

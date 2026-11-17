@@ -1030,10 +1030,10 @@ async fn create_context_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_context_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_CONTEXTS_DELETE_1_1) {
+        if is_tt(msg_type, body, trust_tasks::TASK_CONTEXTS_DELETE_1_2) {
             assert_eq!(body["payload"]["force"], true);
             tt_ok(
-                trust_tasks::TASK_CONTEXTS_DELETE_1_1,
+                trust_tasks::TASK_CONTEXTS_DELETE_1_2,
                 json!({ "id": "primary", "deleted": true }),
             )
         } else {
@@ -1119,29 +1119,23 @@ async fn list_did_templates_via_didcomm() {
 
 // ── WebVH ────────────────────────────────────────────────────────────
 
-fn webvh_did_record_json(did: &str) -> Value {
-    json!({
-        "did": did,
-        "server_id": "s1",
-        "mnemonic": "",
-        "scid": "Qabc",
-        "context_id": "primary",
-        "portable": false,
-        "log_entry_count": 1,
-        "pre_rotation_count": 0,
-        "next_fragment_id": 1,
-        "created_at": "2026-01-01T00:00:00Z",
-        "updated_at": "2026-01-01T00:00:00Z"
-    })
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn list_dids_webvh_via_didcomm() {
+async fn list_dids_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if is_tt(msg_type, body, trust_tasks::TASK_WEBVH_DIDS_LIST_1_0) {
+        if is_tt(msg_type, body, trust_tasks::TASK_VTA_DIDS_LIST_0_1) {
             tt_ok(
-                trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-                json!({"dids": [webvh_did_record_json("did:webvh:abc")]}),
+                trust_tasks::TASK_VTA_DIDS_LIST_0_1,
+                json!({"dids": [{
+                    "did": "did:webvh:abc:example.com",
+                    "method": "webvh",
+                    "contextId": "ctx",
+                    "level": 1,
+                    "primary": false,
+                    "deactivated": false,
+                    "alsoKnownAs": [],
+                    "createdAt": "2026-11-17T10:00:00Z",
+                    "updatedAt": "2026-11-17T10:00:00Z"
+                }]}),
             )
         } else {
             no_handler()
@@ -1149,8 +1143,11 @@ async fn list_dids_webvh_via_didcomm() {
     })
     .await;
 
-    let r = client.list_dids_webvh(None, None).await.unwrap();
-    assert_eq!(r.dids.len(), 1);
+    let r = client
+        .list_dids(&vta_sdk::client::DidListFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(r.len(), 1);
 
     shutdown_all(client, responder, mediator).await;
 }

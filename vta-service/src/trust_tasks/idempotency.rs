@@ -616,7 +616,7 @@ mod tests {
                 .needs_key()
         );
         assert!(
-            !retry_safety(trust_tasks::TASK_WEBVH_DIDS_LIST_1_0)
+            !retry_safety(trust_tasks::TASK_VTA_DIDS_LIST_0_1)
                 .expect("classified")
                 .needs_key()
         );

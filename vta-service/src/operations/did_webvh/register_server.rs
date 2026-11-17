@@ -404,6 +404,7 @@ mod tests {
             imported_ks: webvh_ks,
             contexts_ks: webvh_ks,
             webvh_ks,
+            webs_ks: None,
             audit,
             seed_store: seed,
             did_resolver: resolver,

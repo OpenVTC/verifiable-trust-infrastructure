@@ -208,22 +208,6 @@ impl VtaClient {
             .await
     }
 
-    pub async fn list_dids_webvh(
-        &self,
-        context_id: Option<&str>,
-        server_id: Option<&str>,
-    ) -> Result<crate::protocols::did_management::list::ListDidsWebvhResultBody, VtaError> {
-        self.rpc_tt(
-            crate::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-            serde_json::to_value(crate::protocols::did_management::list::ListDidsWebvhBody {
-                context_id: context_id.map(str::to_string),
-                server_id: server_id.map(str::to_string),
-            })?,
-            30,
-        )
-        .await
-    }
-
     pub async fn get_did_webvh(&self, did: &str) -> Result<crate::webvh::WebvhDidRecord, VtaError> {
         // `spec/vta/webvh/dids/get/1.0` carries the record under `record`, so
         // decode the envelope and hand back the record itself — this method's

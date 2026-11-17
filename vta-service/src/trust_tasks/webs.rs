@@ -298,6 +298,50 @@ fn registered_hosts<'a>(
         .map_err(|e| refuse(doc, e, &Codes::default()))
 }
 
+/// Ends a did:webs on its host for a context deletion
+/// (`vta/contexts/delete/1.2`), by the same operation `vta/webs/dids/delete`
+/// runs: the deactivation published, then the slot removed.
+pub(super) struct ContextWebsSettler<'a> {
+    pub state: &'a AppState,
+    pub resolver: &'a Resolver,
+}
+
+#[async_trait::async_trait]
+impl crate::operations::contexts::WebsDidSettler for ContextWebsSettler<'_> {
+    async fn settle(
+        &self,
+        auth: &AuthClaims,
+        did: &str,
+    ) -> Result<Option<(Option<String>, String)>, AppError> {
+        let server = webs_store::get(&self.state.webs_ks, did)
+            .await?
+            .map(|r| r.server_id)
+            .filter(|s| !s.is_empty());
+        let host = match host_for(self.state, self.resolver, server.as_deref().unwrap_or("")).await
+        {
+            Ok(host) => host,
+            Err(e) => return Ok(Some((server, e.to_string()))),
+        };
+        let config = self.state.config.read().await;
+        let deps = WebsDeps::from_app_state(self.state, &config, self.resolver);
+        Ok(
+            match engine::delete_did_webs(&deps, auth, did, None, &host, TRANSPORT_TRUST_TASK).await
+            {
+                Ok(r) if r.slot_removed => None,
+                Ok(r) => Some((
+                    server,
+                    r.host_cleanup_error.unwrap_or_else(|| {
+                        "the hosting server did not confirm removing the slot".to_string()
+                    }),
+                )),
+                // The deactivation itself was not published: the DID is still
+                // live on its host.
+                Err(e) => Some((server, e.to_string())),
+            },
+        )
+    }
+}
+
 // ─── Rendering ─────────────────────────────────────────────────────────
 
 /// The fragment of a key id `<did>#<cesr>`: the key itself, in CESR.
@@ -621,85 +665,6 @@ pub(super) async fn handle_get(
     }
 }
 
-/// The page size `list` uses when the caller names none.
-const DEFAULT_LIST_LIMIT: usize = 100;
-
-/// `vta/webs/dids/list/0.1`.
-pub(super) async fn handle_list(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use spec::list::v0_1 as t;
-    if let Err(r) = parse_payload::<t::Payload>(&doc) {
-        return r;
-    }
-    let p = &doc.payload;
-    let result = async {
-        let mut records = match str_of(p, "contextId") {
-            Some(ctx) => engine::list_did_webs(&state.webs_ks, auth, ctx).await?,
-            None => webs_store::list(&state.webs_ks)
-                .await?
-                .into_iter()
-                .filter(|r| auth.has_context_access(&r.context_id))
-                .collect(),
-        };
-        if let Some(server) = str_of(p, "serverId") {
-            records.retain(|r| r.server_id == server);
-        }
-        if bool_of(p, "includeDeactivated") != Some(true) {
-            records.retain(|r| !r.deactivated);
-        }
-        records.sort_by(|a, b| a.did.cmp(&b.did));
-        // The cursor is the last DID of the page before, as this VTA wrote it.
-        if let Some(cursor) = str_of(p, "cursor") {
-            let after = cursor_did(cursor).ok_or_else(|| {
-                AppError::Validation("the cursor is not one this VTA issued".into())
-            })?;
-            records.retain(|r| r.did.as_str() > after.as_str());
-        }
-        let limit = p
-            .get("limit")
-            .and_then(Value::as_u64)
-            .map_or(DEFAULT_LIST_LIMIT, |l| l as usize);
-        let more = records.len() > limit;
-        records.truncate(limit);
-        let mut dids = Vec::with_capacity(records.len());
-        for r in &records {
-            dids.push(record_json(state, r).await?);
-        }
-        let mut v = json!({ "dids": dids });
-        if more && let Some(last) = records.last() {
-            v["nextCursor"] = json!(issue_cursor(&last.did));
-        }
-        Ok::<_, WebsError>(v)
-    }
-    .await;
-    match result {
-        Ok(v) => respond::<t::Response>(&doc, v),
-        Err(e) => refuse(&doc, e, &Codes::default()),
-    }
-}
-
-const CURSOR_PREFIX: &str = "webs-after:";
-
-fn issue_cursor(did: &str) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{CURSOR_PREFIX}{did}"))
-}
-
-fn cursor_did(cursor: &str) -> Option<String> {
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(cursor)
-        .ok()?;
-    String::from_utf8(bytes)
-        .ok()?
-        .strip_prefix(CURSOR_PREFIX)
-        .filter(|d| d.starts_with("did:webs:"))
-        .map(str::to_string)
-}
-
 /// The record of `did`, for the host it lives on, refusing as `notFound` what
 /// the caller cannot reach.
 async fn reachable(
@@ -888,6 +853,20 @@ async fn delete(
     let result = async {
         let did = str_of(p, "did").unwrap_or_default();
         let record = reachable(state, auth, did).await?;
+        // A DID a context still acts as is not ended from under it — the rule
+        // `vta/webvh/dids/delete` keeps. Retire it by reassigning the context's
+        // DID first (`vta/contexts/update-did`). A context deletion ends it
+        // through `ContextWebsSettler`, where the context is going too.
+        if let Some(ctx) = crate::contexts::list_contexts(&state.contexts_ks)
+            .await?
+            .into_iter()
+            .find(|c| c.did.as_deref() == Some(did))
+        {
+            return Err(WebsError::App(AppError::Conflict(format!(
+                "context `{}` acts as {did}; reassign or clear that context's DID first",
+                ctx.id
+            ))));
+        }
         let host = hosts.host(&record.server_id).await?;
         let config = state.config.read().await;
         let deps = WebsDeps::from_app_state(state, &config, did_resolver);
@@ -926,17 +905,6 @@ mod wire_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_cursor_round_trips_and_a_foreign_one_is_refused() {
-        let did = "did:webs:hosting.example:EAbc";
-        assert_eq!(cursor_did(&issue_cursor(did)).as_deref(), Some(did));
-        assert_eq!(cursor_did("not-a-cursor"), None);
-        use base64::Engine as _;
-        let forged =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("webs-after:did:key:z");
-        assert_eq!(cursor_did(&forged), None);
-    }
 
     #[test]
     fn a_key_id_fragment_is_the_key() {

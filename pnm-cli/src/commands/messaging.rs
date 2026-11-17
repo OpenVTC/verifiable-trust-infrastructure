@@ -282,18 +282,30 @@ async fn seed_address_book(client: &VtaClient, choices: &[IdentityChoice], book:
         .await
         .map(|r| r.contexts.into_iter().map(|c| (c.id, c.name)).collect())
         .unwrap_or_default();
-    if let Ok(webvh) = client.list_dids_webvh(None, None).await {
-        for record in webvh.dids {
-            let context = context_names
-                .get(&record.context_id)
-                .cloned()
-                .unwrap_or_else(|| record.context_id.clone());
-            let name = if record.mnemonic.trim().is_empty() {
-                context
-            } else {
-                format!("{context} · {}", record.mnemonic)
+    // Every method's identities, named by their context — and told apart by the
+    // VTA's own label, or a did:webvh's hosting path, where it has one.
+    if let Ok(dids) = client
+        .list_dids(&vta_sdk::client::DidListFilter::default())
+        .await
+    {
+        for summary in dids {
+            let v = serde_json::to_value(&summary).unwrap_or_default();
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let ctx = s("contextId");
+            let context = context_names.get(&ctx).cloned().unwrap_or(ctx);
+            let tag = Some(s("label"))
+                .filter(|l| !l.trim().is_empty())
+                .or_else(|| {
+                    v.pointer("/methodDetails/webvh/mnemonic")
+                        .and_then(|m| m.as_str())
+                        .filter(|m| !m.trim().is_empty())
+                        .map(str::to_string)
+                });
+            let name = match tag {
+                Some(tag) => format!("{context} · {tag}"),
+                None => context,
             };
-            book.know(&record.did, &name);
+            book.know(&s("did"), &name);
         }
     }
 

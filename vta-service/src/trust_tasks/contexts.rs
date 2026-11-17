@@ -12,8 +12,8 @@ use vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody;
 use vta_sdk::protocols::context_management::get::GetContextBody;
 use vta_sdk::protocols::context_management::list::ListContextsBody;
 use vta_sdk::protocols::context_management::update::UpdateContextBody;
-use vti_specs::vta::contexts::delete::v1_1::Payload as DeletePayload;
-use vti_specs::vta::contexts::update_did::v1_1::Payload as UpdateDidPayload;
+use vti_specs::vta::contexts::delete::v1_2::Payload as DeletePayload;
+use vti_specs::vta::contexts::update_did::v1_2::Payload as UpdateDidPayload;
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -86,7 +86,7 @@ fn reject_context_error(
             Some(serde_json::json!({
                 "subContexts": holds.sub_contexts,
                 "keys": holds.keys,
-                "webvhDids": holds.webvh_dids,
+                "dids": holds.dids,
                 "aclEntries": holds.acl_entries,
                 "didTemplates": holds.did_templates,
             })),
@@ -94,6 +94,18 @@ fn reject_context_error(
         // Only 1.1 asks for this refusal, so only `vta/contexts/delete` emits
         // it; the details are the shape its `detailsSchema` pins, so a
         // consumer can show the DIDs and ask before abandoning them.
+        ContextError::NotHeld(message) => {
+            reject_with_code(doc, ext(&slug, "notHeld"), message, None)
+        }
+        ContextError::DidClassConflict {
+            message,
+            required_class,
+        } => reject_with_code(
+            doc,
+            ext(&slug, "didClassConflict"),
+            message,
+            required_class.map(|c| serde_json::json!({ "requiredClass": c })),
+        ),
         ContextError::HostCleanupFailed(failures) => reject_with_code(
             doc,
             ext(&slug, "hostCleanupFailed"),
@@ -304,10 +316,11 @@ pub(super) async fn handle_update_did(
         Err(resp) => return resp,
     };
     let (id, did) = (req.id.to_string(), req.did.map(String::from));
-    match operations::contexts::update_context_did(
-        &state.contexts_ks,
-        &state.keys_ks,
+    let config = state.config.read().await;
+    match operations::contexts::update_context_did_held(
+        operations::dids::DidStores::from_state(state),
         &state.acl_ks,
+        &config,
         auth,
         &id,
         did,
@@ -341,6 +354,7 @@ pub(super) async fn handle_preview_delete(
         &state.did_templates_ks,
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
+        &state.webs_ks,
         auth,
         &req.id,
         TRANSPORT_TRUST_TASK,
@@ -391,10 +405,17 @@ pub(super) async fn handle_delete(
         match state.did_resolver.as_ref() {
             Some(did_resolver) => {
                 let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+                #[cfg(feature = "webs")]
+                let webs = super::webs::ContextWebsSettler {
+                    state,
+                    resolver: did_resolver,
+                };
                 let cleanup = operations::contexts::ContextDidCleanup {
                     deps: &deps,
                     vta_did: vta_did.as_deref(),
                     host_copies,
+                    #[cfg(feature = "webs")]
+                    webs: Some(&webs),
                 };
                 operations::contexts::delete_context(
                     &ks,

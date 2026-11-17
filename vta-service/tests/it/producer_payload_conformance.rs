@@ -185,7 +185,25 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
         })
         .await,
     );
-    assert_conforms(&captured(|c| async move { drop(c.list_dids_webvh(None, None).await) }).await);
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.list_dids_page(
+                    &vta_sdk::client::DidListFilter {
+                        context_id: Some("ctx".into()),
+                        methods: Some(vec!["webs".into(), "key".into()]),
+                        include_deactivated: true,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(&captured(|c| async move { drop(c.get_did("did:key:z6Mk").await) }).await);
+    assert_conforms(&captured(|c| async move { drop(c.did_methods().await) }).await);
 
     // ── consent ──────────────────────────────────────────────────────
     // `ConsentSubject` is `additionalProperties: false` with four required

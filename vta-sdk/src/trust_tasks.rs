@@ -273,28 +273,51 @@ pub const TASK_CONTEXTS_SECRETS_1_0: &str = "https://trusttasks.org/spec/vta/con
 /// Auth: Super Admin only.
 pub const TASK_CONTEXTS_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/contexts/update/1.0";
 
-/// `spec/vta/contexts/update-did/1.1` — set the context's bound DID, or clear
-/// it with `did: null`; a string `did` must be a DID (DID Core §3.1). The only
-/// way to retire a context's last DID: `webvh/dids/delete` refuses a DID a
-/// context still acts as. Auth: Admin with context access.
-pub const TASK_CONTEXTS_UPDATE_DID_1_1: &str =
-    <vti_specs::vta::contexts::update_did::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `spec/vta/contexts/update-did/1.2` — set the context's bound DID, or clear
+/// it with `did: null`. A string `did` must be an identity the VTA holds in
+/// that context (`notHeld`) of a class that may be its identity
+/// (`didClassConflict`). The only way to retire a context's last DID: a DID's
+/// delete refuses one a context still acts as. Auth: Admin with context access.
+pub const TASK_CONTEXTS_UPDATE_DID_1_2: &str =
+    <vti_specs::vta::contexts::update_did::v1_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/contexts/preview-delete/1.0` — preview resources affected
-/// by deletion. Payload:
+/// `spec/vta/contexts/preview-delete/2.0` — preview resources affected
+/// by deletion, every DID of every method in `dids`. Payload:
 /// [`crate::protocols::context_management::delete::DeleteContextPreviewBody`].
-/// Auth: Super Admin only.
-pub const TASK_CONTEXTS_PREVIEW_DELETE_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/preview-delete/1.0";
+/// Auth: Admin with context access.
+pub const TASK_CONTEXTS_PREVIEW_DELETE_2_0: &str =
+    <vti_specs::vta::contexts::preview_delete::v2_0::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/contexts/delete/1.1` — delete a context and its associated
-/// resources. Every `did:webvh` host copy in the subtree is removed before
-/// anything local goes, and one that cannot be confirmed removed refuses the
+/// `spec/vta/contexts/delete/1.2` — delete a context and its associated
+/// resources, every DID of every method deleted as its own delete task
+/// deletes it. Whatever that needs on a hosting server — a did:webvh log
+/// removed, a did:webs deactivation published and its slot removed — is
+/// settled before anything local goes, and anything unconfirmed refuses the
 /// deletion (`vta/contexts/delete:hostCleanupFailed`) unless
-/// `abandonHostCopies` is set. Supersedes 1.0, which is no longer served or
-/// sent.
-pub const TASK_CONTEXTS_DELETE_1_1: &str =
-    <vti_specs::vta::contexts::delete::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `abandonHostCopies` is set.
+pub const TASK_CONTEXTS_DELETE_1_2: &str =
+    <vti_specs::vta::contexts::delete::v1_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+// ─── Method-neutral DIDs (spec/vta/dids/*) ──────────────────────────────
+//
+// What every identity the VTA holds is, whatever its method: the question
+// `vta/webvh/dids/list` and `vta/webs/dids/list` used to answer one method at
+// a time (docs/05-design-notes/did-management.md).
+
+/// `spec/vta/dids/list/0.1` — every identity the caller may see, any method
+/// and level, as one `DidSummary` each, paged. Auth: context access per DID.
+pub const TASK_VTA_DIDS_LIST_0_1: &str =
+    <vti_specs::vta::dids::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/dids/get/0.1` — one identity's `DidSummary`; `notFound` for one
+/// the VTA holds no record of or the caller cannot reach.
+pub const TASK_VTA_DIDS_GET_0_1: &str =
+    <vti_specs::vta::dids::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/dids/methods/list/0.1` — the DID methods the VTA holds, lists and
+/// will create now, and the tasks that serve each. Auth: any authenticated.
+pub const TASK_VTA_DIDS_METHODS_LIST_0_1: &str =
+    <vti_specs::vta::dids::methods::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Keys slice (spec/vta/keys/*) ────────────────────────────────────────
 
@@ -1825,12 +1848,6 @@ pub const TASK_WEBVH_SERVERS_REMOVE_1_0: &str =
 // a fresh WebVH LogEntry to the DID's `did.jsonl` and (when the DID is
 // hosted) publishes the entry to the registered server.
 
-/// `spec/vta/webvh/dids/list/1.0` — list DIDs known to this VTA,
-/// optionally filtered by context or server. Payload:
-/// [`crate::protocols::did_management::list::ListDidsWebvhBody`].
-/// Auth: any authenticated user.
-pub const TASK_WEBVH_DIDS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
-
 /// `spec/vta/webvh/dids/create/1.2` — mint a new DID via a DID template and
 /// (optionally) register it with a webvh host. The request may name
 /// `didMethod` and `scidAlsoKnownAs`; the response states `serverless` (Keyring
@@ -1914,10 +1931,6 @@ pub const TASK_VTA_WEBS_DIDS_CREATE_0_2: &str =
 /// `vta/webs/dids/get/0.1` — the VTA's record of one did:webs it holds, optionally with its `keri.cesr`.
 pub const TASK_VTA_WEBS_DIDS_GET_0_1: &str =
     <vti_specs::vta::webs::dids::get::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `vta/webs/dids/list/0.1` — the did:webs records the caller may see, paged.
-pub const TASK_VTA_WEBS_DIDS_LIST_0_1: &str =
-    <vti_specs::vta::webs::dids::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vta/webs/dids/update/0.1` — replace a did:webs DID's designated services, key agreement key or aliases, without changing its keys.
 pub const TASK_VTA_WEBS_DIDS_UPDATE_0_1: &str =
@@ -2769,10 +2782,14 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_CREATE_1_0,
     TASK_CONTEXTS_GET_1_0,
     TASK_CONTEXTS_UPDATE_1_0,
-    TASK_CONTEXTS_UPDATE_DID_1_1,
+    TASK_CONTEXTS_UPDATE_DID_1_2,
     TASK_CONTEXTS_SECRETS_1_0,
-    TASK_CONTEXTS_PREVIEW_DELETE_1_0,
-    TASK_CONTEXTS_DELETE_1_1,
+    TASK_CONTEXTS_PREVIEW_DELETE_2_0,
+    TASK_CONTEXTS_DELETE_1_2,
+    // Method-neutral DIDs (spec/vta/dids/*)
+    TASK_VTA_DIDS_LIST_0_1,
+    TASK_VTA_DIDS_GET_0_1,
+    TASK_VTA_DIDS_METHODS_LIST_0_1,
     // Keys slice
     TASK_KEYS_LIST_0_2,
     TASK_KEYS_CREATE_0_1,
@@ -2868,7 +2885,6 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_SERVERS_DOMAINS_0_1,
     TASK_WEBVH_SERVERS_RECONCILE_0_1,
     TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1,
-    TASK_WEBVH_DIDS_LIST_1_0,
     TASK_WEBVH_DIDS_CREATE_1_2,
     TASK_WEBVH_DIDS_GET_1_0,
     TASK_WEBVH_DIDS_DELETE_1_0,
@@ -2878,7 +2894,6 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_WEBS_DIDS_CREATE_0_1,
     TASK_VTA_WEBS_DIDS_CREATE_0_2,
     TASK_VTA_WEBS_DIDS_GET_0_1,
-    TASK_VTA_WEBS_DIDS_LIST_0_1,
     TASK_VTA_WEBS_DIDS_UPDATE_0_1,
     TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1,
     TASK_VTA_WEBS_DIDS_DELETE_0_1,

@@ -127,7 +127,6 @@ const BASELINE: &[(&str, &str)] = &[
     ("webvh.rs", "CreateDidWebvhBody"),
     ("webvh.rs", "DeleteDidWebvhBody"),
     ("webvh.rs", "GetDidWebvhBody"),
-    ("webvh.rs", "ListDidsWebvhBody"),
     ("webvh.rs", "ListWebvhServerDomainsBody"),
     ("webvh.rs", "ListWebvhServersBody"),
     ("webvh.rs", "RealignDidKeysBody"),
@@ -141,7 +140,7 @@ const BASELINE: &[(&str, &str)] = &[
 ];
 
 /// The size of [`BASELINE`], asserted so the list cannot grow quietly.
-const BASELINE_COUNT: usize = 97;
+const BASELINE_COUNT: usize = 96;
 
 fn trust_tasks_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/trust_tasks")
