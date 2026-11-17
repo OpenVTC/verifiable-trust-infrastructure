@@ -147,7 +147,40 @@ impl VtcClient {
         let declared = entry.error_codes.unwrap_or(&[]);
         let max_bytes = vti_specs::schema_index::max_document_bytes_for(&response_uri(type_uri))
             .unwrap_or(MAX_DOCUMENT_RESPONSE_BYTES);
+        #[cfg(feature = "didcomm")]
+        if self.documents.is_some() {
+            return self.session_task(type_uri, payload, declared).await;
+        }
         self.document(type_uri, payload, declared, max_bytes).await
+    }
+
+    /// [`Self::send_task`] over the session, keeping a refusal as the
+    /// community wrote it.
+    ///
+    /// The typed `document` helper asks the session for the payload alone, and
+    /// the typed error the session makes of a refusal keeps its code and
+    /// message and drops the rest. A generic caller acts on the rest: a
+    /// refusal's `details` carry the step-up the community is asking the
+    /// person for (`stepUpHandoff`, VTI-LNK-125 – 131), and without the
+    /// document there is no link to show them. So this asks for the reply
+    /// document and returns a `trust-task-error` as [`VtcError::Refused`],
+    /// or as [`VtcError::NotFound`] where it carries one of the task's
+    /// declared codes saying the thing is absent, exactly as over HTTPS.
+    #[cfg(feature = "didcomm")]
+    async fn session_task(
+        &self,
+        type_uri: &str,
+        payload: Value,
+        declared: &[trust_tasks_rs::DeclaredErrorCode],
+    ) -> Result<Value, VtcError> {
+        let Some(documents) = &self.documents else {
+            return Err(VtcError::Session("this client holds no session".into()));
+        };
+        let reply = documents
+            .dispatch_trust_task_document(type_uri, payload, crate::SESSION_TIMEOUT_SECS)
+            .await
+            .map_err(|e| VtcError::Session(e.to_string()))?;
+        session_reply(reply, declared)
     }
 
     /// Ask which Trust Tasks the community serves — `trust-task-discovery/0.4`.
@@ -195,6 +228,46 @@ pub fn supported_type_uris(response: &discovery::Response) -> Vec<&str> {
         .collect()
 }
 
+/// What a reply document received over a session is to [`VtcClient::send_task`]'s
+/// caller: the `#response` payload, a parked operation, or the refusal.
+#[cfg(feature = "didcomm")]
+fn session_reply(
+    reply: Value,
+    declared: &[trust_tasks_rs::DeclaredErrorCode],
+) -> Result<Value, VtcError> {
+    let reply_type = reply
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let payload = reply.get("payload").cloned().unwrap_or(Value::Null);
+    if reply_type.starts_with("https://trusttasks.org/spec/trust-task-error/") {
+        let code = payload.get("code").and_then(Value::as_str);
+        let reason = payload.pointer("/details/reason").and_then(Value::as_str);
+        if let Some(code) = code
+            && declared.iter().any(|d| d.code == code)
+            && reason == Some(vta_sdk::protocols::trust_task_reject_reasons::NOT_FOUND)
+        {
+            return Err(VtcError::NotFound {
+                code: code.to_string(),
+                message: payload
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            });
+        }
+        return Err(VtcError::Refused {
+            document: reply.to_string(),
+        });
+    }
+    // Parked for other administrators' approval (VTI-APV-017).
+    if let Some(parked) = crate::parked_from_next_step(&reply_type, &payload) {
+        return Err(parked);
+    }
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +277,86 @@ mod tests {
     const VTC_DID: &str = "did:web:vtc.example.com";
     const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.2";
     const GROUPS_CREATE: &str = "https://trusttasks.org/spec/vtc/groups/create/0.1";
+
+    /// Over a session a refusal is kept as the community wrote it, so the
+    /// step-up it asks the person for (`details.stepUpHandoff`, VTI-LNK-127)
+    /// reaches a generic caller; it used to arrive as a one-line session error
+    /// with nothing to show them.
+    #[cfg(feature = "didcomm")]
+    #[test]
+    fn a_session_refusal_keeps_its_document_and_the_step_up_it_carries() {
+        let refusal = serde_json::json!({
+            "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+            "issuer": VTC_DID,
+            "payload": {
+                "code": "permissionDenied",
+                "message": "a passkey gesture bound to this operation is required",
+                "details": {
+                    "stepUpHandoff": { "handle": "AAAAAAAAAAAAAAAAAAAAAA", "expiresAt": 1 }
+                }
+            }
+        });
+        let Err(VtcError::Refused { document }) = session_reply(refusal.clone(), &[]) else {
+            panic!("a refusal is Refused");
+        };
+        let kept: Value = serde_json::from_str(&document).unwrap();
+        assert_eq!(kept, refusal);
+        assert_eq!(
+            kept.pointer("/payload/details/stepUpHandoff/handle"),
+            Some(&serde_json::json!("AAAAAAAAAAAAAAAAAAAAAA"))
+        );
+    }
+
+    /// A declared "no such thing" is `NotFound` over a session as over HTTPS,
+    /// a parked operation is `Parked`, and a `#response` is its payload.
+    #[cfg(feature = "didcomm")]
+    #[test]
+    fn a_session_reply_is_read_as_the_https_one_is() {
+        const REVOKE: &str = "https://trusttasks.org/spec/auth/signing-key/revoke/0.1";
+        let declared = vti_specs::schema_index::entry(REVOKE)
+            .and_then(|e| e.error_codes)
+            .expect("revoke declares its codes");
+        let absent = serde_json::json!({
+            "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+            "payload": {
+                "code": "auth/signing-key/revoke:notFound",
+                "message": "no such key",
+                "details": {
+                    "reason": vta_sdk::protocols::trust_task_reject_reasons::NOT_FOUND
+                }
+            }
+        });
+        assert!(matches!(
+            session_reply(absent.clone(), declared),
+            Err(VtcError::NotFound { code, .. }) if code == "auth/signing-key/revoke:notFound"
+        ));
+        // The same code, undeclared for the task sent, is an ordinary refusal.
+        assert!(matches!(
+            session_reply(absent, &[]),
+            Err(VtcError::Refused { .. })
+        ));
+
+        let parked = serde_json::json!({
+            "type": crate::NEXT_STEP_TYPE,
+            "payload": {
+                "message": "Sent for approval",
+                "expects": [{ "hint": { "actionId": "act_1" } }]
+            }
+        });
+        assert!(matches!(
+            session_reply(parked, &[]),
+            Err(VtcError::Parked { action_id, .. }) if action_id == "act_1"
+        ));
+
+        let answered = serde_json::json!({
+            "type": format!("{MEMBERS_LIST}#response"),
+            "payload": { "items": [] }
+        });
+        assert_eq!(
+            session_reply(answered, &[]).unwrap(),
+            serde_json::json!({ "items": [] })
+        );
+    }
 
     /// A deterministic Ed25519 `did:key` holder for signing in tests.
     fn holder() -> (String, HolderKey) {
