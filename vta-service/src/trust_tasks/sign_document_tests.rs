@@ -363,27 +363,49 @@ async fn sign_document_needs_its_own_capability() {
     }
 }
 
-/// Record `public_key` as the update key of a `did:webvh` this VTA holds — the
-/// state a VTA-built `did:webvh` is in, whose signing key is its update key.
+/// Hold a `did:webvh` log naming `public_key` as the update key in its genesis
+/// entry, followed by `later` entries (each a `parameters` object) — the state a
+/// VTA-built `did:webvh` is in, whose signing key is its update key. Only the log
+/// is written: the check reads what a verifier reads, not the key-handle index.
+#[cfg(feature = "webvh")]
+async fn hold_log(state: &AppState, did: &str, public_key: &str, later: &[serde_json::Value]) {
+    let entry = |n: usize, parameters: serde_json::Value| {
+        serde_json::json!({
+            "versionId": format!("{n}-QmEntry{n}"),
+            "versionTime": "2026-11-17T12:00:00Z",
+            "parameters": parameters,
+            "state": {
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#key-0"), "type": "Multikey",
+                    "controller": did, "publicKeyMultibase": public_key,
+                }],
+                "assertionMethod": [format!("{did}#key-0")],
+            },
+        })
+        .to_string()
+    };
+    let mut lines = vec![entry(1, serde_json::json!({ "updateKeys": [public_key] }))];
+    for (n, p) in later.iter().enumerate() {
+        lines.push(entry(n + 2, p.clone()));
+    }
+    vta_webvh::webvh_store::store_did_log(&state.webvh_ks, did, &lines.join("\n"))
+        .await
+        .expect("hold the log");
+}
+
+#[cfg(feature = "webvh")]
+const HELD_DID: &str = "did:webvh:QmUpdateKeyTest:example.com";
+
 #[cfg(feature = "webvh")]
 async fn mark_as_update_key(state: &AppState, public_key: &str) {
-    use crate::operations::did_webvh::webvh_keys::{WebvhKeyHandle, WebvhKeyRole, install};
-    install(
-        &state.keys_ks,
-        &WebvhKeyHandle {
-            scid: "QmUpdateKeyTest".into(),
-            version_id: "1-QmUpdateKeyTest".into(),
-            hash: format!("hash-of-{public_key}"),
-            public_key: public_key.into(),
-            derivation_path: "m/26'/0'".into(),
-            seed_id: None,
-            role: WebvhKeyRole::UpdateKey,
-            label: "update key".into(),
-            created_at: chrono::Utc::now(),
-        },
-    )
-    .await
-    .expect("record the update key");
+    hold_log(state, HELD_DID, public_key, &[]).await;
+}
+
+#[cfg(feature = "webvh")]
+fn refused_as_log_key(out: &TrustTaskOutcome) -> bool {
+    let b = body(out);
+    !out.status.is_success() && b.to_string().contains("authorizes the log of")
 }
 
 /// A key that authorizes a `did:webvh` log does not sign a caller's document as
@@ -402,8 +424,12 @@ async fn an_update_key_does_not_sign_as_its_own_did_key() {
         "an update key must not sign as its did:key: {b:#}"
     );
     assert!(
-        b.to_string().contains("authorizes did:webvh log entries"),
+        b.to_string().contains("authorizes the log of"),
         "refused for the wrong reason: {b:#}"
+    );
+    assert!(
+        b.to_string().contains("failedPrecondition"),
+        "keys/sign-document item 6's code: {b:#}"
     );
 }
 
@@ -435,10 +461,67 @@ async fn a_forged_log_entry_is_not_signed_by_the_update_key() {
 
     let out = f.sign_document(forged).await;
     assert!(
-        !out.status.is_success(),
-        "a forged log entry must not be signed: {:#}",
+        refused_as_log_key(&out),
+        "a forged log entry must be refused as a log key's: {:#}",
         body(&out)
     );
+}
+
+/// An update that declares no keys (`"parameters": {}`, a metadata-only update)
+/// leaves the update key in force. The key-handle index lost it at that point;
+/// the log does not.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn an_update_key_stays_refused_after_an_update_that_declares_no_keys() {
+    let f = Fixture::new().await;
+    let key = f.did.trim_start_matches("did:key:").to_string();
+    hold_log(&f.state, HELD_DID, &key, &[serde_json::json!({})]).await;
+    let out = f.sign_document(f.credential()).await;
+    assert!(refused_as_log_key(&out), "{:#}", body(&out));
+}
+
+/// A key committed by hash for the next entry (pre-rotation) authorizes that
+/// entry, so it is refused before it is ever revealed.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn a_committed_next_key_is_refused_before_it_is_revealed() {
+    use affinidi_tdk::secrets_resolver::secrets::Secret;
+    let f = Fixture::new().await;
+    let key = f.did.trim_start_matches("did:key:").to_string();
+    let hash = Secret::base58_hash_string(&key).unwrap();
+    hold_log(
+        &f.state,
+        HELD_DID,
+        "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+        &[serde_json::json!({ "nextKeyHashes": [hash] })],
+    )
+    .await;
+    let out = f.sign_document(f.credential()).await;
+    assert!(refused_as_log_key(&out), "{:#}", body(&out));
+}
+
+/// A key a held log only lists as a verification method authorizes no entry,
+/// and still signs as its did:key.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn a_key_a_log_only_lists_as_a_method_still_signs() {
+    let f = Fixture::new().await;
+    let key = f.did.trim_start_matches("did:key:").to_string();
+    // The fixture's key only in the document; another key updates the log.
+    let other = "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
+    let log = serde_json::json!({
+        "versionId": "1-QmOnly",
+        "parameters": { "updateKeys": [other] },
+        "state": { "id": HELD_DID, "verificationMethod": [{
+            "id": format!("{HELD_DID}#key-0"), "type": "Multikey",
+            "controller": HELD_DID, "publicKeyMultibase": key }] },
+    })
+    .to_string();
+    vta_webvh::webvh_store::store_did_log(&f.state.webvh_ks, HELD_DID, &log)
+        .await
+        .unwrap();
+    let out = f.sign_document(f.credential()).await;
+    assert!(out.status.is_success(), "{:#}", body(&out));
 }
 
 /// The same key still signs as the `did:webvh` it serves: that proof names the

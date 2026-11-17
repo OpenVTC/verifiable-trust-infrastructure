@@ -10,6 +10,7 @@ mod concurrency;
 pub(crate) mod document;
 pub(crate) mod host;
 mod lifecycle;
+pub(crate) mod log_authority;
 pub(crate) mod presentation;
 mod realign;
 mod register_server;

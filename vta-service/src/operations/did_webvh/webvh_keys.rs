@@ -162,34 +162,6 @@ pub async fn find_handle_by_hash(
     Ok(None)
 }
 
-/// Whether `public_key` (multibase, as `update_keys` writes it) may authorize
-/// a log entry of a `did:webvh` this VTA holds: an active update key, or a
-/// pre-rotation key committed to become one.
-///
-/// Such a key must not sign anything a log verifier would read as a log entry
-/// proof. Fails closed: a handle that cannot be read is an error, never "no".
-pub async fn is_log_authorization_key(
-    keys_ks: &KeyspaceHandle,
-    public_key: &str,
-) -> Result<bool, AppError> {
-    for raw in keys_ks
-        .prefix_keys(ACTIVE_PREFIX.as_bytes().to_vec())
-        .await?
-    {
-        let Some(handle) = keys_ks.get::<WebvhKeyHandle>(raw).await? else {
-            continue;
-        };
-        if matches!(
-            handle.role,
-            WebvhKeyRole::UpdateKey | WebvhKeyRole::PreRotation
-        ) && handle.public_key == public_key
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// Move every handle for `(scid, version_id)` from the active prefix
 /// to the `superseded:` prefix. Idempotent — re-running on an
 /// already-superseded version is a no-op.
@@ -392,49 +364,5 @@ mod tests {
         supersede_keys_for_version(&ks, scid, v1).await.unwrap();
         // No-op the second time around — must not panic or error.
         supersede_keys_for_version(&ks, scid, v1).await.unwrap();
-    }
-
-    /// The keys that may authorize a log entry are the active update keys and
-    /// the pre-rotation keys committed to become one; a key published only as
-    /// a verification method, or one superseded by a later version, is not.
-    #[tokio::test]
-    async fn only_update_and_pre_rotation_keys_authorize_log_entries() {
-        let ks = test_keys_ks().await;
-        let update = handle("Q1", "1-zA", WebvhKeyRole::UpdateKey, "zUpd");
-        let pre = handle("Q1", "1-zA", WebvhKeyRole::PreRotation, "zPre");
-        let method = handle(
-            "Q1",
-            "1-zA",
-            WebvhKeyRole::Verification { fragment_id: 0 },
-            "zVm",
-        );
-        let old = handle("Q2", "1-zB", WebvhKeyRole::UpdateKey, "zOld");
-        for h in [&update, &pre, &method, &old] {
-            install(&ks, h).await.unwrap();
-        }
-        supersede_keys_for_version(&ks, "Q2", "1-zB").await.unwrap();
-
-        assert!(
-            is_log_authorization_key(&ks, &update.public_key)
-                .await
-                .unwrap()
-        );
-        assert!(
-            is_log_authorization_key(&ks, &pre.public_key)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !is_log_authorization_key(&ks, &method.public_key)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !is_log_authorization_key(&ks, &old.public_key)
-                .await
-                .unwrap(),
-            "superseded"
-        );
-        assert!(!is_log_authorization_key(&ks, "z6MkUnknown").await.unwrap());
     }
 }
