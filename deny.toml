@@ -69,6 +69,46 @@ ignore = [
   build script, which reads one pinned entry and never extracts); drop with it.
   """ },
 
+  { id = "RUSTSEC-2026-0545", reason = """
+  zip 2.x: WinZip AES entries returned without checking their authentication
+  code. Same sole path as RUSTSEC-2026-0367: nitro_attest's build script
+  builds zip with `default-features = false, features = ["deflate"]`, so the
+  `aes-crypto` code this advisory lives in is not compiled, and it reads one
+  SHA-256-pinned, unencrypted entry. Drop with RUSTSEC-2026-0367.
+  """ },
+
+  { id = "RUSTSEC-2026-0548", reason = """
+  zip 2.x: `ZipStreamReader` extracts entries under local-header names that
+  can differ from the central directory. Same sole path as RUSTSEC-2026-0367:
+  nitro_attest's build script opens the pinned archive with `ZipArchive` and
+  reads `root.pem` by its central-directory name; it never uses
+  `ZipStreamReader`. Drop with RUSTSEC-2026-0367.
+  """ },
+
+  { id = "RUSTSEC-2026-0543", reason = """
+  chrono is unmaintained (chronotope/chrono#1768); all versions, no fix, and
+  no vulnerability is reported, only the status. It is pervasive: the
+  workspace's own crates use it directly, and it arrives again through
+  affinidi-tdk, affinidi-data-integrity, the mediator and regorus, so it
+  cannot leave the graph until those move too. Drop when the workspace and
+  the affinidi-tdk-rs stack have migrated to `jiff` or `time`.
+  """ },
+
+  { id = "RUSTSEC-2026-0555", reason = """
+  chrono-tz is unmaintained, with chrono (RUSTSEC-2026-0543). Status only, no
+  vulnerability. Reached only through regorus (vti-common's policy engine),
+  for Rego's time builtins. Drop when regorus leaves chrono-tz, or with
+  RUSTSEC-2026-0543.
+  """ },
+
+  { id = "RUSTSEC-2026-0542", reason = """
+  humantime is marked unmaintained because chrono is (RUSTSEC-2026-0543).
+  Status only, no vulnerability; humantime 2.4.0 has no dependencies in
+  Cargo.lock, so chrono's status does not reach it. Reached through
+  object_store and the mediator. Drop when those leave humantime, or with
+  RUSTSEC-2026-0543.
+  """ },
+
 
   { id = "RUSTSEC-2026-0387", reason = """
   crypto-bigint: secret-dependent branches in operations meant to be
