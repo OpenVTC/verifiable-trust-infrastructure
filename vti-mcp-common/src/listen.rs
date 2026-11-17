@@ -32,6 +32,11 @@
 //!
 //! A bridge served this way must also hold its hosts to a protocol version
 //! that can ask the human ([`supported_protocol_versions`]).
+//!
+//! One process may serve several services behind the one token
+//! ([`router_many`], [`serve_many`]), each at `/mcp/<name>` with its own MCP
+//! session manager: `vtc-mcp --communities` serves one bridge per community
+//! this way, so each MCP server a host sees is one identity at one node.
 
 use std::borrow::Cow;
 use std::net::SocketAddr;
@@ -290,16 +295,95 @@ pub fn router<S>(
 where
     S: ServerHandler + Clone + Send + Sync + 'static,
 {
+    gated(
+        bridge,
+        axum::Router::new().nest_service(MCP_PATH, mcp_service(service, cancel)),
+        token,
+    )
+}
+
+/// The path one of several services is served at: `/mcp/<name>`.
+pub fn mcp_path_for(name: &str) -> String {
+    format!("{MCP_PATH}/{name}")
+}
+
+/// A name a service can be served under: 1–64 lowercase ASCII letters, digits,
+/// `-` or `_`, starting with a letter or digit. It becomes a URL path segment
+/// and the name hosts know the service by, so nothing that needs escaping.
+pub fn check_service_name(name: &str) -> Result<(), String> {
+    let well_formed = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    if well_formed {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{name}` cannot be served as {}: a name is 1–64 lowercase letters, digits, `-` or \
+             `_`, starting with a letter or digit",
+            mcp_path_for(name)
+        ))
+    }
+}
+
+/// The HTTP application for several services behind one token: each at
+/// [`mcp_path_for`] its name, and nothing at [`MCP_PATH`] itself, so a host
+/// always names the service it means. Each service is as isolated as if it had
+/// a listener of its own — its own MCP sessions, and whatever it keeps behind
+/// its `Arc`s; only the token and the port are shared.
+pub fn router_many<S>(
+    bridge: &Bridge,
+    services: Vec<(String, S)>,
+    token: Arc<str>,
+    cancel: CancellationToken,
+) -> Result<axum::Router, String>
+where
+    S: ServerHandler + Clone + Send + Sync + 'static,
+{
+    if services.is_empty() {
+        return Err("nothing to serve: no service was given".into());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut app = axum::Router::new();
+    for (name, service) in services {
+        check_service_name(&name)?;
+        if !seen.insert(name.clone()) {
+            return Err(format!(
+                "`{name}` is named twice; each service needs its own name"
+            ));
+        }
+        app = app.nest_service(&mcp_path_for(&name), mcp_service(service, cancel.clone()));
+    }
+    Ok(gated(bridge, app, token))
+}
+
+/// MCP's streamable HTTP transport over `service`, one clone per MCP session.
+fn mcp_service<S>(
+    service: S,
+    cancel: CancellationToken,
+) -> StreamableHttpService<S, LocalSessionManager>
+where
+    S: ServerHandler + Clone + Send + Sync + 'static,
+{
     // Loopback hosts only (rmcp's default list), and no `Origin` at all: an
     // MCP host sends none, a browser always does.
     let config = StreamableHttpServerConfig::default()
         .with_cancellation_token(cancel)
         .enforce_origin_validation();
-    let http = StreamableHttpService::new(
+    StreamableHttpService::new(
         move || Ok(service.clone()),
         Arc::new(LocalSessionManager::default()),
         config,
-    );
+    )
+}
+
+/// Put every route of `app` behind the bearer token.
+fn gated(bridge: &Bridge, app: axum::Router, token: Arc<str>) -> axum::Router {
     let gate = Gate {
         token,
         refusal: format!(
@@ -308,9 +392,7 @@ where
         )
         .into(),
     };
-    axum::Router::new()
-        .nest_service(MCP_PATH, http)
-        .layer(axum::middleware::from_fn_with_state(gate, require_bearer))
+    app.layer(axum::middleware::from_fn_with_state(gate, require_bearer))
 }
 
 #[derive(Clone)]
@@ -349,13 +431,53 @@ pub async fn serve<S>(
 where
     S: ServerHandler + Clone + Send + Sync + 'static,
 {
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| std::io::Error::new(e.kind(), format!("binding --listen {addr}: {e}")))?;
+    let listener = bind(addr).await?;
     let bound = listener.local_addr()?;
     tracing::info!(url = %format!("http://{bound}{MCP_PATH}"), "serving MCP over loopback HTTP");
     let cancel = CancellationToken::new();
     let app = router(bridge, service, Arc::from(token), cancel.clone());
+    run(listener, app, cancel).await
+}
+
+/// Serve each of `services` at `http://<addr>/mcp/<name>` until SIGINT or
+/// SIGTERM ([`router_many`]), then close every MCP session and return; the
+/// caller closes its node sessions after.
+pub async fn serve_many<S>(
+    bridge: &Bridge,
+    services: Vec<(String, S)>,
+    addr: SocketAddr,
+    token: String,
+) -> std::io::Result<()>
+where
+    S: ServerHandler + Clone + Send + Sync + 'static,
+{
+    let names: Vec<String> = services.iter().map(|(n, _)| n.clone()).collect();
+    let cancel = CancellationToken::new();
+    let app = router_many(bridge, services, Arc::from(token), cancel.clone())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    let listener = bind(addr).await?;
+    let bound = listener.local_addr()?;
+    for name in &names {
+        tracing::info!(
+            service = %name,
+            url = %format!("http://{bound}{}", mcp_path_for(name)),
+            "serving MCP over loopback HTTP"
+        );
+    }
+    run(listener, app, cancel).await
+}
+
+async fn bind(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| std::io::Error::new(e.kind(), format!("binding --listen {addr}: {e}")))
+}
+
+async fn run(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    cancel: CancellationToken,
+) -> std::io::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
@@ -535,6 +657,124 @@ mod tests {
                 .find(|d| !d.is_empty())
                 .unwrap_or(&text);
             serde_json::from_str(json).unwrap_or_else(|e| panic!("{e}: {text}"))
+        }
+
+        /// A handler that answers `initialize` with its own name, so a test can
+        /// tell which service a path reached.
+        #[derive(Clone)]
+        struct Named(&'static str);
+
+        impl ServerHandler for Named {
+            fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+                super::supported_protocol_versions()
+            }
+            fn get_info(&self) -> ServerConfig {
+                let mut info = rmcp::model::Implementation::from_build_env();
+                info.name = self.0.to_string();
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+                    .with_server_info(info)
+            }
+        }
+
+        async fn spawn_many(names: &[&'static str]) -> (String, CancellationToken) {
+            let cancel = CancellationToken::new();
+            let services = names.iter().map(|n| (n.to_string(), Named(n))).collect();
+            let app = router_many(&BRIDGE, services, Arc::from(TOKEN), cancel.clone()).unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let stop = cancel.clone();
+            tokio::spawn(async move {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { stop.cancelled().await })
+                    .await
+                    .unwrap();
+            });
+            (base, cancel)
+        }
+
+        #[test]
+        fn a_service_name_is_one_plain_path_segment() {
+            for good in ["first-vtc", "acme_2", "0x"] {
+                check_service_name(good).unwrap();
+            }
+            for bad in [
+                "",
+                "-lead",
+                "Upper",
+                "a/b",
+                "a b",
+                "dot.ted",
+                &"x".repeat(65),
+            ] {
+                assert!(check_service_name(bad).is_err(), "{bad:?} accepted");
+            }
+        }
+
+        #[test]
+        fn several_services_need_distinct_well_formed_names() {
+            let cancel = CancellationToken::new();
+            let token: Arc<str> = Arc::from(TOKEN);
+            let twice = vec![("a".to_string(), Named("a")), ("a".to_string(), Named("a"))];
+            let err = router_many(&BRIDGE, twice, token.clone(), cancel.clone()).unwrap_err();
+            assert!(err.contains("named twice"), "{err}");
+            let bad = vec![("../x".to_string(), Named("x"))];
+            assert!(router_many(&BRIDGE, bad, token.clone(), cancel.clone()).is_err());
+            let none: Vec<(String, Named)> = vec![];
+            assert!(router_many(&BRIDGE, none, token, cancel).is_err());
+        }
+
+        /// Each service at its own path, behind the one token; nothing at
+        /// `/mcp` itself; and a session one service opened means nothing to
+        /// another.
+        #[tokio::test]
+        async fn several_services_are_each_served_at_their_own_path() {
+            let (base, cancel) = spawn_many(&["alpha", "beta"]).await;
+            let mut sessions = Vec::new();
+            for name in ["alpha", "beta"] {
+                let url = format!("{base}{}", mcp_path_for(name));
+                let refused = post(&url, &initialize("2025-11-25")).send().await.unwrap();
+                assert_eq!(refused.status(), 401, "{name} without the token");
+                let response = post(&url, &initialize("2025-11-25"))
+                    .bearer_auth(TOKEN)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 200);
+                sessions.push(
+                    response.headers()["mcp-session-id"]
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                );
+                let init = message(response).await;
+                assert_eq!(init["result"]["serverInfo"]["name"], name, "{init}");
+            }
+
+            for path in [MCP_PATH.to_string(), mcp_path_for("gamma")] {
+                let response = post(&format!("{base}{path}"), &initialize("2025-11-25"))
+                    .bearer_auth(TOKEN)
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 404, "{path}");
+            }
+
+            // alpha's session, presented to beta.
+            let crossed = post(
+                &format!("{base}{}", mcp_path_for("beta")),
+                &json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
+            )
+            .bearer_auth(TOKEN)
+            .header("mcp-session-id", &sessions[0])
+            .send()
+            .await
+            .unwrap();
+            assert!(
+                crossed.status().is_client_error(),
+                "a session from one service was accepted by another: {}",
+                crossed.status()
+            );
+            cancel.cancel();
         }
 
         #[tokio::test]

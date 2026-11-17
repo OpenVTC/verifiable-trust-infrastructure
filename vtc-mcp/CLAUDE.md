@@ -92,6 +92,14 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio (or, wi
   never answer "two sessions" by starting two bridges on one key. State that
   must be per host (an elicitation) goes on the calling session's peer, never
   on the shared bridge.
+- **Several communities are several bridges in one process, never one
+  bridge with a `community` argument** (`src/communities.rs`, design note
+  D7a). `--communities` builds a `VtcMcp` per section — its own client,
+  identity, guard, recorder, sign-in — and serves each at `/mcp/<name>`
+  (`vti_mcp_common::listen::router_many`); nothing at `/mcp`. One agent DID
+  for two sections is refused (VTI-KEY-005, VTI-KEY-006); what is policy is
+  fatal, a key that cannot be used degrades only its community. Key material
+  is named by owner-only files, never written in the TOML.
 - **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
   the action's summary from the payload that would run (`verify_action`),
   refuses on any mismatch, and puts the summary and match code in front of

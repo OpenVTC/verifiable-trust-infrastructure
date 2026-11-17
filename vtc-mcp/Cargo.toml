@@ -41,6 +41,10 @@ clap = { workspace = true, features = ["env"] }
 ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 multibase = { workspace = true }
+# `--communities`: the file naming each community a `--listen` bridge serves,
+# and connecting to them side by side.
+toml = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

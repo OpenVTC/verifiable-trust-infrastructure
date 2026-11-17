@@ -356,6 +356,49 @@ the listener, the `Serving` choice and the version cap live in
 `vti_mcp_common::listen` and both bridges take them; each names itself with a
 `Bridge` (its name, token variable and state-directory variable).
 
+### D7a. Several communities, one process: a path per community
+
+An operator who takes part in several communities would otherwise run one
+`--listen` bridge per community — a launchd or systemd unit, a port and a
+host entry each. `--communities <file>` serves them all from one process
+instead: one TOML section per community, each built into its own `VtcMcp`
+(its own client and mediator socket, identity, guard, recorder, sign-in and
+health) and served at `/mcp/<name>` behind the one token
+(`vti_mcp_common::listen::router_many`). Nothing is served at `/mcp` itself,
+so a host always names the community it means.
+
+**A path per community, not a `community` argument on every tool.** One
+endpoint routing by argument would put every community behind one MCP
+server: a host's approval of `vtc_call` would cover every community at once,
+one guard would have to answer for all of them, and a prompt-injected call
+could be steered at a community the person never meant to touch. A path per
+community keeps what D3 promises at the level a host sees — each MCP server is
+one identity at one community — and leaves the tools, prompts, workflows and
+skill unchanged. Each path also keeps its own MCP session manager, so a
+session one community's endpoint opened means nothing at another's.
+
+**The file decides what is policy.** A file that cannot be read, an unknown
+key (`deny_unknown_fields`, so a mistyped `read_only` is not silently
+ignored), a malformed name, an unparseable confirm level or transport, an
+audit log that cannot be opened, and **one agent DID named for two
+communities** are fatal. The last is the key-reuse note's warning made a
+refusal (VTI-KEY-005, VTI-KEY-006): a single bridge cannot see the other
+community, so it only warns; a file that names both can, so it refuses. A key
+that cannot be used — missing, unparseable, readable by others, or not the
+`agent_did` written beside it — is identity, not policy: that community
+serves degraded and says why in its own `vtc_status`, as a single bridge
+would, while the others serve normally. Communities connect side by side, so
+one unreachable community delays no other.
+
+**Key material never sits in the file.** `agent_key_file` names an
+owner-only file holding the key (the JSON `--mint-did-key` prints, or the bare
+multibase key) and the DID is derived from the key; `agent_secrets_file` names
+a persona's bundle. The policy flags given beside `--communities` are every
+section's defaults; a section's `deny` adds to the process-wide list and never
+lifts it. The single-community flags (`--vtc-did`, the identity flags,
+`--audit-log`) are refused beside `--communities`, since a process-wide value
+would be ambiguous. stdio and a single `--listen` community are unchanged.
+
 ## 3. Rollout
 
 | Phase | Deliverable | Where |
@@ -368,6 +411,7 @@ the listener, the `Serving` choice and the version cap live in
 | 6 | **Done.** Operator page `docs/03-vtc/vtc-mcp.md` with a worked example; the Claude Code skill `vtc-mcp/skills/vtc-community/SKILL.md`; `vtc-mcp --mint-did-key` for the dedicated-agent rung | docs, `vtc-mcp` |
 | 7 | **Done.** Member badges: the `badges` guide resource, the `create-badge` and `my-badges` prompts, and `badge_create` (upload the picture → create naming the uploaded digest → offer → claim code → read back), each step guarded under its own URI | `vtc-mcp` |
 | 8 | **Done.** `--listen`: one bridge serving every MCP host on the machine over loopback streamable HTTP, behind a bearer token, with no `Origin` and a loopback `Host` (D7) | `vtc-mcp` |
+| 9 | **Done.** `--communities`: several communities from one `--listen` process, each at `/mcp/<name>` as its own identity, policy, audit log and sign-in; one agent DID for two communities refused (D7a) | `vtc-mcp`, `vti-mcp-common` |
 
 Phase 3 is usable on its own: a member or an administrator can drive every
 pinned task from an assistant with nothing but the catalog. Phases 4 and 5
