@@ -362,6 +362,7 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     "https://trusttasks.org/spec/vault/unarchive/0.1",
     "https://trusttasks.org/spec/vault/restore/0.1",
     "https://trusttasks.org/spec/vault/purge/0.1",
+    //   The eight `vault/credentials/*` entries that sat here are gone: the
     //   family was specified upstream (trust-tasks-tf#338) and shipped in
     //   trust-tasks-rs 0.17.4, so it has a published schema, a conformance
     //   witness, and payload validation on the dispatch spine. Debt discharged
