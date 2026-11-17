@@ -282,10 +282,8 @@ mod tests {
         assert_eq!(public.len(), 33, "compressed SEC1 point");
 
         let sig = sign(&ks, "p", b"payload").await.unwrap();
-        assert!(
-            affinidi_crypto::p256::verify(&public, b"payload", &sig).unwrap(),
-            "P-256 signature verifies under the advertised public key"
-        );
+        affinidi_crypto::p256::verify_signature(&public, b"payload", &sig)
+            .expect("P-256 signature verifies under the advertised public key");
     }
 
     /// An internal key exists to sign. A key-agreement key cannot, and minting
