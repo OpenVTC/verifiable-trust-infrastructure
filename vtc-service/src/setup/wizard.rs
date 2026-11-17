@@ -136,7 +136,7 @@ async fn collect_interactive(
     // 2. Mediator choice, then which transports to advertise over it. Both
     //    happen before the mint below, because the answers become service
     //    entries in the document being minted and cannot be added afterwards.
-    let messaging = prompt_messaging(resolved.as_ref().and_then(|r| r.mediator_did.clone()))?;
+    let messaging = prompt_messaging(resolved.as_ref().and_then(vta_mediator))?;
     let transports = match messaging.as_ref() {
         Some(m) => prompt_transports(&m.mediator_did)?,
         // No mediator, nothing to advertise. The document carries REST only.
@@ -950,8 +950,44 @@ pub(crate) fn normalize_registry_did(raw: &str) -> Result<Option<String>, AppErr
     Ok(Some(trimmed.to_string()))
 }
 
-/// Ask the operator which mediator the VTC should route DIDComm traffic
-/// through. Three paths:
+/// The mediator a VTA's own DID document routes its messaging through, and
+/// the transports it advertises over it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VtaMediator {
+    did: String,
+    transports: Vec<Transport>,
+}
+
+/// The mediator to suggest from a resolved VTA: the `TSPTransport` entry's
+/// first, then the `DIDCommMessaging` entry's.
+///
+/// A VTA may advertise either transport, or both. Reading only the DIDComm
+/// entry told the operator of a TSP-only VTA that it had no mediator. Each
+/// entry is read on its own (matched on service `type`, not on `#id`), and
+/// when both name the same mediator it is reported for both.
+fn vta_mediator(resolved: &ResolvedVta) -> Option<VtaMediator> {
+    match (
+        resolved.tsp_mediator_did.as_deref(),
+        resolved.mediator_did.as_deref(),
+    ) {
+        (Some(tsp), Some(didcomm)) if tsp == didcomm => Some(VtaMediator {
+            did: tsp.to_string(),
+            transports: vec![Transport::Tsp, Transport::Didcomm],
+        }),
+        (Some(tsp), _) => Some(VtaMediator {
+            did: tsp.to_string(),
+            transports: vec![Transport::Tsp],
+        }),
+        (None, Some(didcomm)) => Some(VtaMediator {
+            did: didcomm.to_string(),
+            transports: vec![Transport::Didcomm],
+        }),
+        (None, None) => None,
+    }
+}
+
+/// Ask the operator which mediator the VTC should route its TSP and DIDComm
+/// traffic through. Three paths:
 ///
 /// 1. Use the same mediator the VTA advertises in its DID document.
 ///    This is the dominant choice for single-operator deployments —
@@ -962,39 +998,45 @@ pub(crate) fn normalize_registry_did(raw: &str) -> Result<Option<String>, AppErr
 ///    startup ("messaging not configured — inbound message handling
 ///    disabled") but otherwise stays healthy on the REST surface.
 ///
-/// `vta_mediator` is the mediator DID resolved from the VTA's DID
-/// document (the caller resolves the VTA once, up front; see
-/// [`run_setup_wizard`]). `None` means the document advertised no
-/// mediator (or didn't resolve) — the wizard then falls through to
-/// options 2 + 3, letting the operator supply one or skip messaging.
-fn prompt_messaging(vta_mediator: Option<String>) -> Result<Option<MessagingConfig>, AppError> {
+/// `vta_mediator` is the mediator resolved from the VTA's DID document
+/// ([`vta_mediator`]; the caller resolves the VTA once, up front). `None`
+/// means the document advertised neither a TSP nor a DIDComm mediator (or
+/// didn't resolve) — the wizard then falls through to options 2 + 3, letting
+/// the operator supply one or skip messaging.
+fn prompt_messaging(
+    vta_mediator: Option<VtaMediator>,
+) -> Result<Option<MessagingConfig>, AppError> {
     use dialoguer::Select;
 
     println!();
     let mut labels: Vec<String> = Vec::new();
     let mut tags: Vec<&str> = Vec::new();
-    if let Some(med) = vta_mediator.as_deref() {
-        labels.push(format!("Use the VTA's mediator ({med})"));
+    if let Some(med) = vta_mediator.as_ref() {
+        labels.push(format!(
+            "Use the VTA's mediator ({}, {})",
+            med.did,
+            transport_names(&med.transports)
+        ));
         tags.push("vta-mediator");
     } else {
-        println!("  Note: the VTA's DID document does not advertise a DIDComm mediator;");
-        println!("        you'll need to supply one yourself or skip messaging.");
+        println!("  Note: the VTA's DID document advertises no mediator (no TSP or DIDComm");
+        println!("        service); you'll need to supply one yourself or skip messaging.");
         println!();
     }
     labels.push("Specify a different mediator DID".to_string());
     tags.push("custom");
-    labels.push("Skip messaging (DIDComm disabled)".to_string());
+    labels.push("Skip messaging (no TSP or DIDComm)".to_string());
     tags.push("skip");
 
     let idx = Select::new()
-        .with_prompt("DIDComm messaging")
+        .with_prompt("Messaging mediator (TSP / DIDComm)")
         .items(&labels)
         .default(0)
         .interact()
         .map_err(prompt_err)?;
 
     let mediator_did = match tags[idx] {
-        "vta-mediator" => vta_mediator.expect("present when tag was inserted"),
+        "vta-mediator" => vta_mediator.expect("present when tag was inserted").did,
         "custom" => Input::new()
             .with_prompt("Mediator DID (must start with `did:`)")
             .validate_with(|input: &String| -> Result<(), String> {
@@ -1021,6 +1063,18 @@ fn prompt_messaging(vta_mediator: Option<String>) -> Result<Option<MessagingConf
         setup_acl: false,
         drain_inbox_on_start: false,
     }))
+}
+
+/// `TSP + DIDComm`, in the order given — how a transport list reads in a prompt.
+fn transport_names(transports: &[Transport]) -> String {
+    transports
+        .iter()
+        .map(|t| match t {
+            Transport::Tsp => "TSP",
+            Transport::Didcomm => "DIDComm",
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 /// Ask which transports the community's DID document should advertise.
@@ -1275,9 +1329,9 @@ fn prompt_identity_method() -> Result<IdentityMethod, AppError> {
 /// of reading the did-hosting catalogue.
 ///
 /// Prefers REST — the lightweight challenge-response flow (`auth_light`)
-/// reads the catalogue without spinning up a mediator session. Falls back
-/// to a DIDComm session against a DIDComm-only VTA so the picker still
-/// works there. The choice of listing transport is independent of the
+/// reads the catalogue without spinning up a mediator session. Without REST
+/// it connects over whichever messaging transport the VTA advertises, TSP
+/// before DIDComm, so the picker works against a TSP-only VTA too. The choice of listing transport is independent of the
 /// transport the later provision round-trip uses.
 async fn connect_setup_client(
     resolved: &ResolvedVta,
@@ -1311,6 +1365,19 @@ async fn connect_setup_client(
         return Ok(client);
     }
 
+    #[cfg(feature = "tsp")]
+    if let Some(mediator_did) = resolved.tsp_mediator_did.as_deref() {
+        return VtaClient::connect_tsp(
+            &setup_key.did,
+            setup_key.private_key_multibase(),
+            &resolved.vta_did,
+            mediator_did,
+            resolved.rest_url.clone(),
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("VTA TSP connection failed: {e}")));
+    }
+
     if let Some(mediator_did) = resolved.mediator_did.as_deref() {
         return VtaClient::connect_didcomm(
             &setup_key.did,
@@ -1324,7 +1391,7 @@ async fn connect_setup_client(
     }
 
     Err(AppError::Internal(
-        "VTA advertises neither a REST nor a DIDComm transport".into(),
+        "VTA advertises no transport this build can use (REST, TSP or DIDComm)".into(),
     ))
 }
 
@@ -2774,6 +2841,58 @@ mod tests {
         assert!(msg.contains("vtc setup --from"), "{msg}");
         assert!(msg.contains("identity_method = \"webs\""), "{msg}");
         assert!(msg.contains("server_id"), "{msg}");
+    }
+
+    fn resolved_with(tsp: Option<&str>, didcomm: Option<&str>) -> ResolvedVta {
+        ResolvedVta {
+            vta_did: "did:webvh:vta".into(),
+            tsp_mediator_did: tsp.map(str::to_string),
+            mediator_did: didcomm.map(str::to_string),
+            rest_url: None,
+        }
+    }
+
+    /// A TSP-only VTA has a mediator: its `TSPTransport` entry's. Reading only
+    /// the DIDComm entry told the operator it advertised none.
+    #[test]
+    fn a_tsp_only_vta_suggests_its_tsp_mediator() {
+        assert_eq!(
+            vta_mediator(&resolved_with(Some("did:web:m"), None)),
+            Some(VtaMediator {
+                did: "did:web:m".into(),
+                transports: vec![Transport::Tsp],
+            })
+        );
+    }
+
+    #[test]
+    fn a_didcomm_only_vta_suggests_its_didcomm_mediator() {
+        assert_eq!(
+            vta_mediator(&resolved_with(None, Some("did:web:m"))),
+            Some(VtaMediator {
+                did: "did:web:m".into(),
+                transports: vec![Transport::Didcomm],
+            })
+        );
+    }
+
+    /// One mediator for both is reported for both; two different ones
+    /// suggest the TSP entry's (TSP > DIDComm).
+    #[test]
+    fn a_dual_transport_vta_suggests_tsp_first() {
+        let same = vta_mediator(&resolved_with(Some("did:web:m"), Some("did:web:m"))).unwrap();
+        assert_eq!(same.did, "did:web:m");
+        assert_eq!(same.transports, vec![Transport::Tsp, Transport::Didcomm]);
+        assert_eq!(transport_names(&same.transports), "TSP + DIDComm");
+
+        let split = vta_mediator(&resolved_with(Some("did:web:t"), Some("did:web:d"))).unwrap();
+        assert_eq!(split.did, "did:web:t");
+        assert_eq!(split.transports, vec![Transport::Tsp]);
+    }
+
+    #[test]
+    fn a_vta_advertising_no_mediator_suggests_none() {
+        assert_eq!(vta_mediator(&resolved_with(None, None)), None);
     }
 
     /// #501: the provisioning transports on offer are the advertised ones, in
