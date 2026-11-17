@@ -1,6 +1,7 @@
 # A community logo the VTC stores and serves
 
-Status: implemented (`vtc/community/logo/update/0.1`, `GET /v1/community/logo`).
+Status: implemented (`vtc/community/logo/update/0.1`, `vtc/community/logo/show/0.1`,
+`GET /v1/community/logo`).
 
 ## The problem
 
@@ -24,16 +25,26 @@ at all. A hosted VTC (a VTA Farm session, say) is exactly that case:
 The community stores the image itself and serves it from its own origin.
 
 - **The write** is a Trust Task, `vtc/community/logo/update/0.1`, signed by an
-  administrator (`vtc.surface.admin`), carrying the image or `image: null` to
-  remove it.
-- **The read** is a public, unauthenticated `GET /v1/community/logo`, beside
-  `public-profile` and `did-qr.svg`. An `<img>` cannot send a signed document,
-  and the sign-in pages draw the logo before the visitor has any identity.
+  administrator (`vtc.surface.admin`), carrying the image or `remove: true`.
+  Removal is a member of its own, never `image: null`, so a request whose
+  image was never filled in fails validation rather than deleting the logo.
+- **The bytes** are served at a public, unauthenticated `GET /v1/community/logo`,
+  beside `public-profile` and `did-qr.svg`: one URL across updates, revalidated
+  on every use (`Cache-Control: public, no-cache`) against an `ETag` of the
+  digest. An `<img>` cannot send a signed document, and the sign-in pages draw
+  the logo before the visitor has any identity.
+- **Any client** learns of it with `vtc/community/logo/show/0.1`, answered to
+  an unidentified caller too: the `LogoRef` (digest, media type, size,
+  dimensions and `url`, the absolute `https` address under `public_url` —
+  omitted when the community has none), and the bytes inline on
+  `includeData: true`. `logo/update` answers the same `LogoRef`.
 - **Pages learn of it** through a `logo` member of the public profile and of
   the portal's `/v1/member/me` `community`: `{ url, sha256, mediaType, width,
-  height }`, with `url = /v1/community/logo?v=<first 16 hex of the digest>`, so
-  a replaced logo is a new URL and no cache serves the old one. Every page draws
-  `logo.url` in preference to `logoUrl` (`chosenLogo`).
+  height }`, with `url = /v1/community/logo?v=<first 16 hex of the digest>`: a
+  same-origin path, and the digest as a key for a browser's in-page image
+  cache, which the route ignores. Every page draws `logo.url` in preference to
+  `logoUrl` (`chosenLogo`). A logo whose bytes do not match its record is not
+  named at all, so a page falls back to `logoUrl` rather than a broken image.
 
 ## Choices and why
 
@@ -42,10 +53,9 @@ The community stores the image itself and serves it from its own origin.
    there, so a relative path would be refused by `profile/update` and by config
    import, and the profile form would fight it. `logoUrl` also stays useful as
    an address for readers that fetch from anywhere.
-2. **No `dryRun`, no `logo/show` task.** A theme has a profile to check against,
-   so a dry run means something. A logo has nothing to check but whether it
-   decodes, and a dry run would be unaudited decoding on demand. The public GET
-   is the read.
+2. **No `dryRun`.** A theme has a profile to check against, so a dry run means
+   something. A logo has nothing to check but whether it decodes, and a dry run
+   would be unaudited decoding on demand.
 3. **Stored as PNG, always.** `directory::images::reencode` writes JPEG for an
    opaque image, which suits a photograph and smears a logo's flat color and
    sharp edges. `reencode_logo` shares the decoding and its bounds and always
@@ -65,16 +75,18 @@ The community stores the image itself and serves it from its own origin.
 | Bytes bounded before decoding; pixels and decode memory bounded while decoding | `directory::images::decode` (256 KiB, 8192 px, 128 MiB) |
 | Decoded strictly as the declared type, never sniffed | `directory::images::decode` (`ImageReader::with_format`) |
 | No received byte stored: metadata, text chunks and trailing polyglot payloads gone | `reencode_logo`; `a_logo_keeps_no_text_chunk_metadata_or_trailing_bytes` |
-| Per-signer rate limit (20 an hour); one update at a time, from its first read to its write | `community::logo::LogoState` |
+| Rate limit of 20 an hour per administrator — the identity a delegated key resolves to, so more keys do not raise it — counting every request that passes the standing check, a no-op included, before decoding; one update at a time, from its first read to its write | `community::logo::LogoState`, `AdminActor::did` |
 | A store an administrator can always repair: an unreadable record is replaced, and the same image sent again restores bytes that no longer match | `community::ops::logo::update_logo` |
-| A payload without `image` is refused, never read as a removal | schema check in `parse_spec_payload`; `a_payload_without_image_is_refused_and_removes_nothing` |
-| Audited by digest, never the image; no change without its record | `community::ops::logo`, `CommunityLogoUpdated` |
+| Exactly one of `image` and `remove: true`; a missing or `null` image is never a removal | schema `oneOf` in `parse_spec_payload`; `a_payload_without_image_is_refused_and_removes_nothing` |
+| Audited by digest, never the image; refused as `unavailable` rather than changed unaudited. The audit record is written before the rows: the converse order could leave a change with no record | `community::ops::logo`, `CommunityLogoUpdated` |
 | Served as an image only: fixed `Content-Type`, `nosniff`, `default-src 'none'; sandbox` | `routes::community::logo` |
-| A record that does not match its bytes, or names another type, is never served | `LogoState::served`, `LogoMeta::well_formed` |
+| A record that does not match its bytes, or names another type, is never served or advertised; an update landing between the record and bytes reads is read again, not reported as a mismatch | `LogoState::snapshot`, `LogoMeta::well_formed` |
 | No session, no cookie; nothing a visitor reveals | `routes::community::logo` (public, ungoverned like `public-profile`) |
 
-The route reads only the small record on each request and serves the bytes
-from memory, keyed by digest, and answers `304` on a matching `ETag`. It sits
+Every reader — the route, the public profile, the portal and `logo/show` — is
+answered from one snapshot in memory (`LogoState::snapshot`), loaded once and
+kept until an update or a backup import invalidates it, so a request, a `304`
+on a matching `ETag` included, touches no store. It sits
 off the unauthenticated governor, like `public-profile`, because pages load it
 on every navigation and the governor refills one request every five seconds.
 

@@ -1,5 +1,6 @@
 //! Community logo — an image the community stores and serves from its own
-//! origin (`vtc/community/logo/update/0.1`, served at [`LOGO_PATH`]).
+//! origin (`vtc/community/logo/update/0.1`, read with
+//! `vtc/community/logo/show/0.1` and served at [`LOGO_PATH`]).
 //!
 //! Why the community holds the bytes: its console, member portal and default
 //! landing page are served with `img-src 'self' data:`, so a logo named by the
@@ -18,12 +19,17 @@
 //! always written in one batch. Removal keeps the record (with no logo) so
 //! `updatedAt` still answers when it was removed.
 //!
-//! **Served from memory, checked against the store.** The public route reads
-//! only the small record on each request and keeps the bytes of the digest it
-//! names in [`LogoState`]; a record that changes under it (an update, or a
-//! backup import before its restart) is noticed on the next request. Bytes
-//! whose digest does not match their record, or a record naming a media type
-//! outside [`MEDIA_TYPES`], are never served.
+//! **One address, served from memory.** The logo is served at one URL that
+//! does not change across updates (update item 9's SHOULD), revalidated by an
+//! `ETag` of its digest. Every reader — the route, the public profile, the
+//! member portal and `logo/show` — goes through [`LogoState::snapshot`], which
+//! loads the record and bytes once, checks the bytes against the record, and
+//! keeps the result until an update or a backup import
+//! ([`LogoState::invalidate`]) changes what is stored. Bytes whose digest does
+//! not match their record, or a record naming a media type outside
+//! [`MEDIA_TYPES`], are never served — and never advertised, so a page that
+//! cannot draw the stored logo falls back to `logoUrl` rather than a broken
+//! image.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -42,17 +48,22 @@ pub const LOGO_RECORD_KEY: &[u8] = b"community/logo";
 /// The stored bytes, beside [`LOGO_RECORD_KEY`].
 pub const LOGO_BYTES_KEY: &[u8] = b"community/logo/bytes";
 
-/// Where the community serves its logo (under the API mount).
+/// Where the community serves its logo, from the site root. The same across
+/// updates (update item 9).
 pub const LOGO_PATH: &str = "/v1/community/logo";
 
 /// The media types a stored logo may have (`LogoMediaType`). The route answers
 /// its `Content-Type` from this list, never from the record's own string.
 pub const MEDIA_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
 
-/// Updates one signer may send per hour (update item 5).
+/// Updates one administrator may send per hour (update item 5).
 pub const UPDATES_PER_HOUR: usize = 20;
 
-/// The stored logo, as `LogoRef` names it.
+/// How often a load retries when the record changes between its two reads.
+const LOAD_ATTEMPTS: usize = 3;
+
+/// The stored logo as its record names it. A storage record, not a wire
+/// type: the tasks answer it as their generated `LogoRef` ([`logo_ref!`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LogoMeta {
@@ -65,17 +76,9 @@ pub struct LogoMeta {
 }
 
 impl LogoMeta {
-    /// The `logo` the profile's readers are given: the path to load it from,
-    /// versioned by digest so a replaced logo is never read from a cache.
-    pub fn public_url(&self) -> String {
-        format!(
-            "{LOGO_PATH}?v={}",
-            &self.sha256[..16.min(self.sha256.len())]
-        )
-    }
-
     /// Whether the record is one the route may serve: a digest of the shape
-    /// it writes, and a media type from [`MEDIA_TYPES`].
+    /// it writes, a media type from [`MEDIA_TYPES`], and sizes a `LogoRef`
+    /// can carry.
     fn well_formed(&self) -> bool {
         self.sha256.len() == 64
             && self
@@ -84,8 +87,44 @@ impl LogoMeta {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             && MEDIA_TYPES.contains(&self.media_type.as_str())
             && self.size > 0
+            && self.width > 0
+            && self.height > 0
     }
 }
+
+/// The absolute `https` URL the logo is served at, for a `LogoRef`'s `url`
+/// (update item 9): [`LOGO_PATH`] under the community's `public_url`. `None`
+/// when the community has no `https` public URL — a `LogoRef` then omits
+/// `url`, as the schema allows, rather than name an address a reader elsewhere
+/// cannot resolve.
+#[must_use]
+pub fn logo_url(public_url: Option<&str>) -> Option<String> {
+    let base = public_url?.trim().trim_end_matches('/');
+    base.strip_prefix("https://")
+        .filter(|host| !host.is_empty())
+        .map(|_| format!("{base}{LOGO_PATH}"))
+}
+
+/// A task's generated `LogoRef` (`$ty`) for `meta`, served at `url`. A macro
+/// because `logo/update` and `logo/show` each generate their own (identical)
+/// type.
+macro_rules! logo_ref {
+    ($ty:ty, $meta:expr, $url:expr) => {{
+        let meta: &$crate::community::logo::LogoMeta = $meta;
+        let built: Result<$ty, _> = <$ty>::builder()
+            .sha256(meta.sha256.as_str())
+            .media_type(meta.media_type.as_str())
+            .size(u64::from(meta.size))
+            .width(u64::from(meta.width))
+            .height(u64::from(meta.height))
+            .url($url)
+            .try_into();
+        built.map_err(|e| {
+            ::vti_common::error::AppError::Internal(format!("community logo reference: {e}"))
+        })
+    }};
+}
+pub(crate) use logo_ref;
 
 /// The stored logo as a page is told about it: the `logo` member of the
 /// public profile and of the member portal's `community`.
@@ -93,7 +132,12 @@ impl LogoMeta {
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct PublicLogo {
-    /// Same-origin path to load it from, versioned by digest.
+    /// Where a page loads it: [`LOGO_PATH`] on the same origin as the profile
+    /// it appears in (a reader elsewhere resolves it against the URL it read
+    /// the profile from), with the digest as `?v=` so a browser's in-page
+    /// image cache never shows a replaced logo. The route ignores the query
+    /// and revalidates every use, so any `v` answers the current logo.
+    /// `vtc/community/logo/show/0.1` names the absolute, unversioned URL.
     pub url: String,
     pub sha256: String,
     pub media_type: String,
@@ -101,21 +145,16 @@ pub struct PublicLogo {
     pub height: u32,
 }
 
-impl From<LogoMeta> for PublicLogo {
-    fn from(m: LogoMeta) -> Self {
+impl From<&LogoMeta> for PublicLogo {
+    fn from(m: &LogoMeta) -> Self {
         Self {
-            url: m.public_url(),
-            sha256: m.sha256,
-            media_type: m.media_type,
+            url: format!("{LOGO_PATH}?v={}", &m.sha256[..16]),
+            sha256: m.sha256.clone(),
+            media_type: m.media_type.clone(),
             width: m.width,
             height: m.height,
         }
     }
-}
-
-/// The [`PublicLogo`] for the logo the community holds and may serve.
-pub async fn public_logo(ks: &KeyspaceHandle) -> Option<PublicLogo> {
-    current(ks).await.map(PublicLogo::from)
 }
 
 /// `community/logo`: the logo held, if any, and when it last changed.
@@ -134,26 +173,6 @@ pub async fn load_record(ks: &KeyspaceHandle) -> Result<Option<LogoRecord>, AppE
             .map(Some)
             .map_err(|e| AppError::Internal(format!("community logo decode: {e}"))),
         None => Ok(None),
-    }
-}
-
-/// The logo the community holds and may serve, or `None`. A record that is
-/// unreadable or not [`LogoMeta::well_formed`] answers `None` and is logged:
-/// what nothing here wrote is never served.
-pub async fn current(ks: &KeyspaceHandle) -> Option<LogoMeta> {
-    match load_record(ks).await {
-        Ok(Some(LogoRecord {
-            logo: Some(meta), ..
-        })) if meta.well_formed() => Some(meta),
-        Ok(Some(LogoRecord { logo: Some(_), .. })) => {
-            tracing::warn!("stored community logo record is malformed; serving none");
-            None
-        }
-        Ok(_) => None,
-        Err(e) => {
-            tracing::warn!(error = %e, "stored community logo record unreadable; serving none");
-            None
-        }
     }
 }
 
@@ -192,13 +211,39 @@ pub fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// What the service holds in memory for the logo: the bytes last served, the
-/// per-signer update counts, and the one-at-a-time update permit.
+/// A logo the community may serve: its record, and bytes that match it.
+#[derive(Debug, Clone)]
+pub struct HeldLogo {
+    pub meta: LogoMeta,
+    /// Reference-counted: a response shares them, never copies.
+    pub bytes: Bytes,
+}
+
+/// What the community holds, as every reader sees it.
+#[derive(Debug, Clone, Default)]
+pub struct LogoSnapshot {
+    /// The logo it serves, or `None` when it holds none it may serve.
+    pub held: Option<HeldLogo>,
+    /// When the stored logo was last replaced or removed; `None` when the
+    /// community has never held one.
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// The cached snapshot, and the generation an invalidation bumps so a load
+/// that began before it never caches what it read.
+#[derive(Default)]
+struct Cache {
+    generation: u64,
+    snapshot: Option<LogoSnapshot>,
+}
+
+/// What the service holds in memory for the logo: the snapshot every reader
+/// is answered from, the per-administrator update counts, and the
+/// one-at-a-time update permit.
 pub struct LogoState {
-    /// The bytes of the digest last served, so a request reads only the record.
-    served: Mutex<Option<(String, Bytes)>>,
-    /// Updates per signer in the last hour. In memory: a restart forgives,
-    /// which a rate limit may.
+    cache: Mutex<Cache>,
+    /// Updates per administrator in the last hour. In memory: a restart
+    /// forgives, which a rate limit may.
     updates: Mutex<HashMap<String, VecDeque<Instant>>>,
     /// One update at a time, from its first read to its write: re-encoding is
     /// CPU-bound, and two updates must not interleave their check and write.
@@ -208,7 +253,7 @@ pub struct LogoState {
 impl Default for LogoState {
     fn default() -> Self {
         Self {
-            served: Mutex::new(None),
+            cache: Mutex::new(Cache::default()),
             updates: Mutex::new(HashMap::new()),
             update: tokio::sync::Semaphore::new(1),
         }
@@ -216,8 +261,8 @@ impl Default for LogoState {
 }
 
 impl LogoState {
-    /// Count one update by `did`; `false` once they have sent
-    /// [`UPDATES_PER_HOUR`] in the last hour.
+    /// Count one update by the administrator `did`; `false` once they have
+    /// sent [`UPDATES_PER_HOUR`] in the last hour.
     pub fn admit_update(&self, did: &str) -> bool {
         crate::directory::admit(
             &self.updates,
@@ -227,45 +272,117 @@ impl LogoState {
         )
     }
 
-    /// Forget the cached bytes (after an update, so the next read reloads).
+    /// Forget the snapshot, so the next reader loads what is stored now. Call
+    /// after anything writes the logo's rows: an update, a backup import.
     pub fn invalidate(&self) {
-        *self.served.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        cache.generation = cache.generation.wrapping_add(1);
+        cache.snapshot = None;
     }
 
-    /// The logo to serve: its record and bytes, or `None` when there is none
-    /// or what is stored does not match its record.
-    pub async fn served(&self, ks: &KeyspaceHandle) -> Option<(LogoMeta, Bytes)> {
-        let meta = current(ks).await?;
-        if let Some((sha, bytes)) = self
-            .served
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            && *sha == meta.sha256
-        {
-            return Some((meta, bytes.clone()));
-        }
-        let bytes = match ks.get_raw(LOGO_BYTES_KEY).await {
-            Ok(Some(b)) => b,
-            Ok(None) => {
-                tracing::warn!("community logo record names bytes that are not stored");
-                return None;
+    /// What the community holds: from memory, or loaded once and kept.
+    pub async fn snapshot(&self, ks: &KeyspaceHandle) -> LogoSnapshot {
+        let generation = {
+            let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(snapshot) = &cache.snapshot {
+                return snapshot.clone();
             }
+            cache.generation
+        };
+        let (snapshot, settled) = load_snapshot(ks).await;
+        if settled {
+            let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+            if cache.generation == generation {
+                cache.snapshot = Some(snapshot.clone());
+            }
+        }
+        snapshot
+    }
+
+    /// The logo to serve, or `None`.
+    pub async fn served(&self, ks: &KeyspaceHandle) -> Option<HeldLogo> {
+        self.snapshot(ks).await.held
+    }
+
+    /// The `logo` a page is told about: only a logo the route will serve.
+    pub async fn public_logo(&self, ks: &KeyspaceHandle) -> Option<PublicLogo> {
+        self.served(ks).await.map(|h| PublicLogo::from(&h.meta))
+    }
+}
+
+/// Read the record and its bytes. The second member is whether the result may
+/// be kept: not after a store error, which the next reader should retry.
+///
+/// The two reads are not one snapshot of the store, so an update landing
+/// between them pairs a record with the next logo's bytes. A mismatch is
+/// therefore checked against the record read again: only one that persists
+/// is a store whose bytes do not match their record.
+async fn load_snapshot(ks: &KeyspaceHandle) -> (LogoSnapshot, bool) {
+    for _ in 0..LOAD_ATTEMPTS {
+        let raw = match ks.get_raw(LOGO_RECORD_KEY).await {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return (LogoSnapshot::default(), true),
             Err(e) => {
-                tracing::warn!(error = %e, "community logo bytes unreadable");
-                return None;
+                tracing::warn!(error = %e, "community logo record unreadable; serving none");
+                return (LogoSnapshot::default(), false);
             }
         };
-        if digest(&bytes) != meta.sha256 || bytes.len() != meta.size as usize {
-            tracing::warn!("stored community logo does not match its record; serving none");
-            return None;
+        let record: LogoRecord = match serde_json::from_slice(&raw) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "stored community logo record is malformed; serving none");
+                return (LogoSnapshot::default(), true);
+            }
+        };
+        let none = LogoSnapshot {
+            held: None,
+            updated_at: Some(record.updated_at),
+        };
+        let meta = match record.logo {
+            None => return (none, true),
+            Some(meta) if meta.well_formed() => meta,
+            Some(_) => {
+                tracing::warn!("stored community logo record is malformed; serving none");
+                return (none, true);
+            }
+        };
+        let bytes = match ks.get_raw(LOGO_BYTES_KEY).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(error = %e, "community logo bytes unreadable; serving none");
+                return (none, false);
+            }
+        };
+        if let Some(bytes) = bytes
+            && bytes.len() == meta.size as usize
+            && digest(&bytes) == meta.sha256
+        {
+            return (
+                LogoSnapshot {
+                    held: Some(HeldLogo {
+                        meta,
+                        bytes: Bytes::from(bytes),
+                    }),
+                    updated_at: none.updated_at,
+                },
+                true,
+            );
         }
-        // `Bytes` is reference-counted: a response shares it, never copies.
-        let bytes = Bytes::from(bytes);
-        *self.served.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some((meta.sha256.clone(), bytes.clone()));
-        Some((meta, bytes))
+        match ks.get_raw(LOGO_RECORD_KEY).await {
+            // The record changed under us: an update landed. Read it again.
+            Ok(again) if again.as_deref() != Some(raw.as_slice()) => continue,
+            Ok(_) => {
+                tracing::warn!("stored community logo does not match its record; serving none");
+                return (none, true);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "community logo record unreadable; serving none");
+                return (none, false);
+            }
+        }
     }
+    tracing::warn!("community logo changed on every read; serving none for now");
+    (LogoSnapshot::default(), false)
 }
 
 #[cfg(test)]
@@ -306,25 +423,54 @@ mod tests {
         store_logo(&ks, Some((meta_for(&bytes), bytes.clone())), at)
             .await
             .unwrap();
-        let (meta, served) = state.served(&ks).await.unwrap();
-        assert_eq!(&*served, bytes.as_slice());
+        state.invalidate();
+        let held = state.served(&ks).await.unwrap();
+        assert_eq!(&*held.bytes, bytes.as_slice());
+        let public = state.public_logo(&ks).await.unwrap();
         assert_eq!(
-            meta.public_url(),
-            format!("{LOGO_PATH}?v={}", &meta.sha256[..16])
+            public.url,
+            format!("{LOGO_PATH}?v={}", &held.meta.sha256[..16])
         );
+        assert_eq!(public.sha256, held.meta.sha256);
 
         let removed = store_logo(&ks, None, at).await.unwrap();
         assert!(removed.logo.is_none());
-        assert!(
-            state.served(&ks).await.is_none(),
-            "the cache follows the record"
+        state.invalidate();
+        let snapshot = state.snapshot(&ks).await;
+        assert!(snapshot.held.is_none());
+        assert_eq!(
+            snapshot.updated_at,
+            Some(at),
+            "removal keeps when it happened"
         );
-        assert_eq!(load_record(&ks).await.unwrap().unwrap().updated_at, at);
         assert!(ks.get_raw(LOGO_BYTES_KEY).await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn bytes_that_do_not_match_their_record_are_never_served() {
+    async fn the_snapshot_is_kept_until_invalidated() {
+        let ks = scratch().await;
+        let state = LogoState::default();
+        let first = b"\x89PNG-first".to_vec();
+        store_logo(&ks, Some((meta_for(&first), first.clone())), Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(&*state.served(&ks).await.unwrap().bytes, first.as_slice());
+
+        let second = b"\x89PNG-second".to_vec();
+        store_logo(&ks, Some((meta_for(&second), second.clone())), Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            &*state.served(&ks).await.unwrap().bytes,
+            first.as_slice(),
+            "answered from memory, not the store"
+        );
+        state.invalidate();
+        assert_eq!(&*state.served(&ks).await.unwrap().bytes, second.as_slice());
+    }
+
+    #[tokio::test]
+    async fn bytes_that_do_not_match_their_record_are_never_served_or_advertised() {
         let ks = scratch().await;
         let state = LogoState::default();
         let bytes = b"\x89PNG-fixture".to_vec();
@@ -335,6 +481,10 @@ mod tests {
             .await
             .unwrap();
         assert!(state.served(&ks).await.is_none());
+        assert!(
+            state.public_logo(&ks).await.is_none(),
+            "a page is never pointed at a logo the route will not serve"
+        );
     }
 
     #[tokio::test]
@@ -347,17 +497,27 @@ mod tests {
         store_logo(&ks, Some((meta, bytes)), Utc::now())
             .await
             .unwrap();
-        assert!(current(&ks).await.is_none());
         assert!(state.served(&ks).await.is_none());
     }
 
     #[test]
-    fn updates_are_bounded_per_signer() {
+    fn the_logo_url_is_absolute_https_or_absent() {
+        assert_eq!(
+            logo_url(Some("https://vtc.example/")).as_deref(),
+            Some("https://vtc.example/v1/community/logo")
+        );
+        assert_eq!(logo_url(Some("http://localhost:8100")), None);
+        assert_eq!(logo_url(Some("https://")), None);
+        assert_eq!(logo_url(None), None);
+    }
+
+    #[test]
+    fn updates_are_bounded_per_administrator() {
         let state = LogoState::default();
         for _ in 0..UPDATES_PER_HOUR {
             assert!(state.admit_update("did:example:a"));
         }
         assert!(!state.admit_update("did:example:a"));
-        assert!(state.admit_update("did:example:b"), "per signer");
+        assert!(state.admit_update("did:example:b"), "per administrator");
     }
 }

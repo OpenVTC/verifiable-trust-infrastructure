@@ -2687,7 +2687,14 @@ export interface components {
             height: number;
             mediaType: string;
             sha256: string;
-            /** @description Same-origin path to load it from, versioned by digest. */
+            /**
+             * @description Where a page loads it: [`LOGO_PATH`] on the same origin as the profile
+             *     it appears in (a reader elsewhere resolves it against the URL it read
+             *     the profile from), with the digest as `?v=` so a browser's in-page
+             *     image cache never shows a replaced logo. The route ignores the query
+             *     and revalidates every use, so any `v` answers the current logo.
+             *     `vtc/community/logo/show/0.1` names the absolute, unversioned URL.
+             */
             url: string;
             /** Format: int32 */
             width: number;

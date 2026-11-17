@@ -392,7 +392,7 @@ pub async fn me(
                 .map(|p| p.name.clone())
                 .filter(|n| !n.is_empty()),
             logo_url: profile.as_ref().and_then(|p| p.logo_url.clone()),
-            logo: crate::community::logo::public_logo(&state.community_ks).await,
+            logo: state.community_logo.public_logo(&state.community_ks).await,
             did: vtc_did,
         },
     }))

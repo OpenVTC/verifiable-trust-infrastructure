@@ -1002,7 +1002,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/community/theme/show/0.1",
     "https://trusttasks.org/spec/vtc/community/theme/update/0.1",
     // The community logo: update signed from the Logo card
-    // (`plugins/community/LogoCard.tsx`); read as a public GET, not a task.
+    // (`plugins/community/LogoCard.tsx`). The console reads it from the public
+    // profile; `logo/show` is for clients that do not.
     "https://trusttasks.org/spec/vtc/community/logo/update/0.1",
     // The member directory's Directory page (`admin-ui/src/lib/directory.ts`):
     // the schema, every entry as an administrator reads it, and asserted values.

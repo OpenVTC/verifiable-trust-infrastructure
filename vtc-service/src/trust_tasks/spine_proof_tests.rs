@@ -799,6 +799,10 @@ const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
         surface_tasks::THEME_SHOW_TYPE,
         "a public read, answered to an unidentified caller too: the sign-in pages draw the theme before the visitor has an identity",
     ),
+    (
+        surface_tasks::LOGO_SHOW_TYPE,
+        "a public read, answered to an unidentified caller too: the sign-in pages draw the logo before the visitor has an identity",
+    ),
     (surface_tasks::REQUESTED_SHOW_TYPE, "a public read"),
     (surface_tasks::JOIN_DISCOVERY_SHOW_TYPE, "a public read"),
     (surface_tasks::SCHEMAS_LIST_TYPE, "a public read"),

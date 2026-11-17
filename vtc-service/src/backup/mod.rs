@@ -424,6 +424,9 @@ pub async fn import_backup(
     if let Err(e) = crate::acl::resource_grant::rebuild_holder_index(&state.acl_ks).await {
         tracing::warn!(error = %e, "backup import: the git grant-holder index could not be rebuilt; boot rebuilds it");
     }
+    // The logo every page is answered from is held in memory; the restored
+    // rows are what to serve now.
+    state.community_logo.invalidate();
     // The audit index describes the log this process had; the next read
     // rebuilds it against the restored one.
     if let Err(e) = crate::audit_index::reset(&state.audit_index_ks).await {

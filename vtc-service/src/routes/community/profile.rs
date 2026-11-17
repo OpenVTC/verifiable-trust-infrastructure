@@ -135,7 +135,7 @@ pub async fn get_public_profile(
         name: profile.name,
         description: profile.description,
         logo_url: profile.logo_url,
-        logo: crate::community::logo::public_logo(&state.community_ks).await,
+        logo: state.community_logo.public_logo(&state.community_ks).await,
         public_url: profile.public_url,
         contact_email: profile.contact_email,
         language: profile.language,

@@ -1,8 +1,9 @@
 //! The community logo's write — `vtc/community/logo/update/0.1`.
 //!
-//! Signed documents only (`trust_tasks::surface_tasks`). The read is the
-//! public route `GET /v1/community/logo` (`routes::community::logo`) and the
-//! `logo` member of the public profile.
+//! Signed documents only (`trust_tasks::surface_tasks`). The reads are
+//! `vtc/community/logo/show/0.1`, the public route `GET /v1/community/logo`
+//! (`routes::community::logo`) and the `logo` member of the public profile,
+//! all answered from [`crate::community::logo::LogoState::snapshot`].
 
 use axum::http::StatusCode;
 use base64::Engine as _;
@@ -12,9 +13,15 @@ use vtc_audit::{AuditEvent, CommunityLogoUpdatedData};
 use vti_common::error::AppError;
 use vti_specs::vtc::community::logo::update::v0_1::LogoImage;
 
-use crate::community::logo::{LogoMeta, digest, load_record, store_logo};
-use crate::directory::images::{MAX_IMAGE_BYTES, UploadError, reencode_logo};
+use crate::community::logo::{LOGO_RECORD_KEY, LogoMeta, LogoRecord, digest, store_logo};
+use crate::directory::images::{UploadError, reencode_logo};
 use crate::server::AppState;
+
+/// What an update asks for: a new logo, or `remove: true`.
+pub(crate) enum LogoChange<'a> {
+    Set(&'a LogoImage),
+    Remove,
+}
 
 /// What an update answers: the logo now held, whether this request changed
 /// it, and when it last changed.
@@ -41,15 +48,18 @@ impl From<AppError> for LogoUpdateError {
     }
 }
 
-/// Replace the logo with `image`, or remove it when `None`, as `actor`. The
-/// caller has established that `actor` holds administrator standing before
-/// anything here decodes (item 1).
+/// Replace the logo with `change`, or remove it, as `actor` — the
+/// administrator the signer resolved to, never a delegated signing key, so the
+/// rate limit is theirs however many keys they enrol (item 5). The caller has
+/// established that `actor` holds administrator standing before anything here
+/// decodes (item 1).
 pub(crate) async fn update_logo(
     state: &AppState,
     actor: &str,
-    image: Option<&LogoImage>,
+    change: LogoChange<'_>,
 ) -> Result<LogoUpdate, LogoUpdateError> {
-    // Item 5, before any work: a refused update costs nothing.
+    // Item 5: every request that passed item 1 counts, a no-op included, and
+    // before `data` is decoded — decoding is the expensive step.
     if !state.community_logo.admit_update(actor) {
         return Err(LogoUpdateError::RateLimited);
     }
@@ -64,19 +74,17 @@ pub(crate) async fn update_logo(
 
     // What is stored, read leniently: a record nothing here can read must
     // never stop an administrator replacing or removing it.
-    let record = match load_record(&state.community_ks).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "stored community logo record unreadable; it will be replaced");
-            None
-        }
-    };
-    let unreadable = record.is_none()
-        && state
-            .community_ks
-            .get_raw(crate::community::logo::LOGO_RECORD_KEY)
-            .await?
-            .is_some();
+    let raw = state.community_ks.get_raw(LOGO_RECORD_KEY).await?;
+    let record: Option<LogoRecord> = raw
+        .as_deref()
+        .and_then(|bytes| match serde_json::from_slice(bytes) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(error = %e, "stored community logo record unreadable; it will be replaced");
+                None
+            }
+        });
+    let unreadable = raw.is_some() && record.is_none();
     // The logo actually servable now: its record well-formed and its bytes
     // matching. Only that counts as "already stored" below, so sending the
     // same image again repairs a store whose bytes were lost or altered.
@@ -84,19 +92,16 @@ pub(crate) async fn update_logo(
         .community_logo
         .served(&state.community_ks)
         .await
-        .map(|(meta, _)| meta);
+        .map(|h| h.meta);
 
-    let next = match image {
-        None => None,
-        Some(image) => {
-            // Item 2: bounded before it is decoded as an image.
+    let next = match change {
+        LogoChange::Remove => None,
+        LogoChange::Set(image) => {
             let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(image.data.as_str())
                 .map_err(|_| LogoUpdateError::NotAnImage)?;
-            if bytes.len() > MAX_IMAGE_BYTES {
-                return Err(LogoUpdateError::TooLarge);
-            }
-            // Items 3 and 4, off the runtime.
+            // Items 2–4, off the runtime. `reencode_logo` refuses more than
+            // 262144 bytes before decoding them as an image (item 2).
             let media_type = image.media_type.to_string();
             let encoded =
                 match tokio::task::spawn_blocking(move || reencode_logo(&bytes, &media_type)).await
@@ -120,7 +125,7 @@ pub(crate) async fn update_logo(
         }
     };
 
-    // Item 6: storing what is already stored, or removing what is not held,
+    // Item 7: storing what is already stored, or removing what is not held,
     // changes nothing and is not audited.
     // A removal is a no-op only when the record itself says nothing is held:
     // a record naming a logo that cannot be served is still removed.
@@ -137,8 +142,13 @@ pub(crate) async fn update_logo(
         });
     }
 
-    // Item 6: refuse rather than make an unaudited change. The record is
-    // written before the row, so a change never lands without one.
+    // Item 7: refuse with `unavailable` rather than make an unaudited change.
+    // So the audit record is written first: were the rows written first, a
+    // failed audit write (or the process dying between the two) would leave a
+    // change in place with no record of who made it, which the item forbids.
+    // The order's cost is the converse — a store write failing after the
+    // audit write leaves a record of a change that did not land — and the
+    // request is then refused, so the administrator sees it did not.
     let writer = state
         .audit_writer
         .as_ref()
@@ -161,9 +171,23 @@ pub(crate) async fn update_logo(
     let removed = next.is_none();
     writer
         .write(actor, None, AuditEvent::CommunityLogoUpdated(data))
-        .await?;
-    let record = store_logo(&state.community_ks, next, Utc::now()).await?;
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "community logo update refused: the audit record could not be written");
+            AppError::ServiceError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: "the audit record could not be written; nothing was stored".into(),
+            }
+        })?;
+    let stored = store_logo(&state.community_ks, next, Utc::now()).await;
     state.community_logo.invalidate();
+    let record = stored.inspect_err(|e| {
+        tracing::error!(
+            error = %e,
+            security_alert = true,
+            "community logo audited but not stored: the audit trail names a change that did not land"
+        );
+    })?;
     info!(
         removed,
         digest = ?record.logo.as_ref().map(|m| &m.sha256),

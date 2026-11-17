@@ -42,7 +42,7 @@ use uuid::Uuid;
 use vti_specs::vtc::community::{
     branding::{show::v0_1 as branding_show, update::v0_1 as branding_update},
     join_discovery::{show::v0_1 as join_discovery_show, update::v0_1 as join_discovery_update},
-    logo::update::v0_1 as logo_update,
+    logo::{show::v0_1 as logo_show, update::v0_1 as logo_update},
     requested_attributes::{show::v0_1 as requested_show, update::v0_1 as requested_update},
     theme::{show::v0_1 as theme_show, update::v0_1 as theme_update},
 };
@@ -81,6 +81,9 @@ pub(crate) const VETTER_GRANTS_LIST_TYPE: &str = <grants_list::Payload as Payloa
 
 #[cfg(test)]
 pub(crate) const THEME_SHOW_TYPE: &str = <theme_show::Payload as Payload>::TYPE_URI;
+/// Read by the proof census (`spine_proof_tests`); dispatch keys on the type.
+#[cfg(test)]
+pub(crate) const LOGO_SHOW_TYPE: &str = <logo_show::Payload as Payload>::TYPE_URI;
 
 #[cfg(test)]
 pub(crate) const SCHEMAS_SHOW_TYPE: &str = <schemas_show::Payload as Payload>::TYPE_URI;
@@ -164,6 +167,7 @@ pub(super) fn register(routes: Routes) -> Routes {
     let routes = on!(routes, branding_update::Payload => |state, ctx, doc| handle_branding_update(state, ctx, doc));
     let routes = on!(routes, theme_show::Payload => |state, _, doc| handle_theme_show(state, doc));
     let routes = on!(routes, theme_update::Payload => |state, ctx, doc| handle_theme_update(state, ctx, doc));
+    let routes = on!(routes, logo_show::Payload => |state, _, doc| handle_logo_show(state, doc));
     let routes =
         on!(routes, logo_update::Payload => |state, ctx, doc| handle_logo_update(state, ctx, doc));
     let routes = on!(routes, requested_show::Payload => |state, ctx, doc| handle_requested_show(state, ctx, doc));
@@ -500,6 +504,62 @@ async fn handle_theme_update(
     }
 }
 
+/// The absolute URL the community serves its logo at, for a `LogoRef`.
+async fn served_logo_url(state: &AppState) -> Option<String> {
+    crate::community::logo::logo_url(state.config.read().await.public_url.as_deref())
+}
+
+/// `vtc/community/logo/show/0.1` — a public read, answered to an unidentified
+/// caller too (item 1): the sign-in pages draw the logo before the visitor has
+/// an identity. Answered from the same snapshot the route serves, so `data`
+/// is exactly the bytes whose digest is `logo.sha256` (item 3).
+async fn handle_logo_show(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    use base64::Engine as _;
+
+    let payload = match parse_spec_payload::<logo_show::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let snapshot = state.community_logo.snapshot(&state.community_ks).await;
+    let url = served_logo_url(state).await;
+    let logo = match snapshot
+        .held
+        .as_ref()
+        .map(|h| crate::community::logo::logo_ref!(logo_show::LogoRef, &h.meta, url))
+        .transpose()
+    {
+        Ok(l) => l,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let data = match (&snapshot.held, payload.include_data) {
+        (Some(held), Some(true)) => {
+            let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&held.bytes);
+            match logo_show::ResponseData::try_from(encoded) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    return app_error_to_reject(
+                        &doc,
+                        &AppError::Internal(format!("logo/show data: {e}")),
+                    );
+                }
+            }
+        }
+        _ => None,
+    };
+    let built: Result<logo_show::Response, _> = logo_show::Response::builder()
+        .logo(logo)
+        .data(data)
+        .updated_at(snapshot.updated_at)
+        .try_into();
+    match built {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(
+            &doc,
+            &AppError::Internal(format!("logo/show response: {e}")),
+        ),
+    }
+}
+
 /// `vtc/community/logo/update/0.1` — administrator standing, as for the theme,
 /// checked before `data` is decoded (item 1).
 async fn handle_logo_update(
@@ -507,7 +567,7 @@ async fn handle_logo_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::community::ops::logo::{LogoUpdateError, update_logo};
+    use crate::community::ops::logo::{LogoChange, LogoUpdateError, update_logo};
 
     let actor = match as_capable::<logo_update::Payload>(
         state,
@@ -524,13 +584,47 @@ async fn handle_logo_update(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match update_logo(state, &actor, payload.image.as_ref()).await {
+    // Exactly one of `image` and `remove: true` (item 6): the schema's
+    // `oneOf`, and `remove`'s `const`, already hold this; a `remove: false`
+    // that reached here is still never read as anything.
+    let change = match &payload {
+        logo_update::Payload::Variant0 { image, .. } => LogoChange::Set(image),
+        logo_update::Payload::Variant1 { remove: true, .. } => LogoChange::Remove,
+        _ => {
+            return reject_with_code(
+                &doc,
+                trust_tasks_rs::TrustTaskCode::Standard(
+                    trust_tasks_rs::StandardCode::MalformedRequest,
+                ),
+                "send exactly one of `image` and `remove: true`",
+                None,
+            );
+        }
+    };
+    match update_logo(state, &actor, change).await {
         Ok(u) => {
-            let mut body = json!({ "logo": u.logo, "stored": u.stored });
-            if let Some(at) = u.updated_at {
-                body["updatedAt"] = json!(at);
+            let url = served_logo_url(state).await;
+            let logo = match u
+                .logo
+                .as_ref()
+                .map(|m| crate::community::logo::logo_ref!(logo_update::LogoRef, m, url))
+                .transpose()
+            {
+                Ok(l) => l,
+                Err(e) => return app_error_to_reject(&doc, &e),
+            };
+            let built: Result<logo_update::Response, _> = logo_update::Response::builder()
+                .logo(logo)
+                .stored(u.stored)
+                .updated_at(u.updated_at)
+                .try_into();
+            match built {
+                Ok(response) => success_response(&doc, response),
+                Err(e) => app_error_to_reject(
+                    &doc,
+                    &AppError::Internal(format!("logo/update response: {e}")),
+                ),
             }
-            success_response(&doc, body)
         }
         Err(LogoUpdateError::TooLarge) => reject_with_code(
             &doc,

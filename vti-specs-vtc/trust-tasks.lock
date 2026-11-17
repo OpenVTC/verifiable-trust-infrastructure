@@ -405,10 +405,16 @@ type_uri = "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1"
 digest = "sha256:6d431d36340836f5c7c0f468bbd9b0ee31d3138af5d1ece6170996848866f78e"
 
 [[task]]
+slug = "vtc/community/logo/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/community/logo/show/0.1"
+digest = "sha256:30ec700651047b21ced95c4d8a695682dda8af6e1713a43b7634194dbc76de06"
+
+[[task]]
 slug = "vtc/community/logo/update"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/community/logo/update/0.1"
-digest = "sha256:344dc73d9c5f11bc53f0010679c41eb3c6c8d64ed5c10b1d01f46b2f4ec5b042"
+digest = "sha256:ed2042dbd1c0cf1df93c888f8f9c3bce8fd8c2a5f40aba5e6c4e0980c219eff6"
 
 [[task]]
 slug = "vtc/community/profile/show"

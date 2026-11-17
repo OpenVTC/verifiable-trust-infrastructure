@@ -7,10 +7,14 @@
 //!
 //! What it serves is only ever the community's own re-encoding (update item
 //! 4), with headers that keep any reader from treating the bytes as anything
-//! but an image (item 8): the `Content-Type` comes from a fixed list, never
+//! but an image (item 9): the `Content-Type` comes from a fixed list, never
 //! from the stored record's string; `nosniff`; and a CSP under which the
-//! response, opened directly, may run nothing. It reads the small record on
-//! each request and serves the bytes from memory (`LogoState::served`).
+//! response, opened directly, may run nothing. Served from memory
+//! (`LogoState::snapshot`), so a request — a 304 included — touches no store.
+//!
+//! One URL across updates (item 9), so a page embeds it once: it is
+//! revalidated on every use (`no-cache`) against an `ETag` of the digest, and
+//! a replaced logo is drawn on the next load. A query string is ignored.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -19,9 +23,9 @@ use axum::response::{IntoResponse, Response};
 use crate::community::logo::MEDIA_TYPES;
 use crate::server::AppState;
 
-/// `Cache-Control`: the profile names the logo by a digest-versioned URL, so a
-/// replaced logo is a new URL; five minutes bounds a bare `/v1/community/logo`.
-const CACHE: &str = "public, max-age=300";
+/// `Cache-Control`: one URL for whichever logo is stored, so a cache may keep
+/// the bytes but revalidates them on each use — a 304 from memory.
+const CACHE: &str = "public, no-cache";
 
 /// Opened directly, the response runs and loads nothing.
 const CSP: &str = "default-src 'none'; sandbox";
@@ -38,13 +42,15 @@ const CSP: &str = "default-src 'none'; sandbox";
     ),
 )]
 pub async fn get_logo(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some((meta, bytes)) = state.community_logo.served(&state.community_ks).await else {
+    let Some(held) = state.community_logo.served(&state.community_ks).await else {
         return (StatusCode::NOT_FOUND, "no logo").into_response();
     };
-    let Some(media) = MEDIA_TYPES.iter().find(|m| **m == meta.media_type) else {
+    // `served` admits only a record naming one of these; the header value is
+    // taken from the fixed list, never from the record's string.
+    let Some(media) = MEDIA_TYPES.iter().find(|m| **m == held.meta.media_type) else {
         return (StatusCode::NOT_FOUND, "no logo").into_response();
     };
-    let etag = format!("\"{}\"", meta.sha256);
+    let etag = format!("\"{}\"", held.meta.sha256);
     let fixed = [
         (header::CACHE_CONTROL, HeaderValue::from_static(CACHE)),
         (
@@ -90,7 +96,7 @@ pub async fn get_logo(State(state): State<AppState>, headers: HeaderMap) -> Resp
                 HeaderValue::from_static("inline; filename=\"logo\""),
             ),
         ],
-        bytes,
+        held.bytes,
     )
         .into_response()
 }

@@ -303,9 +303,13 @@ and anything after the image data), stores it in the `community`
 keyspace and serves it itself at `GET /v1/community/logo`: public, with
 `Content-Type` from a fixed list, `X-Content-Type-Options: nosniff`,
 `Content-Security-Policy: default-src 'none'; sandbox`, an `ETag` from
-its digest and `Cache-Control: public, max-age=300`. Each change is
-audited as `CommunityLogoUpdated` with the stored digest, never the
-image, and one administrator may make 20 changes an hour.
+its digest and `Cache-Control: public, no-cache` — the URL stays the
+same across updates, so a cache revalidates each use. Any client can
+read it with `vtc/community/logo/show/0.1`, which names its absolute
+`https` URL (under `public_url`) and, on `includeData`, carries the
+bytes. Each change is audited as `CommunityLogoUpdated` with the stored
+digest, never the image, and one administrator may make 20 changes an
+hour.
 
 The public profile and the portal's `/v1/member/me` name it as `logo`
 (`url`, `sha256`, `mediaType`, `width`, `height`), and every page — the

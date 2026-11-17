@@ -13,7 +13,7 @@ import { Save, Trash2, Upload } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { postSignedTrustTask, type ApiError } from "@/lib/api";
-import { PUBLIC_PROFILE_KEY } from "@/lib/community-identity";
+import { PUBLIC_PROFILE_KEY, fetchPublicProfile } from "@/lib/community-identity";
 import { LogoError, prepareLogo } from "@/lib/logo-upload";
 import { messageOf } from "@/lib/messages";
 import { useToast } from "@/lib/toast";
@@ -21,30 +21,14 @@ import { pictureUrl, toBase64Url } from "@/members/picture";
 
 export const LOGO_UPDATE_TYPE = "https://trusttasks.org/spec/vtc/community/logo/update/0.1";
 
-const LOGO_KEY = ["community-logo"] as const;
 const TOO_LARGE = "vtc/community/logo/update:tooLarge";
 const NOT_AN_IMAGE = "vtc/community/logo/update:notAnImage";
 const RATE_LIMITED = "vtc/community/logo/update:rateLimited";
 
-/** The stored logo as the public profile names it. */
-interface StoredLogo {
-  url: string;
-  sha256: string;
-  width: number;
-  height: number;
-}
-
 interface UpdateAnswer {
-  logo: { sha256: string; mediaType: string; size: number; width: number; height: number } | null;
+  logo: { sha256: string; mediaType: string; size: number; width: number; height: number; url?: string } | null;
   stored: boolean;
   updatedAt?: string;
-}
-
-async function fetchStoredLogo(): Promise<StoredLogo | null> {
-  const res = await fetch("/v1/community/public-profile", { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`public profile: HTTP ${res.status}`);
-  const body = (await res.json()) as { logo?: StoredLogo | null };
-  return body.logo && typeof body.logo.url === "string" ? body.logo : null;
 }
 
 /** The community's refusal, in the administrator's words. */
@@ -60,7 +44,9 @@ export function CommunityLogoCard() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
-  const stored = useQuery({ queryKey: LOGO_KEY, queryFn: fetchStoredLogo });
+  // The same read as the top bar's, so one fetch serves both and one
+  // invalidation refreshes both.
+  const stored = useQuery({ queryKey: PUBLIC_PROFILE_KEY, queryFn: fetchPublicProfile });
   const [draft, setDraft] = useState<{ data: string; preview: string; width: number; height: number } | null>(
     null,
   );
@@ -68,14 +54,15 @@ export function CommunityLogoCard() {
   const fileInput = useRef<HTMLInputElement>(null);
 
   const save = useMutation({
+    // Removal is `remove: true`, never `image: null` (update item 6).
     mutationFn: (data: string | null) =>
-      postSignedTrustTask<UpdateAnswer>(LOGO_UPDATE_TYPE, {
-        image: data === null ? null : { mediaType: "image/png", data },
-      }),
+      postSignedTrustTask<UpdateAnswer>(
+        LOGO_UPDATE_TYPE,
+        data === null ? { remove: true } : { image: { mediaType: "image/png", data } },
+      ),
     onSuccess: (answer) => {
       setNotice(null);
       setDraft(null);
-      void queryClient.invalidateQueries({ queryKey: LOGO_KEY });
       void queryClient.invalidateQueries({ queryKey: PUBLIC_PROFILE_KEY });
       toast.push(
         "success",
@@ -116,7 +103,7 @@ export function CommunityLogoCard() {
     if (ok) save.mutate(null);
   };
 
-  const current = stored.data ?? null;
+  const current = stored.data?.storedLogo ?? null;
   const shown = draft?.preview ?? current?.url ?? null;
 
   return (

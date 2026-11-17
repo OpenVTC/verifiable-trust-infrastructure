@@ -4599,7 +4599,7 @@
           },
           "url": {
             "type": "string",
-            "description": "Same-origin path to load it from, versioned by digest."
+            "description": "Where a page loads it: [`LOGO_PATH`] on the same origin as the profile\nit appears in (a reader elsewhere resolves it against the URL it read\nthe profile from), with the digest as `?v=` so a browser's in-page\nimage cache never shows a replaced logo. The route ignores the query\nand revalidates every use, so any `v` answers the current logo.\n`vtc/community/logo/show/0.1` names the absolute, unversioned URL."
           },
           "width": {
             "type": "integer",

@@ -1,7 +1,8 @@
-//! The community logo (`vtc/community/logo/update/0.1`, served at
-//! `GET /v1/community/logo`): written by an administrator, re-encoded so no
-//! byte sent survives, served from the community's own origin with headers no
-//! reader can mistake for anything but an image.
+//! The community logo (`vtc/community/logo/update/0.1`, read with
+//! `vtc/community/logo/show/0.1`, served at `GET /v1/community/logo`): written
+//! by an administrator, re-encoded so no byte sent survives, served from the
+//! community's own origin with headers no reader can mistake for anything but
+//! an image.
 
 use std::io::Cursor;
 
@@ -20,6 +21,12 @@ use vtc_service::acl::VtcRole;
 use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 
 const UPDATE: &str = "https://trusttasks.org/spec/vtc/community/logo/update/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/community/logo/show/0.1";
+
+/// The removal request (item 6): `remove: true`, never `image: null`.
+fn remove() -> Value {
+    json!({ "remove": true })
+}
 const LOGO_UPDATE_ERR_TOO_LARGE: &str = "vtc/community/logo/update:tooLarge";
 const LOGO_UPDATE_ERR_NOT_AN_IMAGE: &str = "vtc/community/logo/update:notAnImage";
 const LOGO_UPDATE_ERR_RATE_LIMITED: &str = "vtc/community/logo/update:rateLimited";
@@ -109,7 +116,7 @@ async fn a_logo_is_stored_re_encoded_served_and_removed() {
         "the polyglot is gone"
     );
 
-    // The header set (item 8).
+    // The header set (item 9).
     let h = |name: &str| {
         headers
             .get(name)
@@ -122,7 +129,7 @@ async fn a_logo_is_stored_re_encoded_served_and_removed() {
         h("content-security-policy").as_deref(),
         Some("default-src 'none'; sandbox")
     );
-    assert_eq!(h("cache-control").as_deref(), Some("public, max-age=300"));
+    assert_eq!(h("cache-control").as_deref(), Some("public, no-cache"));
     let etag = h("etag").unwrap();
     assert_eq!(etag, format!("\"{}\"", logo["sha256"].as_str().unwrap()));
     assert!(headers.get(header::SET_COOKIE).is_none(), "no cookie");
@@ -133,13 +140,13 @@ async fn a_logo_is_stored_re_encoded_served_and_removed() {
     assert!(body.is_empty());
     assert!(headers.get(header::ETAG).is_some());
 
-    // The same image again changes nothing (item 6).
+    // The same image again changes nothing (item 7).
     let (_, doc) = call(&vtc, &admin, UPDATE, image_payload(&sent)).await;
     assert_eq!(payload(&doc)["stored"], false, "{doc}");
     assert_eq!(payload(&doc)["logo"], logo);
 
     // Removed, and then not served.
-    let (_, doc) = call(&vtc, &admin, UPDATE, json!({ "image": null })).await;
+    let (_, doc) = call(&vtc, &admin, UPDATE, remove()).await;
     assert_conforms(UPDATE, &doc);
     assert_eq!(payload(&doc)["stored"], true, "{doc}");
     assert!(payload(&doc)["logo"].is_null(), "{doc}");
@@ -147,7 +154,7 @@ async fn a_logo_is_stored_re_encoded_served_and_removed() {
     assert_eq!(get_logo(&vtc, None).await.0, StatusCode::NOT_FOUND);
 
     // Removing what is not held changes nothing.
-    let (_, doc) = call(&vtc, &admin, UPDATE, json!({ "image": null })).await;
+    let (_, doc) = call(&vtc, &admin, UPDATE, remove()).await;
     assert_eq!(payload(&doc)["stored"], false, "{doc}");
 }
 
@@ -266,7 +273,7 @@ async fn only_an_administrator_changes_the_logo() {
     let member = party_with_role(&vtc, VtcRole::Member, &[]).await;
     let (status, doc) = call(&vtc, &member, UPDATE, image_payload(&png(4, 4))).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{doc}");
-    let (status, doc) = post(&vtc, &unsigned(&member, UPDATE, json!({ "image": null }))).await;
+    let (status, doc) = post(&vtc, &unsigned(&member, UPDATE, remove())).await;
     assert!(
         status.is_client_error() && error_code(&doc).is_some(),
         "{status} {doc}"
@@ -321,16 +328,21 @@ async fn a_logo_larger_than_the_default_document_bound_is_accepted() {
     assert!(body.len() <= 262_144);
 }
 
-/// A payload with no `image` is outside the schema. It must never be read as
-/// `image: null`, which would remove the logo.
+/// A payload with neither `image` nor `remove: true`, or both, is outside the
+/// schema (item 6). A missing or `null` image is never read as removal.
 #[tokio::test]
 async fn a_payload_without_image_is_refused_and_removes_nothing() {
     let vtc = vtc().await;
     let admin = admin(&vtc).await;
     let (_, doc) = call(&vtc, &admin, UPDATE, image_payload(&png(8, 8))).await;
     assert_eq!(payload(&doc)["stored"], true, "{doc}");
+    let mut both = image_payload(&png(8, 8));
+    both["remove"] = json!(true);
     for bad in [
         json!({}),
+        json!({ "image": null }),
+        json!({ "remove": false }),
+        both,
         json!({ "image": null, "logoUrl": "https://example.com/l.png" }),
     ] {
         let (status, doc) = call(&vtc, &admin, UPDATE, bad).await;
@@ -365,7 +377,7 @@ async fn sending_the_logo_again_repairs_a_store_that_no_longer_matches() {
 
     // A record nothing can read does not stop an administrator replacing it,
     // or removing it.
-    for fix in [logo, json!({ "image": null })] {
+    for fix in [logo, remove()] {
         vtc.state
             .community_ks
             .insert_raw(LOGO_RECORD_KEY.to_vec(), b"not json".to_vec())
@@ -397,4 +409,117 @@ async fn a_weak_validator_also_answers_not_modified() {
     assert_eq!(status, StatusCode::NOT_MODIFIED);
     let (status, _, _) = get_logo(&vtc, Some("\"other\"")).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// `logo/show` answers anyone, without a proof (item 1): `logo: null` when
+/// none is held (item 2), the `LogoRef` the update answered, and the bytes
+/// only when asked for (item 3).
+#[tokio::test]
+async fn anyone_reads_the_logo_and_its_bytes_on_request() {
+    let vtc = vtc().await;
+    let admin = admin(&vtc).await;
+    let visitor = party_with_role(&vtc, VtcRole::Member, &[]).await;
+
+    let (status, doc) = post(&vtc, &unsigned(&visitor, SHOW, json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_conforms(SHOW, &doc);
+    assert!(payload(&doc)["logo"].is_null(), "{doc}");
+    assert!(
+        payload(&doc).get("updatedAt").is_none(),
+        "never held: {doc}"
+    );
+
+    let (_, updated) = call(&vtc, &admin, UPDATE, image_payload(&png(12, 6))).await;
+    let stored = payload(&updated)["logo"].clone();
+
+    let (status, doc) = post(&vtc, &unsigned(&visitor, SHOW, json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_conforms(SHOW, &doc);
+    assert_eq!(payload(&doc)["logo"], stored, "the same LogoRef (item 2)");
+    assert!(payload(&doc).get("data").is_none(), "not asked for: {doc}");
+    assert_eq!(payload(&doc)["updatedAt"], payload(&updated)["updatedAt"]);
+
+    let (_, doc) = post(
+        &vtc,
+        &unsigned(&visitor, SHOW, json!({ "includeData": true })),
+    )
+    .await;
+    assert_conforms(SHOW, &doc);
+    let data = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload(&doc)["data"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(hex::encode(Sha256::digest(&data)), stored["sha256"]);
+    let (_, _, served) = get_logo(&vtc, None).await;
+    assert_eq!(data, served, "the bytes the route serves");
+
+    // Removed: `logo: null` and no bytes, even when asked for.
+    call(&vtc, &admin, UPDATE, remove()).await;
+    let (_, doc) = post(
+        &vtc,
+        &unsigned(&visitor, SHOW, json!({ "includeData": true })),
+    )
+    .await;
+    assert!(payload(&doc)["logo"].is_null(), "{doc}");
+    assert!(payload(&doc).get("data").is_none(), "{doc}");
+    assert!(payload(&doc)["updatedAt"].is_string(), "{doc}");
+}
+
+/// Item 9: every `LogoRef` names the absolute `https` URL the logo is served
+/// at — the same across updates — and omits it when the community has no
+/// `https` public URL to name it by.
+#[tokio::test]
+async fn the_logo_ref_names_an_absolute_https_url() {
+    let vtc = vtc().await;
+    let admin = admin(&vtc).await;
+    let (_, doc) = call(&vtc, &admin, UPDATE, image_payload(&png(4, 4))).await;
+    assert!(
+        payload(&doc)["logo"].get("url").is_none(),
+        "no public URL: {doc}"
+    );
+
+    vtc.state.config.write().await.public_url = Some("https://vtc.example/".into());
+    let (_, doc) = call(&vtc, &admin, UPDATE, image_payload(&png(6, 6))).await;
+    assert_conforms(UPDATE, &doc);
+    let url = "https://vtc.example/v1/community/logo";
+    assert_eq!(payload(&doc)["logo"]["url"], url, "{doc}");
+    let (_, doc) = call(&vtc, &admin, UPDATE, image_payload(&png(8, 8))).await;
+    assert_eq!(payload(&doc)["logo"]["url"], url, "unchanged by an update");
+    let visitor = party_with_role(&vtc, VtcRole::Member, &[]).await;
+    let (_, doc) = post(&vtc, &unsigned(&visitor, SHOW, json!({}))).await;
+    assert_eq!(payload(&doc)["logo"]["url"], url, "{doc}");
+}
+
+/// A logo whose bytes the route will not serve is not advertised either, so a
+/// page falls back to `logoUrl` rather than drawing a broken image.
+#[tokio::test]
+async fn a_logo_that_cannot_be_served_is_not_advertised() {
+    use vtc_service::community::logo::LOGO_BYTES_KEY;
+    let vtc = vtc().await;
+    let admin = admin(&vtc).await;
+    call(&vtc, &admin, UPDATE, image_payload(&png(8, 8))).await;
+    vtc.state
+        .community_ks
+        .remove(LOGO_BYTES_KEY.to_vec())
+        .await
+        .unwrap();
+    vtc.state.community_logo.invalidate();
+
+    let res = vtc
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/community/public-profile")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(body.get("logo").is_none(), "{body}");
+    let visitor = party_with_role(&vtc, VtcRole::Member, &[]).await;
+    let (_, doc) = post(&vtc, &unsigned(&visitor, SHOW, json!({}))).await;
+    assert!(payload(&doc)["logo"].is_null(), "{doc}");
 }
