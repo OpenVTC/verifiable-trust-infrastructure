@@ -20,10 +20,15 @@ VTI-KEY-190 – 192):
 |---|---|---|
 | Relationship DID (pairwise, per community) | any | **Yes** |
 | Persona DID (a person's own identity) | `did:webvh`, any | **Yes** |
-| Service DID (the durable identity of a VTA, VTC, host service) | `did:webvh`, `did:scid:vh:1` (VTI-KEY-001) | **No** |
+| Service DID (the durable identity of a VTA, VTC, host service) | `did:webvh`, `did:scid:vh:1`, `did:webs` (VTI-KEY-001, 003) | **Yes, since §4** |
 
 So a VTA creates, hosts and acts as `did:webs` **persona, relationship and
 integration DIDs**, at level 1: one signing key, no key roles.
+
+> **Superseded for service DIDs by §4.** The paragraph below records the
+> position when this note was written; dtgwg-vti-spec#121 and #123 then made
+> `did:webs` a method every node resolves, and §4 admits it as a node's own
+> identity.
 
 A **service DID** stays `did:webvh` or `did:scid:vh:1`. VTI-KEY-001 names only
 those, VTI-KEY-003 forbids requiring a peer to resolve anything else, and the

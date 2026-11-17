@@ -14,20 +14,23 @@
 //! REST handlers — replicated here at the slice boundary since
 //! trust-task handlers take `AuthClaims` directly):
 //!
-//! | URI                                 | Auth        |
-//! |-------------------------------------|-------------|
-//! | `webvh/servers/list/1.0`            | any authed  |
-//! | `webvh/servers/add/1.0`             | super-admin |
-//! | `webvh/servers/update/1.0`          | super-admin |
-//! | `webvh/servers/remove/1.0`          | super-admin |
-//! | `webvh/dids/list/1.0`               | any authed  |
-//! | `webvh/dids/create/1.2`             | `key-mint`  |
-//! | `webvh/dids/get/1.0`                | any authed  |
-//! | `webvh/dids/get-log/1.0`            | any authed  |
-//! | `webvh/dids/delete/1.0`             | admin       |
-//! | `webvh/dids/update/1.0`, `1.1`      | admin       |
-//! | `webvh/dids/rotate-keys/1.0`        | admin       |
-//! | `webvh/dids/register-with-server/1.0` | super-admin |
+//! | URI                                         | Auth        |
+//! |---------------------------------------------|-------------|
+//! | `webvh/servers/list/1.0`                    | any authed  |
+//! | `webvh/servers/register/1.0`                | super-admin |
+//! | `webvh/servers/remove/1.0`                  | super-admin |
+//! | `webvh/servers/domains/0.1`                 | any authed  |
+//! | `webvh/servers/reconcile/0.1`               | super-admin |
+//! | `webvh/servers/retire-orphan/0.1`           | super-admin |
+//! | `webvh/dids/list/1.0`                       | any authed  |
+//! | `webvh/dids/create/1.2`                     | `key-mint`  |
+//! | `webvh/dids/get/1.0` (log via `includeLog`) | any authed  |
+//! | `webvh/dids/delete/1.0`                     | admin       |
+//! | `webvh/dids/update/1.0`, `1.1`              | admin       |
+//! | `webvh/dids/rotate-keys/1.0`                | admin       |
+//! | `webvh/dids/realign-keys/1.0`               | admin       |
+//! | `webvh/dids/register-with-server/1.0`       | super-admin |
+//! | `webvh/agent-name/*` (list 1.1, others 1.0) | the DID's context |
 
 #![cfg(feature = "webvh")]
 
