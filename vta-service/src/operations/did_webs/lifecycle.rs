@@ -228,10 +228,12 @@ async fn publish<H: WebsHost>(
         .publish(&record.mnemonic, text, record.domain.as_deref())
         .await
         .map_err(WebsError::from_host)?;
-    if published.did_url != record.did {
+    if published.did_id.as_deref() != Some(record.did.as_str()) {
         return Err(AppError::Internal(format!(
             "the hosting server published {} for slot {}, not {}",
-            published.did_url, record.mnemonic, record.did
+            published.did_id.as_deref().unwrap_or("no identifier"),
+            record.mnemonic,
+            record.did
         ))
         .into());
     }

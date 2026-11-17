@@ -47,8 +47,14 @@ impl WebsHost for RecordingHost {
         let label = domain.unwrap_or("hosting.example").replace(':', "%3A");
         let did = format!("did:webs:{label}:{}", mnemonic.replace('/', ":"));
         Ok(RequestUriResponse {
-            did_url: self.lie.clone().unwrap_or(did),
+            // As the host answers (`DidRecord`): the log's URL, and the
+            // identifier it derived. `lie` makes the identifier another one.
+            did_url: format!(
+                "https://{}/{mnemonic}/keri.cesr",
+                domain.unwrap_or("hosting.example")
+            ),
             mnemonic: mnemonic.to_string(),
+            did_id: Some(self.lie.clone().unwrap_or(did)),
         })
     }
 
@@ -1596,5 +1602,37 @@ async fn a_did_webs_persona_sends_and_receives_didcomm_through_its_mediator() {
             .as_deref()
             .is_some_and(|kid| kid.starts_with(&format!("{}#", c.did))),
         "{meta:?}"
+    );
+}
+
+/// A publication is checked against the identifier the host derived
+/// (`DidRecord.didId`), not against `didUrl`, which the specification defines
+/// as the URL of the slot's log document. Checking `didUrl` refused every real
+/// host's answer: a did:webs VTA's first boot published its identity and then
+/// refused to record it.
+#[test]
+fn a_publication_is_checked_against_the_hosts_did_id_not_its_url() {
+    let did = "did:webs:webvh.example:nodes:EJdeTq8v1SPknlbBkCXjSphLhP_N2D_9-IvFzBCYPxh5";
+    let mnemonic = "nodes/EJdeTq8v1SPknlbBkCXjSphLhP_N2D_9-IvFzBCYPxh5";
+    let answer = |did_id: Option<&str>| RequestUriResponse {
+        did_url: format!("https://webvh.example/{mnemonic}/did.jsonl"),
+        mnemonic: mnemonic.to_string(),
+        did_id: did_id.map(str::to_string),
+    };
+
+    check_published(&answer(Some(did)), did, mnemonic)
+        .expect("the host's answer names the identifier: its didUrl is only where the log is");
+    assert!(
+        check_published(
+            &answer(Some("did:webs:webvh.example:nodes:EOther")),
+            did,
+            mnemonic
+        )
+        .is_err(),
+        "another identifier is refused"
+    );
+    assert!(
+        check_published(&answer(None), did, mnemonic).is_err(),
+        "an answer naming no identifier is refused"
     );
 }

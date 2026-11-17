@@ -50,8 +50,12 @@ impl WebsHost for RecordingHost {
             .push((mnemonic.to_string(), keri_cesr.to_string()));
         let label = domain.unwrap_or("hosting.example").replace(':', "%3A");
         Ok(RequestUriResponse {
-            did_url: format!("did:webs:{label}:{}", mnemonic.replace('/', ":")),
+            did_url: format!(
+                "https://{}/{mnemonic}/keri.cesr",
+                domain.unwrap_or("hosting.example")
+            ),
             mnemonic: mnemonic.to_string(),
+            did_id: Some(format!("did:webs:{label}:{}", mnemonic.replace('/', ":"))),
         })
     }
 
