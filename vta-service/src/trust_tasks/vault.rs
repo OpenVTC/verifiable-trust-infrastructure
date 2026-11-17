@@ -2100,6 +2100,7 @@ pub(super) async fn handle_sign_trust_task(
         &state.contexts_ks,
         &state.audit_sink,
         &*state.seed_store,
+        crate::operations::persona::PersonaStores::from_state(state),
         &stored.entry.context_id,
         &stored.secret,
         &req.unsigned_envelope,

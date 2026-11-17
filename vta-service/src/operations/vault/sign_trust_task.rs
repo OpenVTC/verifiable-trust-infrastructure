@@ -81,6 +81,7 @@ pub async fn sign_envelope(
     contexts_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
     seed_store: &dyn SeedStore,
+    persona: crate::operations::persona::PersonaStores<'_>,
     entry_context_id: &str,
     secret: &VaultSecret,
     unsigned_envelope: &Value,
@@ -140,7 +141,7 @@ pub async fn sign_envelope(
     if envelope_issuer != principal_did {
         return Err(SignTrustTaskError::IssuerMismatch {
             envelope_issuer: envelope_issuer.to_string(),
-            expected: principal_did,
+            expected: principal_did.clone(),
         });
     }
 
@@ -162,9 +163,26 @@ pub async fn sign_envelope(
         }
     }
 
+    // A key-role identity publishes a different key for each purpose
+    // (VTI-KEY-072): its `operational` key under `authentication`, its
+    // `attestation` key under `assertionMethod`. An entry stores one key id, so
+    // signing every document with it leaves one of the two purposes naming a
+    // method the principal's document does not list for it, and a verifier
+    // refuses the proof (VTI-KEY-022). Where the principal is such an identity
+    // this agent holds, the purpose decides the key; the entry's own key is
+    // used for every other principal. Either way the key is held to the
+    // entry's context below (custody rule 7).
+    let relationship = match proof_purpose {
+        ProofPurpose::AssertionMethod => crate::operations::persona::Relationship::AssertionMethod,
+        _ => crate::operations::persona::Relationship::Authentication,
+    };
+    let signing_key_id =
+        crate::operations::persona::role_key_id_for(persona, &principal_did, relationship)
+            .await?
+            .unwrap_or(signing_key_id);
+
     // Load the signing key as an affinidi Secret and sign. The proof's
-    // verificationMethod kid IS the entry's signing_key_id — the maintainer
-    // trusts the stored reference (validated at upsert time).
+    // verificationMethod kid IS the key record's id.
     let secret_key = super::load_signing_secret_by_id(
         keys_ks,
         imported_ks,

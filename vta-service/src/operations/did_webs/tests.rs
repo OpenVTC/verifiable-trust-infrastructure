@@ -1052,6 +1052,109 @@ fn persona_stores(f: &Fixture) -> crate::operations::persona::PersonaStores<'_> 
     }
 }
 
+/// A key-role identity publishes a different key for each relationship, so the
+/// key it signs with is the relationship's: `operational` for `authentication`,
+/// `attestation` for `assertionMethod`, never the key event log's own key
+/// (VTI-KEY-072). A sign-in signs one document for each purpose
+/// (`auth/oob/identify`, `auth/oob/grant`), so one key for both is refused by
+/// the community at one step or the other (VTI-KEY-022).
+#[tokio::test]
+async fn a_key_role_did_webs_is_a_persona_signing_with_the_key_of_the_relationship() {
+    use crate::operations::persona::{
+        Relationship, own_document, persona_key_for, role_key_id_for,
+    };
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let mut params = f.params();
+    params.key_roles = true;
+    let created = create_did_webs(
+        &f.deps(),
+        &crate::test_support::super_admin_claims(),
+        params,
+        &host,
+        "test",
+    )
+    .await
+    .expect("created");
+    let attestation = created.attestation_key_id.clone().expect("attestation key");
+    let operational = created.operational_key_id.clone().expect("operational key");
+    assert_ne!(attestation, operational);
+    let acme = admin_claims_for_context("acme");
+    let doc = own_document(persona_stores(&f), &created.did)
+        .await
+        .unwrap()
+        .expect("its own document");
+
+    for (relationship, role_key) in [
+        (Relationship::AssertionMethod, &attestation),
+        (Relationship::Authentication, &operational),
+    ] {
+        let key = persona_key_for(persona_stores(&f), &acme, &created.did, relationship)
+            .await
+            .unwrap()
+            .expect("a persona the caller may act as");
+        assert_eq!(&key.key_id, role_key, "{relationship:?}");
+        assert_eq!(&key.verification_method, role_key, "{relationship:?}");
+        assert_ne!(key.key_id, created.signing_key_id, "{relationship:?}");
+        // The method a proof names is the one the document lists for the purpose.
+        let fragment = role_key.split_once('#').unwrap().1;
+        assert!(
+            doc[relationship.as_str()].to_string().contains(fragment),
+            "{relationship:?}: {doc}"
+        );
+        // And the purpose alone decides the key record, whoever asks.
+        assert_eq!(
+            role_key_id_for(persona_stores(&f), &created.did, relationship)
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(role_key)
+        );
+    }
+
+    // Outside its context it is still no one's persona.
+    let other = admin_claims_for_context("other");
+    assert!(
+        persona_key_for(
+            persona_stores(&f),
+            &other,
+            &created.did,
+            Relationship::Authentication
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+}
+
+/// An identity without key roles has one signing key, which the caller already
+/// holds: the relationship decides nothing.
+#[tokio::test]
+async fn a_did_webs_without_key_roles_names_no_role_key() {
+    use crate::operations::persona::{Relationship, role_key_id_for};
+    let f = Fixture::new().await;
+    let host = RecordingHost::default();
+    let c = created(&f, &host).await;
+    for relationship in [Relationship::AssertionMethod, Relationship::Authentication] {
+        assert!(
+            role_key_id_for(persona_stores(&f), &c.did, relationship)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(
+        role_key_id_for(
+            persona_stores(&f),
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            Relationship::Authentication
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+}
+
 #[tokio::test]
 async fn a_did_webs_is_a_persona_signing_as_its_key_state_key() {
     use crate::operations::persona::{Relationship, own_document, persona_key_for};
