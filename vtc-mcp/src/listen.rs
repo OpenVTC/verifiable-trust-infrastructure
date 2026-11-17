@@ -38,6 +38,7 @@ mod tests {
             let bridge = VtcMcp::degraded(
                 "no community in this test".into(),
                 BridgeIdentity {
+                    community: None,
                     mode: "unconfigured".into(),
                     agent_did: None,
                     vtc_did: None,
@@ -170,6 +171,90 @@ mod tests {
             );
             let init = message(response).await;
             assert_eq!(init["result"]["protocolVersion"], "2025-11-25", "{init}");
+            cancel.cancel();
+        }
+
+        /// A degraded bridge for `name`, speaking as `agent`.
+        fn named(name: &str, agent: &str) -> VtcMcp {
+            VtcMcp::degraded(
+                format!("{name} is not connected in this test"),
+                BridgeIdentity {
+                    community: Some(name.into()),
+                    mode: "did:key".into(),
+                    agent_did: Some(agent.into()),
+                    vtc_did: Some(format!("did:webvh:x:{name}.example")),
+                    transport_choice: "auto".into(),
+                    reuse_warning: None,
+                    serving: format!("http://127.0.0.1{}", listen::mcp_path_for(name)),
+                },
+                Guard {
+                    read_only: name == "acme",
+                    allow: vec![],
+                    deny: vec![],
+                    confirm: ConfirmLevel::parse("destructive").unwrap(),
+                    node: "VTC",
+                },
+                Arc::new(Recorder::default()),
+            )
+        }
+
+        /// `--communities`: each community at its own path is its own
+        /// identity, policy and recorder — what one host sees of `first`
+        /// says nothing of `acme`.
+        #[tokio::test]
+        async fn each_community_is_its_own_bridge_on_one_port() {
+            let cancel = CancellationToken::new();
+            let app = listen::router_many(
+                &crate::listen::BRIDGE,
+                vec![
+                    ("first".to_string(), named("first", "did:key:zFirst")),
+                    ("acme".to_string(), named("acme", "did:key:zAcme")),
+                ],
+                Arc::from(TOKEN),
+                cancel.clone(),
+            )
+            .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let stop = cancel.clone();
+            tokio::spawn(async move {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move { stop.cancelled().await })
+                    .await
+                    .unwrap();
+            });
+
+            for (name, agent, read_only) in [
+                ("first", "did:key:zFirst", false),
+                ("acme", "did:key:zAcme", true),
+            ] {
+                let url = format!("{base}{}", listen::mcp_path_for(name));
+                let session = open_session(&url).await;
+                let called = post(
+                    &url,
+                    &json!({
+                        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                        "params": { "name": "vtc_status", "arguments": {} }
+                    }),
+                )
+                .bearer_auth(TOKEN)
+                .header("mcp-session-id", &session)
+                .send()
+                .await
+                .unwrap();
+                let reply = message(called).await;
+                let text = reply["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{reply}"));
+                let status: Value = serde_json::from_str(text).unwrap();
+                assert_eq!(status["identity"]["community"], name, "{status}");
+                assert_eq!(status["identity"]["agentDid"], agent, "{status}");
+                assert_eq!(status["policy"]["readOnly"], read_only, "{status}");
+                assert!(
+                    status["connectError"].as_str().unwrap().starts_with(name),
+                    "{status}"
+                );
+            }
             cancel.cancel();
         }
 

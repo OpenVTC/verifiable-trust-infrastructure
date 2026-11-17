@@ -782,6 +782,7 @@ mod tests {
         VtcMcp::new(
             Arc::new(VtcClient::with_key(base, VTC_DID, holder())),
             BridgeIdentity {
+                community: None,
                 mode: "did:key".into(),
                 agent_did: Some(holder().holder_did().to_string()),
                 vtc_did: Some(VTC_DID.into()),

@@ -487,6 +487,89 @@ VTC_MCP_AGENT_KEY=z3u2… vtc-mcp \
 - **Stops cleanly** on SIGINT or SIGTERM, closing every MCP session and then
   the community session.
 
+### 7.2 Several communities: one bridge, a path each (`--communities`)
+
+Take part in more than one community, and one `--listen` process can bridge
+them all. Each community is a section of a TOML file, served at its own path
+as its own identity, with its own policy, audit log and wallet sign-in; only
+the port and the token are shared.
+
+```sh
+# A key for each community (§2.7), kept owner-only. The DID is in the file.
+mkdir -p ~/.local/state/vtc-mcp/keys
+(umask 077; vtc-mcp --mint-did-key > ~/.local/state/vtc-mcp/keys/first-vtc.json)
+(umask 077; vtc-mcp --mint-did-key > ~/.local/state/vtc-mcp/keys/acme.json)
+```
+
+```toml
+# ~/.config/vtc-mcp/communities.toml — relative paths are read from here.
+[community.first-vtc]
+vtc_did        = "did:webvh:…:vtc.example.com"
+agent_key_file = "~/.local/state/vtc-mcp/keys/first-vtc.json"
+confirm        = "sensitive"
+audit_log      = "~/.local/state/vtc-mcp/first-vtc-audit.jsonl"
+
+[community.acme]
+vtc_did            = "did:webvh:…:acme.example"
+agent_secrets_file = "~/.config/vtc-mcp/acme-persona.json"   # a member persona
+read_only          = true
+```
+
+```sh
+vtc-mcp --listen 127.0.0.1:7465 --communities ~/.config/vtc-mcp/communities.toml
+# → serving MCP over loopback HTTP  service=first-vtc  url=http://127.0.0.1:7465/mcp/first-vtc
+# → serving MCP over loopback HTTP  service=acme       url=http://127.0.0.1:7465/mcp/acme
+```
+
+```json
+{
+  "mcpServers": {
+    "first-vtc": {
+      "type": "http",
+      "url": "http://127.0.0.1:7465/mcp/first-vtc",
+      "headers": { "Authorization": "Bearer ${VTC_MCP_LISTEN_TOKEN}" }
+    },
+    "acme": {
+      "type": "http",
+      "url": "http://127.0.0.1:7465/mcp/acme",
+      "headers": { "Authorization": "Bearer ${VTC_MCP_LISTEN_TOKEN}" }
+    }
+  }
+}
+```
+
+A section's keys:
+
+| Key | |
+|---|---|
+| `vtc_did` | The community. Required |
+| `vtc_url` | As `--vtc-url` |
+| `agent_key_file` | Rung 2: an owner-only file holding the key — the JSON `--mint-did-key` prints, or the bare multibase key. The DID is derived from the key |
+| `agent_did` | Optional beside `agent_key_file`; when given, it must be the key's DID |
+| `agent_secrets_file` | Rung 1: an owner-only file holding a member persona's secrets bundle |
+| `transport`, `read_only`, `allow`, `confirm` | As the flags; default to the flags given beside `--communities` |
+| `deny` | Added to `--deny`, never in place of it |
+| `audit_log` | That community's own JSONL record |
+
+- **A path per community, and nothing at `/mcp`.** Each host entry names the
+  community it means, and an approval a host gives one entry's tools is
+  never an approval at another community. `vtc_status` and `vtc_whoami`
+  carry the section's name as `community`, and every log line names it.
+- **One key, one community — enforced.** A file naming the same agent DID for
+  two communities is refused at startup (§2.7).
+- **What is policy is fatal; what is identity degrades one community.** An
+  unknown key in the file, a bad name (lowercase letters, digits, `-`, `_`),
+  a confirm level or transport that does not parse, or an audit log that
+  cannot be opened stops the bridge. A key file that is missing, unparseable,
+  readable by others or not the `agent_did` beside it leaves only that
+  community degraded, its `vtc_status` saying why, while the others serve.
+- **Beside it, only policy flags.** `--vtc-did`, `--vtc-url`, the identity
+  flags and `--audit-log` (and their `VTC_MCP_*` variables) are refused with
+  `--communities`; each section names its own. `--communities` needs
+  `--listen`; a stdio host reaches one community, as before.
+- **Adding a community** is a new section and a restart, then a new host
+  entry and `/mcp` in Claude Code to connect it.
+
 **The skill.** `vtc-mcp/skills/vtc-community/SKILL.md` is a Claude Code skill
 that teaches an assistant how to work through this bridge: start with status,
 whoami and supported tasks; read the catalog's schema before a call; use the

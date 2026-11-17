@@ -320,6 +320,9 @@ elicit_safe!(Approval);
 /// when the connection failed.
 #[derive(Debug, Clone, Default)]
 pub struct BridgeIdentity {
+    /// The name this community is served under with `--communities`
+    /// (`/mcp/<name>`); `None` for a bridge to one community.
+    pub community: Option<String>,
     /// The ladder rung: `did:webvh-bundle`, `did:key`, or `unconfigured`.
     pub mode: String,
     /// The DID this bridge speaks as.
@@ -347,6 +350,9 @@ impl BridgeIdentity {
         });
         if let Some(w) = &self.reuse_warning {
             v["keyReuseWarning"] = json!(w);
+        }
+        if let Some(name) = &self.community {
+            v["community"] = json!(name);
         }
         v
     }
@@ -436,6 +442,9 @@ pub(crate) struct CallGuard {
     args: Value,
     started: Instant,
     recorder: Arc<Recorder>,
+    /// The community's name with `--communities`, so one process's log lines
+    /// say which community each call went to (`-` for a single bridge).
+    community: Option<String>,
 }
 
 impl CallGuard {
@@ -492,6 +501,7 @@ impl CallGuard {
         };
         match outcome {
             "ok" => tracing::info!(
+                community = self.community.as_deref().unwrap_or("-"),
                 seq = self.seq,
                 tool = self.tool,
                 operation = self.operation.as_deref().unwrap_or("-"),
@@ -500,6 +510,7 @@ impl CallGuard {
                 "call ok"
             ),
             _ => tracing::warn!(
+                community = self.community.as_deref().unwrap_or("-"),
                 seq = self.seq,
                 tool = self.tool,
                 operation = self.operation.as_deref().unwrap_or("-"),
@@ -621,8 +632,10 @@ impl VtcMcp {
             args: redact_call(operation, &args),
             started: Instant::now(),
             recorder: self.recorder.clone(),
+            community: self.identity.community.clone(),
         };
         tracing::info!(
+            community = guard.community.as_deref().unwrap_or("-"),
             seq,
             tool,
             operation = operation.unwrap_or("-"),
@@ -1172,6 +1185,7 @@ mod tests {
 
     fn identity() -> BridgeIdentity {
         BridgeIdentity {
+            community: None,
             mode: "did:key".into(),
             agent_did: Some("did:key:zAgent".into()),
             vtc_did: Some(VTC_DID.into()),

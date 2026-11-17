@@ -22,6 +22,12 @@
 //! Both need `--vtc-did`. Both given is an error; half of rung 2 is an error
 //! naming the missing field; neither serves in degraded mode so `vtc_status`
 //! can say what is wrong. There is no rung that replays an operator's login.
+//!
+//! ## Several communities
+//!
+//! `--communities <file>` with `--listen` bridges each community the file
+//! names from one process, at `/mcp/<name>`, each as its own identity under
+//! its own policy (`communities`). The ladder holds per community.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -30,13 +36,15 @@ use std::sync::Arc;
 use clap::{Parser, ValueEnum};
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
+use tracing::Instrument;
 use vta_sdk::did_secrets::DidSecretsBundle;
 use vta_sdk::session::TransportChoice;
 use vtc_client::{SessionIdentity, VtcClient};
 use vti_mcp_common::guard::{ConfirmLevel, Guard};
-use vti_mcp_common::listen::Serving;
+use vti_mcp_common::listen::{Serving, mcp_path_for};
 use vti_mcp_common::observability::{self, LogFormat, Recorder};
 
+mod communities;
 mod guides;
 mod health;
 mod key_reuse;
@@ -144,6 +152,15 @@ struct Args {
     /// first use.
     #[arg(long, env = "VTC_MCP_LISTEN")]
     listen: Option<SocketAddr>,
+
+    /// Bridge every community this TOML file names from one `--listen`
+    /// process, each at `http://<addr>/mcp/<name>` as its own identity, with
+    /// its own policy, audit log and sign-in (`docs/03-vtc/vtc-mcp.md` §7.2).
+    /// Replaces `--vtc-did`, `--vtc-url`, the identity flags and
+    /// `--audit-log`; the policy flags beside it are every community's
+    /// default.
+    #[arg(long, env = "VTC_MCP_COMMUNITIES")]
+    communities: Option<PathBuf>,
 }
 
 /// A fresh Ed25519 `did:key` and its private key, multibase-encoded as the
@@ -166,7 +183,7 @@ fn mint_did_key() -> anyhow::Result<serde_json::Value> {
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
-enum TransportOpt {
+pub(crate) enum TransportOpt {
     #[default]
     Auto,
     Tsp,
@@ -292,6 +309,10 @@ async fn main() -> anyhow::Result<()> {
     let log_format = LogFormat::parse(&args.log_format).map_err(|e| anyhow::anyhow!(e))?;
     observability::init_tracing("vtc_mcp", &args.log_level, log_format);
 
+    if let Some(path) = args.communities.clone() {
+        return run_communities(&args, &path).await;
+    }
+
     // Policy failures are fatal; connectivity failures serve degraded. See
     // `vta-mcp` for why: running under a policy the operator did not ask for
     // is the one outcome worse than not starting, while an exited MCP server
@@ -303,13 +324,7 @@ async fn main() -> anyhow::Result<()> {
         confirm: ConfirmLevel::parse(&args.confirm).map_err(|e| anyhow::anyhow!(e))?,
         node: "VTC",
     };
-    let recorder = match &args.audit_log {
-        Some(path) => Arc::new(
-            Recorder::with_file(path)
-                .map_err(|e| anyhow::anyhow!("opening --audit-log {}: {e}", path.display()))?,
-        ),
-        None => Arc::new(Recorder::default()),
-    };
+    let recorder = open_recorder(args.audit_log.as_deref())?;
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         policy = %guard.summary(),
@@ -325,44 +340,71 @@ async fn main() -> anyhow::Result<()> {
     let serving =
         Serving::from_listen(&listen::BRIDGE, args.listen).map_err(|e| anyhow::anyhow!(e))?;
 
+    let community = Community {
+        name: None,
+        vtc_did: args.vtc_did.clone(),
+        vtc_url: args.vtc_url.clone(),
+        rung: ladder(&args),
+        transport: args.transport,
+        guard,
+        recorder,
+        serving: serving.label(),
+        reuse_check: !args.no_key_reuse_check,
+    };
+    let (bridge, client) = open(community).await;
+    serve(bridge, client, serving).await
+}
+
+/// One community to bridge, resolved from the flags or from one section of
+/// the communities file.
+struct Community {
+    /// Its name with `--communities`; `None` for a bridge to one community.
+    name: Option<String>,
+    vtc_did: Option<String>,
+    vtc_url: Option<String>,
+    rung: Result<Option<(SessionIdentity, &'static str)>, String>,
+    transport: TransportOpt,
+    guard: Guard,
+    recorder: Arc<Recorder>,
+    /// How hosts reach it: `stdio`, or its URL.
+    serving: String,
+    reuse_check: bool,
+}
+
+/// Connect to one community and build its bridge — degraded, with the
+/// reason, when there is no usable identity, no community, or no connection,
+/// so its `vtc_status` can say what is wrong.
+async fn open(c: Community) -> (VtcMcp, Option<Arc<VtcClient>>) {
     let mut identity = BridgeIdentity {
+        community: c.name.clone(),
         mode: "unconfigured".into(),
         agent_did: None,
-        vtc_did: args.vtc_did.clone(),
-        transport_choice: args.transport.label().into(),
+        vtc_did: c.vtc_did.clone(),
+        transport_choice: c.transport.label().into(),
         reuse_warning: None,
-        serving: serving.label(),
+        serving: c.serving,
     };
-    let rung = match ladder(&args) {
+    let degraded = |message: String, identity, guard, recorder| {
+        tracing::error!(error = %message, "serving in degraded mode — tools will report this");
+        (VtcMcp::degraded(message, identity, guard, recorder), None)
+    };
+    let (session_identity, mode) = match c.rung {
         Ok(Some(rung)) => rung,
         Ok(None) => {
             let message = "no identity configured: supply --agent-secrets (a did:webvh bundle) \
                            or --agent-did + --agent-key (a dedicated did:key), and --vtc-did"
                 .to_string();
-            tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-            return serve(
-                VtcMcp::degraded(message, identity, guard, recorder),
-                None,
-                serving,
-            )
-            .await;
+            return degraded(message, identity, c.guard, c.recorder);
         }
         Err(e) => {
             let message = format!("no usable identity: {e}");
-            tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-            return serve(
-                VtcMcp::degraded(message, identity, guard, recorder),
-                None,
-                serving,
-            )
-            .await;
+            return degraded(message, identity, c.guard, c.recorder);
         }
     };
-    let (session_identity, mode) = rung;
     identity.mode = mode.into();
     identity.agent_did = Some(session_identity.did().to_string());
 
-    let Some(vtc_did) = args
+    let Some(vtc_did) = c
         .vtc_did
         .as_deref()
         .map(str::trim)
@@ -371,16 +413,10 @@ async fn main() -> anyhow::Result<()> {
         let message = "no community configured: --vtc-did names the community, and its DID \
                        document says how to reach it"
             .to_string();
-        tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-        return serve(
-            VtcMcp::degraded(message, identity, guard, recorder),
-            None,
-            serving,
-        )
-        .await;
+        return degraded(message, identity, c.guard, c.recorder);
     };
 
-    if !args.no_key_reuse_check {
+    if c.reuse_check {
         identity.reuse_warning = reuse_warning(identity.agent_did.as_deref(), vtc_did);
     }
 
@@ -388,14 +424,14 @@ async fn main() -> anyhow::Result<()> {
         mode,
         agent_did = identity.agent_did.as_deref().unwrap_or("-"),
         vtc_did,
-        transport = args.transport.label(),
+        transport = c.transport.label(),
         "connecting to the community"
     );
     let connected = VtcClient::connect_resolved(
         session_identity,
         vtc_did,
-        args.vtc_url.as_deref(),
-        args.transport.into(),
+        c.vtc_url.as_deref(),
+        c.transport.into(),
     )
     .await;
     match connected {
@@ -406,25 +442,133 @@ async fn main() -> anyhow::Result<()> {
                     .transport()
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "-".into()),
-                serving = %serving.label(),
+                serving = %identity.serving,
                 "connected to the community; serving MCP"
             );
-            let bridge = VtcMcp::new(client.clone(), identity, guard, recorder);
+            let bridge = VtcMcp::new(client.clone(), identity, c.guard, c.recorder);
             bridge.learn_served().await;
             bridge.learn_delegation().await;
-            serve(bridge, Some(client), serving).await
+            (bridge, Some(client))
         }
         Err(e) => {
             let message = format!("connecting to the community ({mode}): {e}");
-            tracing::error!(error = %message, "serving in degraded mode — tools will report this");
-            serve(
-                VtcMcp::degraded(message, identity, guard, recorder),
-                None,
-                serving,
-            )
-            .await
+            degraded(message, identity, c.guard, c.recorder)
         }
     }
+}
+
+fn open_recorder(path: Option<&std::path::Path>) -> anyhow::Result<Arc<Recorder>> {
+    Ok(match path {
+        Some(path) => Arc::new(
+            Recorder::with_file(path)
+                .map_err(|e| anyhow::anyhow!("opening audit log {}: {e}", path.display()))?,
+        ),
+        None => Arc::new(Recorder::default()),
+    })
+}
+
+/// The flags `--communities` replaces: each community names its own, and a
+/// process-wide one would be ambiguous.
+fn communities_conflicts(args: &Args) -> Vec<&'static str> {
+    [
+        ("--vtc-did", args.vtc_did.is_some()),
+        ("--vtc-url", args.vtc_url.is_some()),
+        ("--agent-secrets", args.agent_secrets.is_some()),
+        ("--agent-did", args.agent_did.is_some()),
+        ("--agent-key", args.agent_key.is_some()),
+        ("--audit-log", args.audit_log.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(flag, given)| given.then_some(flag))
+    .collect()
+}
+
+/// `--communities`: bridge every community the file names from one process,
+/// each at `/mcp/<name>`. Everything that is the operator's policy — the
+/// file, the flags beside it, every audit log, the listen address and token —
+/// is settled before anything connects, and fatal when wrong.
+async fn run_communities(args: &Args, path: &std::path::Path) -> anyhow::Result<()> {
+    let conflicts = communities_conflicts(args);
+    if !conflicts.is_empty() {
+        anyhow::bail!(
+            "--communities names each community's DID, identity and audit log in its own \
+             section; remove {} (or their VTC_MCP_* variables)",
+            conflicts.join(", ")
+        );
+    }
+    let Some(addr) = args.listen else {
+        anyhow::bail!(
+            "--communities serves each community at its own path, so it needs --listen \
+             (127.0.0.1:7465); a stdio host reaches one community, with --vtc-did"
+        );
+    };
+    // Checked here rather than per community: a bad default is as fatal as a
+    // bad section.
+    ConfirmLevel::parse(&args.confirm).map_err(|e| anyhow::anyhow!(e))?;
+    let defaults = communities::Defaults {
+        transport: args.transport,
+        read_only: args.read_only,
+        allow: args.allow.clone(),
+        deny: args.deny.clone(),
+        confirm: args.confirm.clone(),
+    };
+    let resolved = communities::load(path, &defaults).map_err(|e| anyhow::anyhow!(e))?;
+    let Serving::Http { addr, token } =
+        Serving::from_listen(&listen::BRIDGE, Some(addr)).map_err(|e| anyhow::anyhow!(e))?
+    else {
+        unreachable!("a listen address always serves HTTP")
+    };
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        communities = resolved.len(),
+        file = %path.display(),
+        "vtc-mcp starting"
+    );
+
+    let mut pending = Vec::with_capacity(resolved.len());
+    for c in resolved {
+        let recorder = open_recorder(c.audit_log.as_deref())?;
+        tracing::info!(
+            community = %c.name,
+            policy = %c.guard.summary(),
+            audit_log = recorder
+                .audit_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "-".into()),
+            "community configured"
+        );
+        let name = c.name.clone();
+        let community = Community {
+            serving: format!("http://{addr}{}", mcp_path_for(&c.name)),
+            name: Some(c.name),
+            vtc_did: Some(c.vtc_did),
+            vtc_url: c.vtc_url,
+            rung: c.rung.map(Some),
+            transport: c.transport,
+            guard: c.guard,
+            recorder,
+            reuse_check: !args.no_key_reuse_check,
+        };
+        let span = tracing::info_span!("community", name = %name);
+        pending.push(async move { (name, open(community).await) }.instrument(span));
+    }
+    // Each community connects on its own: one that is slow or unreachable
+    // delays none of the others' connects, and serves degraded on its own.
+    let opened = futures_util::future::join_all(pending).await;
+
+    let mut services = Vec::with_capacity(opened.len());
+    let mut clients = Vec::new();
+    for (name, (bridge, client)) in opened {
+        services.push((name, bridge));
+        clients.extend(client);
+    }
+    let served = vti_mcp_common::listen::serve_many(&listen::BRIDGE, services, addr, token)
+        .await
+        .map_err(anyhow::Error::from);
+    for client in clients {
+        client.shutdown().await;
+    }
+    served
 }
 
 /// Serve MCP until the host disconnects (stdio) or the process is told to stop
@@ -534,6 +678,22 @@ mod tests {
         );
         assert_ne!(mint_did_key().unwrap()["did"], minted["did"]);
         assert!(args(&["--mint-did-key"]).mint_did_key);
+    }
+
+    #[test]
+    fn communities_replaces_the_single_community_flags() {
+        assert!(communities_conflicts(&args(&["--communities", "c.toml"])).is_empty());
+        let a = args(&[
+            "--communities",
+            "c.toml",
+            "--vtc-did",
+            "did:webvh:x",
+            "--audit-log",
+            "a.jsonl",
+            "--confirm",
+            "sensitive",
+        ]);
+        assert_eq!(communities_conflicts(&a), vec!["--vtc-did", "--audit-log"]);
     }
 
     #[test]
