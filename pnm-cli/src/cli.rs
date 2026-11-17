@@ -288,9 +288,8 @@ pub(crate) enum Commands {
         command: DidMgmtCommands,
     },
 
-    /// did:webs DIDs (alpha): persona, relationship and integration DIDs on
-    /// KERI, created and hosted by the VTA. Never a node's own identity
-    /// (VTI-KEY-001: that stays did:webvh or did:scid:vh:1).
+    /// did:webs DIDs (alpha): persona, relationship, integration and service
+    /// DIDs on KERI, created and hosted by the VTA.
     Webs {
         #[command(subcommand)]
         command: WebsCommands,
