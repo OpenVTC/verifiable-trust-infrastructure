@@ -110,6 +110,9 @@ RUN apt-get update && \
 # TEE support is built into vta-enclave by default (no need to specify tee).
 # KMS bootstrap handles seed and JWT key — no need for config-seed, keyring,
 # or aws-secrets features.
+# `jemalloc` is appended to FEATURES in both cargo commands below, so every
+# profile ships with jemalloc as its allocator (freed memory returned to the OS)
+# whatever FEATURES is overridden to.
 ARG FEATURES="rest,didcomm,vsock-store,vsock-log"
 
 # BAKE_CONFIG drives one Rust feature: the fleet build (`false`) compiles in the
@@ -123,7 +126,7 @@ ARG BAKE_CONFIG=true
 # the real manifests, and the flag buys nothing for a warm-up whose output is
 # discarded. The real build below is locked, which is where it matters.
 COPY --from=planner /build/recipe.json recipe.json
-RUN EFFECTIVE_FEATURES="${FEATURES}"; \
+RUN EFFECTIVE_FEATURES="${FEATURES},jemalloc"; \
     if [ "${BAKE_CONFIG}" = "false" ]; then EFFECTIVE_FEATURES="${EFFECTIVE_FEATURES},tenant-overlay"; fi; \
     cargo chef cook --release --recipe-path recipe.json \
         --package vta-enclave \
@@ -191,7 +194,7 @@ COPY vti-witness/ vti-witness/
 # image cannot silently resolve a dependency set other than the one CI tested.
 # `tenant-overlay` is appended for the fleet build (BAKE_CONFIG=false) so the
 # baked base config's placeholder fields are filled from the vsock overlay.
-RUN EFFECTIVE_FEATURES="${FEATURES}"; \
+RUN EFFECTIVE_FEATURES="${FEATURES},jemalloc"; \
     if [ "${BAKE_CONFIG}" = "false" ]; then EFFECTIVE_FEATURES="${EFFECTIVE_FEATURES},tenant-overlay"; fi; \
     echo "Building vta-enclave (BAKE_CONFIG=${BAKE_CONFIG}) with features: ${EFFECTIVE_FEATURES}"; \
     cargo build --release --locked --package vta-enclave \

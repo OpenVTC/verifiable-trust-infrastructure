@@ -77,6 +77,9 @@ RUN apt-get update && \
 #   docker build --build-arg FEATURES="setup,rest,didcomm,aws-secrets" .
 # `keyring` is intentionally excluded — containers have no desktop
 # secret-service session. `aws-secrets` reads the instance/task role via IMDS.
+# `jemalloc` is appended to FEATURES in both cargo commands below, so every
+# profile ships with jemalloc as its allocator (freed memory returned to the OS)
+# whatever FEATURES is overridden to.
 ARG FEATURES="setup,rest,didcomm,cli-synthesis,aws-secrets,webvh"
 
 # Dependency layer. No `--locked` here: cook builds from the recipe rather than
@@ -91,14 +94,14 @@ ARG FEATURES="setup,rest,didcomm,cli-synthesis,aws-secrets,webvh"
 COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json \
         --package vta-service \
-        --no-default-features --features ${FEATURES}
+        --no-default-features --features ${FEATURES},jemalloc
 
 # Source layer. `--locked` so the image is built against the committed
 # Cargo.lock and cannot silently resolve a different dependency set than CI
 # tested.
 COPY . .
 RUN cargo build --release --locked --package vta-service \
-        --no-default-features --features ${FEATURES} && \
+        --no-default-features --features ${FEATURES},jemalloc && \
     cp target/release/vta /build/vta-bin
 
 # -----------------------------------------------------------------------------

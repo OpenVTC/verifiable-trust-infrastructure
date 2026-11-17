@@ -38,9 +38,14 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 # statement carries `#[allow(unsafe_code)]` beside its SAFETY comment.
 UNSAFE_CRATES = {
     "pnm-cli": "std::env::set_var at startup",
-    "vta-service": "AsyncFd::register for the vsock listener; env::remove_var at boot",
+    "room-host": "jemalloc's _rjem_malloc_conf export",
+    "vta-enclave": "jemalloc's _rjem_malloc_conf export",
+    "vta-service": "AsyncFd::register for the vsock listener; env::remove_var at boot; jemalloc's _rjem_malloc_conf export",
     "vta-tee": "the /dev/nsm and /dev/sev-guest ioctls",
     "vti-common": "libc::umask and env::set_var in tests",
+    "vti-voting-service": "jemalloc's _rjem_malloc_conf export",
+    "vti-witness": "jemalloc's _rjem_malloc_conf export",
+    "vtc-service": "jemalloc's _rjem_malloc_conf export",
 }
 
 root = Path(__file__).resolve().parent.parent
