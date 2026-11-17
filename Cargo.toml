@@ -871,6 +871,8 @@ dialoguer = "0.12"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
+# Global allocator for the service binaries (their `jemalloc` feature).
+tikv-jemallocator = "0.7"
 # Shell completions for pnm / cnm (`completions <shell>`). Same 4.6 line as clap.
 clap_complete = "4.6"
 

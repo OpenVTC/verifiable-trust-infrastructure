@@ -19,7 +19,16 @@ name = "vta-enclave"
 path = "src/main.rs"
 
 [features]
-default = ["rest", "didcomm", "tsp"]
+default = ["rest", "didcomm", "tsp", "jemalloc"]
+## Use jemalloc as the binary's global allocator (set in src/main.rs; a library
+## must never impose an allocator on its consumers). On by default: with the
+## system allocator (glibc malloc) freed pages are kept in the process's arenas,
+## so RSS ratchets up to its high-water mark and stays there — which reads as a
+## leak in monitoring even when the live heap is flat. jemalloc's decay-based
+## purging returns them, so RSS tracks live memory. Disable
+## (`--no-default-features`) to profile against the system allocator.
+jemalloc = ["dep:tikv-jemallocator"]
+
 rest = ["vta-service/rest"]
 didcomm = ["vta-service/didcomm"]
 # TSP transport pass-through. On by default, as it is for `vta-service`.
@@ -49,5 +58,21 @@ clap = { workspace = true }
 base64 = { workspace = true }
 tokio-vsock = { workspace = true, optional = true }
 
-[lints]
-workspace = true
+# jemalloc for the binary (see the `jemalloc` feature). Not available on MSVC;
+# the cfg gate in src/main.rs falls back to the system allocator there.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+# The workspace lint table with `unsafe_code` at `deny`, not `forbid` (#2658):
+# this crate exports jemalloc's `_rjem_malloc_conf` tuning symbol from
+# src/main.rs, which needs `#[unsafe(export_name)]`. That statement carries
+# `#[allow(unsafe_code)]` beside its SAFETY comment.
+# `scripts/check-workspace-lints.py` holds this table to `[workspace.lints]`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
