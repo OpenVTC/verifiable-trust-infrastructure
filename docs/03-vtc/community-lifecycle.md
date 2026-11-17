@@ -293,8 +293,16 @@ chose, but they are not fixed there. To add a transport later — `#tsp`
 on a community minted with DIDComm only, say — or to change or drop one,
 edit the document at the VTA and publish the new log entry.
 
-The VTA holds the keys that extend the community's DID log, so the edit
-always happens there. What happens next depends on who serves the log.
+The VTA holds the keys that change the community's DID document, so the
+edit always happens there.
+
+**A did:webs VTC** (`identity_method = "webs"`, a DID of the form
+`did:webs:<host>[:<path>]:<AID>`) has no log to deliver: `pnm webs update
+<community-did> --services didcomm,tsp` sets the transports at the VTA,
+which publishes to the host. See [did:webs](../02-vta/did-webs.md). The
+rest of this section is for a did:webvh.
+
+For a did:webvh, what happens next depends on who serves the log.
 Check first:
 
 ```sh

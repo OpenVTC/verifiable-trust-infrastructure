@@ -114,9 +114,10 @@ pub(crate) struct VtcWizardInputs {
     /// Omit (or leave blank) for a community with no registry; the service
     /// entry is then pruned from the document.
     ///
-    /// The VTC cannot re-sign its own log, so changing this after mint is a
-    /// VTA-side `pnm did-mgmt dids edit` — then, for a VTC serving its own
-    /// `did.jsonl`, `cnm did-log install` with the extended log.
+    /// The VTC cannot change its own document, so changing this after mint is
+    /// VTA-side: for a did:webvh `pnm did-mgmt dids edit` — then, for a VTC
+    /// serving its own `did.jsonl`, `cnm did-log install` with the extended
+    /// log; for a did:webs `vta/webs/dids/update` with `services.additional`.
     #[serde(default)]
     pub registry_did: Option<String>,
 
@@ -166,10 +167,12 @@ pub(crate) struct VtcWizardInputs {
     #[serde(default)]
     pub identity_method: IdentityMethod,
 
-    /// Where the VTC's `did:webvh` is published. All fields optional; an
-    /// empty `[webvh]` table (or omitting it) reproduces the serverless
-    /// default — the VTC self-hosts its `did.jsonl` at `base_url` with a
-    /// server-assigned path.
+    /// Where the VTC's DID is published. For a did:webvh all fields are
+    /// optional; an empty `[webvh]` table (or omitting it) reproduces the
+    /// serverless default — the VTC self-hosts its `did.jsonl` at `base_url`.
+    /// A did:webs has no serverless mode and needs `server_id`; its `path` is
+    /// the slot before the AID, and omitting it publishes at the domain's top
+    /// level.
     #[serde(default)]
     pub webvh: WebvhTarget,
 
