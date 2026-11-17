@@ -290,6 +290,8 @@ mod tests {
             imported_ks: &fx.keyspace(crate::keyspaces::IMPORTED_SECRETS),
             contexts_ks: &fx.keyspace(crate::keyspaces::CONTEXTS),
             webvh_ks: &fx.keyspace(crate::keyspaces::WEBVH),
+            // Never compares a host's listing.
+            webs_ks: None,
             delete_cascade: None,
             audit: &audit,
             seed_store: &fx.seed,

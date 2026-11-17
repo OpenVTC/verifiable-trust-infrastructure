@@ -211,6 +211,50 @@ pub async fn delete(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
     ks.remove(did_key(did)).await
 }
 
+/// Every did:webs slot this VTA holds, as the webvh records reconcile and
+/// retire-orphan compare a host's listing against: the DID, its server, its
+/// slot and its context. Reads only those members, so it runs in a build
+/// without the `webs` feature — a slot must never look orphaned because the
+/// build cannot read the record that holds it.
+pub async fn held_slots(
+    ks: &KeyspaceHandle,
+) -> Result<Vec<vta_sdk::webvh::WebvhDidRecord>, AppError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Slot {
+        did: String,
+        server_id: String,
+        mnemonic: String,
+        context_id: String,
+    }
+    let now = chrono::Utc::now();
+    ks.prefix_iter_raw(DID_PREFIX)
+        .await?
+        .into_iter()
+        .map(|(key, value)| {
+            let s: Slot = serde_json::from_slice(&value).map_err(|e| {
+                AppError::Internal(format!(
+                    "a did:webs record under {} is unreadable: {e}",
+                    String::from_utf8_lossy(&key)
+                ))
+            })?;
+            Ok(vta_sdk::webvh::WebvhDidRecord {
+                did: s.did,
+                server_id: s.server_id,
+                mnemonic: s.mnemonic,
+                scid: String::new(),
+                context_id: s.context_id,
+                portable: false,
+                log_entry_count: 0,
+                pre_rotation_count: 0,
+                next_fragment_id: 0,
+                created_at: now,
+                updated_at: now,
+            })
+        })
+        .collect()
+}
+
 /// Remove every record of `context_id`, returning how many went.
 ///
 /// Reads only `contextId`, so it runs in a build without the `webs` feature.
@@ -254,6 +298,25 @@ mod tests {
         .unwrap();
         let ks = store.keyspace(vta_keyspaces::WEBS).unwrap();
         (dir, ks)
+    }
+
+    /// Reconcile and retire-orphan compare a host's listing against these: a
+    /// did:webs slot left out read as host-only, and could be retired.
+    #[tokio::test]
+    async fn every_did_webs_slot_is_held_for_reconcile() {
+        let (_dir, ks) = keyspace().await;
+        ks.insert(
+            did_key("did:webs:h.example:people:E1"),
+            &serde_json::json!({ "did": "did:webs:h.example:people:E1", "contextId": "acme",
+                                 "serverId": "host-1", "mnemonic": "people/E1" }),
+        )
+        .await
+        .unwrap();
+        let held = held_slots(&ks).await.unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].server_id, "host-1");
+        assert_eq!(held[0].mnemonic, "people/E1");
+        assert_eq!(held[0].context_id, "acme");
     }
 
     #[tokio::test]

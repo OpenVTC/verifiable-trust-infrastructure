@@ -37,7 +37,7 @@ const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.2";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
 /// because it acts on the seed behind the key, not the key itself.
 const TASK_KEYS_EXPORT_SECRET: &str = "https://trusttasks.org/spec/keys/export-secret/0.1";
-const TASK_WEBVH_DIDS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
+const TASK_VTA_DIDS_LIST: &str = "https://trusttasks.org/spec/vta/dids/list/0.1";
 
 /// A success response document carrying `payload`.
 async fn tt_ok(payload: Value) -> ResponseTemplate {
@@ -1180,7 +1180,7 @@ async fn preview_delete_context_returns_summary() {
         json!({
             "id": "primary",
             "keys": ["k1"],
-            "webvh_dids": [],
+            "dids": [],
             "acl_entries_removed": [],
             "acl_entries_updated": [],
             "did_templates": []
@@ -1430,22 +1430,46 @@ async fn create_did_webvh_posts() {
     assert_eq!(r.scid, "Qabc");
 }
 
+fn did_summary_json(did: &str, method: &str) -> Value {
+    json!({
+        "did": did,
+        "method": method,
+        "contextId": "primary",
+        "level": 1,
+        "primary": false,
+        "deactivated": false,
+        "alsoKnownAs": [],
+        "createdAt": "2026-11-17T10:00:00Z",
+        "updatedAt": "2026-11-17T10:00:00Z"
+    })
+}
+
 #[tokio::test]
-async fn list_dids_webvh_filters_by_context() {
+async fn list_dids_sends_the_filters_and_reads_every_page() {
     let server = MockServer::start().await;
+    // Page two, matched first on its cursor.
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
-            "type": TASK_WEBVH_DIDS_LIST,
-            // camelCase: the payload is built from `ListDidsWebvhBody`, which
-            // emits the canonical spelling rather than whatever a hand-written
-            // literal happened to say.
-            "payload": {"contextId": "primary", "serverId": "s1"}
+            "type": TASK_VTA_DIDS_LIST,
+            "payload": {"contextId": "primary", "methods": ["webs", "key"], "cursor": "c1"}
+        })))
+        .respond_with(tt_ok(json!({ "dids": [did_summary_json("did:key:z6MkB", "key")] })).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(body_partial_json(json!({
+            "type": TASK_VTA_DIDS_LIST,
+            "payload": {"contextId": "primary", "methods": ["webs", "key"]}
         })))
         .respond_with(
             tt_ok(json!({
-                "dids": [webvh_did_record_json("did:webvh:Qabc:server.example.com:primary")]
+                "dids": [did_summary_json("did:webs:h.example:p:EAid", "webs")],
+                "nextCursor": "c1"
             }))
             .await,
         )
@@ -1453,11 +1477,16 @@ async fn list_dids_webvh_filters_by_context() {
         .mount(&server)
         .await;
     let c = client(&server).await;
-    let r = c
-        .list_dids_webvh(Some("primary"), Some("s1"))
+    let all = c
+        .list_dids(&vta_sdk::client::DidListFilter {
+            context_id: Some("primary".into()),
+            methods: Some(vec!["webs".into(), "key".into()]),
+            ..Default::default()
+        })
         .await
         .unwrap();
-    assert_eq!(r.dids.len(), 1);
+    let dids: Vec<String> = all.iter().map(|d| d.did.to_string()).collect();
+    assert_eq!(dids, ["did:webs:h.example:p:EAid", "did:key:z6MkB"]);
 }
 
 #[tokio::test]

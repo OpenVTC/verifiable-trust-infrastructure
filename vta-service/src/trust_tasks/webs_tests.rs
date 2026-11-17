@@ -189,7 +189,12 @@ impl Rig {
         if uri == uris::TASK_VTA_WEBS_DIDS_GET_0_1 {
             return handle_get(s, a, doc).await;
         }
-        handle_list(s, a, doc).await
+        if uri == uris::TASK_VTA_DIDS_GET_0_1 {
+            return super::super::dids::handle_get(s, a, doc).await;
+        }
+        // Listing is method-neutral (`vta/dids/list`): a did:webs is found
+        // there, beside every other method's identities.
+        super::super::dids::handle_list(s, a, doc).await
     }
 }
 
@@ -257,8 +262,8 @@ async fn a_did_webs_lives_its_whole_life_through_the_slice() {
     // list
     let listed = ok(&rig
         .run(
-            uris::TASK_VTA_WEBS_DIDS_LIST_0_1,
-            json!({ "contextId": CTX }),
+            uris::TASK_VTA_DIDS_LIST_0_1,
+            json!({ "contextId": CTX, "methods": ["webs"] }),
         )
         .await);
     assert_eq!(listed["dids"].as_array().unwrap().len(), 1);
@@ -384,8 +389,8 @@ async fn a_did_webs_lives_its_whole_life_through_the_slice() {
     // it leaves the default listing
     let listed = ok(&rig
         .run(
-            uris::TASK_VTA_WEBS_DIDS_LIST_0_1,
-            json!({ "contextId": CTX }),
+            uris::TASK_VTA_DIDS_LIST_0_1,
+            json!({ "contextId": CTX, "methods": ["webs"] }),
         )
         .await);
     assert!(listed["dids"].as_array().unwrap().is_empty());
@@ -959,4 +964,256 @@ fn create_0_2_invalid_examples_are_refused() {
         }))
         .is_ok()
     );
+}
+
+// ─── Method-neutral: the summary, and deleting the context ─────────────
+
+#[tokio::test]
+async fn a_did_webs_is_summarised_as_every_identity_is() {
+    let rig = Rig::new().await;
+    let created = ok(&rig
+        .run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_2, create_02("persona"))
+        .await);
+    let did = created["did"].as_str().unwrap().to_string();
+
+    let got = ok(&rig
+        .run(uris::TASK_VTA_DIDS_GET_0_1, json!({ "did": did }))
+        .await)["did"]
+        .clone();
+    assert_eq!(got["method"], "webs");
+    assert_eq!(got["contextId"], CTX);
+    assert_eq!(got["class"], "persona");
+    assert_eq!(got["level"], 1);
+    assert_eq!(got["deactivated"], false);
+    assert_eq!(got["signingKeyId"], created["signingKeyId"]);
+    assert_eq!(
+        got["methodDetails"]["webs"]["aid"],
+        did.rsplit(':').next().unwrap()
+    );
+
+    // In the unfiltered listing, beside whatever else the agent holds.
+    let listed = ok(&rig.run(uris::TASK_VTA_DIDS_LIST_0_1, json!({})).await);
+    assert!(
+        listed["dids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["did"] == did.as_str()),
+        "{listed:#}"
+    );
+}
+
+#[tokio::test]
+async fn a_did_webs_in_a_context_nobody_may_reach_is_not_found() {
+    let rig = Rig::new().await;
+    let created = ok(&rig
+        .run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_1, create_payload())
+        .await);
+    let did = created["did"].as_str().unwrap();
+    let stranger = admin_claims_for_context("elsewhere");
+    let doc = TrustTask::new(
+        "urn:uuid:00000000-0000-4000-8000-0000000000aa".to_string(),
+        uris::TASK_VTA_DIDS_GET_0_1.parse::<TypeUri>().unwrap(),
+        json!({ "did": did }),
+    );
+    let out = super::super::dids::handle_get(&rig.state, &stranger, doc).await;
+    assert_eq!(code(&out), "vta/dids/get:notFound");
+}
+
+/// Ends a did:webs on the rig's recording host, by the operation a context
+/// deletion runs in production (`ContextWebsSettler`).
+struct RigSettler<'r>(&'r Rig);
+
+#[async_trait::async_trait]
+impl crate::operations::contexts::WebsDidSettler for RigSettler<'_> {
+    async fn settle(
+        &self,
+        auth: &AuthClaims,
+        did: &str,
+    ) -> Result<Option<(Option<String>, String)>, AppError> {
+        let config = self.0.state.config.read().await;
+        let deps = WebsDeps::from_app_state(&self.0.state, &config, &self.0.resolver);
+        Ok(
+            match engine::delete_did_webs(&deps, auth, did, None, &&self.0.host, "test").await {
+                Ok(r) if r.slot_removed => None,
+                Ok(r) => Some((None, r.host_cleanup_error.unwrap_or_default())),
+                Err(e) => Some((None, e.to_string())),
+            },
+        )
+    }
+}
+
+impl Rig {
+    async fn delete_context(
+        &self,
+        force: bool,
+        host_copies: crate::operations::contexts::HostCopies,
+    ) -> Result<
+        vta_sdk::protocols::context_management::delete::DeleteContextResultBody,
+        crate::operations::contexts::ContextError,
+    > {
+        let ks = crate::operations::keyspaces_from_app_state(&self.state);
+        let deps =
+            crate::operations::did_webvh::WebvhDeps::from_app_state(&self.state, &self.resolver);
+        let settler = RigSettler(self);
+        let cleanup = crate::operations::contexts::ContextDidCleanup {
+            deps: &deps,
+            vta_did: None,
+            host_copies,
+            webs: Some(&settler),
+        };
+        crate::operations::contexts::delete_context(
+            &ks,
+            &self.auth,
+            CTX,
+            force,
+            "test",
+            Some(&cleanup),
+        )
+        .await
+    }
+}
+
+/// The defect: a context's did:webs was purged with its other rows, its key
+/// event log left published as a live identity, and neither the preview, the
+/// `notEmpty` count nor the leftovers report mentioned it.
+#[tokio::test]
+async fn deleting_its_context_ends_a_did_webs_and_removes_its_slot() {
+    use crate::operations::contexts::{ContextError, HostCopies};
+    let rig = Rig::new().await;
+    let created = ok(&rig
+        .run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_1, create_payload())
+        .await);
+    let did = created["did"].as_str().unwrap().to_string();
+
+    // The preview names it.
+    let preview = crate::operations::contexts::preview_delete_context(
+        &rig.state.contexts_ks,
+        &rig.state.keys_ks,
+        &rig.state.acl_ks,
+        &rig.state.did_templates_ks,
+        &rig.state.webvh_ks,
+        &rig.state.webs_ks,
+        &rig.auth,
+        CTX,
+        "test",
+    )
+    .await
+    .expect("preview");
+    assert_eq!(preview.dids, vec![did.clone()]);
+
+    // Without force, the refusal counts it.
+    match rig.delete_context(false, HostCopies::RequireRemoved).await {
+        Err(ContextError::NotEmpty(holds)) => assert_eq!(holds.dids, 1),
+        other => panic!("expected notEmpty, got {other:?}"),
+    }
+
+    // With force: the deactivation published, then the slot removed.
+    let published_before = rig.host.published.lock().unwrap().len();
+    let deleted = rig
+        .delete_context(true, HostCopies::RequireRemoved)
+        .await
+        .expect("deleted");
+    assert!(deleted.deleted);
+    assert!(deleted.daemon_cleanup_errors.is_empty());
+    assert_eq!(
+        rig.host.published.lock().unwrap().len(),
+        published_before + 1,
+        "the deactivation is published to the host"
+    );
+    let slot = created["slot"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            did.strip_prefix("did:webs:hosting.example:")
+                .unwrap()
+                .replace(':', "/")
+        });
+    assert_eq!(*rig.host.deleted.lock().unwrap(), vec![slot]);
+    assert!(
+        crate::webs_store::get(&rig.state.webs_ks, &did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_host_that_refuses_holds_the_deletion_unless_its_copy_is_abandoned() {
+    use crate::operations::contexts::{ContextError, HostCopies};
+    let rig = Rig::new().await;
+    let created = ok(&rig
+        .run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_1, create_payload())
+        .await);
+    let did = created["did"].as_str().unwrap().to_string();
+    rig.host.refuse_with(Some("unavailable"));
+
+    match rig.delete_context(true, HostCopies::RequireRemoved).await {
+        Err(ContextError::HostCleanupFailed(failures)) => {
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].did, did);
+        }
+        other => panic!("expected hostCleanupFailed, got {other:?}"),
+    }
+    assert!(
+        crate::webs_store::get(&rig.state.webs_ks, &did)
+            .await
+            .unwrap()
+            .is_some(),
+        "nothing local goes while a host copy is unconfirmed"
+    );
+
+    let deleted = rig
+        .delete_context(true, HostCopies::Abandon)
+        .await
+        .expect("deleted, its copy abandoned");
+    assert_eq!(deleted.daemon_cleanup_errors.len(), 1);
+    assert!(deleted.daemon_cleanup_errors[0].starts_with(&did));
+}
+
+/// `update-did/1.2`: a persona DID cannot become the DID of a context whose
+/// DID is this node's own — the one-class rule (VTI-KEY-193), now applied to
+/// every path that sets a context's DID, not only a did:webs create.
+#[tokio::test]
+async fn a_persona_did_cannot_become_a_node_identity_context_did() {
+    let rig = Rig::new().await;
+    let created = ok(&rig
+        .run(uris::TASK_VTA_WEBS_DIDS_CREATE_0_2, create_02("persona"))
+        .await);
+    let persona = created["did"].as_str().unwrap().to_string();
+    let node = rig
+        .state
+        .config
+        .read()
+        .await
+        .vta_did
+        .clone()
+        .expect("vta_did");
+    let mut ctx = crate::contexts::get_context(&rig.state.contexts_ks, CTX)
+        .await
+        .unwrap()
+        .unwrap();
+    ctx.did = Some(node.clone());
+    crate::contexts::store_context(&rig.state.contexts_ks, &ctx)
+        .await
+        .unwrap();
+
+    let doc = TrustTask::new(
+        "urn:uuid:00000000-0000-4000-8000-0000000000bb".to_string(),
+        uris::TASK_CONTEXTS_UPDATE_DID_1_2
+            .parse::<TypeUri>()
+            .unwrap(),
+        json!({ "id": CTX, "did": persona }),
+    );
+    let out = super::super::contexts::handle_update_did(&rig.state, &rig.auth, doc).await;
+    assert_eq!(code(&out), "vta/contexts/update-did:didClassConflict");
+    assert_eq!(
+        body(&out).pointer("/payload/details/requiredClass"),
+        Some(&json!("service"))
+    );
+    let after = crate::contexts::get_context(&rig.state.contexts_ks, CTX)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.did.as_deref(), Some(node.as_str()));
 }

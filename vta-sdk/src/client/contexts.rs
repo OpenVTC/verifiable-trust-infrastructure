@@ -81,7 +81,7 @@ impl VtaClient {
     ) -> Result<ContextResponse, VtaError> {
         let did = did.into();
         self.rpc_tt(
-            crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+            crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2,
             serde_json::json!({ "id": id, "did": &did }),
             30,
         )
@@ -97,7 +97,7 @@ impl VtaClient {
     /// context was acting as. Clearing a context with no DID succeeds.
     pub async fn clear_context_did(&self, id: &str) -> Result<ContextResponse, VtaError> {
         self.rpc_tt(
-            crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+            crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2,
             serde_json::json!({ "id": id, "did": null }),
             30,
         )
@@ -109,7 +109,7 @@ impl VtaClient {
         id: &str,
     ) -> Result<context_management::delete::DeleteContextPreviewResultBody, VtaError> {
         self.rpc_tt(
-            crate::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+            crate::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_2_0,
             serde_json::json!({ "id": id }),
             30,
         )
@@ -153,11 +153,11 @@ impl VtaClient {
         id: &str,
         force: bool,
         abandon_host_copies: bool,
-    ) -> Result<vti_specs::vta::contexts::delete::v1_1::Response, VtaError> {
+    ) -> Result<vti_specs::vta::contexts::delete::v1_2::Response, VtaError> {
         // 60s: the VTA spends up to 20s on hosts before it touches anything
         // local, then deletes the subtree.
         self.rpc_tt(
-            crate::trust_tasks::TASK_CONTEXTS_DELETE_1_1,
+            crate::trust_tasks::TASK_CONTEXTS_DELETE_1_2,
             serde_json::json!({
                 "id": id,
                 "force": force,

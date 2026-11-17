@@ -394,6 +394,7 @@ pub use crate::did_templates::{
 // callers can continue to use `vta_sdk::client::*` without reaching
 // into the submodule path.
 mod types;
+pub use dids::DidListFilter;
 pub use types::*;
 
 // ── Per-domain impl blocks ─────────────────────────────────────────
@@ -410,6 +411,7 @@ mod consent;
 mod contexts;
 mod credentials;
 mod did_templates;
+mod dids;
 mod keys;
 // Consumed from `vta-service`'s dev-dependency, which enables the feature the
 // ordinary way. `cargo -p vta-sdk --features test-loopback` does *not* rebuild
@@ -4276,7 +4278,7 @@ mod idempotency_document_tests {
         IDEMPOTENCY_KEY
             .scope("urn:uuid:k".to_string(), async {
                 let doc = build_task_document(
-                    trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
+                    trust_tasks::TASK_VTA_DIDS_LIST_0_1,
                     serde_json::json!({}),
                     None,
                 );

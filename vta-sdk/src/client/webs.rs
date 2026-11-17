@@ -70,16 +70,6 @@ impl VtaClient {
             .await
     }
 
-    /// `vta/webs/dids/list/0.1` — the did:webs records the caller may see. A
-    /// page carrying `nextCursor` is not the whole listing.
-    pub async fn list_dids_webs(
-        &self,
-        req: &dids::list::v0_1::Payload,
-    ) -> Result<dids::list::v0_1::Response, VtaError> {
-        self.webs_call(trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1, req)
-            .await
-    }
-
     /// `vta/webs/dids/update/0.1` — replace designated services, the key
     /// agreement key or the aliases, without changing keys.
     pub async fn update_did_webs(

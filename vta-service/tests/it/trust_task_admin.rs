@@ -91,6 +91,25 @@ struct TestContext {
     inner: TestAppContext,
 }
 
+/// A `did:key` the VTA holds in `context` — what `update-did/1.2` requires a
+/// context's DID to be.
+async fn held_did_key(ctx: &TestContext, context: &str, mb: &str) -> String {
+    let did = format!("did:key:{mb}");
+    vta_keys::save_key_record(
+        &ctx.inner.keys_ks,
+        &format!("{did}#{mb}"),
+        "m/26'/0'/9'",
+        vta_sdk::keys::KeyType::Ed25519,
+        mb,
+        "",
+        Some(context),
+        None,
+    )
+    .await
+    .expect("seed a held did:key");
+    did
+}
+
 impl TestContext {
     fn jwt_keys(&self) -> &Arc<JwtKeys> {
         &self.inner.jwt_keys
@@ -941,7 +960,7 @@ async fn context_create_get_update_list_delete() {
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_2,
             json!({"id": "lifecycle"}),
         )
         .await;
@@ -964,16 +983,17 @@ async fn context_admin_can_update_own_context_did() {
     assert!(status.is_success());
 
     let scoped = ctx.login(SEED_SCOPED, "admin", vec!["myctx".into()]).await;
+    let did = held_did_key(&ctx, "myctx", "z6MkMyCtxDid").await;
     let (status, body) = app
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
-            json!({"id": "myctx", "did": "did:webvh:abc:example.com"}),
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2,
+            json!({"id": "myctx", "did": did}),
         )
         .await;
     assert!(status.is_success(), "update did: {status} {body}");
-    assert_eq!(body["did"], "did:webvh:abc:example.com");
+    assert_eq!(body["did"], did.as_str());
 }
 
 /// An admin scoped to one context cannot update another's DID — refused
@@ -1001,7 +1021,7 @@ async fn context_admin_cannot_update_other_context_did() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2,
             json!({"id": "ctx-b", "did": "did:webvh:nope:example.com"}),
         )
         .await;
@@ -1014,7 +1034,7 @@ async fn context_admin_cannot_update_other_context_did() {
         .task(
             &ctx,
             &scoped,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2,
             json!({"id": "ctx-ghost", "did": "did:webvh:nope:example.com"}),
         )
         .await;
@@ -1048,16 +1068,17 @@ async fn super_admin_can_update_any_context_did() {
     )
     .await;
 
+    let did = held_did_key(&ctx, "anyctx", "z6MkAnyCtxDid").await;
     let (status, body) = app
         .task(
             &ctx,
             &super_admin,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
-            json!({"id": "anyctx", "did": "did:webvh:xyz:example.com"}),
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2,
+            json!({"id": "anyctx", "did": did}),
         )
         .await;
     assert!(status.is_success(), "{status} {body}");
-    assert_eq!(body["did"], "did:webvh:xyz:example.com");
+    assert_eq!(body["did"], did.as_str());
 }
 
 #[tokio::test]
@@ -1080,7 +1101,7 @@ async fn non_admin_cannot_update_context_did() {
         .task(
             &ctx,
             &application,
-            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+            vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2,
             json!({"id": "restricted", "did": "did:webvh:bad:example.com"}),
         )
         .await;

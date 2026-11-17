@@ -480,7 +480,7 @@ pub fn render_delete_context_preview(
     let sub_contexts = &preview.sub_contexts;
     let has_resources = !sub_contexts.is_empty()
         || !preview.keys.is_empty()
-        || !preview.webvh_dids.is_empty()
+        || !preview.dids.is_empty()
         || !preview.acl_entries_removed.is_empty()
         || !preview.acl_entries_updated.is_empty()
         || !preview.did_templates.is_empty();
@@ -514,9 +514,11 @@ pub fn render_delete_context_preview(
     // these principals should lose access. A list of opaque DIDs is the
     // hardest possible form in which to make that call, so every DID here
     // renders name-first with its identifier alongside.
-    if !preview.webvh_dids.is_empty() {
-        println!("  WebVH DIDs ({}):", preview.webvh_dids.len());
-        for did in &preview.webvh_dids {
+    // Every method's, not only did:webvh: a did:webs in the subtree is ended
+    // and its slot removed just the same (`vta/contexts/delete/1.2`).
+    if !preview.dids.is_empty() {
+        println!("  DIDs ({}):", preview.dids.len());
+        for did in &preview.dids {
             println!("    - {}", inline(book, did));
         }
     }
@@ -665,7 +667,7 @@ pub async fn cmd_context_delete(
 /// the DIDs the deletion left published.
 fn deletion_outcome(
     id: &str,
-    result: vta_sdk::specs::vta::contexts::delete::v1_1::Response,
+    result: vta_sdk::specs::vta::contexts::delete::v1_2::Response,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     if !result.deleted {
         return Err(format!(
@@ -975,7 +977,7 @@ mod tests {
     fn response(
         deleted: bool,
         orphans: &[&str],
-    ) -> vta_sdk::specs::vta::contexts::delete::v1_1::Response {
+    ) -> vta_sdk::specs::vta::contexts::delete::v1_2::Response {
         serde_json::from_value(serde_json::json!({
             "id": "ctx",
             "deleted": deleted,

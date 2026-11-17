@@ -5663,18 +5663,6 @@ fn webs_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            uris::TASK_VTA_WEBS_DIDS_LIST_0_1,
-            (
-                json!({ "contextId": "personal", "limit": 10 }),
-                parses::<ws::list::v0_1::Payload>,
-                validates::<ws::list::v0_1::Payload>,
-            ),
-            (
-                json!({ "dids": [record()] }),
-                parses::<ws::list::v0_1::Response>,
-            ),
-        ),
-        (
             uris::TASK_VTA_WEBS_DIDS_UPDATE_0_1,
             (
                 json!({ "did": DID, "expectedVersionId": VERSION,
@@ -6641,6 +6629,54 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
     ]
 }
 
+/// `DidSummary`s as the engines build them (`operations::dids`), one per
+/// shape: a did:webvh with method details, a did:webs with a class, a did:key
+/// with neither.
+fn did_summaries() -> Vec<Value> {
+    use crate::operations::dids::DidSummary;
+    let at = chrono::DateTime::parse_from_rfc3339("2026-11-17T10:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let base = |did: &str, method: &'static str| DidSummary {
+        did: did.into(),
+        method,
+        context_id: Some("personal".into()),
+        class: None,
+        level: 1,
+        primary: false,
+        deactivated: false,
+        server_id: None,
+        label: None,
+        signing_key_id: None,
+        key_agreement_key_id: None,
+        also_known_as: Vec::new(),
+        created_at: at,
+        updated_at: at,
+        method_details: None,
+    };
+    let mut webvh = base("did:webvh:QmScid:example.com:personal", "webvh");
+    webvh.primary = true;
+    webvh.server_id = Some("prod".into());
+    webvh.signing_key_id = Some("did:webvh:QmScid:example.com:personal#key-0".into());
+    webvh.method_details = json!({ "scid": "QmScid", "mnemonic": "personal",
+        "portable": false, "logEntryCount": 1, "preRotationCount": 0 })
+    .as_object()
+    .cloned();
+    let mut webs = base("did:webs:example.com:p:EAid", "webs");
+    webs.class = Some("persona");
+    webs.deactivated = true;
+    webs.also_known_as = vec!["did:keri:EAid".into()];
+    webs.method_details = json!({ "aid": "EAid", "slot": "p/EAid", "domain": "example.com",
+        "sequenceNumber": 2, "keriCesrUrl": "https://example.com/p/EAid/keri.cesr",
+        "didJsonUrl": "https://example.com/p/EAid/did.json" })
+    .as_object()
+    .cloned();
+    let mut key = base("did:key:z6Mkhold", "key");
+    key.label = Some("holder".into());
+    key.signing_key_id = Some("did:key:z6Mkhold#z6Mkhold".into());
+    vec![webvh.to_value(), webs.to_value(), key.to_value()]
+}
+
 #[allow(deprecated)] // vta/webvh/dids/rotate-keys/1.0: still served; whether to move is a pending decision
 fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     use specs::vta::{contexts as ctx, services as svc, webvh as wv};
@@ -6716,14 +6752,15 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (context_record(), parses::<ctx::update::v1_0::Response>),
         ),
         (
-            // 1.1: `did` may be `null`, which clears the context's DID.
-            uris::TASK_CONTEXTS_UPDATE_DID_1_1,
+            // `did` may be `null`, which clears the context's DID; 1.2 refuses
+            // a string naming an identity the VTA does not hold there.
+            uris::TASK_CONTEXTS_UPDATE_DID_1_2,
             (
                 json!({ "id": "personal", "did": null }),
-                parses::<ctx::update_did::v1_1::Payload>,
-                validates::<ctx::update_did::v1_1::Payload>,
+                parses::<ctx::update_did::v1_2::Payload>,
+                validates::<ctx::update_did::v1_2::Payload>,
             ),
-            (context_record(), parses::<ctx::update_did::v1_1::Response>),
+            (context_record(), parses::<ctx::update_did::v1_2::Response>),
         ),
         (
             uris::TASK_CONTEXTS_SECRETS_1_0,
@@ -6758,45 +6795,99 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            uris::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+            uris::TASK_CONTEXTS_PREVIEW_DELETE_2_0,
             (
                 json!({ "id": "personal" }),
-                parses::<ctx::preview_delete::v1_0::Payload>,
-                validates::<ctx::preview_delete::v1_0::Payload>,
+                parses::<ctx::preview_delete::v2_0::Payload>,
+                validates::<ctx::preview_delete::v2_0::Payload>,
             ),
             (
-                // These four are arrays of ids, not counts. The names read like
-                // tallies and do not behave like them — precisely what a witness
-                // written by hand gets wrong and the round-trip check exists to catch.
-                json!({ "id": "personal", "keys": ["k-1"], "webvhDids": [],
-                 "aclEntriesRemoved": ["did:key:zRemoved"], "aclEntriesUpdated": [] }),
-                parses::<ctx::preview_delete::v1_0::Response>,
+                // Serialised from the type the service answers with, so a
+                // member it renames cannot pass by a hand-written literal.
+                // `dids` names every method's identities (2.0).
+                serde_json::to_value(
+                    vta_sdk::protocols::context_management::delete::DeleteContextPreviewResultBody {
+                        id: "personal".into(),
+                        keys: vec!["k-1".into()],
+                        dids: vec![
+                            "did:webvh:QmX:host.example:p".into(),
+                            "did:webs:host.example:p:EAid".into(),
+                        ],
+                        acl_entries_removed: vec!["did:key:zRemoved".into()],
+                        ..Default::default()
+                    },
+                )
+                .expect("the preview serialises"),
+                parses::<ctx::preview_delete::v2_0::Response>,
             ),
         ),
         (
-            // 1.1: `abandonHostCopies`, and the orphans it leaves reported.
-            uris::TASK_CONTEXTS_DELETE_1_1,
+            // `abandonHostCopies`, and the orphans it leaves reported — of any
+            // method (1.2).
+            uris::TASK_CONTEXTS_DELETE_1_2,
             (
                 json!({ "id": "personal", "force": true, "abandonHostCopies": true }),
-                parses::<ctx::delete::v1_1::Payload>,
-                validates::<ctx::delete::v1_1::Payload>,
+                parses::<ctx::delete::v1_2::Payload>,
+                validates::<ctx::delete::v1_2::Payload>,
             ),
             (
                 json!({ "id": "personal", "deleted": true,
-                        "daemonCleanupErrors": ["did:webvh:QmX:host.example:p: host down"] }),
-                parses::<ctx::delete::v1_1::Response>,
+                        "daemonCleanupErrors": ["did:webs:host.example:p:EAid: host down"] }),
+                parses::<ctx::delete::v1_2::Response>,
             ),
         ),
         (
-            uris::TASK_WEBVH_DIDS_LIST_1_0,
+            uris::TASK_VTA_DIDS_LIST_0_1,
             (
-                json!({}),
-                parses::<wv::dids::list::v1_0::Payload>,
-                validates::<wv::dids::list::v1_0::Payload>,
+                json!({ "contextId": "personal", "methods": ["webvh", "webs", "key"],
+                        "includeDeactivated": true, "limit": 10 }),
+                parses::<vti_specs::vta::dids::list::v0_1::Payload>,
+                validates::<vti_specs::vta::dids::list::v0_1::Payload>,
             ),
             (
-                json!({ "dids": [did_record()] }),
-                parses::<wv::dids::list::v1_0::Response>,
+                json!({ "dids": did_summaries(), "nextCursor": "ZGlkcy1hZnRlcg" }),
+                parses::<vti_specs::vta::dids::list::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_DIDS_GET_0_1,
+            (
+                json!({ "did": did }),
+                parses::<vti_specs::vta::dids::get::v0_1::Payload>,
+                validates::<vti_specs::vta::dids::get::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": did_summaries()[0] }),
+                parses::<vti_specs::vta::dids::get::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_DIDS_METHODS_LIST_0_1,
+            (
+                json!({}),
+                parses::<vti_specs::vta::dids::methods::list::v0_1::Payload>,
+                validates::<vti_specs::vta::dids::methods::list::v0_1::Payload>,
+            ),
+            (
+                json!({ "methods": [
+                    crate::operations::dids::MethodInfo {
+                        method: "webs",
+                        listed: true,
+                        creatable: true,
+                        classes: vec!["relationship", "persona"],
+                        operations: vec![uris::TASK_VTA_WEBS_DIDS_GET_0_1],
+                    }
+                    .to_value(),
+                    crate::operations::dids::MethodInfo {
+                        method: "key",
+                        listed: true,
+                        creatable: false,
+                        classes: Vec::new(),
+                        operations: Vec::new(),
+                    }
+                    .to_value(),
+                ] }),
+                parses::<vti_specs::vta::dids::methods::list::v0_1::Response>,
             ),
         ),
         (

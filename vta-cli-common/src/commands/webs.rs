@@ -227,53 +227,25 @@ pub async fn cmd_webs_get(client: &VtaClient, did: &str, keri_cesr: bool) -> Cmd
     Ok(())
 }
 
+/// `webs list` — the method-neutral listing (`vta/dids/list`), narrowed to
+/// did:webs.
 pub async fn cmd_webs_list(
     client: &VtaClient,
     context: Option<&str>,
     server: Option<&str>,
     include_deactivated: bool,
 ) -> CmdResult {
-    let mut cursor: Option<String> = None;
-    let mut all = Vec::new();
-    loop {
-        let mut v = json!({ "includeDeactivated": include_deactivated });
-        if let Some(c) = context {
-            v["contextId"] = json!(c);
-        }
-        if let Some(s) = server {
-            v["serverId"] = json!(s);
-        }
-        if let Some(c) = &cursor {
-            v["cursor"] = json!(c);
-        }
-        let req: dids::list::v0_1::Payload = payload("list", v)?;
-        let page = client.list_dids_webs(&req).await?;
-        for d in &page.dids {
-            all.push(serde_json::to_value(d)?);
-        }
-        match page.next_cursor {
-            Some(c) => cursor = Some(c.to_string()),
-            None => break,
-        }
-    }
-    if is_json_output() {
-        print_json(&json!({ "dids": all }))?;
-        return Ok(());
-    }
-    if all.is_empty() {
-        println!("No did:webs DIDs found.");
-        return Ok(());
-    }
-    for d in &all {
-        let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-        let gone = if d.get("deactivated").and_then(Value::as_bool) == Some(true) {
-            "  (deactivated)"
-        } else {
-            ""
-        };
-        println!("{}  [{}]{gone}", s("did"), s("contextId"));
-    }
-    Ok(())
+    super::dids::cmd_dids_list(
+        client,
+        &vta_sdk::client::DidListFilter {
+            context_id: context.map(str::to_string),
+            methods: Some(vec!["webs".to_string()]),
+            server_id: server.map(str::to_string),
+            include_deactivated,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// The arguments of `webs update`.

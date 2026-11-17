@@ -151,11 +151,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_CONTEXTS_GET_1_0, ReadOnly),
     (trust_tasks::TASK_CONTEXTS_UPDATE_1_0, RetrySafe),
     // Clearing is a set-to-absent: repeating it leaves the same state.
-    (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1, RetrySafe),
-    (trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0, ReadOnly),
+    (trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2, RetrySafe),
+    (trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_2_0, ReadOnly),
     // A retry after a `hostCleanupFailed` refusal is the point of the code:
     // nothing local went, and host copies already removed count as removed.
-    (trust_tasks::TASK_CONTEXTS_DELETE_1_1, RetrySafe),
+    (trust_tasks::TASK_CONTEXTS_DELETE_1_2, RetrySafe),
     // ── Services ────────────────────────────────────────────────────────
     //
     // Every mutation here republishes the agent's did:webvh log, and that log
@@ -361,7 +361,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // what the caller saw.
     (trust_tasks::TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1, RetrySafe),
     // ── WebVH DIDs ──────────────────────────────────────────────────────
-    (trust_tasks::TASK_WEBVH_DIDS_LIST_1_0, ReadOnly),
+    (trust_tasks::TASK_VTA_DIDS_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_DIDS_GET_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_DIDS_METHODS_LIST_0_1, ReadOnly),
     // The finding that opened all of this. Production callers use
     // `WebvhPathMode::AutoAssign`, so a retried create is assigned a *different*
     // path: the first DID stays published in the log with no local reference.
@@ -381,7 +383,6 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1, Keyed),
     (trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_2, Keyed),
     (trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1, ReadOnly),
-    (trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1, ReadOnly),
     // Each update and rotation appends events to the key event log; two append
     // two (a second rotation installs a key the first committed).
     (trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1, Keyed),

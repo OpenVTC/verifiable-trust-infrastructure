@@ -1114,6 +1114,7 @@ pub async fn run_context_delete(
         &did_templates_ks,
         #[cfg(feature = "webvh")]
         &webvh_ks,
+        &webs_ks,
         &auth,
         &id,
         "vta-contexts-delete",
@@ -1193,6 +1194,7 @@ pub async fn run_context_delete(
             imported_ks: &imported_ks,
             contexts_ks: &contexts_ks,
             webvh_ks: &webvh_ks,
+            webs_ks: Some(&webs_ks),
             audit: &audit_sink,
             seed_store: &*seed_store,
             did_resolver: &did_resolver,
@@ -1208,6 +1210,10 @@ pub async fn run_context_delete(
             // The break-glass path keeps the 1.0 contract it always had, and
             // prints every orphan below.
             host_copies: crate::operations::contexts::HostCopies::ReportAfter,
+            // Offline: no hosting client, so a did:webs in the subtree is an
+            // unconfirmed host copy, reported rather than dropped unseen.
+            #[cfg(feature = "webs")]
+            webs: None,
         };
         let result = crate::operations::contexts::delete_context(
             &ks,

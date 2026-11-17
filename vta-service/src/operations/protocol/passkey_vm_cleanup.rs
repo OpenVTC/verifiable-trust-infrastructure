@@ -127,6 +127,8 @@ pub async fn strip_all_passkey_vms(
             imported_ks,
             contexts_ks,
             webvh_ks,
+            // Publishes; never compares a host's listing.
+            webs_ks: None,
             // Publishing a service change never deletes a DID.
             delete_cascade: None,
             audit,

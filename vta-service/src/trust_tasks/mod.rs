@@ -104,6 +104,7 @@ pub(crate) mod credential_exchange;
 mod credentials;
 mod device;
 mod did_templates;
+mod dids;
 mod discovery;
 #[cfg(test)]
 mod error_code_census;
@@ -257,7 +258,6 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
@@ -268,7 +268,6 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_1,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_CREATE_0_2,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1,
-    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1,
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_DELETE_0_1,
@@ -2694,13 +2693,13 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_CONTEXTS_SECRETS_1_0 => contexts::handle_secrets
         [ None Secret false ],
     // 1.1 lets `did` be `null` (clear it).
-    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1 => contexts::handle_update_did
+    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_2 => contexts::handle_update_did
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete
+    vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_2_0 => contexts::handle_preview_delete
         [ None Metadata false ],
     // 1.1 settles every host copy before any local record goes, and refuses
     // (`hostCleanupFailed`) unless the caller chose `abandonHostCopies`.
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_1 => contexts::handle_delete
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_2 => contexts::handle_delete
         [ Destructive None false ],
     // ─── Keys slice ──────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_KEYS_LIST_0_2 => keys::handle_list
@@ -3511,8 +3510,14 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1 => webvh::handle_servers_retire_orphan
         [ Destructive None false ],
-    #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => webvh::handle_dids_list
+    // ─── Method-neutral DIDs (every method, every level) ──────────
+    // The question `webvh/dids/list` and `webs/dids/list` answered one method
+    // at a time (docs/05-design-notes/did-management.md).
+    vta_sdk::trust_tasks::TASK_VTA_DIDS_LIST_0_1 => dids::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_DIDS_GET_0_1 => dids::handle_get
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_DIDS_METHODS_LIST_0_1 => dids::handle_methods_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_2 => webvh::handle_dids_create
@@ -3558,9 +3563,6 @@ dispatch_table! {
         [ Mutating Metadata false ],
     #[cfg(feature = "webs")]
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_GET_0_1 => webs::handle_get
-        [ None Metadata false ],
-    #[cfg(feature = "webs")]
-    vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_LIST_0_1 => webs::handle_list
         [ None Metadata false ],
     #[cfg(feature = "webs")]
     vta_sdk::trust_tasks::TASK_VTA_WEBS_DIDS_UPDATE_0_1 => webs::handle_update
@@ -5329,6 +5331,26 @@ mod response_coverage {
 
     /// A context to hang scoped state off. Also covers
     /// `vta/contexts/create/1.0`.
+    /// A `did:key` this VTA holds in `context`: the key record whose id is the
+    /// DID's own `did:key:<mb>#<mb>`, which is what `vta/dids` summarises and
+    /// what `update-did/1.2` accepts as a context's DID.
+    async fn a_held_did_key(state: &crate::server::AppState, context: &str, mb: &str) -> String {
+        let did = format!("did:key:{mb}");
+        vta_keys::save_key_record(
+            &state.keys_ks,
+            &format!("{did}#{mb}"),
+            "m/26'/0'/9'",
+            vta_sdk::keys::KeyType::Ed25519,
+            mb,
+            "",
+            Some(context),
+            None,
+        )
+        .await
+        .expect("seed a held did:key");
+        did
+    }
+
     async fn a_context(state: &crate::server::AppState, id: &str) {
         ok(
             state,
@@ -5464,12 +5486,51 @@ mod response_coverage {
     async fn contexts_update_did() {
         let (state, _dir) = build_signing_test_app_state().await;
         a_context(&state, "cov-update-did").await;
+        let did = a_held_did_key(&state, "cov-update-did", "z6MkCovContextDid").await;
         ok(
             &state,
-            t::TASK_CONTEXTS_UPDATE_DID_1_1,
-            json!({ "id": "cov-update-did", "did": "did:key:z6MkCovContextDid" }),
+            t::TASK_CONTEXTS_UPDATE_DID_1_2,
+            json!({ "id": "cov-update-did", "did": did }),
         )
         .await;
+    }
+
+    /// `update-did/1.2`: a DID this VTA holds no identity for — or holds in
+    /// another context — is `notHeld`, and the context keeps its DID.
+    #[tokio::test]
+    async fn contexts_update_did_refuses_a_did_the_context_does_not_hold() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-not-held").await;
+        a_context(&state, "cov-elsewhere").await;
+        let elsewhere = a_held_did_key(&state, "cov-elsewhere", "z6MkHeldElsewhere").await;
+        for did in ["did:web:nobody-holds-this.example", elsewhere.as_str()] {
+            let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+            let body = signed_body(
+                t::TASK_CONTEXTS_UPDATE_DID_1_2,
+                &vta_did,
+                json!({ "id": "cov-not-held", "did": did }),
+            );
+            let outcome = super::dispatch_trust_task_core(
+                &state,
+                &crate::test_support::super_admin_claims(),
+                &body,
+                transport::TransportConfidentiality::HopByHop,
+            )
+            .await;
+            let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+            assert_eq!(
+                doc["payload"]["code"], "vta/contexts/update-did:notHeld",
+                "{did}: {doc}"
+            );
+        }
+        let ctx = crate::contexts::get_context(&state.contexts_ks, "cov-not-held")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            ctx.did, None,
+            "a refused update leaves the context as it was"
+        );
     }
 
     /// `update-did/1.1`: `did: null` clears the context's DID and the record
@@ -5479,23 +5540,25 @@ mod response_coverage {
     async fn contexts_update_did_1_1_clears() {
         let (state, _dir) = build_signing_test_app_state().await;
         a_context(&state, "cov-clear-did").await;
+        let first = a_held_did_key(&state, "cov-clear-did", "z6MkCovContextDid").await;
+        let second = a_held_did_key(&state, "cov-clear-did", "z6MkCovSecondDid").await;
         ok(
             &state,
-            t::TASK_CONTEXTS_UPDATE_DID_1_1,
-            json!({ "id": "cov-clear-did", "did": "did:key:z6MkCovContextDid" }),
+            t::TASK_CONTEXTS_UPDATE_DID_1_2,
+            json!({ "id": "cov-clear-did", "did": first }),
         )
         .await;
         let set = ok(
             &state,
-            t::TASK_CONTEXTS_UPDATE_DID_1_1,
-            json!({ "id": "cov-clear-did", "did": "did:web:ctx.example" }),
+            t::TASK_CONTEXTS_UPDATE_DID_1_2,
+            json!({ "id": "cov-clear-did", "did": second }),
         )
         .await;
-        assert_eq!(set["did"], "did:web:ctx.example");
+        assert_eq!(set["did"], second.as_str());
         for round in ["first", "second"] {
             let cleared = ok(
                 &state,
-                t::TASK_CONTEXTS_UPDATE_DID_1_1,
+                t::TASK_CONTEXTS_UPDATE_DID_1_2,
                 json!({ "id": "cov-clear-did", "did": null }),
             )
             .await;
@@ -5519,7 +5582,7 @@ mod response_coverage {
             json!({ "id": "cov-bad-did", "did": "hello" }),
             json!({ "id": "cov-bad-did" }),
         ] {
-            let body = signed_body(t::TASK_CONTEXTS_UPDATE_DID_1_1, &vta_did, payload.clone());
+            let body = signed_body(t::TASK_CONTEXTS_UPDATE_DID_1_2, &vta_did, payload.clone());
             let outcome = super::dispatch_trust_task_core(
                 &state,
                 &crate::test_support::super_admin_claims(),
@@ -6442,7 +6505,7 @@ mod response_coverage {
             .await
             .expect("seed the webvh record");
 
-        ok(&state, t::TASK_WEBVH_DIDS_LIST_1_0, json!({})).await;
+        ok(&state, t::TASK_VTA_DIDS_LIST_0_1, json!({})).await;
 
         // `agent-name/*` is deliberately NOT covered here, and the reason is
         // not obvious: the names are local records, but every one of those
@@ -6593,7 +6656,7 @@ mod response_coverage {
         // delete would take with it, so cover them in that order.
         let preview = ok(
             &state,
-            t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+            t::TASK_CONTEXTS_PREVIEW_DELETE_2_0,
             json!({ "id": "cov-contexts" }),
         )
         .await;
@@ -6611,7 +6674,7 @@ mod response_coverage {
         // refusal the preview above exists to warn about.
         ok(
             &state,
-            t::TASK_CONTEXTS_DELETE_1_1,
+            t::TASK_CONTEXTS_DELETE_1_2,
             json!({ "id": "cov-contexts", "force": true }),
         )
         .await;
@@ -6642,7 +6705,7 @@ mod response_coverage {
 
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
         let body = signed_body(
-            t::TASK_CONTEXTS_DELETE_1_1,
+            t::TASK_CONTEXTS_DELETE_1_2,
             &vta_did,
             json!({ "id": "cov-notempty" }),
         );
@@ -6679,7 +6742,7 @@ mod response_coverage {
         let (state, _dir) = build_signing_test_app_state().await;
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
         let body = signed_body(
-            t::TASK_CONTEXTS_DELETE_1_1,
+            t::TASK_CONTEXTS_DELETE_1_2,
             &vta_did,
             json!({ "id": "cov-never-created", "force": true }),
         );
@@ -6767,7 +6830,7 @@ mod response_coverage {
 
         let doc = answer(
             &state,
-            t::TASK_CONTEXTS_DELETE_1_1,
+            t::TASK_CONTEXTS_DELETE_1_2,
             json!({ "id": "gone-host", "force": true }),
         )
         .await;
@@ -6813,7 +6876,7 @@ mod response_coverage {
 
         let payload = ok(
             &state,
-            t::TASK_CONTEXTS_DELETE_1_1,
+            t::TASK_CONTEXTS_DELETE_1_2,
             json!({ "id": "abandon", "force": true, "abandonHostCopies": true }),
         )
         .await;
@@ -6869,7 +6932,7 @@ mod response_coverage {
         let started = std::time::Instant::now();
         let doc = answer(
             &state,
-            t::TASK_CONTEXTS_DELETE_1_1,
+            t::TASK_CONTEXTS_DELETE_1_2,
             json!({ "id": "unreachable", "force": true }),
         )
         .await;
@@ -6921,17 +6984,17 @@ mod response_coverage {
                 json!({ "id": "PLACEHOLDER" }),
             ),
             (
-                t::TASK_CONTEXTS_UPDATE_DID_1_1,
+                t::TASK_CONTEXTS_UPDATE_DID_1_2,
                 "vta/contexts/update-did",
                 json!({ "id": "PLACEHOLDER", "did": null }),
             ),
             (
-                t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+                t::TASK_CONTEXTS_PREVIEW_DELETE_2_0,
                 "vta/contexts/preview-delete",
                 json!({ "id": "PLACEHOLDER" }),
             ),
             (
-                t::TASK_CONTEXTS_DELETE_1_1,
+                t::TASK_CONTEXTS_DELETE_1_2,
                 "vta/contexts/delete",
                 json!({ "id": "PLACEHOLDER", "force": true }),
             ),

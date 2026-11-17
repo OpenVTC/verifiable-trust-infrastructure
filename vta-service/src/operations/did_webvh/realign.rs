@@ -70,7 +70,10 @@ pub async fn realign_did_key_records(
     let mut record = webvh_store::get_did(webvh_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
-    auth.require_context(&record.context_id)?;
+    // NotFound, not Forbidden, for a DID in a context the caller cannot reach:
+    // the specification's answer "whether or not the VTA holds it", so a
+    // refusal does not confirm that it does.
+    super::hide_unreachable(auth, &record.context_id, did)?;
 
     // The DID's own log, not a resolution: this agent published it, and a
     // repair that depends on the network is a repair that cannot run when the
@@ -620,7 +623,8 @@ mod tests {
         )
         .await
         .expect_err("cross-context admin must be refused");
-        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        // NotFound, not Forbidden: the refusal must not confirm the DID exists.
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
         assert!(
             held(&ts.keys_ks, &format!("{did}#key-0")).await.is_some(),
             "a record moved anyway"
