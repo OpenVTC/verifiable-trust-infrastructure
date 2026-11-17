@@ -76,6 +76,7 @@ pub(crate) const RETIRE_TYPE: &str = <retire::Payload as Payload>::TYPE_URI;
 pub(crate) const ASSIGN_TYPE: &str = <assign::Payload as Payload>::TYPE_URI;
 pub(crate) const MIGRATE_TYPE: &str = <migrate::Payload as Payload>::TYPE_URI;
 pub(crate) const CREDENTIALS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const CREDENTIALS_RECIPIENT_TYPE: &str = <recipient::Payload as Payload>::TYPE_URI;
 /// How long `credentials/recipient` waits on its own DID's resolution before
 /// answering from its own record (item 3).
