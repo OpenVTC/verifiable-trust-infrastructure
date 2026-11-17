@@ -256,7 +256,13 @@ minted, otherwise by resolving it — never from the request), refuses a key tha
 is not one of its verification methods (`issuerMismatch`) or not listed under the
 requested purpose (`purposeNotAuthorized`, `assertionMethod` by default), refuses
 a document that already carries a proof, and builds the proof configuration and
-hash data itself. The answer is the document exactly as sent with the proof
+hash data itself. A key that authorizes the log of a `did:webvh` this VTA holds
+(an update key or a pre-rotation key) signs only as that `did:webvh`, never as
+its own `did:key`: a proof by `did:key:<update key>` is exactly a log entry's, so
+signing a caller's document that way would let any holder of `sign-document` in
+the context rewrite the DID. It is refused as `failedPrecondition` (item 6, a key
+bound to another protocol). The VTA reads this from the logs it holds — every
+key any entry names in `updateKeys` or commits to in `nextKeyHashes`. The answer is the document exactly as sent with the proof
 attached; use it as it is. Gated on `sign-document`, and `sign` is not accepted
 in its place. Each proof is audited as `keys.sign-document` (signer, method,
 purpose, the document's `id` and `type`, and the SHA-256 of the hash data —

@@ -803,6 +803,53 @@ pub async fn sign_document(
     let key = vta_sdk::did_key::decode_ed25519_public_key_multibase(&record.public_key)
         .map_err(|e| AppError::Internal(format!("key {key_id}'s public key: {e}")))?;
 
+    // Item 6, for a key bound to another protocol: a key that authorizes the
+    // log of a `did:webvh` this VTA holds is bound to that log, and does not
+    // sign as its own `did:key`. A webvh log entry's proof is exactly an
+    // `eddsa-jcs-2022` proof by `did:key:<update key>`, so signing a caller's
+    // document that way would let any holder of `sign-document` in the context
+    // write the DID's next entry. It still signs as the `did:webvh` it serves,
+    // whose proofs name that DID's own method — which a log verifier never
+    // accepts. (That one key is both, against VTI-KEY-093, is registered in the
+    // specification's divergence register.) Read from the logs themselves
+    // (`did_webvh::log_authority`), so an update that declares no keys, a DID
+    // older than the key-handle index, or an update key that is also a method
+    // is covered alike.
+    #[cfg(feature = "webvh")]
+    if signer.starts_with("did:key:")
+        && let Some(did) = crate::operations::did_webvh::log_authority::log_authorized_by(
+            stores.webvh_ks,
+            &record.public_key,
+        )
+        .await?
+    {
+        let reason = format!(
+            "{key_id} authorizes the log of {did}, so it signs only as that DID, never as its \
+             own did:key"
+        );
+        tracing::error!(
+            audit = true,
+            security_alert = true,
+            did = %auth.did,
+            key_id,
+            log_did = %did,
+            channel,
+            "sign-document refused: the key authorizes a did:webvh log",
+        );
+        audit::record_with_detail_best_effort(
+            audit,
+            crate::operations::key_custody::CUSTODY_VIOLATION_ACTION,
+            &auth.did,
+            Some(key_id),
+            "denied",
+            Some(channel),
+            record.context_id.as_deref(),
+            Some(&reason),
+        )
+        .await;
+        return Err(ProtocolSignRefusal::KeyNotActive(reason));
+    }
+
     // Item 8: the signer DID's own document, never one from the request.
     let own = match did_key_methods(&signer) {
         Some(m) => Some(m),
