@@ -1132,9 +1132,13 @@ pub async fn delete_context(
     #[cfg(feature = "webvh")]
     if let Some(cleanup) = cleanup {
         let deadline = tokio::time::Instant::now() + HOST_SETTLE_BUDGET;
-        let mut failures = settle_host_copies(cleanup, &subtree_dids).await?;
+        let failures = settle_host_copies(cleanup, &subtree_dids).await?;
         #[cfg(feature = "webs")]
-        failures.extend(settle_webs_dids(cleanup, auth, &subtree_webs, deadline).await?);
+        let failures = {
+            let mut all = failures;
+            all.extend(settle_webs_dids(cleanup, auth, &subtree_webs, deadline).await?);
+            all
+        };
         #[cfg(not(feature = "webs"))]
         let _ = deadline;
         if !failures.is_empty() {
