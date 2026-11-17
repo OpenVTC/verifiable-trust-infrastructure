@@ -75,11 +75,14 @@ Turning a mode off later keeps the configs that use it: each reports its credent
 On the config's page in the console, **Set the credential** (or **Replace the
 credential**) takes an S3 access-key pair, or the service-account key file exactly as
 Google issued it, and a reason. The browser seals it to the community's DID before
-anything is sent: HPKE to the X25519 derivation of the Ed25519 key (`#key-0`) in the
-DID document this community serves at `/.well-known/did.jsonl`. The page forgets the
-key the moment it is sealed. If the browser cannot seal — the community does not
-serve its own DID document, or no console key is enrolled — the page says so and
-shows the terminal command instead.
+anything is sent: HPKE to the X25519 derivation of the community's Ed25519 signing key,
+which the page asks of the community itself (`vtc/storage/credentials/recipient/0.1`)
+because a browser cannot resolve and verify every DID method — a `did:webs`, or a
+`did:webvh` on a DID host. The community answers only with the key its DID document
+publishes, so a rotation not yet published there is refused rather than sealed past.
+The page forgets the key the moment it is sealed. If the browser cannot seal — that
+refusal, or no console key enrolled — the page says so and shows the terminal command
+instead.
 
 From a terminal holding an administrator's `cnm` profile:
 

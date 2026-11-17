@@ -424,6 +424,9 @@ const READ_VERBS: &[&str] = &[
     "list",
     "get",
     "get-many",
+    // `vtc/storage/credentials/recipient`: reads the public key a sealed credential
+    // is sealed to; persists nothing.
+    "recipient",
     "show",
     "info",
     "whoami",

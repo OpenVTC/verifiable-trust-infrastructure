@@ -732,7 +732,9 @@ the VTC, again only where the host permits it (`[rooms.files.auth] sealed = true
   `SealedStorageCredential` naming its config, sent as
   `vtc/storage/credentials/set/0.2` — from the config's console page, which seals in
   the browser (`admin-ui/src/lib/sealed-transfer.ts`, held to the Rust opener by
-  shared vectors) to the `#key-0` of the DID document the VTC serves, or from
+  shared vectors) to the key the VTC names for itself with
+  `vtc/storage/credentials/recipient/0.1` (its signing key, by role, held to its
+  resolved DID document — any method, `did:webs` included), or from
   `cnm storage credentials set`, which the page offers when it cannot seal.
 - **Checked as received**: against the specification's schema, its `kind` against
   the config's and its `configId` against the request's (a block sealed for one

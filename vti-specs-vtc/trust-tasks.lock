@@ -1569,6 +1569,12 @@ type_uri = "https://trusttasks.org/spec/vtc/storage/configs/update/0.3"
 digest = "sha256:ad5fb22ec8620c9455e65630b37b34cd9ddf6e54ae2f4d5fe04af32c51471e2e"
 
 [[task]]
+slug = "vtc/storage/credentials/recipient"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/storage/credentials/recipient/0.1"
+digest = "sha256:2d382fef7064d9ce44a752db88c5ee23b5f379adfb1f50e8da543905b6eaa68a"
+
+[[task]]
 slug = "vtc/storage/credentials/set"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3"

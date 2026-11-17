@@ -308,6 +308,7 @@ use crate::server::AppState;
         vta_sdk::openapi::StorageCredentialsSet03Payload,
         vta_sdk::openapi::StorageCredentialsSet03Response,
         vta_sdk::openapi::StorageCredentialsSet03Cleartext,
+        vta_sdk::openapi::StorageCredentialsRecipient01Response,
         vta_sdk::openapi::StorageConfigsUpdate03Payload,
         vta_sdk::openapi::StorageConfigsUpdate03Response,
         vta_sdk::openapi::StorageConfigsRetire03Response,

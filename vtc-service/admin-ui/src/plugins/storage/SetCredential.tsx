@@ -15,7 +15,7 @@
 //
 // The change is parked for another holder of `vtc.rooms.admin` like every storage
 // change; they see the config and the block's digest. Where this browser cannot
-// seal — the community serves no DID document here, or no console key is enrolled —
+// seal — the community cannot say which key to seal to, or no console key is enrolled —
 // the terminal command is the way, and is always shown beside the form.
 
 import { useState, type FormEvent } from "react";

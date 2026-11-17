@@ -84,6 +84,9 @@ pub struct SealedCredentials {
     ks: KeyspaceHandle,
     /// The X25519 secret the community opens sealed blocks with.
     open_key: Zeroizing<[u8; 32]>,
+    /// The Ed25519 public key `open_key` derives from: what a producer seals to
+    /// (`vtc/storage/credentials/recipient/0.1` item 2).
+    recipient: [u8; 32],
     /// The fingerprint's HMAC key.
     fingerprint_key: Zeroizing<[u8; 32]>,
 }
@@ -100,6 +103,9 @@ impl SealedCredentials {
         derivation_root: &[u8; 32],
     ) -> Self {
         let open_key = vta_sdk::sealed_transfer::ed25519_seed_to_x25519_secret(ed25519_seed);
+        let recipient = ed25519_dalek::SigningKey::from_bytes(ed25519_seed)
+            .verifying_key()
+            .to_bytes();
         let mut fingerprint_key = Zeroizing::new([0u8; 32]);
         Hkdf::<Sha256>::new(None, derivation_root)
             .expand(
@@ -110,8 +116,15 @@ impl SealedCredentials {
         Self {
             ks: ks.with_encryption(storage_key),
             open_key,
+            recipient,
             fingerprint_key,
         }
+    }
+
+    /// The Ed25519 public key whose X25519 derivation opens a sealed block — the
+    /// only key `vtc/storage/credentials/recipient/0.1` answers with (item 2).
+    pub fn recipient(&self) -> [u8; 32] {
+        self.recipient
     }
 
     /// Open `armored` (whose digest is `digest_multibase`) as the credential for

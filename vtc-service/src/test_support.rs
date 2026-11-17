@@ -112,6 +112,14 @@ pub fn test_community_x25519_public() -> [u8; 32] {
     x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*secret)).to_bytes()
 }
 
+/// The Ed25519 public key a test community's signer holds (`with_signers`): what its
+/// DID document publishes, and what `vtc/storage/credentials/recipient` answers with.
+pub fn test_community_ed25519_public() -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(&SIGNER_SEED)
+        .verifying_key()
+        .to_bytes()
+}
+
 /// The fixtures both services share live in `vti_common::test_support` (#2572).
 pub use vti_common::test_support::{build_offline_atm, init_jwt_provider};
 

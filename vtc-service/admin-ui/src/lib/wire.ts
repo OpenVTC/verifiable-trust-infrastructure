@@ -14394,6 +14394,20 @@ export interface components {
              */
             relayUrl: string;
         };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcStorageCredentialsRecipientV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The Ed25519 key the community opens a sealed block with, and where its DID document publishes it. */
+        VtcStorageCredentialsRecipientV0_1Response: {
+            /** @description The community's DID: the document's `issuer`, stated in the payload so the answer still names it once separated from its envelope. */
+            communityDid: string;
+            ext?: components["schemas"]["VtcStorageCredentialsRecipientV0_1Ext"];
+            /** @description That Ed25519 public key, as its `did:key`. A sealed block's recipient is this key's X25519 derivation. */
+            recipientKey: string;
+            /** @description The absolute DID URL of the verification method in the community's DID document that publishes `recipientKey`: its signing key, by role. */
+            verificationMethod: string;
+        };
         /** @description Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `notAllowed` means the config's mode is one the community's host configuration no longer permits, so it cannot store until its `auth` is changed; `none` is a `local` config. */
         VtcStorageCredentialsSetV0_3CredentialState: {
             account?: components["schemas"]["VtcStorageCredentialsSetV0_3ExternalAccountId"];

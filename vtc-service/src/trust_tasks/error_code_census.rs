@@ -761,6 +761,12 @@ fn witnesses() -> Vec<Witness> {
             "vtc_storage_credentials_set_refuses_with_its_declared_codes"
         ),
         witness!(
+            s::storage::credentials::recipient::v0_1::error_codes::NOT_PUBLISHED,
+            crate::rooms::storage_configs::codes::RECIPIENT_NOT_PUBLISHED,
+            "room_storage_auth.rs",
+            "vtc_storage_credentials_recipient_refuses_a_key_its_document_does_not_publish"
+        ),
+        witness!(
             s::storage::credentials::set::v0_3::error_codes::CANNOT_OPEN,
             crate::rooms::storage_configs::codes::SET_CANNOT_OPEN,
             "room_storage_auth.rs",
