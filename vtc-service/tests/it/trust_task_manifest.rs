@@ -1137,6 +1137,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/storage/configs/retire/0.3",
     "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
     "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3",
+    // The key the console seals a credential to, for any DID method.
+    "https://trusttasks.org/spec/vtc/storage/credentials/recipient/0.1",
     "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.2",
     "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.3",
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).

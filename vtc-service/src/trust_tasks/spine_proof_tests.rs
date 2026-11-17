@@ -538,6 +538,10 @@ const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
         "reads one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
     ),
     (
+        storage_tasks::CREDENTIALS_RECIPIENT_TYPE,
+        "reads the key a sealed credential is sealed to; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
+    ),
+    (
         storage_tasks::PROBE_TYPE,
         "probes one storage config; the handler authorizes vtc.rooms.admin from the signer's own entry, so an unsigned caller is refused regardless",
     ),

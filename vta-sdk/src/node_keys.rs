@@ -122,6 +122,38 @@ impl NodeKeyIds {
     }
 }
 
+/// The Ed25519 public key `document`, the DID document of `did`, publishes under
+/// the verification method `id` — as `publicKeyMultibase`, or as an `OKP` /
+/// `Ed25519` `publicKeyJwk` (how a `did:webs` publishes its keys). `id` may be
+/// absolute or `#fragment`; the document's own ids may be either.
+///
+/// `None` when the document lists no such method or it holds no Ed25519 key.
+pub fn ed25519_public_key(did: &str, document: &Value, id: &str) -> Option<[u8; 32]> {
+    let wanted = absolute(did, id);
+    let method = document
+        .get("verificationMethod")?
+        .as_array()?
+        .iter()
+        .find(|m| {
+            m.get("id")
+                .and_then(Value::as_str)
+                .map(|i| absolute(did, i))
+                == Some(wanted.clone())
+        })?;
+    if let Some(mb) = method.get("publicKeyMultibase").and_then(Value::as_str) {
+        return crate::did_key::decode_ed25519_public_key_multibase(mb).ok();
+    }
+    let jwk = method.get("publicKeyJwk")?;
+    if jwk.get("kty")?.as_str()? != "OKP" || jwk.get("crv")?.as_str()? != "Ed25519" {
+        return None;
+    }
+    use base64::Engine as _;
+    let x = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(jwk.get("x")?.as_str()?)
+        .ok()?;
+    <[u8; 32]>::try_from(x.as_slice()).ok()
+}
+
 /// The fragment of a DID URL, without the `#`.
 pub fn fragment(id: &str) -> Option<&str> {
     id.split_once('#').map(|(_, f)| f)
@@ -148,6 +180,34 @@ fn absolute(did: &str, id: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// VTI-KEY-150: the signing key is read in either shape a document publishes
+    /// it — multibase at `#key-0` on a did:webvh, a JWK under its own id on a
+    /// did:webs — and nothing else is taken for it.
+    #[test]
+    fn vti_key_150_an_ed25519_key_is_read_as_multibase_or_jwk() {
+        use base64::Engine as _;
+        let public = [9u8; 32];
+        let mb = crate::did_key::ed25519_multibase_pubkey(&public);
+        let did = "did:webvh:QmScid:vtc.example";
+        let webvh = json!({ "id": did, "verificationMethod": [
+            { "id": "#key-0", "type": "Multikey", "publicKeyMultibase": mb } ] });
+        assert_eq!(
+            ed25519_public_key(did, &webvh, &format!("{did}#key-0")),
+            Some(public)
+        );
+        assert_eq!(ed25519_public_key(did, &webvh, "#key-1"), None);
+
+        let did = "did:webs:vtc.example:EAid";
+        let x = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public);
+        let webs = json!({ "id": did, "verificationMethod": [
+            { "id": format!("{did}#DKey"), "type": "JsonWebKey",
+              "publicKeyJwk": { "kty": "OKP", "crv": "Ed25519", "x": x } },
+            { "id": format!("{did}#XKey"), "type": "JsonWebKey",
+              "publicKeyJwk": { "kty": "OKP", "crv": "X25519", "x": x } } ] });
+        assert_eq!(ed25519_public_key(did, &webs, "#DKey"), Some(public));
+        assert_eq!(ed25519_public_key(did, &webs, "#XKey"), None);
+    }
 
     const DID: &str = "did:webvh:QmScid:vta.example";
 

@@ -1,6 +1,7 @@
 //! Where this community keeps its rooms' files — `vtc/storage/configs/{list,get}/0.2`,
 //! `vtc/storage/configs/{create,update,retire}/0.3`, `vtc/storage/configs/probe/0.1`,
-//! `vtc/storage/credentials/set/0.3`, `vtc/rooms/storage/assign/0.2` and
+//! `vtc/storage/credentials/set/0.3`, `vtc/storage/credentials/recipient/0.1`,
+//! `vtc/rooms/storage/assign/0.2` and
 //! `vtc/rooms/storage/migrate/0.3`
 //! (`docs/05-design-notes/data-rooms-files.md` §7; [`crate::rooms::storage_configs`]).
 //!
@@ -8,7 +9,8 @@
 //! time: the host's authority over rooms, never a room's. No room-issued credential is
 //! required or accepted, and nothing here needs or could use a room key.
 //!
-//! - **Reads** (`list`, `get`) and the **probe** answer a holder of `vtc.rooms.admin`.
+//! - **Reads** (`list`, `get`, `credentials/recipient`) and the **probe** answer a holder
+//!   of `vtc.rooms.admin`.
 //! - **Changes** (`create`, `update`, `retire`, `assign`, `migrate`) decide where members' files go
 //!   and what reaches them, so each is parked for the other holders' consent after the
 //!   requester's operation-bound step-up ([`super::acl_tasks::settle_consent_gate`],
@@ -32,7 +34,7 @@ use super::routing::{Routes, on};
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
+use trust_tasks_rs::{ErrorPayload, Payload, RejectReason, TrustTask};
 use vtc_audit::{AuditEvent, RoomStorageChangedData};
 use vti_common::blob_store::{BlobKey, PROBE_PREFIX};
 use vti_rooms::blobs::{
@@ -44,10 +46,12 @@ use vti_specs::vtc::storage::configs::{
     create::v0_3 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
     retire::v0_3 as retire, update::v0_3 as update,
 };
+use vti_specs::vtc::storage::credentials::recipient::v0_1 as recipient;
 use vti_specs::vtc::storage::credentials::set::v0_3 as set;
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
+    TrustTaskOutcome, app_error_to_reject, error_response, extended_code, reject_with,
+    reject_with_code,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::acl::Capability;
@@ -72,6 +76,10 @@ pub(crate) const RETIRE_TYPE: &str = <retire::Payload as Payload>::TYPE_URI;
 pub(crate) const ASSIGN_TYPE: &str = <assign::Payload as Payload>::TYPE_URI;
 pub(crate) const MIGRATE_TYPE: &str = <migrate::Payload as Payload>::TYPE_URI;
 pub(crate) const CREDENTIALS_SET_TYPE: &str = <set::Payload as Payload>::TYPE_URI;
+pub(crate) const CREDENTIALS_RECIPIENT_TYPE: &str = <recipient::Payload as Payload>::TYPE_URI;
+/// How long `credentials/recipient` waits on its own DID's resolution before
+/// answering from its own record (item 3).
+const OWN_DID_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// At most this many room identifiers in a `get` (`vtc/storage/configs/get` item 2).
 const ASSIGNED_ROOMS_SHOWN: usize = 100;
@@ -90,6 +98,9 @@ pub(super) fn register(routes: Routes) -> Routes {
     let routes = on!(routes, update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
     let routes =
         on!(routes, set::Payload => |state, ctx, doc| handle_credentials_set(state, ctx, doc));
+    let routes = on!(routes, recipient::Payload => |state, ctx, doc| {
+        handle_credentials_recipient(state, ctx, doc)
+    });
     let routes = on!(routes, retire::Payload => |state, ctx, doc| handle_retire(state, ctx, doc));
     let routes = on!(routes, probe::Payload => |state, ctx, doc| handle_probe(state, ctx, doc));
     let routes = on!(routes, assign::Payload => |state, ctx, doc| handle_assign(state, ctx, doc));
@@ -741,6 +752,96 @@ fn open_sealed(
             SealedRefusal::CannotOpen(why) => refuse(doc, c::CANNOT_OPEN.code, why, None),
             SealedRefusal::Invalid(why) => refuse(doc, c::INVALID_CREDENTIAL.code, why, None),
         })
+}
+
+/// `vtc/storage/credentials/recipient/0.1`: the key a `credentials/set` block is sealed
+/// to — the Ed25519 key whose X25519 derivation [`crate::rooms::storage_credentials`]
+/// opens with, as its `did:key`, and the verification method publishing it (item 2).
+/// A client that cannot resolve and verify this community's DID — the console in a
+/// browser, for a `did:webs` or a hosted `did:webvh` — seals to this answer.
+///
+/// When this community's own DID resolves, the answer is held to the document: a
+/// signing key there that is not the one it opens with is `notPublished`, so nothing is
+/// sealed past a rotation (item 3). When it does not resolve in time, the answer comes
+/// from the key the community holds, which item 3 permits.
+async fn handle_credentials_recipient(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = rooms_admin(state, ctx, &doc).await {
+        return reject;
+    }
+    if let Err(reject) = parse_spec_payload::<recipient::Payload>(&doc) {
+        return reject;
+    }
+    let (Some(sealed), Some(signer)) = (
+        state.room_storage.sealed_credentials(),
+        state.credential_signer.as_ref(),
+    ) else {
+        return app_error_to_reject(
+            &doc,
+            &vti_common::error::AppError::ServiceError {
+                status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                message: "this community cannot keep a sealed credential: its signing key is \
+                          not loaded"
+                    .into(),
+            },
+        );
+    };
+    let key = sealed.recipient();
+    let did = signer.issuer_did();
+    let mut method = absolute_method(did, signer.assertion_method_id());
+
+    let resolved = match state.did_resolver.as_ref() {
+        Some(resolver) => tokio::time::timeout(OWN_DID_RESOLVE_TIMEOUT, resolver.resolve(did))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|r| serde_json::to_value(&r.doc).ok()),
+        None => None,
+    };
+    if let Some(document) = resolved {
+        let published = vta_sdk::node_keys::NodeKeyIds::from_document(did, &document)
+            .ok()
+            .and_then(|ids| {
+                vta_sdk::node_keys::ed25519_public_key(did, &document, &ids.signing)
+                    .map(|k| (ids.signing, k))
+            });
+        match published {
+            Some((id, published)) if published == key => method = id,
+            _ => {
+                // Declared `retryable: true` (a rotation not yet published); an
+                // extended code defaults to false.
+                let code = recipient::error_codes::NOT_PUBLISHED;
+                let err = ErrorPayload::new(extended_code(code.code))
+                    .with_message(format!(
+                        "the key this community opens sealed credentials with is not the \
+                         signing key {did}'s DID document publishes; publish the rotated key \
+                         at the VTA, then ask again"
+                    ))
+                    .with_retryable(code.retryable);
+                return error_response(
+                    doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), err),
+                );
+            }
+        }
+    }
+
+    let body = json!({
+        "communityDid": did,
+        "verificationMethod": method,
+        "recipientKey": format!("did:key:{}", vta_sdk::did_key::ed25519_multibase_pubkey(&key)),
+    });
+    respond::<recipient::Response>(&doc, body)
+}
+
+/// A verification-method id made absolute under `did`.
+fn absolute_method(did: &str, id: &str) -> String {
+    match id.strip_prefix('#') {
+        Some(fragment) => format!("{did}#{fragment}"),
+        None => id.to_string(),
+    }
 }
 
 /// `vtc/storage/credentials/set/0.3`: a `sealed` config's long-lived credential, sealed

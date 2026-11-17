@@ -35518,6 +35518,46 @@
         },
         "additionalProperties": false
       },
+      "VtcStorageCredentialsRecipientV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcStorageCredentialsRecipientV0_1Response": {
+        "type": "object",
+        "description": "The Ed25519 key the community opens a sealed block with, and where its DID document publishes it.",
+        "required": [
+          "communityDid",
+          "verificationMethod",
+          "recipientKey"
+        ],
+        "properties": {
+          "communityDid": {
+            "type": "string",
+            "description": "The community's DID: the document's `issuer`, stated in the payload so the answer still names it once separated from its envelope.",
+            "maxLength": 1000,
+            "minLength": 5,
+            "pattern": "^did:[a-z0-9]+:[^#?/\\s]+$"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcStorageCredentialsRecipientV0_1Ext"
+          },
+          "recipientKey": {
+            "type": "string",
+            "description": "That Ed25519 public key, as its `did:key`. A sealed block's recipient is this key's X25519 derivation.",
+            "pattern": "^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]+$"
+          },
+          "verificationMethod": {
+            "type": "string",
+            "description": "The absolute DID URL of the verification method in the community's DID document that publishes `recipientKey`: its signing key, by role.",
+            "maxLength": 1200,
+            "minLength": 6,
+            "pattern": "^did:[a-z0-9]+:[^#?/\\s]+#[^\\s]+$"
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcStorageCredentialsSetV0_3CredentialState": {
         "type": "object",
         "description": "Whether a config can authenticate now, and how — never the credential. `status`: `vta-account`, `ambient` and `sealed` are usable; `required` means the config cannot store until a credential is provided (a `sealed` config never set, or set before a restore, which carries no credential); `notAllowed` means the config's mode is one the community's host configuration no longer permits, so it cannot store until its `auth` is changed; `none` is a `local` config.",

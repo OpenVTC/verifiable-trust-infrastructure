@@ -71,8 +71,10 @@ pub mod codes {
         create::v0_3 as create, get::v0_2 as get, list::v0_2 as list, probe::v0_1 as probe,
         retire::v0_3 as retire, update::v0_3 as update,
     };
+    use vti_specs::vtc::storage::credentials::recipient::v0_1 as recipient;
     use vti_specs::vtc::storage::credentials::set::v0_3 as set;
 
+    pub const RECIPIENT_NOT_PUBLISHED: &str = recipient::error_codes::NOT_PUBLISHED.code;
     pub const LIST_INVALID_CURSOR: &str = list::error_codes::INVALID_CURSOR.code;
     pub const GET_NOT_FOUND: &str = get::error_codes::NOT_FOUND.code;
     pub const CREATE_EXISTS: &str = create::error_codes::EXISTS.code;

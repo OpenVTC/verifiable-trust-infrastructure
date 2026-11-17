@@ -1806,6 +1806,16 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
+            s::storage::credentials::recipient::v0_1::Payload,
+            s::storage::credentials::recipient::v0_1::Response,
+            json!({}),
+            json!({
+                "communityDid": "did:webs:vtc.example.com:EAbcAid",
+                "verificationMethod": "did:webs:vtc.example.com:EAbcAid#DKey",
+                "recipientKey": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            })
+        ),
+        checked!(
             s::storage::configs::retire::v0_3::Payload,
             s::storage::configs::retire::v0_3::Response,
             json!({ "configId": "local", "reason": "moving to object storage" }),

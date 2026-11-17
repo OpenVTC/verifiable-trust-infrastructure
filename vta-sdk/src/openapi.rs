@@ -69,6 +69,7 @@ use vti_specs::vtc::rooms::{
 };
 use vti_specs::vtc::schemas::accepts;
 use vti_specs::vtc::storage::configs as storage_configs;
+use vti_specs::vtc::storage::credentials::recipient as storage_credentials_recipient;
 use vti_specs::vtc::storage::credentials::set as storage_credentials_set;
 
 /// Transparent wrappers documenting generated types, one per line.
@@ -685,6 +686,9 @@ spec_types! {
     /// seals inside the block. Never a payload member, never sent unsealed.
     StorageCredentialsSet03Cleartext(storage_credentials_set::v0_3::SealedCredentialCleartext)
         in storage_credentials_set::v0_3::Payload as "SealedCredentialCleartext";
+    /// `vtc/storage/credentials/recipient/0.1#response` — the key a sealed credential is
+    /// sealed to, as its `did:key`, and the verification method publishing it.
+    StorageCredentialsRecipient01Response(storage_credentials_recipient::v0_1::Response);
     /// `git-ns/view/0.6#response` — namespaces, repositories and recorded git
     /// rights.
     GitNsView06Response(git_ns_view::v0_6::Response);

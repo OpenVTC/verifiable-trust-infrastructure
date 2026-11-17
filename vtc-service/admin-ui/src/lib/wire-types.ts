@@ -284,6 +284,7 @@ export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_3Resp
 // sealed; it is never a payload member and never leaves the page unsealed.
 export type StorageCredentialsSetPayload = Schemas["VtcStorageCredentialsSetV0_3Payload"];
 export type StorageCredentialsSetResponse = Schemas["VtcStorageCredentialsSetV0_3Response"];
+export type StorageCredentialsRecipientResponse = Schemas["VtcStorageCredentialsRecipientV0_1Response"];
 export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_3SealedCredentialCleartext"];
 
 // ── Data rooms the community itself owns ────────────────────────────────

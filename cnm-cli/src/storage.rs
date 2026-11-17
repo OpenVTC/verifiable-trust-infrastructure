@@ -187,36 +187,12 @@ fn community_ed25519(did: &str, doc: &Value) -> CliResult<[u8; 32]> {
     let signing = vta_sdk::node_keys::NodeKeyIds::from_document(did, doc)
         .map_err(|e| format!("{did}: {e}"))?
         .signing;
-    let fragment = vta_sdk::node_keys::fragment(&signing);
-    let method = doc["verificationMethod"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|m| {
-            let id = m["id"].as_str().unwrap_or_default();
-            id == signing || (id.starts_with('#') && Some(&id[1..]) == fragment)
-        })
-        .ok_or_else(|| {
-            format!("{did}'s DID document does not publish its signing key {signing}")
-        })?;
-    let from_multibase = method["publicKeyMultibase"]
-        .as_str()
-        .and_then(|mb| vta_sdk::did_key::decode_ed25519_public_key_multibase(mb).ok());
-    let from_jwk = || {
-        use base64::Engine as _;
-        let jwk = &method["publicKeyJwk"];
-        (jwk["kty"] == "OKP" && jwk["crv"] == "Ed25519")
-            .then(|| jwk["x"].as_str())
-            .flatten()
-            .and_then(|x| {
-                base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(x)
-                    .ok()
-            })
-            .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
-    };
-    from_multibase.or_else(from_jwk).ok_or_else(|| {
-        format!("{did}'s signing key {signing} is not an Ed25519 key to seal to").into()
+    vta_sdk::node_keys::ed25519_public_key(did, doc, &signing).ok_or_else(|| {
+        format!(
+            "{did}'s DID document does not publish its signing key {signing} as an Ed25519 key \
+             to seal to"
+        )
+        .into()
     })
 }
 
