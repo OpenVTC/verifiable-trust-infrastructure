@@ -44,8 +44,14 @@ const DID_LIST_MAX_PAGES: u64 = 100;
 /// A reserved or registered slot: where the log goes, and its identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestUriResponse {
+    /// The URL of the slot's log document (`DidRecord.didUrl`): where the log
+    /// is published and fetched. Never the DID.
     pub did_url: String,
     pub mnemonic: String,
+    /// The identifier the host derived from what it published
+    /// (`DidRecord.didId`), absent for a slot only reserved. This, not
+    /// `did_url`, is what a publication is checked against.
+    pub did_id: Option<String>,
 }
 
 /// One slot the host holds for this VTA, as the reconcile reads it.
@@ -374,6 +380,7 @@ impl<'a> WebvhHostClient<'a> {
         Ok(RequestUriResponse {
             did_url,
             mnemonic: record.mnemonic,
+            did_id: record.did_id,
         })
     }
 
@@ -575,6 +582,7 @@ fn project_check_name(
     Ok(RequestUriResponse {
         did_url,
         mnemonic: record.mnemonic,
+        did_id: record.did_id,
     })
 }
 

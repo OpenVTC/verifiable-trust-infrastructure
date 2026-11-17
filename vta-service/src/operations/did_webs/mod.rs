@@ -954,11 +954,13 @@ fn check_published(
     did: &str,
     mnemonic: &str,
 ) -> Result<(), WebsError> {
-    if published.did_url != did {
+    // `didId` is the identifier the host derived from the stream it
+    // published; `didUrl` is only where that stream lives.
+    if published.did_id.as_deref() != Some(did) {
         return Err(WebsError::App(AppError::Internal(format!(
             "the hosting server published {} for slot {mnemonic}, not {did}; nothing was \
              recorded here, and the slot must be reconciled on the server",
-            published.did_url
+            published.did_id.as_deref().unwrap_or("no identifier")
         ))));
     }
     Ok(())
