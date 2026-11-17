@@ -26,6 +26,7 @@ import { forgetMemberSessionKey } from "@/lib/console-key";
 import { forgetSessionKey } from "./oob";
 import { SignIn, isJoinIntent } from "./SignIn";
 import { CommunityTopbar, fetchCommunityProfile } from "../signin/SignInLayout";
+import { chosenLogo } from "@/lib/display-logo";
 import { shortenDid } from "@/lib/format";
 
 async function fetchMe(): Promise<MemberMe | null> {
@@ -152,7 +153,7 @@ export function Portal() {
   }, [signedIn]);
 
   const communityName = me.data?.community.name ?? profile.data?.name;
-  const logoUrl = me.data?.community.logoUrl ?? profile.data?.logoUrl;
+  const logoUrl = (me.data ? chosenLogo(me.data.community) : null) ?? profile.data?.logoUrl;
 
   return (
     <>

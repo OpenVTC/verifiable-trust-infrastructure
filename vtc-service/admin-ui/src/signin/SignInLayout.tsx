@@ -11,7 +11,7 @@
 import { useState, type ReactNode } from "react";
 
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
-import { displayableLogo } from "@/lib/display-logo";
+import { chosenLogo, displayableLogo, type LogoSource } from "@/lib/display-logo";
 
 /** The community's top bar. The brand links to the community's home page;
  *  the colour-theme switcher sits at the far end, after `children`. */
@@ -121,8 +121,8 @@ export async function fetchCommunityProfile(): Promise<{
   try {
     const res = await fetch("/v1/community/public-profile");
     if (!res.ok) return { name: null, logoUrl: null };
-    const p = (await res.json()) as { name?: string; logoUrl?: string | null };
-    return { name: p.name || null, logoUrl: p.logoUrl || null };
+    const p = (await res.json()) as { name?: string } & LogoSource;
+    return { name: p.name || null, logoUrl: chosenLogo(p) };
   } catch {
     return { name: null, logoUrl: null };
   }

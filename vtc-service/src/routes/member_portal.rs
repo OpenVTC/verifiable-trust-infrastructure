@@ -346,6 +346,9 @@ pub async fn sign_out(
 pub struct MemberCommunity {
     pub name: Option<String>,
     pub logo_url: Option<String>,
+    /// The logo the community stored, drawn in preference to `logoUrl`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logo: Option<crate::community::logo::PublicLogo>,
     pub did: Option<String>,
 }
 
@@ -389,6 +392,7 @@ pub async fn me(
                 .map(|p| p.name.clone())
                 .filter(|n| !n.is_empty()),
             logo_url: profile.as_ref().and_then(|p| p.logo_url.clone()),
+            logo: state.community_logo.public_logo(&state.community_ks).await,
             did: vtc_did,
         },
     }))

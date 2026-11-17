@@ -133,6 +133,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/community/logo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /community/logo — the community's stored logo image.
+         *     Public, unauthenticated.
+         */
+        get: operations["get_logo"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/community/public-profile": {
         parameters: {
             query?: never;
@@ -2612,6 +2632,7 @@ export interface components {
             createdAt: string;
             description: string;
             language: string;
+            logo?: components["schemas"]["PublicLogo"] | null;
             logoUrl?: string | null;
             /**
              * @description The community's DIDComm mediator DID, if one is configured.
@@ -2656,6 +2677,27 @@ export interface components {
              *     caller might act on.
              */
             transports: components["schemas"]["TransportStatus"][];
+        };
+        /**
+         * @description The stored logo as a page is told about it: the `logo` member of the
+         *     public profile and of the member portal's `community`.
+         */
+        PublicLogo: {
+            /** Format: int32 */
+            height: number;
+            mediaType: string;
+            sha256: string;
+            /**
+             * @description Where a page loads it: [`LOGO_PATH`] on the same origin as the profile
+             *     it appears in (a reader elsewhere resolves it against the URL it read
+             *     the profile from), with the digest as `?v=` so a browser's in-page
+             *     image cache never shows a replaced logo. The route ignores the query
+             *     and revalidates every use, so any `v` answers the current logo.
+             *     `vtc/community/logo/show/0.1` names the absolute, unversioned URL.
+             */
+            url: string;
+            /** Format: int32 */
+            width: number;
         };
         /**
          * @description The messaging SDK's [`ReceiveHealth`], as a health endpoint reports it.
@@ -14846,6 +14888,40 @@ export interface operations {
                 };
             };
             /** @description Community profile not initialised */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_logo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored logo: the community's own PNG re-encoding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                };
+            };
+            /** @description Not modified (matches If-None-Match) */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The community holds no logo */
             404: {
                 headers: {
                     [name: string]: unknown;

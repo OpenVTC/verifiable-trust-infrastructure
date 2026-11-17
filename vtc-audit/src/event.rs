@@ -625,6 +625,11 @@ pub enum AuditEvent {
     /// never its text (update item 6).
     CommunityThemeUpdated(CommunityThemeUpdatedData),
 
+    /// An admin replaced or removed the community's logo — the image the
+    /// community serves from its own origin (`vtc/community/logo/update/0.1`).
+    /// Names the stored re-encoding by digest, never the image (update item 6).
+    CommunityLogoUpdated(CommunityLogoUpdatedData),
+
     /// An administrator defined, changed or retired a member-directory field,
     /// or the retention period of a retired one ran out and its values were
     /// erased (`vtc/directory/fields/*`). Each ceiling in force is a promise
@@ -1312,6 +1317,7 @@ impl AuditEvent {
             Self::VetterAutoGrantSwept(..) => "VetterAutoGrantSwept",
             Self::CommunityBrandingUpdated(..) => "CommunityBrandingUpdated",
             Self::CommunityThemeUpdated(..) => "CommunityThemeUpdated",
+            Self::CommunityLogoUpdated(..) => "CommunityLogoUpdated",
             Self::DirectoryFieldChanged(..) => "DirectoryFieldChanged",
             Self::DirectoryCardChanged(..) => "DirectoryCardChanged",
             Self::DirectoryCardPublication(..) => "DirectoryCardPublication",
@@ -2957,6 +2963,21 @@ pub struct CommunityThemeUpdatedData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     /// Its length in UTF-8 bytes; 0 when removed.
+    pub bytes: u32,
+}
+
+/// Payload for [`AuditEvent::CommunityLogoUpdated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommunityLogoUpdatedData {
+    /// Lowercase hex SHA-256 of the stored re-encoding; `None` when the logo
+    /// was removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    /// The stored media type; `None` when removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// The stored length in bytes; 0 when removed.
     pub bytes: u32,
 }
 
@@ -4665,6 +4686,14 @@ mod tests {
                     bytes: 0,
                 }),
                 "CommunityThemeUpdated",
+            ),
+            (
+                AuditEvent::CommunityLogoUpdated(CommunityLogoUpdatedData {
+                    digest: None,
+                    media_type: None,
+                    bytes: 0,
+                }),
+                "CommunityLogoUpdated",
             ),
             (
                 AuditEvent::DirectoryFieldChanged(DirectoryFieldChangedData {

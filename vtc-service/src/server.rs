@@ -220,6 +220,9 @@ pub struct AppState {
     /// The member directory (`crate::directory`): its schema and every
     /// member's card, in its own keyspace.
     pub directory: Arc<crate::directory::Directory>,
+    /// The community's logo as served (`crate::community::logo`): the bytes of
+    /// the digest last served, its update rate limit and re-encoding permit.
+    pub community_logo: Arc<crate::community::logo::LogoState>,
     /// Community elections (`crate::elections`): the registrar's records, and its
     /// link to ballot boxes over this VTC's messaging.
     pub elections: Arc<crate::elections::Elections>,
@@ -1152,6 +1155,7 @@ pub async fn run(
         room_storage,
         community_rooms,
         directory,
+        community_logo: Arc::new(crate::community::logo::LogoState::default()),
         elections,
         audit_ks,
         audit_key_ks,

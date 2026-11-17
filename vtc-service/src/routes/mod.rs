@@ -745,6 +745,10 @@ fn build_api_chain(
         // The community DID as a QR code, for a wallet to scan off the landing
         // page. Public for the same reason as the profile: it is the same DID.
         .routes(routes!(community::did_qr::get_did_qr))
+        // The logo the community stored (`vtc/community/logo/update/0.1`),
+        // served from its own origin because its pages admit images from
+        // nowhere else. Public for the same reason as the profile.
+        .routes(routes!(community::logo::get_logo))
         // Community branding (`vtc/community/branding/{show,update}/0.1`) and
         // what the community asks an applicant to tell it about themselves
         // (`vtc/community/requested-attributes/{show,update}/0.1`), both
@@ -1542,6 +1546,7 @@ mod openapi_tests {
         const PUBLIC: &[(&str, &str)] = &[
             ("GET", "/v1/community/public-profile"),
             ("GET", "/v1/community/did-qr.svg"),
+            ("GET", "/v1/community/logo"),
             ("GET", "/v1/status-lists/{purpose}"),
         ];
         PUBLIC.contains(&(method, path))
@@ -1677,6 +1682,11 @@ mod openapi_tests {
         ("GET", "/v1/community/public-profile"),
         // The community DID as an SVG QR code — the same public DID, drawn.
         ("GET", "/v1/community/did-qr.svg"),
+        // The community's stored logo — public by design, served from memory
+        // against a small record read, 304 on a matching ETag. Pages load it
+        // on every navigation, which the unauth governor's 1-per-5-s refill
+        // would break.
+        ("GET", "/v1/community/logo"),
         // (The join manifest is now the `join-requests/manifest/1.0` Trust
         // Task verb on `POST /v1/trust-tasks`, not a bespoke public GET.)
         // Verifier-facing status list — public by the W3C BitstringStatusList model.

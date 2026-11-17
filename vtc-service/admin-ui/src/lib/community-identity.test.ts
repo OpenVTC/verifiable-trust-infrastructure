@@ -5,6 +5,7 @@ import {
   applyCommunityAccent,
   displayableLogo,
 } from "@/lib/community-identity";
+import { chosenLogo, logoUrlWarning } from "@/lib/display-logo";
 
 describe("the community accent", () => {
   afterEach(() => applyCommunityAccent(null));
@@ -47,5 +48,30 @@ describe("the community logo", () => {
     expect(displayableLogo("//cdn.example.com/logo.png", ORIGIN)).toBeNull();
     expect(displayableLogo("", ORIGIN)).toBeNull();
     expect(displayableLogo(null, ORIGIN)).toBeNull();
+  });
+});
+
+describe("which logo a page draws", () => {
+  const ORIGIN = "https://vtc.example.org";
+
+  it("prefers the logo the community stored over the Logo URL", () => {
+    expect(chosenLogo({ logo: { url: "/v1/community/logo?v=0123" }, logoUrl: "https://cdn.example.com/l.png" })).toBe(
+      "/v1/community/logo?v=0123",
+    );
+    expect(chosenLogo({ logo: null, logoUrl: "https://cdn.example.com/l.png" })).toBe("https://cdn.example.com/l.png");
+    expect(chosenLogo({ logoUrl: "" })).toBeNull();
+    expect(chosenLogo({ logo: { url: 42 } })).toBeNull();
+    expect(chosenLogo(null)).toBeNull();
+    // The stored logo's path is same-origin, so it is always drawable.
+    expect(displayableLogo(chosenLogo({ logo: { url: "/v1/community/logo?v=0123" } }), ORIGIN)).toBe(
+      "/v1/community/logo?v=0123",
+    );
+  });
+
+  it("warns under the Logo URL field only when these pages will not draw it", () => {
+    expect(logoUrlWarning("", ORIGIN)).toBeNull();
+    expect(logoUrlWarning("https://vtc.example.org/logo.png", ORIGIN)).toBeNull();
+    expect(logoUrlWarning("https://cdn.example.com/logo.png", ORIGIN)).toMatch(/won't show/);
+    expect(logoUrlWarning("not a url", ORIGIN)).toMatch(/won't show/);
   });
 });

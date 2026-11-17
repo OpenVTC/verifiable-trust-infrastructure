@@ -162,6 +162,29 @@
         }
       }
     },
+    "/v1/community/logo": {
+      "get": {
+        "tags": [
+          "community"
+        ],
+        "summary": "GET /community/logo — the community's stored logo image.\nPublic, unauthenticated.",
+        "operationId": "get_logo",
+        "responses": {
+          "200": {
+            "description": "The stored logo: the community's own PNG re-encoding",
+            "content": {
+              "image/png": {}
+            }
+          },
+          "304": {
+            "description": "Not modified (matches If-None-Match)"
+          },
+          "404": {
+            "description": "The community holds no logo"
+          }
+        }
+      }
+    },
     "/v1/community/public-profile": {
       "get": {
         "tags": [
@@ -4506,6 +4529,17 @@
           "language": {
             "type": "string"
           },
+          "logo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicLogo",
+                "description": "The logo the community stored and serves from its own origin\n(`vtc/community/logo/update/0.1`), if any. A page that admits images\nonly from its own origin draws this in preference to `logoUrl`; absent\nwhen the community holds none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "logoUrl": {
             "type": [
               "string",
@@ -4538,6 +4572,39 @@
               "$ref": "#/components/schemas/TransportStatus"
             },
             "description": "How to reach this community, and whether each route currently works.\n\nEvery protocol is listed, each carrying `advertised` (the DID document\noffers it) and `serviceable` (this VTC can answer on it right now).\nReachable means both.\n\n**The DID document remains authoritative.** This is a *view* of it,\nresolved at request time, published so a visitor or a monitor can\nvalidate connectivity without resolving the DID themselves — never an\nindependent declaration. A client choosing a transport must still match\non the document's service `type`; if the two ever disagree, the document\nwins and this field is the thing that is wrong.\n\nEmpty when the community's own DID could not be resolved — reported as\nunknown rather than as \"advertises nothing\", which would be a lie a\ncaller might act on."
+          }
+        }
+      },
+      "PublicLogo": {
+        "type": "object",
+        "description": "The stored logo as a page is told about it: the `logo` member of the\npublic profile and of the member portal's `community`.",
+        "required": [
+          "url",
+          "sha256",
+          "mediaType",
+          "width",
+          "height"
+        ],
+        "properties": {
+          "height": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "mediaType": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "Where a page loads it: [`LOGO_PATH`] on the same origin as the profile\nit appears in (a reader elsewhere resolves it against the URL it read\nthe profile from), with the digest as `?v=` so a browser's in-page\nimage cache never shows a replaced logo. The route ignores the query\nand revalidates every use, so any `v` answers the current logo.\n`vtc/community/logo/show/0.1` names the absolute, unversioned URL."
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },

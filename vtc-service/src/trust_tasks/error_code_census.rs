@@ -3114,6 +3114,24 @@ fn witnesses() -> Vec<Witness> {
             "a_theme_outside_the_profile_is_refused_where_it_breaks_it"
         ),
         witness!(
+            s::community::logo::update::v0_1::error_codes::TOO_LARGE,
+            crate::trust_tasks::surface_tasks::LOGO_UPDATE_ERR_TOO_LARGE,
+            "community_logo.rs",
+            "a_picture_claiming_more_pixels_than_are_decoded_is_too_large"
+        ),
+        witness!(
+            s::community::logo::update::v0_1::error_codes::NOT_AN_IMAGE,
+            crate::trust_tasks::surface_tasks::LOGO_UPDATE_ERR_NOT_AN_IMAGE,
+            "community_logo.rs",
+            "what_is_not_a_raster_of_its_type_is_refused"
+        ),
+        witness!(
+            s::community::logo::update::v0_1::error_codes::RATE_LIMITED,
+            crate::trust_tasks::surface_tasks::LOGO_UPDATE_ERR_RATE_LIMITED,
+            "community_logo.rs",
+            "updates_beyond_the_hourly_bound_are_rate_limited"
+        ),
+        witness!(
             s::community::requested_attributes::update::v0_1::error_codes::DUPLICATE_TYPE,
             crate::trust_tasks::surface_tasks::REQUESTED_ERR_DUPLICATE_TYPE,
             "surface_verbs_spine.rs",

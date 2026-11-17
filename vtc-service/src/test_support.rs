@@ -812,6 +812,7 @@ impl TestVtcBuilder {
                     .expect("directory ks"),
                 self.directory,
             )),
+            community_logo: Arc::new(crate::community::logo::LogoState::default()),
             elections: Arc::new(crate::elections::Elections::new(
                 store
                     .keyspace(crate::store::keyspaces::ELECTIONS)

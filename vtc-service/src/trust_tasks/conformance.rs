@@ -3802,6 +3802,42 @@ fn table() -> Vec<Conformance> {
             json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "dryRun": true }),
             json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "stored": false })
         ),
+        // The handlers build both answers as the generated types; these pin
+        // the request shapes each side sends. Removal (`remove: true`,
+        // `logo: null`) is exercised end to end by `tests/it/community_logo.rs`.
+        checked!(
+            s::community::logo::update::v0_1::Payload,
+            s::community::logo::update::v0_1::Response,
+            json!({ "image": { "mediaType": "image/png", "data": "iVBORw0KGgo" } }),
+            json!({
+                "logo": {
+                    "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
+                    "mediaType": "image/png",
+                    "size": 18342,
+                    "width": 512,
+                    "height": 256,
+                    "url": "https://community.example/v1/community/logo",
+                },
+                "stored": true,
+                "updatedAt": TS,
+            })
+        ),
+        checked!(
+            s::community::logo::show::v0_1::Payload,
+            s::community::logo::show::v0_1::Response,
+            json!({ "includeData": true }),
+            json!({
+                "logo": {
+                    "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
+                    "mediaType": "image/png",
+                    "size": 18342,
+                    "width": 512,
+                    "height": 256,
+                },
+                "data": "iVBORw0KGgo",
+                "updatedAt": TS,
+            })
+        ),
         checked!(
             s::community::requested_attributes::show::v0_1::Payload,
             s::community::requested_attributes::show::v0_1::Response,
