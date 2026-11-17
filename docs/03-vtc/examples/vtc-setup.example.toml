@@ -48,11 +48,13 @@ context = "default"   # the VTA context this community provisions under
 # of being configured with both DIDs. Must be a DID, not a URL — the referral
 # names the registry by DID. Omit for a community with no registry.
 #
-# Can be changed after mint, but not here: the VTA holds the keys that extend
-# the DID log, so the change is `pnm did-mgmt dids edit` at the VTA. A VTC that
-# serves its own did.jsonl then installs the new log with
+# Can be changed after mint, but not here: the VTA holds the keys that change
+# the DID document. For a did:webvh the change is `pnm did-mgmt dids edit` at
+# the VTA. A VTC that serves its own did.jsonl then installs the new log with
 # `pnm did-mgmt dids get-log <did> --out did.jsonl` and
-# `cnm did-log install --file did.jsonl`; one on a DID host needs neither.
+# `cnm did-log install --file did.jsonl`; one on a DID host needs neither. For
+# a did:webs it is `vta/webs/dids/update` with `services.additional`; there is
+# no log to install (docs/02-vta/did-webs.md).
 # See docs/03-vtc/community-lifecycle.md.
 # registry_did = "did:webvh:abc:registry.example.com"
 
@@ -94,12 +96,15 @@ context = "default"   # the VTA context this community provisions under
 # provision_transport = "rest"
 
 # ── DID hosting (optional) ──────────────────────────────────────────────
-# Omit the whole [webvh] table for the serverless default: the VTC
-# self-hosts its did.jsonl at base_url with a server-assigned path.
+# For a did:webvh, omit the whole [webvh] table for the serverless default:
+# the VTC self-hosts its did.jsonl at base_url. A did:webs
+# (identity_method = "webs") has no serverless mode and needs server_id.
 # [webvh]
 # server_id = "host-1"                 # a registered did-hosting server id
 # domain    = "tenant.example.com"     # tenant domain on a multi-domain host
-# path      = "communities/acme"       # path in did:webvh:<scid>:<host>:<path>
+# path      = "communities/acme"       # did:webvh:<scid>:<host>:<path>, or
+#                                      # did:webs:<host>:<path>:<AID>; omitted:
+#                                      # server-assigned (webvh), top level (webs)
 
 # ── Messaging (optional) ────────────────────────────────────────────────
 # Omit the whole table for no messaging — the daemon stays healthy on REST

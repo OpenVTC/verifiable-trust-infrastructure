@@ -846,9 +846,10 @@ fn prompt_inputs(single_admin: bool) -> Result<WizardInputs, AppError> {
     println!("holds only this community's DID can resolve one hop to the registry");
     println!("rather than being configured with both DIDs.");
     println!();
-    println!("You can change it later: `pnm did-mgmt dids edit` at the VTA, then, if");
-    println!("this VTC serves its own DID log, `cnm did-log install`. Leave blank if");
-    println!("the community has no registry, or if you don't know it yet.");
+    println!("You can change it later, at the VTA: for a did:webvh `pnm did-mgmt dids");
+    println!("edit`, then, if this VTC serves its own DID log, `cnm did-log install`;");
+    println!("for a did:webs `vta/webs/dids/update` with `services.additional`. Leave");
+    println!("blank if the community has no registry, or if you don't know it yet.");
     println!();
     let registry_did: String = Input::new()
         .with_prompt("Trust registry DID (blank for none)")
@@ -1191,22 +1192,20 @@ async fn select_webvh_target(
 ) -> Result<(IdentityMethod, WebvhTarget), AppError> {
     println!();
     println!("\x1b[1mDID hosting\x1b[0m");
-    println!("  Your community is identified by a `did:webvh` DID of the form:");
+    println!("  Your community is identified by one DID, which every member, credential");
+    println!("  and trust-registry entry will reference — choose its method, host and");
+    println!("  path deliberately. It takes one of two forms:");
     println!();
-    println!("    did:webvh:<scid>:<host>:<path>");
+    println!("    did:webvh:<scid>:<host>[:<path>]   (default)");
+    println!("    did:webs:<host>[:<path>]:<AID>     (alpha)");
     println!();
-    println!("  <scid> is a self-certifying id the VTA generates for you. <host> is the");
-    println!("  did-hosting server's domain and <path> is an optional label under it.");
-    println!("  This is the DID every member, credential, and trust-registry entry will");
-    println!("  reference — choose its host and path deliberately.");
+    println!("  <host> is the did-hosting server's domain and <path> an optional label");
+    println!("  under it. A did:webvh's <scid> is a self-certifying id the VTA generates;");
+    println!("  it can instead be serverless — no <path>, its did.jsonl self-hosted by");
+    println!("  this daemon at <host>/.well-known/did.jsonl.");
     println!();
-    println!("  Serverless instead drops the <path>: the VTC self-hosts its own");
-    println!("  did.jsonl at <host>/.well-known/did.jsonl, served by this daemon — no");
-    println!("  external did-hosting server required.");
-    println!();
-    println!("  Or a did:webs (alpha): did:webs:<host>:<path>:<AID>, a KERI identifier the");
-    println!("  VTA publishes at a did-hosting server built with did:webs hosting. It has");
-    println!("  one signing key (no post-quantum key), no serverless mode, and its services");
+    println!("  A did:webs's <AID> is a KERI identifier the VTA generates. It has one");
+    println!("  signing key (no post-quantum key), no serverless mode, and its services");
     println!("  change only through the VTA. See docs/02-vta/did-webs.md.");
     println!();
 
@@ -1287,7 +1286,7 @@ async fn prompt_webvh_target(
         // under that server, so offer it (and the tenant-domain picker).
         Some(sid) => {
             let domain = prompt_webvh_domain(client, sid).await?;
-            let path = prompt_webvh_path(sid)?;
+            let path = prompt_hosted_path(method, sid)?;
             (domain, path)
         }
         // Serverless: the VTC self-hosts its `did.jsonl`, and the DID
@@ -1529,20 +1528,19 @@ async fn prompt_webvh_domain(
     }
 }
 
-/// Prompt for the optional `<path>` label of the VTC DID under the
-/// selected hosting server. Blank input → `None` (the server assigns
-/// one). Only called in hosted mode: serverless self-hosting always
-/// resolves at `<host>/.well-known/did.jsonl`, so it has no path to pick.
-fn prompt_webvh_path(server_id: &str) -> Result<Option<String>, AppError> {
+/// Prompt for the optional `<path>` of the VTC DID under the selected hosting
+/// server, worded for the chosen method. Blank input → `None`. Only called in
+/// hosted mode: serverless self-hosting always resolves at
+/// `<host>/.well-known/did.jsonl`, so it has no path to pick.
+fn prompt_hosted_path(method: IdentityMethod, server_id: &str) -> Result<Option<String>, AppError> {
+    let (explanation, prompt) = hosted_path_text(method, server_id);
     println!();
-    println!("  Optional path label under the hosting server `{server_id}`. It becomes the");
-    println!("  trailing `<path>` of the VTC DID — e.g. `acme` yields a DID ending");
-    println!("  `:acme`. Operators with a naming convention (community slug, env)");
-    println!("  can pin it; leave blank to let the server assign one.");
+    println!("{explanation}");
     let raw: String = Input::new()
-        .with_prompt("WebVH path (blank → server-assigned)")
+        .with_prompt(prompt)
         .default(String::new())
         .allow_empty(true)
+        .validate_with(|s: &String| check_hosted_path(method, s))
         .interact_text()
         .map_err(prompt_err)?;
     let trimmed = raw.trim();
@@ -1551,6 +1549,43 @@ fn prompt_webvh_path(server_id: &str) -> Result<Option<String>, AppError> {
     } else {
         Some(trimmed.to_string())
     })
+}
+
+/// What the path prompt says. A did:webvh's path is the DID's trailing label,
+/// and blank lets the server assign one; a did:webs's sits before the AID, and
+/// blank publishes at the domain's top level (`CreateDidWebsParams::path`).
+fn hosted_path_text(method: IdentityMethod, server_id: &str) -> (String, &'static str) {
+    match method {
+        IdentityMethod::Webvh => (
+            format!(
+                "  Optional path label under the hosting server `{server_id}`. It becomes the\n  \
+                 trailing `<path>` of the VTC DID — e.g. `acme` yields\n  \
+                 `did:webvh:<scid>:<host>:acme`. Operators with a naming convention\n  \
+                 (community slug, env) can pin it; leave blank to let the server assign one."
+            ),
+            "did:webvh path (blank → server-assigned)",
+        ),
+        IdentityMethod::Webs => (
+            format!(
+                "  Optional path under the hosting server `{server_id}`. It sits between the\n  \
+                 host and the AID — e.g. `acme` yields `did:webs:<host>:acme:<AID>`; `/`\n  \
+                 separates nested segments. Leave blank to publish at the domain's top level."
+            ),
+            "did:webs path (blank → domain top level)",
+        ),
+    }
+}
+
+/// `.well-known` names a did:webvh root DID; a did:webs is always
+/// `did:webs:<host>[:<path>]:<AID>`, so it is refused here as `vtc setup
+/// --from` and the VTA refuse it.
+fn check_hosted_path(method: IdentityMethod, raw: &str) -> Result<(), String> {
+    if method == IdentityMethod::Webs && raw.trim() == ".well-known" {
+        return Err("`.well-known` names a did:webvh root DID; a did:webs is \
+             did:webs:<host>[:<path>]:<AID>. Leave it blank, or give a slot path"
+            .into());
+    }
+    Ok(())
 }
 
 fn prompt_secrets_config() -> Result<SecretsConfig, AppError> {
@@ -2680,6 +2715,27 @@ mod tests {
         // route reads the file back under this same label.)
         let label = did_log_label_or_err("did:webvh:abc123:vtc.example.com").unwrap();
         assert_eq!(label, "vtc.example.com");
+    }
+
+    #[test]
+    fn the_path_prompt_speaks_the_chosen_method() {
+        let (text, prompt) = hosted_path_text(IdentityMethod::Webs, "vta-host");
+        assert!(prompt.starts_with("did:webs path"), "{prompt}");
+        assert!(prompt.contains("domain top level"), "{prompt}");
+        assert!(text.contains("did:webs:<host>:acme:<AID>"), "{text}");
+        assert!(!text.to_lowercase().contains("webvh"), "{text}");
+        assert!(!text.contains("server assign"), "{text}");
+
+        let (text, prompt) = hosted_path_text(IdentityMethod::Webvh, "vta-host");
+        assert!(prompt.starts_with("did:webvh path"), "{prompt}");
+        assert!(text.contains("did:webvh:<scid>:<host>:acme"), "{text}");
+    }
+
+    #[test]
+    fn a_did_webs_path_refuses_the_webvh_root_slot() {
+        assert!(check_hosted_path(IdentityMethod::Webs, " .well-known ").is_err());
+        assert!(check_hosted_path(IdentityMethod::Webs, "communities/acme").is_ok());
+        assert!(check_hosted_path(IdentityMethod::Webvh, ".well-known").is_ok());
     }
 
     #[test]
