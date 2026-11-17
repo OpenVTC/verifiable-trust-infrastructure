@@ -89,6 +89,8 @@ pub async fn run_acl_create(
         .with_capabilities(capabilities);
 
     store_acl_entry(&acl_ks, &entry).await?;
+    cs.audit_or_undo("acl.create", &did, None, || delete_acl_entry(&acl_ks, &did))
+        .await?;
     cs.persist().await?;
 
     eprintln!("ACL entry created:\n");
@@ -286,6 +288,7 @@ pub async fn run_acl_update(
     let mut entry = get_acl_entry(&acl_ks, &did)
         .await?
         .ok_or_else(|| format!("no ACL entry found for {did}"))?;
+    let before = entry.clone();
 
     if let Some(role) = new_role {
         entry.role = role;
@@ -327,6 +330,10 @@ pub async fn run_acl_update(
     }
 
     store_acl_entry(&acl_ks, &entry).await?;
+    cs.audit_or_undo("acl.update", &did, None, || {
+        store_acl_entry(&acl_ks, &before)
+    })
+    .await?;
     cs.persist().await?;
 
     eprintln!("ACL entry updated:\n");
@@ -361,6 +368,10 @@ pub async fn run_acl_delete(
     }
 
     delete_acl_entry(&acl_ks, &did).await?;
+    cs.audit_or_undo("acl.delete", &did, None, || {
+        store_acl_entry(&acl_ks, &entry)
+    })
+    .await?;
     cs.persist().await?;
 
     eprintln!("ACL entry deleted: {did}");

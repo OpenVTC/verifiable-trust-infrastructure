@@ -367,6 +367,11 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     //   trust-tasks-rs 0.17.4, so it has a published schema, a conformance
     //   witness, and payload validation on the dispatch spine. Debt discharged
     //   by specification rather than by deletion.
+    // (keys/sign-jws/0.1 was here while the Agent Gateway integration carried a
+    //  hand-written, `typ`-allow-listed body ahead of a spec. It was specified
+    //  upstream and shipped in trust-tasks-rs 0.35, so the wire types are the
+    //  generated ones and the spine validates the payload. Debt discharged by
+    //  specification.)
 ];
 
 /// A dispatched handler's future, on the heap. See `dispatch_typed`.

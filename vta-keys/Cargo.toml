@@ -38,6 +38,7 @@ tpm = ["vti-secrets/tpm"]
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.40" }
 vta-config = { path = "../vta-config", version = "0.43" }
+vta-signing = { path = "../vta-signing", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.66" }
 vti-secrets = { path = "../vti-secrets", version = "0.39" }
 vta-sdk = { path = "../vta-sdk", version = "0.90", features = ["sealed-transfer"] }

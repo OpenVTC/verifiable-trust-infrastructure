@@ -85,7 +85,7 @@ that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 ## What gets published
 
-**39 of 50 crates publish.** This is the authoritative count: the eleven
+**40 of 51 crates publish.** This is the authoritative count: the eleven
 workspace members that stay internal set `publish = false` in their own
 `Cargo.toml`, each with a comment saying why, and are listed here —
 `scripts/check-docs.py` fails CI when this list, or any "N of M" count in

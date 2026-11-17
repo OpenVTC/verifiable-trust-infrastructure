@@ -569,6 +569,17 @@ When adding a flow, add it here and a line to the root index.
 - **Code**: `vta-sdk/src/sealed_transfer/` (bundle, hpke, armor, verify).
 
 ### Signing oracle
+- **Where the signature comes from**: the bytes a JWS or an `eddsa-jcs-2022`
+  proof or an SSHSIG signs, the opaque-signing framing, and the Ed25519 and
+  P-256 signature itself are `vta-signing`'s — the same code a service that
+  signs with its own keys uses — and `operations::sign_formats` is a thin facade
+  over it plus the certificate reader, the CSR builders and the did:scid form.
+  What stays in `operations::keys` is everything around a signature: the gates,
+  key custody, the quota and the audit row, all in `sign_payload_recorded`.
+  Never hand-roll Ed25519/P-256 signing in an operation; build the bytes with
+  `vta_signing` (`prepare_*`), sign through `sign_payload_recorded`, and finish
+  the artefact with `vta_signing` (`finish_*`). `sign_characterization_tests`
+  pins the outputs for a fixed key.
 - **What**: Remote signing without key export.
 - **Endpoint**: `POST /keys/{key_id}/sign` — payload + algorithm
   (EdDSA or ES256). Key derived BIP-32 → signature → memory zeroized.

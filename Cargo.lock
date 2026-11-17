@@ -11982,6 +11982,7 @@ dependencies = [
  "vta-config",
  "vta-keyspaces",
  "vta-sdk",
+ "vta-signing",
  "vti-common",
  "vti-secrets",
  "x25519-dalek 3.0.0",
@@ -12147,6 +12148,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "vta-signing",
  "vti-specs",
  "windows-native-keyring-store",
  "wiremock",
@@ -12249,6 +12251,7 @@ dependencies = [
  "vta-policy",
  "vta-sdk",
  "vta-service",
+ "vta-signing",
  "vta-support",
  "vta-sweepers",
  "vta-tee",
@@ -12271,6 +12274,21 @@ dependencies = [
  "x25519-dalek 3.0.0",
  "x509-parser 0.18.1",
  "yasna 0.6.0",
+ "zeroize",
+]
+
+[[package]]
+name = "vta-signing"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "multibase",
+ "p256 0.14.0",
+ "serde_json",
+ "serde_json_canonicalizer 0.4.1",
+ "sha2 0.11.1",
  "zeroize",
 ]
 

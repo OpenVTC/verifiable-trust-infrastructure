@@ -29,6 +29,7 @@ mod idempotency_trust_task;
 mod key_custody_census;
 mod keyring_vti_09_23_https;
 mod memory_audit;
+mod offline_cli_audit;
 mod openapi_schema_names;
 mod operation_budget;
 mod payload_type_census;

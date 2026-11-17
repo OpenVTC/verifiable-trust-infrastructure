@@ -41,6 +41,12 @@ pub async fn load_storage_key_for_cli(
     Ok(Some(key))
 }
 
+/// Actor recorded for a write made through the offline CLI.
+pub const BREAK_GLASS_ACTOR: &str = "vta-cli (break-glass)";
+
+/// Channel recorded for a write made through the offline CLI.
+pub const BREAK_GLASS_CHANNEL: &str = "vta-cli";
+
 /// A thin store wrapper for offline CLI commands.
 ///
 /// Holds an open `Store` and an optional storage-encryption key derived from
@@ -65,6 +71,9 @@ pub struct CliStore {
     /// the `Deref` impl (`&*cs` or just `&cs`) in new code.
     pub store: crate::store::Store,
     enc_key: Option<[u8; 32]>,
+    /// The audit sink break-glass rows are written through, built on first
+    /// use. One per store, so successive rows share one chain head.
+    audit: std::sync::OnceLock<vta_audit::SharedAuditSink>,
 }
 
 impl std::ops::Deref for CliStore {
@@ -93,7 +102,7 @@ impl CliStore {
         let enc_key = load_storage_key_for_cli(config).await?;
         let store = crate::store::Store::open(&config.store)
             .map_err(|e| format!("failed to open store: {e}"))?;
-        Ok(Self { store, enc_key })
+        Ok(Self::from_store(store, enc_key))
     }
 
     /// Construct a `CliStore` from an already-open `Store` and an optional
@@ -102,7 +111,11 @@ impl CliStore {
     /// running) and the enc_key has been pre-loaded with
     /// [`load_storage_key_for_cli`].
     pub fn from_store(store: crate::store::Store, enc_key: Option<[u8; 32]>) -> Self {
-        Self { store, enc_key }
+        Self {
+            store,
+            enc_key,
+            audit: std::sync::OnceLock::new(),
+        }
     }
 
     /// The storage-encryption key, if hardened configuration is active.
@@ -110,6 +123,87 @@ impl CliStore {
     /// use the full app-state builder instead of opening keyspaces directly.
     pub fn enc_key(&self) -> Option<[u8; 32]> {
         self.enc_key
+    }
+
+    /// The sink break-glass rows go through: the chained sink, as the daemon
+    /// writes, so a row made offline is as tamper-evident as one made online
+    /// (VTI-AUD-004). The offline CLI holds the store exclusively, so this is
+    /// the only writer of the chain while it runs.
+    fn audit_sink(&self) -> Result<vta_audit::SharedAuditSink, vti_common::error::AppError> {
+        if let Some(sink) = self.audit.get() {
+            return Ok(sink.clone());
+        }
+        let sink = vta_audit::shared_chained_sink(
+            self.keyspace(crate::keyspaces::AUDIT)?,
+            self.keyspace(crate::keyspaces::AUDIT_KEY)?,
+        );
+        Ok(self.audit.get_or_init(|| sink).clone())
+    }
+
+    /// Record an offline, break-glass write in the audit log.
+    ///
+    /// The offline CLI has no authenticated caller and makes no authorization
+    /// decision, so what it writes is made visible rather than prevented
+    /// (VTI-AUD-001). A write of authority must not survive without its row:
+    /// call [`audit_or_undo`](Self::audit_or_undo) right after the write, and
+    /// this directly only where there is nothing to undo.
+    pub async fn audit_break_glass(
+        &self,
+        action: &str,
+        resource: &str,
+        context_id: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        vta_audit::record(
+            &self.audit_sink()?,
+            action,
+            BREAK_GLASS_ACTOR,
+            Some(resource),
+            "success",
+            Some(BREAK_GLASS_CHANNEL),
+            context_id,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Record `action` for a write just made, or undo the write.
+    ///
+    /// The write lands first so the row records what happened, not what was
+    /// about to. If the row cannot be written, `undo` reverses the write before
+    /// anything is persisted, so a recovery path that changed authority never
+    /// leaves the change without its row — the silent case VTI-AUD-001 exists
+    /// to expose. Either way the command fails; the message says whether the
+    /// store was left as it was.
+    pub async fn audit_or_undo<F, Fut>(
+        &self,
+        action: &str,
+        resource: &str,
+        context_id: Option<&str>,
+        undo: F,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<(), vti_common::error::AppError>>,
+    {
+        let Err(audit) = self.audit_break_glass(action, resource, context_id).await else {
+            return Ok(());
+        };
+        match undo().await {
+            Ok(()) => {
+                self.persist().await?;
+                Err(format!(
+                    "{action} on {resource} was undone: its audit row could not be written \
+                     ({audit}). Nothing changed."
+                )
+                .into())
+            }
+            Err(undo) => Err(format!(
+                "{action} on {resource}: its audit row could not be written ({audit}), and \
+                 undoing the write failed ({undo}). The change is in the store without a row; \
+                 inspect it before starting the VTA."
+            )
+            .into()),
+        }
     }
 
     /// Open a keyspace, wrapping it with AES-256-GCM encryption when
