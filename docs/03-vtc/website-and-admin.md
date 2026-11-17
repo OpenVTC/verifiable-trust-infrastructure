@@ -207,6 +207,45 @@ the service status. The operator console is linked, deliberately
 quietly. An operator site replacing the default should keep a link to
 `/members/`.
 
+### Your own landing page, from a directory
+
+To give the community its own landing page without rebuilding the
+daemon or standing up a second host, point `website.landing_dir` at a
+directory:
+
+```sh
+vtc website export /var/lib/community/landing   # the built-in page, to start from
+```
+
+```toml
+[website]
+landing_dir = "/var/lib/community/landing"
+```
+
+Restart once. From then on the daemon serves that directory at the
+website mount (`/` by default) and re-reads it on every request, so an
+edit shows on the next page load: no rebuild, no restart. Responses are
+`Cache-Control: no-cache`. A directory request or an unknown path
+serves `index.html`. Every path goes through the same safety chain as a
+filesystem website (no hidden files, no escaping the directory through
+`..` or a symlink, no executables). The default CSP still applies, so
+keep scripts and styles in files rather than inline, as the built-in
+page does.
+
+A landing directory may share an origin with the console and API, which
+a `root_dir` website may not. That's because nothing over the network
+writes it: the `/v1/website/*` deploy and file tasks act only on
+`root_dir`. It is as trusted as the host operator who placed it, the
+same footing as a console served with `admin_ui.mode = "directory"`. For
+the same reason the daemon refuses to start if the directory has no
+readable `index.html`, or if it or its `index.html` is world-writable.
+Setting both `landing_dir` and `root_dir` is refused.
+
+Choose `root_dir` when administrators should publish the site from the
+console or a bundle upload; it then needs its own host (see the routing
+section below). Choose `landing_dir` when the page is yours to edit on
+the server.
+
 ### Colour theme
 
 The default landing page, the member portal and the operator console
@@ -1407,6 +1446,7 @@ curl -H "Authorization: Bearer $TOKEN" --data-binary @site.tar.gz \
 curl https://community.example.com/admin/build-info.json
 vtc admin-ui export <dir>             # write the built-in console out to customise
 vtc admin-ui export --members <dir>   # the same for the member portal
+vtc website export <dir>              # the built-in landing page, for website.landing_dir
 ```
 
 ## Configuration
@@ -1414,6 +1454,8 @@ vtc admin-ui export --members <dir>   # the same for the member portal
 ```toml
 [website]
 root_dir = "/var/lib/community/site"      # unset → default landing page
+# landing_dir = "/var/lib/community/landing"  # instead of root_dir: your own landing
+#                                             # page, read from disk, same origin
 deploy_mode = "live"                       # or "managed"
 live_cache_ttl_seconds = 5
 managed_generations_keep = 5
@@ -1464,9 +1506,10 @@ transfer_interval_ms = 20
 ```
 
 In pure **path mode** (omit every `host`), all three surfaces share
-one origin. That's fine for the trusted built-in landing page, but
-`website.root_dir` is then refused at startup — point the website at
-its own host as above, or drop `root_dir` to serve the default page.
+one origin. That's fine for the trusted built-in landing page and for
+a `website.landing_dir`, but `website.root_dir` is then refused at
+startup — point the website at its own host as above, or drop
+`root_dir` to serve the default page (or your own, from `landing_dir`).
 
 ## See also
 

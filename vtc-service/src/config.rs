@@ -1236,6 +1236,20 @@ pub struct WebsiteConfig {
     /// — operators opt in by setting this to a real path.
     #[serde(default)]
     pub root_dir: Option<PathBuf>,
+    /// Directory holding the community's own **landing page**, served at
+    /// the website mount in place of the one built into the binary. Read
+    /// from disk on every request, so an edit shows on the next load —
+    /// no rebuild, no restart. Must hold an `index.html`; `vtc website
+    /// export <dir>` writes the built-in page there as a starting point.
+    ///
+    /// Unlike [`Self::root_dir`] it may share an origin with the console
+    /// and API: nothing over the network writes it (the `/v1/website/*`
+    /// deploy and file tasks act only on `root_dir`), so it is as trusted
+    /// as the host operator who placed it — the same footing as
+    /// `admin_ui.dir`. The boot check refuses a world-writable one. Set
+    /// at most one of `root_dir` and `landing_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_dir: Option<PathBuf>,
     /// Deploy mode: `"live"` (default) or `"managed"`. See
     /// [`crate::website::WebsiteRoot`].
     #[serde(default = "default_deploy_mode")]
@@ -1278,6 +1292,7 @@ impl Default for WebsiteConfig {
     fn default() -> Self {
         Self {
             root_dir: None,
+            landing_dir: None,
             deploy_mode: default_deploy_mode(),
             live_cache_ttl_seconds: default_live_cache_ttl_seconds(),
             managed_generations_keep: default_managed_generations_keep(),
@@ -1287,6 +1302,24 @@ impl Default for WebsiteConfig {
             max_file_size_mb: default_max_file_size_mb(),
             csp_override_file: default_csp_override_file(),
         }
+    }
+}
+
+impl WebsiteConfig {
+    /// `root_dir` (a deployable website, on its own host) and `landing_dir`
+    /// (the operator's landing page, co-resident) are two answers to one
+    /// question — what `GET /` serves — so naming both is refused rather
+    /// than one silently winning.
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.root_dir.is_some() && self.landing_dir.is_some() {
+            return Err(AppError::Config(
+                "website.root_dir and website.landing_dir are both set; a landing page \
+                 in landing_dir replaces the built-in one, a website in root_dir \
+                 replaces both — keep one"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -2247,6 +2280,7 @@ impl AppConfig {
     pub fn validate_routing_and_cors(&self) -> Result<(), AppError> {
         validate_routing(&self.routing)?;
         validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
+        self.website.validate()?;
         validate_cors(&self.cors)?;
         self.admin_ui.validate()?;
         self.witnesses.validate(self.vtc_did.as_deref())?;
@@ -2382,6 +2416,26 @@ mod tests {
         ] {
             assert!(parse(bad).validate().is_err(), "{bad:?} must be refused");
         }
+    }
+
+    /// A landing page from disk needs no host of its own (it is not
+    /// deployable over the network), but naming it beside a filesystem
+    /// website is refused rather than one silently winning.
+    #[test]
+    fn landing_dir_is_co_resident_and_exclusive_with_root_dir() {
+        let landing: WebsiteConfig = toml::from_str("landing_dir = \"/srv/landing\"").unwrap();
+        assert_eq!(
+            landing.landing_dir.as_deref(),
+            Some(std::path::Path::new("/srv/landing"))
+        );
+        landing.validate().unwrap();
+        // Path mode, no dedicated website host: still accepted.
+        validate_website_isolation(&RoutingConfig::default(), landing.root_dir.is_some()).unwrap();
+
+        let both: WebsiteConfig =
+            toml::from_str("root_dir = \"/srv/site\"\nlanding_dir = \"/srv/landing\"").unwrap();
+        let err = both.validate().unwrap_err().to_string();
+        assert!(err.contains("keep one"), "{err}");
     }
 
     #[test]

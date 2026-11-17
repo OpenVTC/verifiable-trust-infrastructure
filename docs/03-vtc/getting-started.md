@@ -296,7 +296,22 @@ its own `credential-exchange/issue` message — see
 ## Step 6 — Configure a public website (optional)
 
 By default the VTC serves a small in-tree landing page at `GET /`.
-To replace it with your community's site:
+To serve your own landing page instead, on the same host, export the
+built-in one, edit it, and point the daemon at it. The daemon re-reads
+it on every request, so later edits need no restart:
+
+```sh
+vtc website export /var/lib/community/landing
+```
+
+```toml
+# config.toml
+[website]
+landing_dir = "/var/lib/community/landing"
+```
+
+To publish a whole site that administrators deploy from the console or
+by bundle upload (on a host of its own):
 
 ```toml
 # config.toml
