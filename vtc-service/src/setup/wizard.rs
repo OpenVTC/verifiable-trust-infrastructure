@@ -1165,8 +1165,8 @@ async fn select_webvh_target(
             Err(e) => {
                 warn!(error = %e, "could not connect to the VTA to list did-hosting servers");
                 println!(
-                    "  Could not reach the VTA to list did-hosting servers ({e}); the VTA \
-                     will auto-select one (or self-host)."
+                    "  Could not reach the VTA to list did-hosting servers ({e}); for a \
+                     did:webvh the VTA will auto-select one (or self-host)."
                 );
                 None
             }
@@ -1174,26 +1174,18 @@ async fn select_webvh_target(
         None => {
             println!(
                 "  The VTA DID didn't resolve, so an interactive server/domain picker isn't \
-                 available; the VTA will auto-select a server (or self-host)."
+                 available; for a did:webvh the VTA will auto-select a server (or \
+                 self-host)."
             );
             None
         }
     };
 
     let Some(client) = client else {
-        // No live catalogue — leave server selection to the VTA (it
-        // auto-picks a registered did-hosting server, or self-hosts).
-        // We don't prompt for a path: it's only meaningful once a
-        // hosting server is in play, and a serverless DID ignores it
-        // entirely (it always resolves at `<host>/.well-known/`), so a
-        // prompt here would have unpredictable effect. A did:webs needs a
-        // named server, so without the catalogue it is not offered: `vtc
-        // setup --from` with `identity_method = "webs"` names one directly.
-        println!(
-            "  did:webs needs a did-hosting server picked from the VTA's catalogue; to set \
-             one up without it, use `vtc setup --from` with identity_method = \"webs\"."
-        );
-        return Ok((IdentityMethod::Webvh, WebvhTarget::default()));
+        // No live catalogue. The method is still the operator's to choose:
+        // answering it here for them minted a did:webvh for an operator who
+        // wanted a did:webs, with nothing but a printed line to say so.
+        return without_catalogue(prompt_identity_method()?);
     };
 
     // A DIDComm-connected client holds a live, auto-reconnecting session for
@@ -1204,6 +1196,28 @@ async fn select_webvh_target(
     let target = prompt_webvh_target(&client).await;
     client.shutdown().await;
     target
+}
+
+/// The hosting target when the VTA's did-hosting catalogue could not be read.
+///
+/// A did:webvh leaves server selection to the VTA (it auto-picks a registered
+/// did-hosting server, or self-hosts). No path is asked for: it means something
+/// only once a hosting server is in play, and a serverless DID ignores it (it
+/// always resolves at `<host>/.well-known/`). A did:webs has no serverless mode
+/// and needs a named server, which only the catalogue offers here — so it is a
+/// refusal naming `vtc setup --from`, which names the server directly, never a
+/// did:webvh in its place.
+fn without_catalogue(method: IdentityMethod) -> Result<(IdentityMethod, WebvhTarget), AppError> {
+    match method {
+        IdentityMethod::Webvh => Ok((IdentityMethod::Webvh, WebvhTarget::default())),
+        IdentityMethod::Webs => Err(AppError::Validation(
+            "a did:webs VTC needs a did-hosting server picked from the VTA's catalogue, \
+             which could not be read (above). Set it up with `vtc setup --from <file>` \
+             naming the server: identity_method = \"webs\" and [webvh] server_id = \"<id \
+             from `pnm did-mgmt servers list`>\" (see docs/03-vtc/non-interactive-setup.md)"
+                .into(),
+        )),
+    }
 }
 
 /// The server, tenant-domain and path prompts, against a connected client.
@@ -2737,6 +2751,29 @@ mod tests {
         let w = single_admin_warning(&inputs(true, Some("did:key:z6MkCo"))).unwrap();
         assert!(w.contains("another of your own identifiers"), "{w}");
         assert!(w.contains("VTI-APV-022"), "{w}");
+    }
+
+    /// Without the did-hosting catalogue a did:webvh is left to the VTA's own
+    /// server pick, as before.
+    #[test]
+    fn without_the_catalogue_a_did_webvh_leaves_the_server_to_the_vta() {
+        let (method, target) = without_catalogue(IdentityMethod::Webvh).unwrap();
+        assert_eq!(method, IdentityMethod::Webvh);
+        assert!(target.server_id.is_none() && target.domain.is_none() && target.path.is_none());
+    }
+
+    /// An operator who chose did:webs is never handed a did:webvh because the
+    /// catalogue could not be read (seen against a TSP-only VTA): the refusal
+    /// names `vtc setup --from`, which names the server directly.
+    #[test]
+    fn without_the_catalogue_a_did_webs_is_refused_with_the_fix_not_minted_as_webvh() {
+        let err = without_catalogue(IdentityMethod::Webs).unwrap_err();
+        let AppError::Validation(msg) = err else {
+            panic!("expected a validation error, got {err:?}");
+        };
+        assert!(msg.contains("vtc setup --from"), "{msg}");
+        assert!(msg.contains("identity_method = \"webs\""), "{msg}");
+        assert!(msg.contains("server_id"), "{msg}");
     }
 
     /// #501: the provisioning transports on offer are the advertised ones, in
