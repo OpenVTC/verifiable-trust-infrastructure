@@ -70,6 +70,19 @@ ignore = [
   """ },
 
 
+  { id = "RUSTSEC-2026-0545", reason = """
+  zip < 9: AES entries returned without checking their authentication code.
+  Same sole path as RUSTSEC-2026-0367 (nitro_attest's build script), which
+  builds zip with only the `deflate` feature, so it cannot decrypt an AES
+  entry at all, and reads one SHA-256-pinned archive; drop with it.
+  """ },
+
+  { id = "RUSTSEC-2026-0548", reason = """
+  zip < 9.0.5: `ZipStreamReader` names entries by their local headers. Same
+  sole path as RUSTSEC-2026-0367 (nitro_attest's build script), which uses
+  `ZipArchive` (central directory), never `ZipStreamReader`; drop with it.
+  """ },
+
   { id = "RUSTSEC-2026-0387", reason = """
   crypto-bigint: secret-dependent branches in operations meant to be
   constant-time. Patched only in >= 0.7.6; there is no fixed 0.5 release.
@@ -96,6 +109,36 @@ ignore = [
   configuration in the build; "unmaintained" is the only flagged risk.
 
   Drop when askama (through uniffi) moves off basic-toml.
+  """ },
+
+  { id = "RUSTSEC-2026-0543", reason = """
+  chrono is unmaintained (informational; no vulnerability, no patched
+  release). It is not removable here alone: 36 workspace crates use it
+  directly, and the Affinidi TDK, messaging SDK, mediator, data-integrity
+  and didwebvh-rs crates all expose it in their APIs, so every one of them
+  must move first. "Unmaintained" is the only flagged risk.
+
+  Drop when the workspace and those dependencies have migrated to jiff or
+  time (the advisory's recommended alternatives).
+  """ },
+
+  { id = "RUSTSEC-2026-0555", reason = """
+  chrono-tz is unmaintained (informational; no patched release). Reached
+  only through regorus, the VTA's Rego policy engine (vti-common), for its
+  time-zone builtins. "Unmaintained" is the only flagged risk.
+
+  Drop when regorus moves off chrono-tz (or with RUSTSEC-2026-0543).
+  """ },
+
+  { id = "RUSTSEC-2026-0542", reason = """
+  humantime is unmaintained (informational; no patched release). Reached
+  only through affinidi-messaging-test-mediator, an optional dependency
+  behind the test-harness features of vta-service, vtc-service and
+  vta-test-support (an embedded mediator for transport tests), which uses it
+  to parse duration strings in its own configuration. "Unmaintained" is the
+  only flagged risk.
+
+  Drop when the mediator moves off humantime.
   """ },
 
   { id = "RUSTSEC-2023-0071", reason = """
