@@ -123,9 +123,16 @@ pub fn prepare_document(
 }
 
 /// The secured document: `input`'s document with the proof `signature` makes.
-pub fn finish_document(input: &DocumentSigningInput, signature: &[u8]) -> Secured {
-    let proof = finish_proof(input.config.clone(), signature);
-    let mut document = input.document.clone();
+///
+/// Takes the input by value: the document it holds becomes the secured one,
+/// so a document is copied once between preparing and finishing, not twice.
+pub fn finish_document(input: DocumentSigningInput, signature: &[u8]) -> Secured {
+    let DocumentSigningInput {
+        mut document,
+        config,
+        ..
+    } = input;
+    let proof = finish_proof(config, signature);
     document["proof"] = proof.clone();
     Secured { document, proof }
 }
@@ -156,7 +163,7 @@ pub fn sign_document(
         domain,
     )?;
     let signature = signer.sign(input.bytes())?;
-    Ok(finish_document(&input, &signature))
+    Ok(finish_document(input, &signature))
 }
 
 /// Verify the `eddsa-jcs-2022` proof of `secured` against `key`.
@@ -185,8 +192,13 @@ pub fn verify_document(secured: &Value, key: &PublicKey) -> Result<(), VerifyErr
         .get("proofValue")
         .and_then(Value::as_str)
         .ok_or_else(|| malformed("the proof has no proofValue"))?;
-    let (_, signature) =
+    // eddsa-jcs-2022 carries the signature as base58btc (`z`), and only that:
+    // a proof whose value is the same bytes in another base is not one.
+    let (base, signature) =
         multibase::decode(proof_value).map_err(|_| malformed("the proofValue is not multibase"))?;
+    if base != multibase::Base::Base58Btc {
+        return Err(malformed("the proofValue is not base58btc multibase"));
+    }
     let mut options = proof.clone();
     options.remove("proofValue");
     let mut unsecured = secured.clone();
@@ -307,7 +319,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let in_phases = finish_document(&input, &secret.sign_message(input.bytes()));
+        let in_phases = {
+            let signature = secret.sign_message(input.bytes());
+            finish_document(input, &signature)
+        };
 
         assert_eq!(in_phases, sign(&secret));
         assert_eq!(
@@ -431,6 +446,26 @@ mod tests {
             assert!(
                 matches!(verify_document(&bad, &key), Err(VerifyError::Malformed(_))),
                 "{bad}"
+            );
+        }
+    }
+
+    /// eddsa-jcs-2022 carries `proofValue` as base58btc; the same signature
+    /// in another multibase base is malformed, not a proof.
+    #[test]
+    fn a_proof_value_in_another_base_is_malformed() {
+        let secret = SigningSecret::ed25519([4; 32]);
+        let mut secured = sign(&secret).document;
+        let (_, signature) =
+            multibase::decode(secured["proof"]["proofValue"].as_str().unwrap()).unwrap();
+        for base in [multibase::Base::Base64, multibase::Base::Base16Lower] {
+            secured["proof"]["proofValue"] = multibase::encode(base, &signature).into();
+            assert!(
+                matches!(
+                    verify_document(&secured, &secret.public_key()),
+                    Err(VerifyError::Malformed(_))
+                ),
+                "{base:?}"
             );
         }
     }

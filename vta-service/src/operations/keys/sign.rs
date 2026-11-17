@@ -87,6 +87,50 @@ pub(super) async fn sign_payload_recorded(
     channel: &str,
     row: SignAuditRow<'_>,
 ) -> Result<SignResultBody, AppError> {
+    let signature = sign_payload_bytes(
+        keys_ks,
+        imported_ks,
+        internal_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        payload,
+        algorithm,
+        domain,
+        channel,
+        row,
+    )
+    .await?;
+    Ok(SignResultBody {
+        key_id: key_id.to_string(),
+        signature: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature),
+        algorithm: algorithm.clone(),
+    })
+}
+
+/// [`sign_payload_recorded`], returning the signature's bytes rather than its
+/// wire form, for an operation that puts them into a format of its own (a
+/// JWS, a CSR, a Data Integrity proof).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn sign_payload_bytes(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    internal_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    payload: &[u8],
+    algorithm: &SignAlgorithm,
+    domain: SigningDomain,
+    channel: &str,
+    row: SignAuditRow<'_>,
+) -> Result<Vec<u8>, AppError> {
     // Gate 0 — the generic oracle needs `Sign` (VTI-VTA-003, VTI-VTA-007).
     // Only for `Opaque`: those bytes came from a caller, which is the generic
     // signing request `Sign` names. `ProtocolDefined` input is built inside the
@@ -162,11 +206,8 @@ pub(super) async fn sign_payload_recorded(
     }
 
     // What gets signed, which is not always what was handed in: an opaque
-
     // payload is framed under its domain tag first. See `SigningDomain`.
-
     let to_sign = domain.signing_input(payload);
-
     let payload = to_sign.as_ref();
 
     let signature_bytes = match record.origin {
@@ -244,23 +285,22 @@ pub(super) async fn sign_payload_recorded(
             )
             .await?;
             match record.key_type {
+                // Both built without a plain copy of the secret: the P-256
+                // key from the secret key itself, the Ed25519 seed copied
+                // from zeroizing memory into zeroizing memory.
                 KeyType::P256 => {
-                    let p256_secret = key.p256_secret()?;
-                    vta_signing::SigningSecret::p256_from_slice(
-                        p256_secret.secret_key.to_bytes().as_slice(),
-                    )
-                    .map_err(|e| AppError::Internal(format!("invalid P-256 key: {e}")))?
-                    .sign_message(payload)
+                    vta_signing::SigningSecret::from_p256_secret(&key.p256_secret()?.secret_key)
+                        .sign_message(payload)
                 }
                 _ => {
                     let bytes = key.ed25519_signing_key_bytes()?;
-                    vta_signing::SigningSecret::ed25519(*bytes).sign_message(payload)
+                    vta_signing::SigningSecret::ed25519_from_slice(bytes.as_slice())
+                        .map_err(|e| AppError::Internal(format!("invalid Ed25519 key: {e}")))?
+                        .sign_message(payload)
                 }
             }
         }
     };
-
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature_bytes);
 
     info!(channel, key_id = %key_id, "payload signed");
 
@@ -301,11 +341,7 @@ pub(super) async fn sign_payload_recorded(
     )
     .await;
 
-    Ok(SignResultBody {
-        key_id: key_id.to_string(),
-        signature,
-        algorithm: algorithm.clone(),
-    })
+    Ok(signature_bytes)
 }
 
 /// Why [`sign_sshsig`] refused, where `keys/sign-sshsig/0.1` declares a code for
@@ -549,8 +585,11 @@ pub async fn sign_jws(
     )
     .await?;
     let (_, algorithm, public) = protocol_signing_key(keys_ks, auth, key_id).await?;
+    // One name for the algorithm, used for the header, the audit row and the
+    // answer alike, so none of them can describe a different signature.
+    let core = core_algorithm(&algorithm)?;
     let input = vta_signing::jws::prepare_jws(
-        core_algorithm(&algorithm)?,
+        core,
         header,
         payload,
         crate::operations::sign_formats::x5c_leaf_is_key(&public),
@@ -562,10 +601,10 @@ pub async fn sign_jws(
         .unwrap_or("-");
     let detail = format!(
         "alg={} typ={typ} sha256={}",
-        public.alg(),
+        core.jose_name(),
         hex::encode(Sha256::digest(input.bytes()))
     );
-    let signed = sign_payload_recorded(
+    let signature = sign_payload_bytes(
         keys_ks,
         imported_ks,
         internal_ks,
@@ -585,12 +624,9 @@ pub async fn sign_jws(
         },
     )
     .await?;
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&signed.signature)
-        .map_err(|e| AppError::Internal(format!("signature encoding: {e}")))?;
     Ok((
         vta_signing::jws::finish_jws(&input, &signature),
-        public.alg(),
+        core.jose_name(),
     ))
 }
 
@@ -668,7 +704,7 @@ pub async fn sign_csr(
         "subject={subject_text} san={names_text} sha256={}",
         hex::encode(Sha256::digest(&info))
     );
-    let signed = sign_payload_recorded(
+    let signature = sign_payload_bytes(
         keys_ks,
         imported_ks,
         internal_ks,
@@ -688,9 +724,6 @@ pub async fn sign_csr(
         },
     )
     .await?;
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&signed.signature)
-        .map_err(|e| AppError::Internal(format!("signature encoding: {e}")))?;
     let pem = certification_request_pem(&info, &key, &signature).map_err(AppError::Internal)?;
     Ok((pem, record.public_key))
 }
@@ -748,7 +781,6 @@ pub async fn sign_document(
     use crate::operations::sign_formats::{
         FormatRefusal, did_key_methods, document_signer, signer_methods,
     };
-    use base64::Engine as _;
     use sha2::{Digest, Sha256};
 
     // Items 1 – 2.
@@ -854,7 +886,7 @@ pub async fn sign_document(
             .unwrap_or_else(|| "-".into()),
         hex::encode(Sha256::digest(hash_data))
     );
-    let signed = sign_payload_recorded(
+    let signature = sign_payload_bytes(
         keys_ks,
         imported_ks,
         internal_ks,
@@ -874,12 +906,9 @@ pub async fn sign_document(
         },
     )
     .await?;
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&signed.signature)
-        .map_err(|e| AppError::Internal(format!("signature encoding: {e}")))?;
 
     // Item 12.
-    let secured = vta_signing::di::finish_document(&input, &signature);
+    let secured = vta_signing::di::finish_document(input, &signature);
     Ok(SignedDocument {
         document: secured.document,
         proof: secured.proof,
@@ -939,7 +968,8 @@ pub async fn derive_and_sign(
         )));
     }
 
-    let signing_key = vta_signing::SigningSecret::ed25519(*signing_bytes);
+    let signing_key = vta_signing::SigningSecret::ed25519_from_slice(signing_bytes.as_slice())
+        .map_err(|e| AppError::Internal(format!("invalid Ed25519 key: {e}")))?;
     let public_key = encode_public_multibase(
         &KeyType::Ed25519,
         vta_signing::Signer::public_key(&signing_key).as_bytes(),

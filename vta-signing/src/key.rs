@@ -190,12 +190,31 @@ impl SigningSecret {
     }
 
     /// An Ed25519 key from a slice that must be exactly 32 bytes.
+    ///
+    /// The seed is copied straight into the zeroizing buffer the key keeps, so
+    /// no plain copy of it is left behind. Prefer this to [`Self::ed25519`]
+    /// where the seed is already held in zeroizing memory.
     pub fn ed25519_from_slice(seed: &[u8]) -> Result<Self, SecretError> {
-        let seed: [u8; 32] = seed.try_into().map_err(|_| SecretError::Length {
-            expected: 32,
-            got: seed.len(),
-        })?;
-        Ok(Self::ed25519(seed))
+        if seed.len() != 32 {
+            return Err(SecretError::Length {
+                expected: 32,
+                got: seed.len(),
+            });
+        }
+        let mut held = Zeroizing::new([0u8; 32]);
+        held.copy_from_slice(seed);
+        Ok(Self {
+            key: Key::Ed25519(held),
+        })
+    }
+
+    /// A P-256 key from a `p256` secret key, without serialising the scalar:
+    /// the signing key is built from it directly, so no copy of the scalar is
+    /// made outside zeroizing memory.
+    pub fn from_p256_secret(secret: &p256::SecretKey) -> Self {
+        Self {
+            key: Key::P256(p256::ecdsa::SigningKey::from(secret)),
+        }
     }
 
     /// A P-256 key from its big-endian scalar.
@@ -485,5 +504,34 @@ mod tests {
         }
         assert_eq!(Algorithm::from_jose_name("ES256K"), None);
         assert_eq!(Algorithm::from_jose_name("none"), None);
+    }
+
+    #[test]
+    fn a_p256_key_from_its_secret_key_is_the_key_its_scalar_names() {
+        let scalar = [5u8; 32];
+        let secret = p256::SecretKey::from_slice(&scalar).unwrap();
+        assert_eq!(
+            SigningSecret::from_p256_secret(&secret).public_key(),
+            SigningSecret::p256_from_slice(&scalar)
+                .unwrap()
+                .public_key()
+        );
+    }
+
+    #[test]
+    fn an_ed25519_seed_slice_must_be_32_bytes() {
+        assert_eq!(
+            SigningSecret::ed25519_from_slice(&[7; 32])
+                .unwrap()
+                .public_key(),
+            SigningSecret::ed25519([7; 32]).public_key()
+        );
+        assert!(matches!(
+            SigningSecret::ed25519_from_slice(&[7; 31]),
+            Err(SecretError::Length {
+                expected: 32,
+                got: 31
+            })
+        ));
     }
 }

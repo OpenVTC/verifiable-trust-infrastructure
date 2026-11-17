@@ -60,16 +60,19 @@ async fn audit_rows(dir: &Path) -> Vec<(String, String, String, String, String)>
         if String::from_utf8_lossy(&key).contains("chain") {
             continue;
         }
-        let Ok(row) = serde_json::from_slice::<serde_json::Value>(&value) else {
+        // Chained, as the daemon writes: an envelope whose actor and DID
+        // resource travel in its hashed members.
+        let env: vta_audit::VtaAuditEnvelope = serde_json::from_slice(&value)
+            .unwrap_or_else(|e| panic!("an audit row that is not an envelope ({e})"));
+        let vta_audit::VtaAuditEvent::VtaOperation(op) = env.event else {
             continue;
         };
-        let text = |name: &str| row[name].as_str().unwrap_or_default().to_string();
         rows.push((
-            text("action"),
-            text("actor"),
-            text("resource"),
-            text("outcome"),
-            text("channel"),
+            op.action,
+            env.actor_did_plain.unwrap_or_default(),
+            op.resource.or(env.target_did_plain).unwrap_or_default(),
+            op.outcome,
+            op.channel.unwrap_or_default(),
         ));
     }
     rows
@@ -113,6 +116,51 @@ async fn offline_context_and_acl_writes_leave_audit_rows() {
     assert_eq!(created.3, "success");
     assert_eq!(created.4, "vta-cli");
     find("context.create", "gateway");
+    assert_chain_verifies(dir.path()).await;
+}
+
+/// The rows are chained, as the daemon's are: an unchained row after the chain
+/// opened is a finding to `audit/verify`, so a break-glass write must not
+/// look like tampering (VTI-AUD-004).
+async fn assert_chain_verifies(dir: &Path) {
+    let store = Store::open(&StoreConfig {
+        data_dir: dir.join("data"),
+    })
+    .expect("open store");
+    let ks = store.keyspace(vta_keyspaces::AUDIT).expect("audit ks");
+    let report = vta_service::operations::audit::verify_audit_chain(&ks)
+        .await
+        .expect("verify");
+    assert!(report.verified, "{report:?}");
+    assert_eq!(report.unparseable_skipped, 0, "{report:?}");
+    assert_eq!(report.legacy_skipped, 0, "{report:?}");
+}
+
+/// The admin grant is checked before anything is written: a bad `--admin-did`
+/// refuses the command and leaves no context behind, audited or not.
+#[tokio::test]
+async fn a_bad_admin_grant_creates_no_context() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = write_config(dir.path());
+
+    for flags in [
+        &["--admin-did", "notadid"][..],
+        &["--admin-did", GATEWAY, "--admin-handoff"][..],
+    ] {
+        let mut args = vec!["contexts", "create", "--id", "gateway"];
+        args.extend_from_slice(flags);
+        let (ok, out) = vta(&config, &args);
+        assert!(!ok, "{flags:?} must be refused: {out}");
+    }
+    let (ok, out) = vta(&config, &["contexts", "create", "--id", "gateway"]);
+    assert!(ok, "the id is still free: {out}");
+    let actions: Vec<String> = audit_rows(dir.path())
+        .await
+        .into_iter()
+        .map(|r| r.0)
+        .filter(|a| a != "audit.key.created")
+        .collect();
+    assert_eq!(actions, ["context.create"], "one context, created once");
 }
 
 #[tokio::test]

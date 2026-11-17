@@ -201,7 +201,8 @@ pub struct VerifiedJws {
 }
 
 /// Verify a compact JWS against `key`: three segments, a protected header whose
-/// `alg` is the key's, and a signature over the first two.
+/// `alg` is the key's and that names no critical extension (`crit`, `b64`),
+/// and a signature over the first two.
 pub fn verify_jws(compact: &str, key: &PublicKey) -> Result<VerifiedJws, VerifyError> {
     let malformed = |m: &str| VerifyError::Malformed(m.to_string());
     let mut parts = compact.split('.');
@@ -221,6 +222,21 @@ pub fn verify_jws(compact: &str, key: &PublicKey) -> Result<VerifiedJws, VerifyE
         .get("alg")
         .and_then(Value::as_str)
         .ok_or_else(|| malformed("the protected header has no alg"))?;
+    // RFC 7515 §4.1.11: a verifier refuses a JWS whose critical extensions it
+    // does not understand, and this one understands none. `b64` is one such
+    // extension (RFC 7797): with `false` the payload segment is not base64url,
+    // so reading it as such would verify one thing and return another. The
+    // signer refuses both members (`FORBIDDEN_HEADER_MEMBERS`); so does this.
+    if header.contains_key("crit") {
+        return Err(malformed(
+            "the protected header names critical extensions (`crit`), and none is understood",
+        ));
+    }
+    if header.contains_key("b64") {
+        return Err(malformed(
+            "the protected header carries `b64` (RFC 7797), which is not understood",
+        ));
+    }
     if Algorithm::from_jose_name(alg) != Some(key.algorithm()) {
         return Err(VerifyError::Algorithm {
             expected: key.algorithm(),
@@ -473,5 +489,31 @@ mod tests {
                 "alg".to_string()
             )))
         );
+    }
+
+    /// RFC 7515 §4.1.11: a critical extension this verifier does not
+    /// understand — any, here — fails verification, even under a valid
+    /// signature. `b64: false` (RFC 7797) would otherwise verify one payload
+    /// and return another.
+    #[test]
+    fn a_token_naming_a_critical_extension_does_not_verify() {
+        let secret = SigningSecret::ed25519([3; 32]);
+        for header in [
+            json!({ "alg": "EdDSA", "crit": ["exp-policy"], "exp-policy": 1 }),
+            json!({ "alg": "EdDSA", "b64": false, "crit": ["b64"] }),
+            json!({ "alg": "EdDSA", "b64": true }),
+        ] {
+            let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string());
+            let input = format!("{header_b64}.QQ");
+            let signature = secret.sign_message(input.as_bytes());
+            let jws = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature));
+            assert!(
+                matches!(
+                    verify_jws(&jws, &secret.public_key()),
+                    Err(VerifyError::Malformed(_))
+                ),
+                "{header}"
+            );
+        }
     }
 }

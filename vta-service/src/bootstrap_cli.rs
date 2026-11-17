@@ -887,6 +887,22 @@ pub async fn run_context_create(
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-create");
     let display_name = name.unwrap_or_else(|| id.clone());
 
+    // Everything the admin grant needs is checked before anything is written,
+    // so a bad flag refuses the command rather than leaving a context created
+    // and the grant half done.
+    if let Some(did) = &admin_did
+        && !did.starts_with("did:")
+    {
+        return Err(format!("--admin-did must start with `did:` (got {did:?})").into());
+    }
+    let admin_expires_at = match admin_expires.as_deref() {
+        Some(raw) => Some(vta_cli_common::duration::duration_to_expires_at(raw)?),
+        None => None,
+    };
+    if admin_handoff && admin_expires_at.is_none() {
+        return Err("--admin-handoff requires --admin-expires (VTI-ACL-054)".into());
+    }
+
     let record = crate::operations::contexts::create_context(
         &contexts_ks,
         &acl_ks,
@@ -898,23 +914,18 @@ pub async fn run_context_create(
         "vta-context-create",
     )
     .await?;
+    // The context's derivation index stays allocated if this is undone: an
+    // index is never handed out twice.
+    cs.audit_or_undo("context.create", &record.id, Some(&record.id), || {
+        crate::contexts::delete_context(&contexts_ks, &record.id)
+    })
+    .await?;
 
     // Optionally grant admin access to the supplied DID, scoped to the
     // new context. Mirrors `pnm contexts create --admin-did ...` so the
     // offline path can also do "create context + grant first admin" in
     // one shot.
     if let Some(did) = admin_did {
-        if !did.starts_with("did:") {
-            return Err(format!(
-                "--admin-did must start with `did:` (got {did:?}) — context was created \
-                 but no ACL entry was added"
-            )
-            .into());
-        }
-        let expires_at = match admin_expires.as_deref() {
-            Some(raw) => Some(vta_cli_common::duration::duration_to_expires_at(raw)?),
-            None => None,
-        };
         let entry = crate::acl::AclEntry::new(
             did.clone(),
             crate::acl::Role::Admin,
@@ -923,13 +934,10 @@ pub async fn run_context_create(
         .with_label(admin_label)
         // Scope to the full path the operation assigned (`<parent>/<id>` nested).
         .with_contexts(vec![record.id.clone()])
-        .with_expires_at(expires_at);
+        .with_expires_at(admin_expires_at);
         // The granter here is the local operator acting as super-admin, so
         // the bound is unrestricted and permanent (VTI-ACL-054).
         let entry = if admin_handoff {
-            if expires_at.is_none() {
-                return Err("--admin-handoff requires --admin-expires (VTI-ACL-054)".into());
-            }
             entry.with_handoff(Some(crate::acl::HandOff {
                 granted_by: auth.did.clone(),
                 granted_at: crate::auth::session::now_epoch(),
@@ -946,16 +954,15 @@ pub async fn run_context_create(
             entry
         };
         crate::acl::store_acl_entry(&acl_ks, &entry).await?;
-        cs.audit_break_glass("acl.create", &did, Some(&record.id))
-            .await?;
+        cs.audit_or_undo("acl.create", &did, Some(&record.id), || {
+            crate::acl::delete_acl_entry(&acl_ks, &did)
+        })
+        .await?;
         eprintln!(
             "Admin ACL entry created for {did} (context: {}).",
             record.id
         );
     }
-
-    cs.audit_break_glass("context.create", &record.id, Some(&record.id))
-        .await?;
     cs.persist().await?;
 
     println!("Context created:");
@@ -1379,6 +1386,35 @@ pub async fn run_context_reprovision(
             .with_contexts(vec![id.clone()])
             .with_created_at(Utc::now().timestamp() as u64);
         crate::acl::store_acl_entry(&state.acl_ks, &entry).await?;
+        // The state's own sink, not the CLI store's: `create_key` above wrote
+        // through it, and a second chained sink would start from a stale head.
+        if let Err(audit) = vta_audit::record(
+            &state.audit_sink,
+            "acl.create",
+            crate::cli_store::BREAK_GLASS_ACTOR,
+            Some(&admin_did),
+            "success",
+            Some(crate::cli_store::BREAK_GLASS_CHANNEL),
+            Some(&id),
+        )
+        .await
+        {
+            crate::acl::delete_acl_entry(&state.acl_ks, &admin_did)
+                .await
+                .map_err(|undo| {
+                    format!(
+                        "acl.create on {admin_did}: its audit row could not be written ({audit}), \
+                         and undoing the write failed ({undo}). The change is in the store \
+                         without a row; inspect it before starting the VTA."
+                    )
+                })?;
+            cs.persist().await?;
+            return Err(format!(
+                "acl.create on {admin_did} was undone: its audit row could not be written \
+                 ({audit}). Nothing changed; no bundle was produced."
+            )
+            .into());
+        }
         cs.persist().await?;
         eprintln!("Created ACL entry for {admin_did} in context '{id}'");
     }
