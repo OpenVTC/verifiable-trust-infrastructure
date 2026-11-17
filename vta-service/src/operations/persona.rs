@@ -265,11 +265,80 @@ async fn webs_document(webs_ks: &KeyspaceHandle, did: &str) -> Result<Option<Val
         .map_err(|e| AppError::Internal(format!("encode the document of {did}: {e}")))
 }
 
+/// Whether `document` lists the method `absolute` (`{did}#{fragment}`) under `relationship`,
+/// by its absolute id or its fragment alone.
+#[cfg(feature = "webs")]
+fn lists_method(document: &Value, relationship: Relationship, absolute: &str) -> bool {
+    let fragment = absolute.split_once('#').map(|(_, f)| format!("#{f}"));
+    document[relationship.as_str()]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|m| {
+            let id = m.as_str().or_else(|| m.get("id").and_then(Value::as_str));
+            id == Some(absolute) || (fragment.is_some() && id == fragment.as_deref())
+        })
+}
+
+/// The key record a **key-role** `did:webs` signs with for `relationship` (VTI-KEY-072):
+/// its `operational` key for `authentication`, its `attestation` key for `assertionMethod`.
+/// The key event log's own key signs neither, so the record's `signing_key_id` is never the
+/// answer for such an identity.
+///
+/// `None` for an identity without key roles, one this agent does not hold, a deactivated
+/// one, and a role key the identity's own document does not list under `relationship` — it
+/// is checked there rather than assumed.
+#[cfg(feature = "webs")]
+async fn webs_role_key_id(
+    webs_ks: &KeyspaceHandle,
+    did: &str,
+    relationship: Relationship,
+) -> Result<Option<String>, AppError> {
+    let Some(record) = crate::webs_store::get(webs_ks, did).await? else {
+        return Ok(None);
+    };
+    if record.deactivated {
+        return Ok(None);
+    }
+    let role_key = match relationship {
+        Relationship::AssertionMethod => record.attestation_key_id,
+        Relationship::Authentication => record.operational_key_id,
+    };
+    let Some(role_key) = role_key else {
+        return Ok(None);
+    };
+    let Some(document) = webs_document(webs_ks, did).await? else {
+        return Ok(None);
+    };
+    Ok(lists_method(&document, relationship, &role_key).then_some(role_key))
+}
+
+/// The key record to sign with **as** `did` for `relationship`, where that is decided by the
+/// identity and not by whoever named a key: a key-role `did:webs` this agent holds, which
+/// publishes a different key for each relationship. `None` for every other DID, whose one
+/// signing key the caller already has.
+///
+/// This names a key record and authorises nothing: the caller still holds the key to its own
+/// custody rule (a vault entry's key must be in the entry's context).
+pub async fn role_key_id_for(
+    stores: PersonaStores<'_>,
+    did: &str,
+    relationship: Relationship,
+) -> Result<Option<String>, AppError> {
+    #[cfg(feature = "webs")]
+    if did.starts_with("did:webs:") && !did.contains('#') {
+        return webs_role_key_id(stores.webs_ks, did, relationship).await;
+    }
+    let _ = (stores, did, relationship);
+    Ok(None)
+}
+
 /// The `did:webs` arm of [`persona_key_for`]: a `did:webs` this agent holds, in a context
 /// the caller may act in, not deactivated. Its key is the key state's signing key, which a
 /// level-1 `did:webs` document lists under both `authentication` and `assertionMethod` as
 /// `#{key}`; it is checked there rather than assumed, and its record must be the active
-/// Ed25519 key of the DID's own context.
+/// Ed25519 key of the DID's own context. A key-role identity signs with the key of the
+/// relationship's role instead ([`webs_role_key_id`]), held to the same record checks.
 #[cfg(feature = "webs")]
 async fn webs_persona_key(
     stores: PersonaStores<'_>,
@@ -282,6 +351,24 @@ async fn webs_persona_key(
     };
     if !auth.has_context_access(&record.context_id) || record.deactivated {
         return Ok(None);
+    }
+    if record.attestation_key_id.is_some() || record.operational_key_id.is_some() {
+        let Some(role_key) = webs_role_key_id(stores.webs_ks, did, relationship).await? else {
+            return Ok(None);
+        };
+        let held: Option<vta_sdk::keys::KeyRecord> = stores
+            .keys_ks
+            .get(crate::keys::store_key(&role_key))
+            .await?;
+        let held = held.filter(|k| {
+            k.status == vta_sdk::keys::KeyStatus::Active
+                && k.key_type == vta_sdk::keys::KeyType::Ed25519
+                && k.context_id.as_deref() == Some(record.context_id.as_str())
+        });
+        return Ok(held.map(|k| PersonaKey {
+            key_id: k.key_id,
+            verification_method: role_key,
+        }));
     }
     let kels = affinidi_did_webs::Kels::parse(&record.keri_cesr)
         .map_err(|e| AppError::Internal(format!("read the stream of {did}: {e}")))?;

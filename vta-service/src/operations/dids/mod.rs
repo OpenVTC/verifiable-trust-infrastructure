@@ -587,7 +587,17 @@ impl WebsEngine {
             deactivated: record.deactivated,
             server_id: Some(record.server_id.clone()),
             label: record.label.clone(),
-            signing_key_id: (!record.deactivated).then(|| record.signing_key_id.clone()),
+            // The key a client signs in with as this DID. For a key-role
+            // identity that is its `operational` key, the one its document
+            // lists under `authentication`; the key event log's own key
+            // (`record.signing_key_id`) is in no relationship there, and a
+            // proof naming it is refused (VTI-KEY-072).
+            signing_key_id: (!record.deactivated).then(|| {
+                record
+                    .operational_key_id
+                    .clone()
+                    .unwrap_or_else(|| record.signing_key_id.clone())
+            }),
             key_agreement_key_id: (!record.deactivated)
                 .then(|| record.key_agreement_key_id.clone()),
             also_known_as,
