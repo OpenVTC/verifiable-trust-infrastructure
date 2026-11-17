@@ -803,6 +803,27 @@ pub async fn sign_document(
     let key = vta_sdk::did_key::decode_ed25519_public_key_multibase(&record.public_key)
         .map_err(|e| AppError::Internal(format!("key {key_id}'s public key: {e}")))?;
 
+    // A key that authorizes a `did:webvh` log this VTA holds does not sign as
+    // its own `did:key`: a webvh log entry's proof is exactly an
+    // `eddsa-jcs-2022` proof by `did:key:<update key>`, so signing a caller's
+    // document that way would let any holder of `sign-document` in the
+    // context forge an entry that rewrites the DID. It still signs as the
+    // `did:webvh` it serves, whose proofs name that DID's own method.
+    #[cfg(feature = "webvh")]
+    if signer.starts_with("did:key:")
+        && crate::operations::did_webvh::webvh_keys::is_log_authorization_key(
+            keys_ks,
+            &record.public_key,
+        )
+        .await?
+    {
+        return Err(AppError::Forbidden(format!(
+            "{key_id} authorizes did:webvh log entries, so it signs documents only as the did:webvh it \
+             serves, never as its own did:key"
+        ))
+        .into());
+    }
+
     // Item 8: the signer DID's own document, never one from the request.
     let own = match did_key_methods(&signer) {
         Some(m) => Some(m),

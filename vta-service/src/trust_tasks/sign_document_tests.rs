@@ -362,3 +362,118 @@ async fn sign_document_needs_its_own_capability() {
         }
     }
 }
+
+/// Record `public_key` as the update key of a `did:webvh` this VTA holds — the
+/// state a VTA-built `did:webvh` is in, whose signing key is its update key.
+#[cfg(feature = "webvh")]
+async fn mark_as_update_key(state: &AppState, public_key: &str) {
+    use crate::operations::did_webvh::webvh_keys::{WebvhKeyHandle, WebvhKeyRole, install};
+    install(
+        &state.keys_ks,
+        &WebvhKeyHandle {
+            scid: "QmUpdateKeyTest".into(),
+            version_id: "1-QmUpdateKeyTest".into(),
+            hash: format!("hash-of-{public_key}"),
+            public_key: public_key.into(),
+            derivation_path: "m/26'/0'".into(),
+            seed_id: None,
+            role: WebvhKeyRole::UpdateKey,
+            label: "update key".into(),
+            created_at: chrono::Utc::now(),
+        },
+    )
+    .await
+    .expect("record the update key");
+}
+
+/// A key that authorizes a `did:webvh` log does not sign a caller's document as
+/// its own `did:key`: that proof is exactly a log entry's, so it would let any
+/// holder of `sign-document` in the context rewrite the DID.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn an_update_key_does_not_sign_as_its_own_did_key() {
+    let f = Fixture::new().await;
+    mark_as_update_key(&f.state, f.did.trim_start_matches("did:key:")).await;
+
+    let out = f.sign_document(f.credential()).await;
+    let b = body(&out);
+    assert!(
+        !out.status.is_success(),
+        "an update key must not sign as its did:key: {b:#}"
+    );
+    assert!(
+        b.to_string().contains("authorizes did:webvh log entries"),
+        "refused for the wrong reason: {b:#}"
+    );
+}
+
+/// The forged log entry a holder of `sign-document` would need: the DID's next
+/// version adding the holder's key, naming the update key's `did:key` so the
+/// proof is by that key. Refused.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn a_forged_log_entry_is_not_signed_by_the_update_key() {
+    let f = Fixture::new().await;
+    mark_as_update_key(&f.state, f.did.trim_start_matches("did:key:")).await;
+    let forged = serde_json::json!({
+        "versionId": "2-QmForged",
+        "versionTime": "2026-11-17T12:00:00Z",
+        "parameters": {},
+        "state": {
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": "did:webvh:QmUpdateKeyTest:example.com",
+            "verificationMethod": [{
+                "id": "did:webvh:QmUpdateKeyTest:example.com#attacker",
+                "type": "Multikey",
+                "controller": "did:webvh:QmUpdateKeyTest:example.com",
+                "publicKeyMultibase": "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+            }],
+            "assertionMethod": ["did:webvh:QmUpdateKeyTest:example.com#attacker"]
+        },
+        "controller": f.did,
+    });
+
+    let out = f.sign_document(forged).await;
+    assert!(
+        !out.status.is_success(),
+        "a forged log entry must not be signed: {:#}",
+        body(&out)
+    );
+}
+
+/// The same key still signs as the `did:webvh` it serves: that proof names the
+/// DID's own method, which no log verifier reads as a log entry proof.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn an_update_key_still_signs_as_the_did_webvh_it_serves() {
+    let f = Fixture::new().await;
+    let persona = crate::operations::persona::test_fixture::webvh_persona(
+        &f.state.keys_ks,
+        &f.state.internal_ks,
+        &f.state.contexts_ks,
+        &f.state.acl_ks,
+        &f.state.webvh_ks,
+        &f.state.seed_store,
+        &f.state.audit_sink,
+        CTX,
+        "webvh-member-key",
+    )
+    .await;
+    mark_as_update_key(
+        &f.state,
+        &vta_sdk::did_key::ed25519_multibase_pubkey(&persona.public_key),
+    )
+    .await;
+
+    let mut credential = f.credential();
+    credential["issuer"] = serde_json::json!(persona.did);
+    let out = f
+        .sign(serde_json::json!({ "keyId": persona.key_id, "document": credential }))
+        .await;
+    let b = body(&out);
+    assert!(out.status.is_success(), "{b:#}");
+    assert_eq!(
+        b["payload"]["proof"]["verificationMethod"],
+        format!("{}#key-1", persona.did)
+    );
+}
