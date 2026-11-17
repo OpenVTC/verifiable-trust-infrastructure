@@ -45,13 +45,11 @@ Baked at compile time by `include_dir!` (see
 sub-router **only** when:
 
 - The `website` cargo feature is on.
-- `website.root_dir` is unset.
+- Neither `website.root_dir` nor `website.landing_dir` is set.
 
-Once the operator sets `website.root_dir`, the filesystem-backed
-handler from `src/website/serve.rs` takes over and this default
-becomes unreachable.
-
-Operators wanting a richer "out of the box" landing page replace
-the files in this directory (or, more commonly, configure
-`website.root_dir` and populate that directory with their own
-content).
+Operators wanting their own landing page don't edit this directory and
+rebuild: `vtc website export <dir>` writes these files out, and
+`website.landing_dir = "<dir>"` serves them from disk, re-read on every
+request, on the same host as the console. `website.root_dir` instead
+serves a deployable site, on a host of its own (the filesystem-backed
+handler in `src/website/serve.rs`).

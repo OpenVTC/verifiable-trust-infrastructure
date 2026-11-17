@@ -179,6 +179,28 @@ enum Commands {
         #[command(subcommand)]
         command: AdminUiCommands,
     },
+    /// The public landing page's files (offline).
+    ///
+    /// To give the community its own landing page, export the built-in one
+    /// to a directory, edit it there, and set `website.landing_dir` in
+    /// config.toml. The daemon serves that directory at `/` instead of the
+    /// page built into the binary, re-reading it on every request — no
+    /// rebuild, no restart, no second host.
+    Website {
+        #[command(subcommand)]
+        command: WebsiteCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebsiteCommands {
+    /// Write the landing page built into this binary to a new or empty
+    /// directory.
+    Export {
+        /// Directory to write into. Created if missing; refused if it
+        /// already holds anything.
+        dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -713,6 +735,31 @@ async fn main() {
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Website { command }) => {
+            #[cfg(feature = "website")]
+            {
+                let WebsiteCommands::Export { dir } = command;
+                if let Err(e) = vtc_service::website::default_site::export(&dir) {
+                    eprintln!("Export failed: {e}");
+                    std::process::exit(1);
+                }
+                println!(
+                    "Landing page written to {}.\n\
+                     Edit it there, then set in config.toml and restart the daemon once:\n\n\
+                     [website]\n\
+                     landing_dir = \"{}\"\n\n\
+                     Later edits show on the next page load.",
+                    dir.display(),
+                    std::path::absolute(&dir).unwrap_or(dir.clone()).display()
+                );
+            }
+            #[cfg(not(feature = "website"))]
+            {
+                let _ = command;
+                eprintln!("website subcommands are unavailable (compiled without 'website')");
                 std::process::exit(1);
             }
         }

@@ -493,7 +493,7 @@ fn tt(
 pub fn router() -> Router<AppState> {
     #[cfg(feature = "website")]
     {
-        router_with(&RoutingConfig::default(), None)
+        router_with(&RoutingConfig::default(), Default::default())
     }
     #[cfg(not(feature = "website"))]
     {
@@ -526,9 +526,9 @@ pub fn router() -> Router<AppState> {
 #[cfg(feature = "website")]
 pub fn router_with(
     routing: &RoutingConfig,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
 ) -> Router<AppState> {
-    router_with_inner(routing, website_state, &[])
+    router_with_inner(routing, website, &[])
 }
 
 /// The router, with the per-IP limiters attributing clients through
@@ -542,10 +542,10 @@ pub fn router_with(
 #[cfg(feature = "website")]
 pub fn router_with_xff(
     routing: &RoutingConfig,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
     trust_xff_cidrs: &[IpNetwork],
 ) -> Router<AppState> {
-    router_with_inner(routing, website_state, trust_xff_cidrs)
+    router_with_inner(routing, website, trust_xff_cidrs)
 }
 
 #[cfg(not(feature = "website"))]
@@ -582,13 +582,13 @@ fn router_with_inner(routing: &RoutingConfig, trust_xff_cidrs: &[IpNetwork]) -> 
 #[cfg(feature = "website")]
 fn router_with_inner(
     routing: &RoutingConfig,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
     trust_xff_cidrs: &[IpNetwork],
 ) -> Router<AppState> {
     let api_chain = build_api_chain(routing, trust_xff_cidrs)
         .split_for_parts()
         .0;
-    with_csrf(assemble_with_website(routing, api_chain, website_state))
+    with_csrf(assemble_with_website(routing, api_chain, website))
 }
 
 /// Attach the CSRF double-submit + `Sec-Fetch-Site` middleware
@@ -1323,7 +1323,7 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
 pub fn assemble_with_website(
     routing: &RoutingConfig,
     api: Router<AppState>,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
 ) -> Router<AppState> {
     use axum::middleware::from_fn;
 
@@ -1354,35 +1354,46 @@ pub fn assemble_with_website(
         .route("/{*path}", any(placeholder_503))
         .layer(from_fn(security_headers));
 
-    // Website sub-router. Two dispatch paths, same rationale for
+    // Website sub-router. Three dispatch paths, same rationale for
     // explicit wildcard routes as the admin block above.
     //
     // - Operator configured `website.root_dir` → serve from the
-    //   filesystem via the M5.4 handler. `website_state` is
-    //   `Some`.
-    // - No `root_dir` → serve the in-tree default landing page
-    //   from `vtc-service/website-default/`. `website_state` is
-    //   `None`. This is the freshly-installed-daemon
-    //   out-of-the-box experience.
+    //   filesystem via the M5.4 handler (`Filesystem`).
+    // - Operator configured `website.landing_dir` → serve their
+    //   landing page from disk, re-read per request (`Landing`).
+    // - Neither → serve the in-tree default landing page from
+    //   `vtc-service/website-default/` (`BuiltIn`). This is the
+    //   freshly-installed-daemon out-of-the-box experience.
     //
-    // Both paths share the security-headers layer so the default
+    // All share the security-headers layer so the default
     // CSP applies uniformly.
     // Built as `Router<()>` (state baked in via `with_state` for
-    // the operator-config branch; the default-site branch is
-    // state-less) so the parent `Router<AppState>` can mount it
+    // the root_dir branch; the landing branches are state-less)
+    // so the parent `Router<AppState>` can mount it
     // via `fallback_service` / `nest_service`. axum 0.8's `merge`
     // doesn't preserve nested-router precedence when the merged
     // router has a wildcard `route("/{*path}")` — the website's
     // wildcard scores higher than the admin nest, so `/admin/*`
     // ends up routed to the website. The service-level mount
     // sidesteps that.
-    let website: axum::Router<()> = match website_state {
-        Some(state) => Router::new()
+    let website: axum::Router<()> = match website {
+        crate::website::WebsiteSource::Filesystem(state) => Router::new()
             .route("/", get(crate::website::serve))
             .route("/{*path}", get(crate::website::serve))
             .layer(from_fn(security_headers))
             .with_state(state),
-        None => Router::new()
+        crate::website::WebsiteSource::Landing(dir) => {
+            let dir = std::sync::Arc::new(dir);
+            let handler = move |req: axum::extract::Request| {
+                let dir = dir.clone();
+                async move { crate::website::default_site::serve_dir(&dir, req).await }
+            };
+            Router::new()
+                .route("/", get(handler.clone()))
+                .route("/{*path}", get(handler))
+                .layer(from_fn(security_headers))
+        }
+        crate::website::WebsiteSource::BuiltIn => Router::new()
             .route("/", get(crate::website::default_site::serve))
             .route("/{*path}", get(crate::website::default_site::serve))
             .layer(from_fn(security_headers)),

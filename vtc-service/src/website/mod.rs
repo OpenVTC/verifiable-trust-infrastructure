@@ -45,3 +45,19 @@ pub mod storage;
 pub use serve::{CspOverrideCache, WebsiteState, serve};
 #[cfg(feature = "website")]
 pub use storage::WebsiteRoot;
+
+/// What the website surface (`routing.website.mount`) serves.
+#[cfg(feature = "website")]
+#[derive(Debug, Clone, Default)]
+pub enum WebsiteSource {
+    /// The landing page built into the binary (`website-default/`).
+    #[default]
+    BuiltIn,
+    /// `website.landing_dir`: the operator's own landing page, read from
+    /// disk on every request ([`default_site::serve_dir`]). Trusted like
+    /// the built-in one, so it may share the console's origin.
+    Landing(std::path::PathBuf),
+    /// `website.root_dir`: the deployable filesystem website, which must
+    /// sit on its own host.
+    Filesystem(WebsiteState),
+}

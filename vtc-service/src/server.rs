@@ -479,6 +479,11 @@ pub async fn run(
         crate::admin_ui::check_serve_dir(dir).map_err(AppError::Config)?;
         info!(dir = %dir.display(), "member portal served from directory");
     }
+    #[cfg(feature = "website")]
+    if let Some(dir) = config.website.landing_dir.as_deref() {
+        crate::website::default_site::check_landing_dir(dir).map_err(AppError::Config)?;
+        info!(dir = %dir.display(), "landing page served from directory");
+    }
 
     // Open cached keyspace handles
     let sessions_ks = store.keyspace(keyspaces::SESSIONS)?;
@@ -2330,11 +2335,17 @@ fn run_rest_thread(
         // `with_csrf`) so the integration harness exercises it exactly
         // as production does (P3.2) — it is no longer layered here.
 
-        // Public-website state (Phase 5 M5.4). `None` when the
-        // operator hasn't set `website.root_dir` — the website
-        // sub-router keeps the 503 placeholder in that case.
+        // What the website surface serves (Phase 5 M5.4): the
+        // `website.root_dir` site, else the operator's
+        // `website.landing_dir` page, else the built-in page.
         #[cfg(feature = "website")]
-        let website_state = build_website_state(&state.config).await;
+        let website_source = match build_website_state(&state.config).await {
+            Some(site) => crate::website::WebsiteSource::Filesystem(site),
+            None => match state.config.read().await.website.landing_dir.clone() {
+                Some(dir) => crate::website::WebsiteSource::Landing(dir),
+                None => crate::website::WebsiteSource::BuiltIn,
+            },
+        };
 
         let trust_xff_cidrs = state.config.read().await.server.trust_xff_cidrs.clone();
         // HSTS from the declared public origin (#2661): the request itself
@@ -2348,7 +2359,7 @@ fn run_rest_thread(
         // `TimeoutLayer` is the outermost layer so the whole-request budget
         // (P0.10) covers every inner middleware + the handler.
         #[cfg(feature = "website")]
-        let app = routes::router_with_xff(&routing, website_state, &trust_xff_cidrs)
+        let app = routes::router_with_xff(&routing, website_source, &trust_xff_cidrs)
             .with_state(state)
             .layer(host_layer)
             .layer(hsts)
