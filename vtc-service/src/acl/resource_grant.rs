@@ -166,11 +166,11 @@ impl ResourceGrant {
     /// `effectiveAt`.
     pub fn is_live(&self, now: DateTime<Utc>) -> bool {
         !self.is_lapsed(now)
-            && !self
+            && self
                 .break_glass
                 .as_ref()
                 .and_then(|b| b.effective_at)
-                .is_some_and(|e| e > now)
+                .is_none_or(|e| e <= now)
     }
 
     /// Whether this grant, in effect, confers `cap` at `wanted` (`None` =
@@ -205,6 +205,8 @@ impl ResourceGrant {
             (Capability::GitCommitSign, _) => inside && cap == Capability::GitCommitSign,
             // A group manager's appointment: that group, nothing else.
             (Capability::GroupsManage, _) => exact && cap == Capability::GroupsManage,
+            // A board facilitator's appointment: that board, nothing else (VTI-BRD-090).
+            (Capability::BoardsManage, _) => exact && cap == Capability::BoardsManage,
             _ => false,
         }
     }

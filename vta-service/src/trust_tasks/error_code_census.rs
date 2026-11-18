@@ -57,26 +57,30 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
     use vti_specs as s;
     vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
-        // AclEntry 0.2 codes for bounds the shared operations still answer as
+        // AclEntry 0.3 codes for bounds the shared operations still answer as
         // `permissionDenied` (the granter-bound checks, VTI-ACL-053), and the
         // last-authority guard, which self-modification refusal makes
         // unreachable at a VTA (an unrestricted admin cannot remove itself).
-        s::acl::change_role::v0_2::error_codes::ADDITIVE_WITHIN_CEILING,
-        s::acl::change_role::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
-        s::acl::grant::v0_2::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
-        s::acl::grant::v0_2::error_codes::APPROVE_WIDER_THAN_GRANTER,
-        s::acl::grant::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
-        s::acl::revoke::v0_2::error_codes::LAST_AUTHORITY_PROTECTED,
+        s::acl::change_role::v0_3::error_codes::ADDITIVE_WITHIN_CEILING,
+        s::acl::change_role::v0_3::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::grant::v0_3::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
+        s::acl::grant::v0_3::error_codes::APPROVE_WIDER_THAN_GRANTER,
+        s::acl::grant::v0_3::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        // This VTA states no purpose policy (VTI-ACL-108 is a MAY), so it never
+        // refuses a purpose by policy.
+        s::acl::grant::v0_3::error_codes::PURPOSE_REFUSED,
+        s::acl::revoke::v0_3::error_codes::LAST_AUTHORITY_PROTECTED,
         s::acl::swap_key::v0_1::error_codes::LINK_PROOF_INVALID,
         s::acl::swap_key::v0_1::error_codes::LINK_PROOF_REQUIRED,
         s::acl::swap_key::v0_1::error_codes::NOT_HOLDER,
         s::acl::swap_key::v0_1::error_codes::SUBJECT_ALREADY_IN_USE,
         s::acl::swap_key::v0_1::error_codes::SUBJECT_NOT_FOUND,
-        s::acl::update::v0_2::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
-        s::acl::update::v0_2::error_codes::APPROVE_WIDER_THAN_GRANTER,
-        s::acl::update::v0_2::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::update::v0_3::error_codes::ADDITIVE_REQUIRES_UNRESTRICTED,
+        s::acl::update::v0_3::error_codes::APPROVE_WIDER_THAN_GRANTER,
+        s::acl::update::v0_3::error_codes::DELEGATION_EXCEEDS_GRANTER,
+        s::acl::update::v0_3::error_codes::PURPOSE_REFUSED,
         // The spine's schema check refuses a `role` member first (update item 2).
-        s::acl::update::v0_2::error_codes::ROLE_CHANGE_NOT_PERMITTED,
+        s::acl::update::v0_3::error_codes::ROLE_CHANGE_NOT_PERMITTED,
         s::audit::list::v0_2::error_codes::INVALID_CURSOR,
         s::auth::revoke_session::v0_2::error_codes::SESSION_NOT_FOUND,
         s::auth::step_up::approve_response::v0_7::error_codes::ACR_UNSATISFIED,
@@ -208,9 +212,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::provision::integration::v0_3::error_codes::TEMPLATE_NOT_FOUND,
         s::provision::integration::v0_3::error_codes::TEMPLATE_VARS_INVALID,
         s::rooms::keys::backfill::v0_2::error_codes::NOT_A_MEMBER,
-        s::rooms::keys::browse::v0_3::error_codes::HOST_REFUSED,
-        s::rooms::keys::browse::v0_3::error_codes::HOST_UNREACHABLE,
-        s::rooms::keys::browse::v0_3::error_codes::NOT_A_MEMBER,
         s::rooms::keys::chain::v0_2::error_codes::NOT_A_MEMBER,
         s::rooms::keys::commit::v0_1::error_codes::COMMIT_INVALID,
         s::rooms::keys::commit::v0_1::error_codes::EPOCH_GAP,
@@ -218,7 +219,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::rooms::keys::key_package::v0_2::error_codes::NOT_INVITED,
         s::rooms::keys::open::v0_2::error_codes::DID_NOT_OPEN,
         s::rooms::keys::present::v0_2::error_codes::ACTION_NOT_HELD,
-        s::rooms::keys::read::v0_1::error_codes::NOT_A_MEMBER,
         s::rooms::keys::welcome::v0_1::error_codes::NOT_INVITED,
         s::rooms::owner::anchor::v0_1::error_codes::HOST_REFUSED,
         s::rooms::owner::anchor::v0_1::error_codes::HOST_UNREACHABLE,
@@ -285,7 +285,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::vta::app_state::delete::v1_0::error_codes::VERSION_CONFLICT,
         s::vta::app_state::get_many::v1_0::error_codes::DUPLICATE_KEY,
         s::vta::app_state::get::v1_0::error_codes::NOT_FOUND,
-        s::vta::app_state::list::v1_0::error_codes::CURSOR_INVALID,
         s::vta::app_state::list::v1_0::error_codes::WATERMARK_TOO_OLD,
         s::vta::app_state::put_many::v1_0::error_codes::BATCH_TOO_LARGE,
         s::vta::app_state::put_many::v1_0::error_codes::DUPLICATE_KEY,
@@ -322,7 +321,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::vta::backup::put_chunk::v1_0::error_codes::NOT_FOUND,
         s::vta::backup::put_chunk::v1_0::error_codes::TERMINAL_STATE,
         s::vta::contexts::create::v1_0::error_codes::PARENT_NOT_FOUND,
-        s::vta::contexts::preview_delete::v1_0::error_codes::NOT_FOUND,
+        s::vta::contexts::preview_delete::v2_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_FOUND,
         s::vta::contexts::secrets::v1_0::error_codes::NOT_RELEASABLE,
         s::vta::contexts::update::v1_0::error_codes::NOT_FOUND,
@@ -341,10 +340,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::vta::did_templates::render::v2_0::error_codes::NOT_FOUND,
         s::vta::did_templates::update::v3_0::error_codes::NOT_FOUND,
         s::vta::management::reload_services::v1_0::error_codes::RELOAD_FAILED,
-        s::vta::memory::delete::v0_1::error_codes::CONTEXT_FORBIDDEN,
         s::vta::memory::delete::v0_1::error_codes::NOT_FOUND,
-        s::vta::memory::list::v0_1::error_codes::CONTEXT_FORBIDDEN,
-        s::vta::memory::put::v0_1::error_codes::CONTEXT_FORBIDDEN,
         s::vta::memory::put::v0_1::error_codes::VALUE_TOO_LARGE,
         s::vta::passkey_vms::enroll_challenge::v0_1::error_codes::DID_NOT_FOUND,
         s::vta::passkey_vms::revoke::v0_1::error_codes::DID_NOT_FOUND,

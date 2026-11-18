@@ -55,7 +55,7 @@ const DOMAIN_TAG: &[u8] = b"vtc-personhood-match/v1\0";
 /// (SPEC §4.5.1), and its `propertyNames` pattern requires a reverse-DNS
 /// key in lowercase — which is why this is `match-code` and not
 /// `matchCode`. Same convention as
-/// [`crate::routes::policies::read::PURPOSE_EXT_KEY`].
+/// [`crate::policy::ops::read::PURPOSE_EXT_KEY`].
 pub const MATCH_CODE_EXT_KEY: &str = "org.openvtc.match-code";
 
 /// Crockford base32 — no `I`, `L`, `O`, `U`.

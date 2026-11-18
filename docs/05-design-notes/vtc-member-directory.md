@@ -1,6 +1,10 @@
 # VTC member directory — design
 
-Status: **proposal** (2026-10-18). Q1–Q3 decided 2026-10-18 (§13). Nothing here is implemented. It needs
+Status: **largely implemented** — the phases in §14 have landed (directory, cards, groups
+including dynamic groups and grant bindings, the personal layer, notes, pictures, external
+cards; operator guides [`../03-vtc/member-directory.md`](../03-vtc/member-directory.md) and
+[`../03-vtc/groups.md`](../03-vtc/groups.md)); introductions (§7.2) are not built.
+Originally a proposal (2026-10-18); Q1–Q3 decided 2026-10-18 (§13). It needs
 specification work in two repositories before any code
 (§12), and it records the decisions that are still open (§13).
 

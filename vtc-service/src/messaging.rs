@@ -116,11 +116,24 @@ pub struct VtcMessaging {
 /// fallback when no resolver is configured or the DID can't be resolved, so
 /// the production `did:webvh` path is unchanged either way — a `did:webvh`
 /// document lists those exact ids, so resolution returns them anyway.
-async fn vtc_key_ids(
+///
+/// A `did:webs` VTC — level 1 or a key-role identity — passes `key_roles`, the
+/// ids its own key bundle gives its keys — the ids the VTA minted them under and published
+/// — and they are used without resolving: local state, not an answer the host
+/// serving the document could shape, and no fallback to `#key-0` / `#key-1`,
+/// which such a document does not have.
+pub(crate) async fn vtc_key_ids(
     did_resolver: Option<&DIDCacheClient>,
     vtc_did: &str,
+    key_roles: Option<&vta_sdk::node_keys::NodeKeyIds>,
 ) -> (String, Option<String>) {
-    let conventional = || (format!("{vtc_did}#key-0"), Some(format!("{vtc_did}#key-1")));
+    if let Some(ids) = key_roles {
+        return (ids.authentication.clone(), ids.key_agreement.clone());
+    }
+    let conventional = || {
+        let ids = vta_sdk::node_keys::NodeKeyIds::conventional(vtc_did);
+        (ids.authentication, ids.key_agreement)
+    };
 
     let Some(resolver) = did_resolver else {
         return conventional();
@@ -136,28 +149,13 @@ async fn vtc_key_ids(
             return conventional();
         }
     };
-
-    // A relationship id may be a bare fragment (`"#key-1"`) rather than an
-    // absolute DID URL; the secrets resolver is keyed by the absolute id, so
-    // re-attach the DID before looking it up.
-    let absolutize = |id: &str| -> String {
-        match id.strip_prefix('#') {
-            Some(fragment) => format!("{vtc_did}#{fragment}"),
-            None => id.to_string(),
-        }
-    };
-
-    let doc = &resolved.doc;
-    let signing = doc
-        .authentication
-        .first()
-        .map(|vr| vr.get_id())
-        .or_else(|| doc.verification_method.first().map(|vm| vm.id.as_str()))
-        .map(absolutize);
-    let ka = doc.key_agreement.first().map(|vr| absolutize(vr.get_id()));
-
-    match signing {
-        Some(signing) => (signing, ka),
+    // By relationship and role (`vta_sdk::node_keys`): DIDComm signs with the
+    // authentication key and decrypts with the key agreement key.
+    let ids = serde_json::to_value(&resolved.doc)
+        .ok()
+        .and_then(|doc| vta_sdk::node_keys::NodeKeyIds::from_document(vtc_did, &doc).ok());
+    match ids {
+        Some(ids) => (ids.authentication, ids.key_agreement),
         // A document with no usable verification method at all — keep the old
         // behaviour so the failure surfaces as the existing "signing secret
         // not found" warn rather than some new path.
@@ -276,10 +274,19 @@ async fn build_messaging(
         }
     };
     let outbox: Arc<dyn OutboxStore> = Arc::new(VtiOutboxStore::new(outbox_ks));
-    // P1a uses `new` (not `with_receipts`) — no layer-receipt emission yet.
-    // Clone transport + outbox before `new` consumes them: the background
-    // loops need their own handles.
-    let service = Arc::new(MessagingService::new(transport.clone(), outbox.clone()));
+    // Receipts are emitted for every message that asks for one, as the VTC's
+    // own DID (VTI-TRN-061); consumed ones settle the VTC's sends, only from
+    // the party each was addressed to (VTI-TRN-062). Clone transport + outbox
+    // before the constructor consumes them: the background loops need their
+    // own handles.
+    let service = Arc::new(MessagingService::with_receipts(
+        transport.clone(),
+        outbox.clone(),
+        Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+            (*atm).clone(),
+            profile.clone(),
+        )),
+    ));
     // Durable outbox: drain sends due entries + retries; outbox-drain confirms
     // Delivered on recipient pickup; confirmation sweep settles expired entries.
     tokio::spawn(affinidi_messaging_delivery::drain_loop(
@@ -292,9 +299,22 @@ async fn build_messaging(
         outbox.clone(),
         std::time::Duration::from_secs(10),
     ));
-    tokio::spawn(affinidi_messaging_delivery::confirmation_loop(
+    // With the service's receipt reach: a relayed entry to a recipient not
+    // known to send receipts settles unconfirmable, not lost (VTI-TRN-064).
+    tokio::spawn(vti_common::outbox_store::confirmation_loop(
         outbox.clone(),
         std::time::Duration::from_secs(30),
+        service.receipt_reach(),
+    ));
+    // Settled entries are removed a week after their delivery window closed
+    // (`VtiOutboxStore::terminal_before`), so the outbox holds what is in
+    // flight and a recent history, not every send ever made (#2550). Hourly:
+    // nothing waits on it. The first pass clears a backlog from before reaping
+    // existed.
+    tokio::spawn(affinidi_messaging_delivery::reap::reap_loop(
+        outbox.clone(),
+        std::time::Duration::from_secs(60 * 60),
+        affinidi_messaging_delivery::reap::TERMINAL_RETENTION,
     ));
     Ok((service, atm, profile))
 }
@@ -453,7 +473,12 @@ pub async fn run_didcomm_service(
 
     // Collect secrets for the profile, keyed by the verification-method ids
     // the VTC's own DID document actually declares (see `vtc_key_ids`).
-    let (signing_id, ka_id) = vtc_key_ids(state.did_resolver.as_ref(), vtc_did).await;
+    let key_roles = state
+        .credential_signer
+        .as_ref()
+        .and_then(|s| s.key_role_ids().cloned());
+    let (signing_id, ka_id) =
+        vtc_key_ids(state.did_resolver.as_ref(), vtc_did, key_roles.as_ref()).await;
     let mut secrets = Vec::new();
     if let Some(s) = secrets_resolver.get_secret(&signing_id).await {
         secrets.push(s);
@@ -557,13 +582,14 @@ pub async fn run_didcomm_service(
         ));
         #[cfg(feature = "tsp")]
         if let Some(primary) = service.primary_transport() {
-            let tsp: Arc<dyn MessageTransport> = Arc::new(crate::member_push::TspPushTransport {
-                atm: atm.clone(),
-                profile: profile.clone(),
-                mediator_did: mediator_did.clone(),
-                pushes: state.member_pushes_ks.clone(),
-                conn: primary.connection_state(),
-            });
+            let tsp: Arc<dyn MessageTransport> =
+                Arc::new(crate::member_push::TspPushTransport::new(
+                    atm.clone(),
+                    profile.clone(),
+                    mediator_did.clone(),
+                    state.member_pushes_ks.clone(),
+                    primary.connection_state(),
+                ));
             service.add_transport(crate::member_push::TSP_TRANSPORT_ID.into(), tsp.clone());
             tokio::spawn(affinidi_messaging_delivery::drain_loop_via(
                 outbox.clone(),
@@ -572,9 +598,17 @@ pub async fn run_didcomm_service(
                 Duration::from_secs(2),
             ));
         }
+        // A recipient's REST endpoint comes from its DID document: the URL guard
+        // and the client's resolver both hold it to this process's endpoint
+        // policy (loopback and private networks only with
+        // `VTA_ALLOW_PRIVATE_ENDPOINTS`).
+        let push_policy = vta_sdk::http::EndpointPolicy::process_default();
         let rest: Arc<dyn MessageTransport> = Arc::new(crate::member_push::RestPushTransport::new(
             state.member_pushes_ks.clone(),
-            crate::recognition::verify::foreign_fetch_client(),
+            vta_sdk::http::foreign_fetch_client_for(push_policy),
+            Arc::new(move |url: &str| {
+                vta_sdk::http::guard_peer_endpoint(url, push_policy).map_err(|e| e.to_string())
+            }),
         ));
         service.add_transport(crate::member_push::REST_TRANSPORT_ID.into(), rest.clone());
         tokio::spawn(affinidi_messaging_delivery::drain_loop_via(

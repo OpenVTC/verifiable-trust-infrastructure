@@ -1801,6 +1801,11 @@ mod tests {
         last_mint: Option<Value>,
         /// Who signed the last `rooms/epoch/mint` the host received.
         last_mint_issuer: Option<String>,
+        /// Whether the host accepts `rooms/create/0.3`; one that predates it answers
+        /// `unsupportedType`.
+        speaks_create_v3: bool,
+        /// The last `rooms/create` payload the host took.
+        last_create: Option<Value>,
     }
 
     struct StubHost {
@@ -1822,6 +1827,8 @@ mod tests {
             log: Vec::new(),
             last_mint: None,
             last_mint_issuer: None,
+            speaks_create_v3: true,
+            last_create: None,
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -1846,7 +1853,14 @@ mod tests {
                                 "roomId": room_id, "visibility": h.visibility,
                                 "retentionPolicy": "chained", "epoch": h.epoch,
                             }))
-                        } else if task == vti_rooms::wire::ROOMS_CREATE_V2_TYPE {
+                        } else if task == vti_rooms::wire::ROOMS_CREATE_V3_TYPE
+                            && !h.speaks_create_v3
+                        {
+                            Err(("unsupportedType", "this host predates rooms/create/0.3"))
+                        } else if task == vti_rooms::wire::ROOMS_CREATE_V2_TYPE
+                            || task == vti_rooms::wire::ROOMS_CREATE_V3_TYPE
+                        {
+                            h.last_create = Some(req["payload"].clone());
                             match h.create_mode {
                                 Mode::Refuse => Err(("rooms/create:alreadyExists", "held already")),
                                 Mode::Unreachable | Mode::AcceptThenLose => {
@@ -1856,7 +1870,15 @@ mod tests {
                                     );
                                 }
                                 Mode::Accept => {
-                                    Ok(serde_json::json!({ "roomId": room_id, "epoch": h.epoch }))
+                                    let mut body =
+                                        serde_json::json!({ "roomId": room_id, "epoch": h.epoch });
+                                    if task == vti_rooms::wire::ROOMS_CREATE_V3_TYPE {
+                                        body["signalDelay"] = req["payload"]
+                                            .get("signalDelay")
+                                            .cloned()
+                                            .unwrap_or(serde_json::json!("randomised"));
+                                    }
+                                    Ok(body)
                                 }
                             }
                         } else if task == vti_rooms::wire::ROOMS_REVOCATIONS_GET_TYPE {
@@ -2949,6 +2971,228 @@ mod tests {
             b"before",
             "and it recalls nothing: what they could read, they still can"
         );
+    }
+
+    /// `rooms/keys/welcome/0.1`, `rooms/keys/open/0.2` on an **attributed** room: a member
+    /// withdrawn and removed (`remove/0.4`), then admitted again with a fresh KeyPackage and
+    /// Welcome, joins — the removal is a prior membership, not a join. What it read before
+    /// the removal still opens, what was sealed while it was out is `removed`, what is
+    /// sealed after the re-admission opens, a second Welcome while current is
+    /// `alreadyJoined`, and `forget` discards the prior membership too.
+    #[tokio::test]
+    async fn a_member_removed_from_an_attributed_room_is_admitted_again_and_reads_on() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (m_state, _m_dir, m_did) = admitted(&o).await; // epoch 2
+        let ks = m_state.room_groups_ks.clone();
+        let member = Member::new(&o.room.did, &m_did).unwrap();
+        let open = |rec: vti_rooms::wire::SealedContent, key: &'static str| {
+            let (ks, member) = (ks.clone(), member.clone());
+            async move {
+                room_groups::open_record_detailed(
+                    &ks,
+                    &member,
+                    key,
+                    1,
+                    &rec.ciphertext,
+                    &rec.nonce,
+                    rec.epoch,
+                )
+                .await
+            }
+        };
+        let seal = |key: &'static str, body: &'static [u8]| {
+            let ks = o.state.room_groups_ks.clone();
+            let owner = om(&o);
+            async move {
+                room_groups::seal_record(&ks, &owner, key, 1, body)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let before = seal("notes/before", b"before").await;
+        assert_eq!(before.epoch, 2);
+
+        let out = remove_withdrawing(&o, &m_did, &[]).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        assert_eq!(out["payload"]["revocation"]["sequence"], 1, "{out}");
+        let removal = commit_of_last_mint(&o);
+        let err = room_groups::apply_commit(&ks, &member, &removal, 2, 0)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("removed this holder"), "{err}");
+
+        let during = seal("notes/during", b"during").await;
+        assert_eq!(during.epoch, 3);
+
+        // Re-admitted: a fresh KeyPackage on the member's VTA, a new leaf and Welcome.
+        let kp = room_groups::mint_key_package(&ks, &member, 3600, 0)
+            .await
+            .unwrap();
+        let out = add(&o, &m_did, &kp.key_package).await;
+        assert_eq!(out["payload"]["epoch"], 4, "{out}");
+        let welcome = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+                .unwrap()
+        };
+        let joined = room_groups::join(&ks, &member, &welcome, 0)
+            .await
+            .expect("a Welcome after a removal is accepted");
+        assert_eq!(joined + 1, 4);
+
+        let after = seal("notes/after", b"after").await;
+        assert_eq!(after.epoch, 4);
+
+        assert_eq!(open(before, "notes/before").await.unwrap(), b"before");
+        match open(during, "notes/during").await {
+            Err(room_groups::OpenError::Removed { epoch, removed_at }) => {
+                assert_eq!((epoch, removed_at), (3, 3))
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert_eq!(open(after, "notes/after").await.unwrap(), b"after");
+
+        // A second Welcome while the membership is current is `alreadyJoined`.
+        assert!(matches!(
+            room_groups::join(&ks, &member, &welcome, 0).await,
+            Err(room_groups::JoinError::AlreadyJoined)
+        ));
+
+        // And `forget` discards the prior membership with the current group.
+        assert_eq!(
+            room_groups::prior_memberships(&ks, &member)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        room_groups::forget(&ks, &member).await.unwrap();
+        assert!(
+            room_groups::prior_memberships(&ks, &member)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(room_groups::load(&ks, &member).await.unwrap().is_none());
+    }
+
+    /// The sibling of the test above where the member's VTA **never applies the removing
+    /// commit** — idle when it was removed, and unable to fetch it afterwards, since the host
+    /// serves commits under the `read` grant the withdrawal ended (`rooms/keys/welcome/0.1`,
+    /// *Rejoining after a removal*). The re-admitting Welcome is the evidence: its tree no
+    /// longer holds the member's earlier leaf, so it is accepted with the removal epoch not
+    /// yet known. What the member read before still opens; what was sealed while it was out
+    /// is `notDelivered` from the prior state until the removing commit is applied to it,
+    /// then `removed`; what is sealed after opens. The commit is applied at the operations
+    /// level, as `room_catch_up` applies what `rooms/epoch/commits` serves.
+    #[tokio::test]
+    async fn a_member_removed_while_idle_from_an_attributed_room_is_admitted_again_and_reads_on() {
+        let o = owner().await;
+        create(&o, &o.room_key).await;
+        let (m_state, _m_dir, m_did) = admitted(&o).await; // epoch 2
+        let ks = m_state.room_groups_ks.clone();
+        let member = Member::new(&o.room.did, &m_did).unwrap();
+        let open = |rec: vti_rooms::wire::SealedContent, key: &'static str| {
+            let (ks, member) = (ks.clone(), member.clone());
+            async move {
+                room_groups::open_record_detailed(
+                    &ks,
+                    &member,
+                    key,
+                    1,
+                    &rec.ciphertext,
+                    &rec.nonce,
+                    rec.epoch,
+                )
+                .await
+            }
+        };
+        let seal = |key: &'static str, body: &'static [u8]| {
+            let ks = o.state.room_groups_ks.clone();
+            let owner = om(&o);
+            async move {
+                room_groups::seal_record(&ks, &owner, key, 1, body)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        let before = seal("notes/before", b"before").await;
+        assert_eq!(before.epoch, 2);
+
+        let out = remove_withdrawing(&o, &m_did, &[]).await;
+        assert_eq!(out["payload"]["epoch"], 3, "{out}");
+        // The member's VTA does not apply this.
+        let removal = commit_of_last_mint(&o);
+        let during = seal("notes/during", b"during").await;
+        assert_eq!(during.epoch, 3);
+
+        let kp = room_groups::mint_key_package(&ks, &member, 3600, 0)
+            .await
+            .unwrap();
+        let out = add(&o, &m_did, &kp.key_package).await;
+        assert_eq!(out["payload"]["epoch"], 4, "{out}");
+        let welcome = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+                .unwrap()
+        };
+        let joined = room_groups::join(&ks, &member, &welcome, 0)
+            .await
+            .expect("a Welcome whose tree lacks the held leaf is accepted");
+        assert_eq!(joined + 1, 4);
+        let prior = room_groups::prior_memberships(&ks, &member).await.unwrap();
+        assert_eq!(prior.len(), 1);
+        assert_eq!(prior[0].removed_epoch, None);
+
+        let after = seal("notes/after", b"after").await;
+        assert_eq!(after.epoch, 4);
+        assert_eq!(
+            open(before.clone(), "notes/before").await.unwrap(),
+            b"before"
+        );
+        assert_eq!(open(after.clone(), "notes/after").await.unwrap(), b"after");
+        match open(during.clone(), "notes/during").await {
+            Err(room_groups::OpenError::NotDelivered { epoch, held }) => {
+                assert_eq!((epoch, held), (3, 2))
+            }
+            other => panic!("expected NotDelivered before the removal applies, got {other:?}"),
+        }
+
+        // The repair the read would make: the prior membership, chosen by the record's epoch.
+        let room_groups::RepairTarget::Prior { signature_key } =
+            room_groups::repair_state(&ks, &member, 3)
+                .await
+                .unwrap()
+                .unwrap()
+                .target
+        else {
+            panic!("epoch 3 is the prior membership's to repair");
+        };
+        assert_eq!(
+            room_groups::apply_prior_commit(&ks, &member, &signature_key, &removal, 2, 0)
+                .await
+                .unwrap(),
+            room_groups::PriorCommit::Removed { epoch: 3 }
+        );
+        match open(during, "notes/during").await {
+            Err(room_groups::OpenError::Removed { epoch, removed_at }) => {
+                assert_eq!((epoch, removed_at), (3, 3))
+            }
+            other => panic!("expected Removed, got {other:?}"),
+        }
+        assert_eq!(open(before, "notes/before").await.unwrap(), b"before");
+        assert_eq!(open(after, "notes/after").await.unwrap(), b"after");
+
+        // A second Welcome while the membership is current is `alreadyJoined`.
+        assert!(matches!(
+            room_groups::join(&ks, &member, &welcome, 0).await,
+            Err(room_groups::JoinError::AlreadyJoined)
+        ));
     }
 
     fn commit_of_last_mint(o: &Owner) -> Vec<u8> {
@@ -4112,11 +4356,89 @@ mod tests {
             .await,
         );
         assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        // `rooms/create/0.3` for either version, when the host speaks it.
         assert_eq!(
             host_log(&o),
             vec![
-                vti_rooms::wire::ROOMS_CREATE_V2_TYPE.to_string(),
+                vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string(),
                 vti_rooms::wire::ROOMS_REVOCATIONS_PUT_TYPE.to_string(),
+            ]
+        );
+    }
+
+    fn register_0_3_request(o: &Owner) -> TrustTask<Value> {
+        request(
+            vta_sdk::trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3,
+            serde_json::json!({
+                "roomId": o.room.did, "host": o.host.did,
+                "visibility": "attributed", "ownerDid": o.member,
+                "signalDelay": "none",
+                "recordRetention": { "tombstoneDays": 7, "recordDays": 365 },
+            }),
+        )
+    }
+
+    /// `rooms/owner/register/0.3`: `recordRetention` and `signalDelay` reach the host's
+    /// `rooms/create/0.3` as given (trust-tasks-tf #1084).
+    #[tokio::test]
+    async fn register_0_3_passes_the_record_retention_and_signal_delay_to_create_0_3() {
+        let o = owner().await;
+        let auth = crate::test_support::super_admin_claims();
+        let out = body(
+            super::super::room_owner::handle_register_v0_3(
+                &o.state,
+                &auth,
+                register_0_3_request(&o),
+            )
+            .await,
+        );
+        assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        assert_eq!(
+            host_log(&o),
+            vec![vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string()]
+        );
+        let sent = o.host.state.lock().unwrap().last_create.clone().unwrap();
+        assert_eq!(sent["signalDelay"], "none", "{sent}");
+        assert_eq!(
+            sent["recordRetention"],
+            serde_json::json!({ "tombstoneDays": 7, "recordDays": 365 })
+        );
+    }
+
+    /// A host that does not accept `rooms/create/0.3`: a registration asking for either
+    /// setting is `hostRefused`, never registered without it; one asking for neither is
+    /// registered at create 0.2, which is the same room.
+    #[tokio::test]
+    async fn register_refuses_settings_a_host_without_create_0_3_cannot_record() {
+        let o = owner().await;
+        o.host.state.lock().unwrap().speaks_create_v3 = false;
+        let auth = crate::test_support::super_admin_claims();
+        let out = body(
+            super::super::room_owner::handle_register_v0_3(
+                &o.state,
+                &auth,
+                register_0_3_request(&o),
+            )
+            .await,
+        );
+        assert_eq!(
+            out["payload"]["code"], "rooms/owner/register:hostRefused",
+            "{out}"
+        );
+        assert_eq!(
+            host_log(&o),
+            vec![vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string()],
+            "never asked again at 0.2"
+        );
+
+        o.host.state.lock().unwrap().log.clear();
+        let out = register_0_2(&o).await;
+        assert_eq!(out["payload"]["epoch"], 1, "{out}");
+        assert_eq!(
+            host_log(&o),
+            vec![
+                vti_rooms::wire::ROOMS_CREATE_V3_TYPE.to_string(),
+                vti_rooms::wire::ROOMS_CREATE_V2_TYPE.to_string(),
             ]
         );
     }

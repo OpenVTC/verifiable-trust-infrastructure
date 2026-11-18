@@ -48,7 +48,7 @@ pub use defaults::{
 };
 pub use engine::{CompiledPolicy, compile, evaluate_decision};
 pub use input::build_policy_input;
-pub use storage::load_active_for_context;
+pub use storage::{PolicyCache, load_active_for_context};
 pub use types::{
     Consumer, Discloses, Disposition, Exposure, PolicyDecision, PolicyInput, PolicyModule,
     PolicyRequest, RequireConsent, SideEffectLevel, StepUp, TaskClass,

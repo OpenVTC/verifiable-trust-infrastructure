@@ -76,7 +76,7 @@ A refusal from the witness (`witness/session:refused`, `challengeMismatch`,
 VTA's record simply expires; open a new session to try again.
 
 ```rust
-use trust_tasks_rs::specs::vta::witness::{accept, open, present};
+use vta_sdk::specs::vta::witness::{accept, open, present};
 
 let opened = vta.witness_open(&open::v0_2::Payload::builder()
     .witness(witness_did)
@@ -104,7 +104,7 @@ relationship — a wallet or agent.
 ## Clients
 
 - **Rust**: `VtaClient::witness_{open,present,accept,list}` (`vta_sdk::client`),
-  taking and returning the generated `trust_tasks_rs::specs::vta::witness` types, as
+  taking and returning the generated `vta_sdk::specs::vta::witness` types (`vti_specs::vta::witness`), as
   above.
 - **Mobile**: `vta_mobile_core::witness`. The wallet's round:
 

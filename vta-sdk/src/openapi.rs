@@ -51,6 +51,7 @@ use crate::protocols::vetting::vetters;
 use vti_specs::credential_exchange;
 use vti_specs::did_management::did::register;
 use vti_specs::git_ns::view as git_ns_view;
+use vti_specs::vtc::badges;
 use vti_specs::vtc::boards;
 use vti_specs::vtc::config;
 use vti_specs::vtc::directory;
@@ -59,6 +60,7 @@ use vti_specs::vtc::groups;
 use vti_specs::vtc::invitations::deliver as invitation_deliver;
 use vti_specs::vtc::join_requests::manifest;
 use vti_specs::vtc::members::credentials as member_credentials;
+use vti_specs::vtc::networks;
 use vti_specs::vtc::registry::{records, sync_jobs};
 use vti_specs::vtc::rooms::{
     community as rooms_community, get as rooms_get, limits::set as rooms_limits_set,
@@ -67,6 +69,7 @@ use vti_specs::vtc::rooms::{
 };
 use vti_specs::vtc::schemas::accepts;
 use vti_specs::vtc::storage::configs as storage_configs;
+use vti_specs::vtc::storage::credentials::recipient as storage_credentials_recipient;
 use vti_specs::vtc::storage::credentials::set as storage_credentials_set;
 
 /// Transparent wrappers documenting generated types, one per line.
@@ -164,6 +167,8 @@ spec_types! {
     VetterShow01Response(vetters::show::v0_1::Response);
     /// `vtc/vetting/vetters/resend/0.2#response`.
     VetterResend02Response(vetters::resend::v0_2::Response);
+    /// `vtc/endorsement-types/register/0.1` payload.
+    EndorsementTypeRegister01Payload(endorsement_types::register::v0_1::Payload);
     /// `vtc/endorsement-types/delete/0.1#response`.
     EndorsementTypeDelete01Response(endorsement_types::delete::v0_1::Response);
     /// `vtc/vetting/vetters/profile/0.1`'s `VettingMethod`.
@@ -345,6 +350,30 @@ spec_types! {
     DirectoryCardPublic01Payload(directory::card::public::v0_1::Payload);
     /// `vtc/directory/card/public/0.1#response` — the card exactly as its member signed it.
     DirectoryCardPublic01Response(directory::card::public::v0_1::Response);
+    /// `vtc/networks/list/0.2` payload — which memberships to list.
+    NetworksList02Payload(networks::list::v0_2::Payload);
+    /// `vtc/networks/list/0.2#response` — the community's network memberships.
+    NetworksList02Response(networks::list::v0_2::Response);
+    /// `vtc/networks/show/0.2` payload — one membership, by network DID.
+    NetworksShow02Payload(networks::show::v0_2::Payload);
+    /// `vtc/networks/show/0.2#response` — the membership and its credentials.
+    NetworksShow02Response(networks::show::v0_2::Response);
+    /// `vtc/networks/preview/0.1` payload — the network to read before joining.
+    NetworksPreview01Payload(networks::preview::v0_1::Payload);
+    /// `vtc/networks/preview/0.1#response` — the network, and where the community stands.
+    NetworksPreview01Response(networks::preview::v0_1::Response);
+    /// `vtc/networks/join/0.2` payload — accept a network's listing.
+    NetworksJoin02Payload(networks::join::v0_2::Payload);
+    /// `vtc/networks/join/0.2#response` — the membership as it now stands.
+    NetworksJoin02Response(networks::join::v0_2::Response);
+    /// `vtc/networks/leave/0.2` payload — depart a network.
+    NetworksLeave02Payload(networks::leave::v0_2::Payload);
+    /// `vtc/networks/leave/0.2#response` — the membership as it now stands.
+    NetworksLeave02Response(networks::leave::v0_2::Response);
+    /// `vtc/networks/repudiate/0.2` payload — reject a network's listing.
+    NetworksRepudiate02Payload(networks::repudiate::v0_2::Payload);
+    /// `vtc/networks/repudiate/0.2#response` — the membership as it now stands.
+    NetworksRepudiate02Response(networks::repudiate::v0_2::Response);
     /// `vtc/groups/create/0.1` payload — a new static group.
     GroupsCreate01Payload(groups::create::v0_1::Payload);
     /// `vtc/groups/create/0.1#response` — the group as stored.
@@ -397,6 +426,18 @@ spec_types! {
     BoardsDelete01Payload(boards::delete::v0_1::Payload);
     /// `vtc/boards/delete/0.1#response` — what was removed, and when the tombstones go.
     BoardsDelete01Response(boards::delete::v0_1::Response);
+    /// `vtc/boards/facilitators/add/0.1` payload — appointing a board's facilitator.
+    BoardsFacilitatorsAdd01Payload(boards::facilitators::add::v0_1::Payload);
+    /// `vtc/boards/facilitators/add/0.1#response` — the board's appointed facilitators.
+    BoardsFacilitatorsAdd01Response(boards::facilitators::add::v0_1::Response);
+    /// `vtc/boards/facilitators/remove/0.1` payload — ending a facilitator's appointment.
+    BoardsFacilitatorsRemove01Payload(boards::facilitators::remove::v0_1::Payload);
+    /// `vtc/boards/facilitators/remove/0.1#response` — the board's appointed facilitators.
+    BoardsFacilitatorsRemove01Response(boards::facilitators::remove::v0_1::Response);
+    /// `vtc/boards/facilitators/list/0.1` payload — the board whose facilitators to read.
+    BoardsFacilitatorsList01Payload(boards::facilitators::list::v0_1::Payload);
+    /// `vtc/boards/facilitators/list/0.1#response` — each appointment, by entry.
+    BoardsFacilitatorsList01Response(boards::facilitators::list::v0_1::Response);
     /// `vtc/boards/list/0.1` payload — the boards the caller may see.
     BoardsList01Payload(boards::list::v0_1::Payload);
     /// `vtc/boards/list/0.1#response` — the boards.
@@ -441,6 +482,126 @@ spec_types! {
     BoardsNotesHide01Payload(boards::notes::hide::v0_1::Payload);
     /// `vtc/boards/notes/hide/0.1#response` — the note.
     BoardsNotesHide01Response(boards::notes::hide::v0_1::Response);
+    /// `vtc/badges/settings/show/0.1` payload — the community's badge settings.
+    BadgesSettingsShow01Payload(badges::settings::show::v0_1::Payload);
+    /// `vtc/badges/settings/show/0.1#response`.
+    BadgesSettingsShow01Response(badges::settings::show::v0_1::Response);
+    /// `vtc/badges/settings/update/0.1` payload — changing the badge settings.
+    BadgesSettingsUpdate01Payload(badges::settings::update::v0_1::Payload);
+    /// `vtc/badges/settings/update/0.1#response`.
+    BadgesSettingsUpdate01Response(badges::settings::update::v0_1::Response);
+    /// `vtc/badges/create/0.1` payload — defining a badge.
+    BadgesCreate01Payload(badges::create::v0_1::Payload);
+    /// `vtc/badges/create/0.1#response`.
+    BadgesCreate01Response(badges::create::v0_1::Response);
+    /// `vtc/badges/update/0.1` payload — changing a badge.
+    BadgesUpdate01Payload(badges::update::v0_1::Payload);
+    /// `vtc/badges/update/0.1#response`.
+    BadgesUpdate01Response(badges::update::v0_1::Response);
+    /// `vtc/badges/retire/0.1` payload — retiring a badge.
+    BadgesRetire01Payload(badges::retire::v0_1::Payload);
+    /// `vtc/badges/retire/0.1#response`.
+    BadgesRetire01Response(badges::retire::v0_1::Response);
+    /// `vtc/badges/promote/0.1` payload — turning a kudos badge into a community badge.
+    BadgesPromote01Payload(badges::promote::v0_1::Payload);
+    /// `vtc/badges/promote/0.1#response`.
+    BadgesPromote01Response(badges::promote::v0_1::Response);
+    /// `vtc/badges/list/0.1` payload — the badges the signer may see.
+    BadgesList01Payload(badges::list::v0_1::Payload);
+    /// `vtc/badges/list/0.1#response`.
+    BadgesList01Response(badges::list::v0_1::Response);
+    /// `vtc/badges/show/0.1` payload — one badge as the signer sees it.
+    BadgesShow01Payload(badges::show::v0_1::Payload);
+    /// `vtc/badges/show/0.1#response`.
+    BadgesShow01Response(badges::show::v0_1::Response);
+    /// `vtc/badges/images/upload/0.1` payload — a badge picture, re-encoded and stored.
+    BadgesImagesUpload01Payload(badges::images::upload::v0_1::Payload);
+    /// `vtc/badges/images/upload/0.1#response`.
+    BadgesImagesUpload01Response(badges::images::upload::v0_1::Response);
+    /// `vtc/badges/images/get/0.1` payload — a badge's picture.
+    BadgesImagesGet01Payload(badges::images::get::v0_1::Payload);
+    /// `vtc/badges/images/get/0.1#response`.
+    BadgesImagesGet01Response(badges::images::get::v0_1::Response);
+    /// `vtc/badges/awards/offer/0.1` payload — offering a community badge.
+    BadgesAwardsOffer01Payload(badges::awards::offer::v0_1::Payload);
+    /// `vtc/badges/awards/offer/0.1#response`.
+    BadgesAwardsOffer01Response(badges::awards::offer::v0_1::Response);
+    /// `vtc/badges/awards/withdraw/0.1` payload — withdrawing an open offer.
+    BadgesAwardsWithdraw01Payload(badges::awards::withdraw::v0_1::Payload);
+    /// `vtc/badges/awards/withdraw/0.1#response`.
+    BadgesAwardsWithdraw01Response(badges::awards::withdraw::v0_1::Response);
+    /// `vtc/badges/awards/revoke/0.1` payload — taking an accepted award back.
+    BadgesAwardsRevoke01Payload(badges::awards::revoke::v0_1::Payload);
+    /// `vtc/badges/awards/revoke/0.1#response`.
+    BadgesAwardsRevoke01Response(badges::awards::revoke::v0_1::Response);
+    /// `vtc/badges/claims/create/0.1` payload — issuing a claim code for an event.
+    BadgesClaimsCreate01Payload(badges::claims::create::v0_1::Payload);
+    /// `vtc/badges/claims/create/0.1#response`.
+    BadgesClaimsCreate01Response(badges::claims::create::v0_1::Response);
+    /// `vtc/badges/claims/list/0.1` payload — a badge's claim codes, never a code.
+    BadgesClaimsList01Payload(badges::claims::list::v0_1::Payload);
+    /// `vtc/badges/claims/list/0.1#response`.
+    BadgesClaimsList01Response(badges::claims::list::v0_1::Response);
+    /// `vtc/badges/claims/withdraw/0.1` payload — a claim code admits no one more.
+    BadgesClaimsWithdraw01Payload(badges::claims::withdraw::v0_1::Payload);
+    /// `vtc/badges/claims/withdraw/0.1#response`.
+    BadgesClaimsWithdraw01Response(badges::claims::withdraw::v0_1::Response);
+    /// `vtc/badges/claims/redeem/0.1` payload — a member claims the badge with a code.
+    BadgesClaimsRedeem01Payload(badges::claims::redeem::v0_1::Payload);
+    /// `vtc/badges/claims/redeem/0.1#response`.
+    BadgesClaimsRedeem01Response(badges::claims::redeem::v0_1::Response);
+    /// `vtc/badges/awards/share/0.1` payload — the holder shows an award outside.
+    BadgesAwardsShare01Payload(badges::awards::share::v0_1::Payload);
+    /// `vtc/badges/awards/share/0.1#response`.
+    BadgesAwardsShare01Response(badges::awards::share::v0_1::Response);
+    /// `vtc/badges/awards/unshare/0.1` payload — the holder stops showing it.
+    BadgesAwardsUnshare01Payload(badges::awards::unshare::v0_1::Payload);
+    /// `vtc/badges/awards/unshare/0.1#response`.
+    BadgesAwardsUnshare01Response(badges::awards::unshare::v0_1::Response);
+    /// `vtc/badges/awards/list/0.1` payload — a badge's awards, to its owners.
+    BadgesAwardsList01Payload(badges::awards::list::v0_1::Payload);
+    /// `vtc/badges/awards/list/0.1#response`.
+    BadgesAwardsList01Response(badges::awards::list::v0_1::Response);
+    /// `vtc/badges/holders/list/0.1` payload — a badge's holders.
+    BadgesHoldersList01Payload(badges::holders::list::v0_1::Payload);
+    /// `vtc/badges/holders/list/0.1#response`.
+    BadgesHoldersList01Response(badges::holders::list::v0_1::Response);
+    /// `vtc/badges/wall/show/0.1` payload — a member's badge wall.
+    BadgesWallShow01Payload(badges::wall::show::v0_1::Payload);
+    /// `vtc/badges/wall/show/0.1#response`.
+    BadgesWallShow01Response(badges::wall::show::v0_1::Response);
+    /// `vtc/badges/mine/list/0.1` payload — the signer's own badges and offers.
+    BadgesMineList01Payload(badges::mine::list::v0_1::Payload);
+    /// `vtc/badges/mine/list/0.1#response`.
+    BadgesMineList01Response(badges::mine::list::v0_1::Response);
+    /// `vtc/badges/mine/accept/0.1` payload — accepting an offer.
+    BadgesMineAccept01Payload(badges::mine::accept::v0_1::Payload);
+    /// `vtc/badges/mine/accept/0.1#response`.
+    BadgesMineAccept01Response(badges::mine::accept::v0_1::Response);
+    /// `vtc/badges/mine/decline/0.1` payload — declining an offer.
+    BadgesMineDecline01Payload(badges::mine::decline::v0_1::Payload);
+    /// `vtc/badges/mine/decline/0.1#response`.
+    BadgesMineDecline01Response(badges::mine::decline::v0_1::Response);
+    /// `vtc/badges/mine/hide/0.1` payload — hiding a held badge from the portal.
+    BadgesMineHide01Payload(badges::mine::hide::v0_1::Payload);
+    /// `vtc/badges/mine/hide/0.1#response`.
+    BadgesMineHide01Response(badges::mine::hide::v0_1::Response);
+    /// `vtc/badges/mine/show/0.1` payload — showing a hidden badge again.
+    BadgesMineShow01Payload(badges::mine::show::v0_1::Payload);
+    /// `vtc/badges/mine/show/0.1#response`.
+    BadgesMineShow01Response(badges::mine::show::v0_1::Response);
+    /// `vtc/badges/mine/arrange/0.1` payload — ordering and pinning the wall.
+    BadgesMineArrange01Payload(badges::mine::arrange::v0_1::Payload);
+    /// `vtc/badges/mine/arrange/0.1#response`.
+    BadgesMineArrange01Response(badges::mine::arrange::v0_1::Response);
+    /// `vtc/badges/kudos/give/0.1` payload — giving a kudos badge.
+    BadgesKudosGive01Payload(badges::kudos::give::v0_1::Payload);
+    /// `vtc/badges/kudos/give/0.1#response`.
+    BadgesKudosGive01Response(badges::kudos::give::v0_1::Response);
+    /// `vtc/badges/kudos/list/0.1` payload — kudos given and received.
+    BadgesKudosList01Payload(badges::kudos::list::v0_1::Payload);
+    /// `vtc/badges/kudos/list/0.1#response`.
+    BadgesKudosList01Response(badges::kudos::list::v0_1::Response);
     /// `vtc/groups/requests/list/0.2` payload — requests to the caller's groups.
     GroupsRequestsList02Payload(groups::requests::list::v0_2::Payload);
     /// `vtc/groups/requests/list/0.2#response` — the requests.
@@ -525,6 +686,9 @@ spec_types! {
     /// seals inside the block. Never a payload member, never sent unsealed.
     StorageCredentialsSet03Cleartext(storage_credentials_set::v0_3::SealedCredentialCleartext)
         in storage_credentials_set::v0_3::Payload as "SealedCredentialCleartext";
+    /// `vtc/storage/credentials/recipient/0.1#response` — the key a sealed credential is
+    /// sealed to, as its `did:key`, and the verification method publishing it.
+    StorageCredentialsRecipient01Response(storage_credentials_recipient::v0_1::Response);
     /// `git-ns/view/0.6#response` — namespaces, repositories and recorded git
     /// rights.
     GitNsView06Response(git_ns_view::v0_6::Response);
@@ -915,6 +1079,12 @@ mod tests {
         check::<BoardsUpdate01Response>();
         check::<BoardsDelete01Payload>();
         check::<BoardsDelete01Response>();
+        check::<BoardsFacilitatorsAdd01Payload>();
+        check::<BoardsFacilitatorsAdd01Response>();
+        check::<BoardsFacilitatorsRemove01Payload>();
+        check::<BoardsFacilitatorsRemove01Response>();
+        check::<BoardsFacilitatorsList01Payload>();
+        check::<BoardsFacilitatorsList01Response>();
         check::<BoardsList01Payload>();
         check::<BoardsList01Response>();
         check::<BoardsShow01Payload>();
@@ -937,6 +1107,66 @@ mod tests {
         check::<BoardsNotesWithdraw01Response>();
         check::<BoardsNotesHide01Payload>();
         check::<BoardsNotesHide01Response>();
+        check::<BadgesSettingsShow01Payload>();
+        check::<BadgesSettingsShow01Response>();
+        check::<BadgesSettingsUpdate01Payload>();
+        check::<BadgesSettingsUpdate01Response>();
+        check::<BadgesCreate01Payload>();
+        check::<BadgesCreate01Response>();
+        check::<BadgesUpdate01Payload>();
+        check::<BadgesUpdate01Response>();
+        check::<BadgesRetire01Payload>();
+        check::<BadgesRetire01Response>();
+        check::<BadgesPromote01Payload>();
+        check::<BadgesPromote01Response>();
+        check::<BadgesList01Payload>();
+        check::<BadgesList01Response>();
+        check::<BadgesShow01Payload>();
+        check::<BadgesShow01Response>();
+        check::<BadgesImagesUpload01Payload>();
+        check::<BadgesImagesUpload01Response>();
+        check::<BadgesImagesGet01Payload>();
+        check::<BadgesImagesGet01Response>();
+        check::<BadgesAwardsOffer01Payload>();
+        check::<BadgesAwardsOffer01Response>();
+        check::<BadgesAwardsWithdraw01Payload>();
+        check::<BadgesAwardsWithdraw01Response>();
+        check::<BadgesAwardsRevoke01Payload>();
+        check::<BadgesAwardsRevoke01Response>();
+        check::<BadgesClaimsCreate01Payload>();
+        check::<BadgesClaimsCreate01Response>();
+        check::<BadgesClaimsList01Payload>();
+        check::<BadgesClaimsList01Response>();
+        check::<BadgesClaimsWithdraw01Payload>();
+        check::<BadgesClaimsWithdraw01Response>();
+        check::<BadgesClaimsRedeem01Payload>();
+        check::<BadgesClaimsRedeem01Response>();
+        check::<BadgesAwardsShare01Payload>();
+        check::<BadgesAwardsShare01Response>();
+        check::<BadgesAwardsUnshare01Payload>();
+        check::<BadgesAwardsUnshare01Response>();
+        check::<BadgesAwardsList01Payload>();
+        check::<BadgesAwardsList01Response>();
+        check::<BadgesHoldersList01Payload>();
+        check::<BadgesHoldersList01Response>();
+        check::<BadgesWallShow01Payload>();
+        check::<BadgesWallShow01Response>();
+        check::<BadgesMineList01Payload>();
+        check::<BadgesMineList01Response>();
+        check::<BadgesMineAccept01Payload>();
+        check::<BadgesMineAccept01Response>();
+        check::<BadgesMineDecline01Payload>();
+        check::<BadgesMineDecline01Response>();
+        check::<BadgesMineHide01Payload>();
+        check::<BadgesMineHide01Response>();
+        check::<BadgesMineShow01Payload>();
+        check::<BadgesMineShow01Response>();
+        check::<BadgesMineArrange01Payload>();
+        check::<BadgesMineArrange01Response>();
+        check::<BadgesKudosGive01Payload>();
+        check::<BadgesKudosGive01Response>();
+        check::<BadgesKudosList01Payload>();
+        check::<BadgesKudosList01Response>();
         check::<GroupsRequestsList02Payload>();
         check::<GroupsRequestsList02Response>();
         check::<GroupsRequestsDecide01Payload>();

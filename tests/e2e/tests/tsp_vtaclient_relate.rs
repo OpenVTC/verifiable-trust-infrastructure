@@ -38,7 +38,7 @@ use ed25519_dalek::SigningKey;
 use vta_sdk::client::VtaClient;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::session_hub::SessionHub;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 mod common;
 

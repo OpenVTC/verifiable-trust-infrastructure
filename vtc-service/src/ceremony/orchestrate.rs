@@ -13,7 +13,7 @@ use affinidi_status_list::StatusPurpose;
 use serde_json::json;
 use tracing::{info, warn};
 
-use vti_common::audit::{AuditEvent, MemberRemovedData, StatusListFlippedData};
+use vtc_audit::{AuditEvent, MemberRemovedData, StatusListFlippedData};
 use vti_common::error::AppError;
 
 use super::execute::{self, EffectOutcome};
@@ -116,13 +116,58 @@ pub async fn role_change_via_pipeline(
     target_role: &str,
     op: Option<crate::acl::admin_consent::Operation<'_>>,
 ) -> Result<RoleChangeResult, AppError> {
-    match run_role_change(
+    session_role_change(
         state,
-        actor,
+        &actor.did,
+        Some(actor),
         subject_did,
         current_role,
         target_role,
-        StepUpSource::Session { op },
+        op,
+    )
+    .await
+}
+
+/// [`role_change_via_pipeline`] for an administrator authorized by a signed
+/// document ([`crate::acl::AdminActor`]), which carries no session: the
+/// session gate reads as "not elevated", exactly as the session-less claims
+/// this door used to be handed did (#2580).
+pub async fn role_change_as(
+    state: &AppState,
+    actor: &crate::acl::AdminActor,
+    subject_did: &str,
+    current_role: &str,
+    target_role: &str,
+    op: Option<crate::acl::admin_consent::Operation<'_>>,
+) -> Result<RoleChangeResult, AppError> {
+    session_role_change(
+        state,
+        &actor.did,
+        None,
+        subject_did,
+        current_role,
+        target_role,
+        op,
+    )
+    .await
+}
+
+async fn session_role_change(
+    state: &AppState,
+    actor_did: &str,
+    session: Option<&vti_common::auth::extractor::AuthClaims>,
+    subject_did: &str,
+    current_role: &str,
+    target_role: &str,
+    op: Option<crate::acl::admin_consent::Operation<'_>>,
+) -> Result<RoleChangeResult, AppError> {
+    match run_role_change(
+        state,
+        actor_did,
+        subject_did,
+        current_role,
+        target_role,
+        StepUpSource::Session { op, session },
     )
     .await?
     {
@@ -149,6 +194,9 @@ pub enum StepUpSource<'a> {
     /// bind it to is refused rather than let through.
     Session {
         op: Option<crate::acl::admin_consent::Operation<'a>>,
+        /// The session whose elevation is read; `None` for a caller with no
+        /// session, which is never elevated.
+        session: Option<&'a vti_common::auth::extractor::AuthClaims>,
     },
     /// A gesture bound to this one operation by a digest of its type and
     /// payload — the signed-document door, which has no session
@@ -176,7 +224,7 @@ pub enum RoleChangeOutcome {
 /// gesture is bound to this operation rather than read from a session.
 pub async fn role_change_via_bound_step_up(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor: &crate::acl::AdminActor,
     subject_did: &str,
     current_role: &str,
     target_role: &str,
@@ -185,7 +233,7 @@ pub async fn role_change_via_bound_step_up(
 ) -> Result<RoleChangeOutcome, AppError> {
     run_role_change(
         state,
-        actor,
+        &actor.did,
         subject_did,
         current_role,
         target_role,
@@ -196,13 +244,12 @@ pub async fn role_change_via_bound_step_up(
 
 async fn run_role_change(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor_did: &str,
     subject_did: &str,
     current_role: &str,
     target_role: &str,
     source: StepUpSource<'_>,
 ) -> Result<RoleChangeOutcome, AppError> {
-    let actor_did = actor.did.as_str();
     let promoting = target_role == super::invariant::ADMIN_ROLE;
     let target: VtcRole = target_role
         .parse()
@@ -249,7 +296,7 @@ async fn run_role_change(
     let next = live.as_ref().map(|prior| {
         let mut next = prior.clone();
         next.role = target.clone();
-        if crate::routes::acl::expressible_in_v0_1(prior) {
+        if crate::acl::ops::expressible_in_v0_1(prior) {
             next.admin = target.implied_authority();
         }
         next
@@ -353,9 +400,10 @@ async fn run_role_change(
     // never asks a human for a passkey gesture it could not use.
     let step_up = promoting
         && match source {
-            StepUpSource::Session { .. } => {
-                crate::acl::elevation::verified(actor, &state.sessions_ks).await
-            }
+            StepUpSource::Session { session, .. } => match session {
+                Some(session) => crate::acl::elevation::verified(session, &state.sessions_ks).await,
+                None => false,
+            },
             StepUpSource::BoundTo { .. } => true,
         };
 
@@ -453,11 +501,11 @@ async fn run_role_change(
                 .join(", ")
         );
         let ready = match source {
-            StepUpSource::Session { op: Some(op) } => {
+            StepUpSource::Session { op: Some(op), .. } => {
                 admin_consent::require(state, actor_did, subject_did, &conferred, op, &summary)
                     .await?
             }
-            StepUpSource::Session { op: None } => {
+            StepUpSource::Session { op: None, .. } => {
                 return Err(AppError::Forbidden(format!(
                     "promoting {subject_did} to unrestricted admin needs another admin's consent, \
                      which only vtc/members/role/set can carry"
@@ -509,8 +557,14 @@ async fn run_role_change(
                     }
                 }
             }
-            StepUpSource::Session { .. } => {
-                if !promoting && !crate::acl::elevation::verified(actor, &state.sessions_ks).await {
+            StepUpSource::Session { session, .. } => {
+                let elevated = match session {
+                    Some(session) => {
+                        crate::acl::elevation::verified(session, &state.sessions_ks).await
+                    }
+                    None => false,
+                };
+                if !promoting && !elevated {
                     return Err(crate::acl::elevation::required(&format!(
                         "moving {subject_did} to {target_role}"
                     )));

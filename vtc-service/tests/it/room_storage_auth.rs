@@ -20,10 +20,12 @@ use vti_rooms_dtg::test_support::Party;
 use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::config::StorageAuthHostConfig;
 use vtc_service::rooms::storage_configs::codes::*;
-use vtc_service::test_support::{TEST_VTC_DID, TestVtc, test_community_x25519_public};
+use vtc_service::test_support::{
+    TEST_VTC_DID, TestVtc, test_community_ed25519_public, test_community_x25519_public,
+};
 
 use crate::common::second_party::Gesturer;
-use crate::common::signed::{error_code, post, signed};
+use crate::common::signed::{error_code, post, signed, signed_to};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST: &str = "https://trusttasks.org/spec/vtc/storage/configs/list/0.2";
@@ -31,6 +33,7 @@ const GET: &str = "https://trusttasks.org/spec/vtc/storage/configs/get/0.2";
 const CREATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/create/0.3";
 const UPDATE: &str = "https://trusttasks.org/spec/vtc/storage/configs/update/0.3";
 const SET: &str = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3";
+const RECIPIENT: &str = "https://trusttasks.org/spec/vtc/storage/credentials/recipient/0.1";
 
 const ROLE: &str = "arn:aws:iam::123456789012:role/northwind-rooms-writer";
 const SECRET: &str = "example-secret-not-a-real-one";
@@ -617,4 +620,114 @@ async fn vtc_storage_credentials_set_refuses_with_its_declared_codes() {
             .unwrap()
             .is_none()
     );
+}
+
+// ─── credentials/recipient ───────────────────────────────────────────────
+
+const WEBS_VTC_DID: &str = "did:webs:vtc.example.com:communities:EAbcAid";
+
+/// A did:webs community whose own DID resolves to `published` (an Ed25519 key as a
+/// JWK under its own id, as a did:webs publishes it).
+async fn webs_community(published: [u8; 32]) -> Fixture {
+    use base64::Engine as _;
+    let vtc = TestVtc::builder()
+        .vtc_did(WEBS_VTC_DID)
+        .with_public_url(RP_ORIGIN)
+        .with_signers(true)
+        .with_did_resolver(true)
+        .build()
+        .await;
+    let id = format!("{WEBS_VTC_DID}#DKeyOne");
+    let doc = json!({
+        "id": WEBS_VTC_DID,
+        "verificationMethod": [{
+            "id": id, "type": "JsonWebKey", "controller": WEBS_VTC_DID,
+            "publicKeyJwk": { "kty": "OKP", "crv": "Ed25519",
+                "x": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(published) },
+        }],
+        "authentication": [id],
+        "assertionMethod": [id],
+    });
+    let mut resolver = vtc.state.did_resolver.clone().expect("resolver attached");
+    resolver
+        .add_did_document(
+            WEBS_VTC_DID,
+            serde_json::from_value(doc).expect("a DID document"),
+        )
+        .await;
+    Fixture {
+        vtc,
+        gesturer: Gesturer::new(),
+    }
+}
+
+async fn ask_webs(fix: &Fixture, by: &Party) -> Value {
+    post(
+        &fix.vtc,
+        &signed_to(by, WEBS_VTC_DID, RECIPIENT, json!({})).await,
+    )
+    .await
+    .1
+}
+
+/// `vtc/storage/credentials/recipient/0.1` item 2: a did:webs community answers with
+/// the key it opens sealed blocks with, as its did:key, under the verification method
+/// its resolved document publishes it as — and a block sealed to it opens.
+#[tokio::test]
+async fn vtc_storage_credentials_recipient_names_the_key_a_did_webs_community_opens_with() {
+    let fix = webs_community(test_community_ed25519_public()).await;
+    let a = admin(&fix).await;
+    let reply = ask_webs(&fix, &a).await;
+    let p = &reply["payload"];
+    assert_eq!(p["communityDid"], WEBS_VTC_DID, "{reply}");
+    assert_eq!(
+        p["verificationMethod"],
+        format!("{WEBS_VTC_DID}#DKeyOne"),
+        "{reply}"
+    );
+    let key = p["recipientKey"].as_str().expect("recipientKey");
+    let public = vta_sdk::did_key::decode_ed25519_public_key_multibase(
+        key.strip_prefix("did:key:").expect("a did:key"),
+    )
+    .unwrap();
+    assert_eq!(
+        vta_sdk::didcomm_light::ed25519_pub_to_x25519_pub(&public).unwrap(),
+        test_community_x25519_public(),
+        "the answer is the key the community opens with"
+    );
+}
+
+/// Item 3: a document that publishes another signing key — a rotation not yet
+/// published — is `notPublished`, with no key.
+#[tokio::test]
+async fn vtc_storage_credentials_recipient_refuses_a_key_its_document_does_not_publish() {
+    let fix = webs_community([3u8; 32]).await;
+    let a = admin(&fix).await;
+    let reply = ask_webs(&fix, &a).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(RECIPIENT_NOT_PUBLISHED),
+        "{reply}"
+    );
+    assert_eq!(reply["payload"]["retryable"], true, "{reply}");
+    assert!(reply["payload"].get("recipientKey").is_none(), "{reply}");
+}
+
+/// Item 3's allowance: a community that cannot resolve its own DID answers from the
+/// key it holds; and item 1: only `vtc.rooms.admin` may ask.
+#[tokio::test]
+async fn vtc_storage_credentials_recipient_answers_unresolved_and_only_a_rooms_admin() {
+    let fix = fixture(permits(false, true)).await;
+    let a = admin(&fix).await;
+    let reply = send(&fix, &a, RECIPIENT, json!({})).await;
+    assert_eq!(reply["payload"]["communityDid"], TEST_VTC_DID, "{reply}");
+    assert_eq!(
+        reply["payload"]["verificationMethod"],
+        format!("{TEST_VTC_DID}#key-0"),
+        "{reply}"
+    );
+
+    let stranger = Party::new();
+    let reply = send(&fix, &stranger, RECIPIENT, json!({})).await;
+    assert_eq!(tt_error_code(&reply), Some("permissionDenied"), "{reply}");
 }

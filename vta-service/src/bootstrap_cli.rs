@@ -141,7 +141,7 @@ pub async fn run_request(
 /// Mints an ephemeral Ed25519 keypair, persists the seed under
 /// `<seed-dir>/bootstrap-secrets/<bundle_id>.key`, and writes a signed
 /// VP naming the target DID template (e.g. `didcomm-mediator`,
-/// `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`) + variables. Hand
+/// `did-host-http`, `did-host-http-didcomm`) + variables. Hand
 /// the JSON to the VTA
 /// operator; they run `vta bootstrap provision-integration --request
 /// <file>` and return an armored sealed bundle + SHA-256 digest.
@@ -609,6 +609,7 @@ pub async fn run_provision_integration(
     let context_created =
         crate::operations::provision_integration::ensure_target_context_or_create(
             &state.contexts_ks,
+            &state.acl_ks,
             &auth,
             &target_context,
             create_context,
@@ -827,6 +828,7 @@ pub async fn run_keys_bundle(
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,
+        webs_ks: &state.webs_ks,
         seed_store: &state.seed_store,
     };
     let bundle = build_did_secrets_bundle(
@@ -885,8 +887,25 @@ pub async fn run_context_create(
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-create");
     let display_name = name.unwrap_or_else(|| id.clone());
 
+    // Everything the admin grant needs is checked before anything is written,
+    // so a bad flag refuses the command rather than leaving a context created
+    // and the grant half done.
+    if let Some(did) = &admin_did
+        && !did.starts_with("did:")
+    {
+        return Err(format!("--admin-did must start with `did:` (got {did:?})").into());
+    }
+    let admin_expires_at = match admin_expires.as_deref() {
+        Some(raw) => Some(vta_cli_common::duration::duration_to_expires_at(raw)?),
+        None => None,
+    };
+    if admin_handoff && admin_expires_at.is_none() {
+        return Err("--admin-handoff requires --admin-expires (VTI-ACL-054)".into());
+    }
+
     let record = crate::operations::contexts::create_context(
         &contexts_ks,
+        &acl_ks,
         &auth,
         &id,
         display_name,
@@ -895,23 +914,18 @@ pub async fn run_context_create(
         "vta-context-create",
     )
     .await?;
+    // The context's derivation index stays allocated if this is undone: an
+    // index is never handed out twice.
+    cs.audit_or_undo("context.create", &record.id, Some(&record.id), || {
+        crate::contexts::delete_context(&contexts_ks, &record.id)
+    })
+    .await?;
 
     // Optionally grant admin access to the supplied DID, scoped to the
     // new context. Mirrors `pnm contexts create --admin-did ...` so the
     // offline path can also do "create context + grant first admin" in
     // one shot.
     if let Some(did) = admin_did {
-        if !did.starts_with("did:") {
-            return Err(format!(
-                "--admin-did must start with `did:` (got {did:?}) — context was created \
-                 but no ACL entry was added"
-            )
-            .into());
-        }
-        let expires_at = match admin_expires.as_deref() {
-            Some(raw) => Some(vta_cli_common::duration::duration_to_expires_at(raw)?),
-            None => None,
-        };
         let entry = crate::acl::AclEntry::new(
             did.clone(),
             crate::acl::Role::Admin,
@@ -920,13 +934,10 @@ pub async fn run_context_create(
         .with_label(admin_label)
         // Scope to the full path the operation assigned (`<parent>/<id>` nested).
         .with_contexts(vec![record.id.clone()])
-        .with_expires_at(expires_at);
+        .with_expires_at(admin_expires_at);
         // The granter here is the local operator acting as super-admin, so
         // the bound is unrestricted and permanent (VTI-ACL-054).
         let entry = if admin_handoff {
-            if expires_at.is_none() {
-                return Err("--admin-handoff requires --admin-expires (VTI-ACL-054)".into());
-            }
             entry.with_handoff(Some(crate::acl::HandOff {
                 granted_by: auth.did.clone(),
                 granted_at: crate::auth::session::now_epoch(),
@@ -943,12 +954,15 @@ pub async fn run_context_create(
             entry
         };
         crate::acl::store_acl_entry(&acl_ks, &entry).await?;
+        cs.audit_or_undo("acl.create", &did, Some(&record.id), || {
+            crate::acl::delete_acl_entry(&acl_ks, &did)
+        })
+        .await?;
         eprintln!(
             "Admin ACL entry created for {did} (context: {}).",
             record.id
         );
     }
-
     cs.persist().await?;
 
     println!("Context created:");
@@ -1037,6 +1051,8 @@ pub async fn run_context_update(
     if clear_did {
         record = crate::operations::contexts::update_context_did(
             &contexts_ks,
+            &cs.keyspace(crate::keyspaces::KEYS)?,
+            &cs.keyspace(crate::keyspaces::ACL)?,
             &auth,
             &id,
             None,
@@ -1087,6 +1103,7 @@ pub async fn run_context_delete(
     let collection_ks = cs.keyspace(crate::keyspaces::COLLECTION)?;
     #[cfg(feature = "webvh")]
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    let webs_ks = cs.keyspace(crate::keyspaces::WEBS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-delete");
 
@@ -1097,6 +1114,7 @@ pub async fn run_context_delete(
         &did_templates_ks,
         #[cfg(feature = "webvh")]
         &webvh_ks,
+        &webs_ks,
         &auth,
         &id,
         "vta-contexts-delete",
@@ -1141,6 +1159,7 @@ pub async fn run_context_delete(
         collection: &collection_ks,
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
+        webs: &webs_ks,
     };
 
     // Assigned by whichever arm below compiles, so neither build carries a
@@ -1175,6 +1194,7 @@ pub async fn run_context_delete(
             imported_ks: &imported_ks,
             contexts_ks: &contexts_ks,
             webvh_ks: &webvh_ks,
+            webs_ks: Some(&webs_ks),
             audit: &audit_sink,
             seed_store: &*seed_store,
             did_resolver: &did_resolver,
@@ -1190,6 +1210,10 @@ pub async fn run_context_delete(
             // The break-glass path keeps the 1.0 contract it always had, and
             // prints every orphan below.
             host_copies: crate::operations::contexts::HostCopies::ReportAfter,
+            // Offline: no hosting client, so a did:webs in the subtree is an
+            // unconfirmed host copy, reported rather than dropped unseen.
+            #[cfg(feature = "webs")]
+            webs: None,
         };
         let result = crate::operations::contexts::delete_context(
             &ks,
@@ -1229,7 +1253,7 @@ pub async fn run_context_delete(
 }
 
 /// `vta context reprovision` — offline equivalent of
-/// `pnm context reprovision`.
+/// `pnm contexts reprovision`.
 ///
 /// The DID's operational keys (signing, KA, any pre-rotation) are
 /// auto-included — the operator does not need to enumerate them.
@@ -1338,6 +1362,7 @@ pub async fn run_context_reprovision(
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,
+        webs_ks: &state.webs_ks,
         seed_store: &state.seed_store,
     };
 
@@ -1367,6 +1392,35 @@ pub async fn run_context_reprovision(
             .with_contexts(vec![id.clone()])
             .with_created_at(Utc::now().timestamp() as u64);
         crate::acl::store_acl_entry(&state.acl_ks, &entry).await?;
+        // The state's own sink, not the CLI store's: `create_key` above wrote
+        // through it, and a second chained sink would start from a stale head.
+        if let Err(audit) = vta_audit::record(
+            &state.audit_sink,
+            "acl.create",
+            crate::cli_store::BREAK_GLASS_ACTOR,
+            Some(&admin_did),
+            "success",
+            Some(crate::cli_store::BREAK_GLASS_CHANNEL),
+            Some(&id),
+        )
+        .await
+        {
+            crate::acl::delete_acl_entry(&state.acl_ks, &admin_did)
+                .await
+                .map_err(|undo| {
+                    format!(
+                        "acl.create on {admin_did}: its audit row could not be written ({audit}), \
+                         and undoing the write failed ({undo}). The change is in the store \
+                         without a row; inspect it before starting the VTA."
+                    )
+                })?;
+            cs.persist().await?;
+            return Err(format!(
+                "acl.create on {admin_did} was undone: its audit row could not be written \
+                 ({audit}). Nothing changed; no bundle was produced."
+            )
+            .into());
+        }
         cs.persist().await?;
         eprintln!("Created ACL entry for {admin_did} in context '{id}'");
     }
@@ -1479,9 +1533,15 @@ mod tests {
         let (_dir, _store, contexts_ks) = open_test_contexts_keyspace();
         let auth = AuthClaims::unsafe_local_cli_super_admin("test");
 
-        let err = ensure_target_context_or_create(&contexts_ks, &auth, "missing-ctx", false)
-            .await
-            .expect_err("missing context with create_context=false must error");
+        let err = ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "missing-ctx",
+            false,
+        )
+        .await
+        .expect_err("missing context with create_context=false must error");
 
         let msg = err.to_string();
         assert!(
@@ -1513,9 +1573,15 @@ mod tests {
         let (_dir, _store, contexts_ks) = open_test_contexts_keyspace();
         let auth = AuthClaims::unsafe_local_cli_super_admin("test");
 
-        ensure_target_context_or_create(&contexts_ks, &auth, "fresh-ctx", true)
-            .await
-            .expect("create_context=true must succeed against a missing context");
+        ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "fresh-ctx",
+            true,
+        )
+        .await
+        .expect("create_context=true must succeed against a missing context");
 
         let record = get_context(&contexts_ks, "fresh-ctx")
             .await
@@ -1535,6 +1601,7 @@ mod tests {
 
         crate::operations::contexts::create_context(
             &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
             &auth,
             "existing-ctx",
             "existing-ctx".into(),
@@ -1547,14 +1614,26 @@ mod tests {
 
         // create_context=false should still succeed because the context
         // is already there.
-        ensure_target_context_or_create(&contexts_ks, &auth, "existing-ctx", false)
-            .await
-            .expect("existing context with create_context=false must be a no-op");
+        ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "existing-ctx",
+            false,
+        )
+        .await
+        .expect("existing context with create_context=false must be a no-op");
 
         // create_context=true must also succeed — it doesn't try to
         // re-create when the row is already present.
-        ensure_target_context_or_create(&contexts_ks, &auth, "existing-ctx", true)
-            .await
-            .expect("existing context with create_context=true must be a no-op");
+        ensure_target_context_or_create(
+            &contexts_ks,
+            &_store.keyspace(crate::keyspaces::ACL).unwrap(),
+            &auth,
+            "existing-ctx",
+            true,
+        )
+        .await
+        .expect("existing context with create_context=true must be a no-op");
     }
 }

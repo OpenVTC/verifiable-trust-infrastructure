@@ -8,7 +8,7 @@ Release mechanics are in [`RELEASING.md`](../../RELEASING.md).
 
 **Never edit a `version = ` field in a feature PR.** Versions are assigned by
 the Release PR that release-plz maintains; merging that PR is what publishes.
-Merging a feature PR publishes nothing. See [`RELEASING.md`](RELEASING.md).
+Merging a feature PR publishes nothing. See [`RELEASING.md`](../../RELEASING.md).
 
 That includes when the `semver report (informational — never blocks)` check
 goes **red on your PR** (it runs only on a PR labelled `semver-report`; the
@@ -42,19 +42,12 @@ feature, so the default-feature reproduction the report printed never touched
 it. A dependency break of this shape is fixed upstream or by a raised floor,
 never by a change here.
 
-**27 of 37 crates publish.** The ten that do not — `vta-enclave`,
-`vta-mcp`, `vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`,
-`room-host`, `vti-rooms-wasm`, `vti-witness`, `vti-voting-service` — set `publish = false` in their
-own manifest, each with a comment saying why. (The count is the workspace's
-members plus `vti-fuzz`; the excluded `deploy/nitro/enclave-proxy` is a
-deployment helper, not counted.)
-
-The other 27 are `vta-sdk`, `vti-common`, `vti-secrets`, `vta-cli-common`,
-`vtc-client`, `pnm-cli`, `cnm-cli`, `vtc-service` — plus `vta-service` and its
-closure (`vta-audit`, `vta-backup`, `vta-config`, `vta-keys`, `vta-keyspaces`,
-`vta-policy`, `vta-support`, `vta-sweepers`, `vta-tee`, `vta-vault`,
-`vta-webvh`, `vta-persona`, `vti-webauthn`, `vta-external`, `vti-vetting-pcs`,
-`vti-voting`, `vti-rooms`, `vti-rooms-dtg`).
+**40 of 51 crates publish.** The count is of workspace members; the
+authoritative list of the eleven that set `publish = false` is in
+[RELEASING.md](../../RELEASING.md#what-gets-published), and
+`scripts/check-docs.py` holds both to the manifests. (`vti-fuzz` and the
+excluded `deploy/nitro/enclave-proxy` are not members and not counted; both
+are unpublished.)
 
 **`vtc-service` is published as a binary**, so an operator installs the VTC
 with `cargo install vtc-service`; nothing consumes its library, so it carries
@@ -190,10 +183,13 @@ a new multi-keyspace fixture should use `open_with_keyspaces`.
 
 ## A merge is not evidence that anything passed
 
-The only **required** status check on `main` is `DCO`. Every job above — the
-build, both test jobs, clippy, fmt, MSRV, `cargo-deny` — is advisory, so a
-pull request merges on a red suite exactly as readily as on a green one, and
-no prompt appears.
+The **required** status checks on `main` are `DCO`, `branch rules` and the
+cheap gates: `Format`, `lockfile resolves`, `lockfile self-pins`,
+`cargo-deny`, `authorization-context types`, `commit lint` and `Clippy`
+(#2647). Every **test** job — both test jobs, the Feature combos, MSRV,
+Mobile, Enclave, Docker — is advisory, so a pull request merges on a red suite
+exactly as readily as on a green one, and no prompt appears. (Until #2647 only
+`DCO` was required, and the incident below happened under that rule.)
 
 This is not hypothetical and it is why the section above exists. On 9 September
 2026 `main` was red for five and a half hours across six consecutive merges —
@@ -211,6 +207,5 @@ Two things follow, and both are habits rather than rules:
   first. It may have been red since before you branched, and the failure you
   are looking at may be somebody else's — or your own, four merges ago.
 
-Whether the CI workflow should be a required check is a repository-settings
-decision that has not been taken. Until it is, the discipline above is what
-stands in for one.
+The test jobs stay advisory until the flaky delivery tests (#918 and its
+kind) are gone; until then the discipline above is what stands in for them.

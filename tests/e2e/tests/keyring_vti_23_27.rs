@@ -24,7 +24,7 @@ use vta_sdk::client::{CreateDidWebvhRequest, CreateKeyRequest, SurfaceTransport,
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::keys::KeyType;
 use vta_service::acl::Role;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 mod common;
 

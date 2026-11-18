@@ -183,7 +183,7 @@ fn issue_and_verify_sd_jwt_vc_end_to_end() {
     // Issuer-side verification: check the Ed25519 signature and reconstruct
     // the full claim set from the disclosures the holder chose to present.
     let opts = VerificationOptions::default();
-    let result = verify(&parsed, &verifier, &hasher, &opts, None).expect("verify issuer signature");
+    let result = verify(&parsed, &verifier, &hasher, &opts).expect("verify issuer signature");
     assert!(result.is_verified());
 
     // Every disclosed claim is recovered with its original value.
@@ -235,7 +235,7 @@ fn tampered_issuer_signature_is_rejected() {
     let forged = SdJwt::new(jws, vc.sd_jwt.disclosures.clone(), vc.sd_jwt.kb_jwt.clone());
 
     let opts = VerificationOptions::default();
-    let err = verify(&forged, &verifier, &hasher, &opts, None)
+    let err = verify(&forged, &verifier, &hasher, &opts)
         .expect_err("tampered signature must be rejected");
     assert!(matches!(err, SdJwtError::Verification(_)));
 }

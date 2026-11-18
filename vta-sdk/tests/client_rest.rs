@@ -31,13 +31,13 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // envelope `type` and the `payload` — which is strictly more precise, because
 // the payload is what the VTA actually acts on.
 
-const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.3";
+const TASK_ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.4";
 const TASK_KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.2";
 const TASK_AUDIT_LIST: &str = "https://trusttasks.org/spec/audit/list/0.2";
 /// `get_key_secret` dispatches this: the operation moved to the seeds slice
 /// because it acts on the seed behind the key, not the key itself.
 const TASK_KEYS_EXPORT_SECRET: &str = "https://trusttasks.org/spec/keys/export-secret/0.1";
-const TASK_WEBVH_DIDS_LIST: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
+const TASK_VTA_DIDS_LIST: &str = "https://trusttasks.org/spec/vta/dids/list/0.1";
 
 /// A success response document carrying `payload`.
 async fn tt_ok(payload: Value) -> ResponseTemplate {
@@ -274,8 +274,8 @@ async fn supported_trust_tasks_decodes_without_a_framework_version() {
         // supplied here is the payload, not the whole document.
         json!({
             "supportedTypes": [
-                "https://trusttasks.org/spec/acl/grant/0.2",
-                "https://trusttasks.org/spec/acl/revoke/0.2"
+                "https://trusttasks.org/spec/acl/grant/0.3",
+                "https://trusttasks.org/spec/acl/revoke/0.3"
             ]
         }),
     )
@@ -773,7 +773,7 @@ async fn list_acl_with_context_query() {
     assert!(resp.entries.is_empty());
 }
 
-/// `acl/list/0.3` names the direction whenever it names a context (and never
+/// `acl/list/0.4` names the direction whenever it names a context (and never
 /// otherwise), in its lowerCamelCase spelling.
 #[tokio::test]
 async fn list_acl_states_the_direction_with_a_context() {
@@ -970,7 +970,7 @@ async fn update_acl_patches() {
         .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "type": "https://trusttasks.org/spec/acl/update/0.3",
             "payload": {"subject": "did:key:zAdmin", "label": "ops"}
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
@@ -986,6 +986,7 @@ async fn update_acl_patches() {
         approve_scope: None,
         allowed_keys: None,
         capabilities: None,
+        purposes: None,
     };
     let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
     assert_eq!(resp.did, "did:key:zAdmin");
@@ -1001,7 +1002,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/show/0.2"
+            "type": "https://trusttasks.org/spec/acl/show/0.3"
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
         .expect(1)
@@ -1010,7 +1011,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/update/0.2",
+            "type": "https://trusttasks.org/spec/acl/update/0.3",
             "payload": {"act": {"scope": "contexts", "contexts": ["ctx-a", "ctx-b"]}}
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
@@ -1020,7 +1021,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(body_partial_json(json!({
-            "type": "https://trusttasks.org/spec/acl/revoke/0.2",
+            "type": "https://trusttasks.org/spec/acl/revoke/0.3",
             "payload": {"revocation": {"kind": "act", "act": {"scope": "contexts", "contexts": ["ctx-b"]}}}
         })))
         .respond_with(tt_ok(acl_entry_envelope("did:key:zAdmin")).await)
@@ -1036,6 +1037,7 @@ async fn update_acl_moves_contexts_by_widening_then_narrowing() {
         approve_scope: None,
         allowed_keys: None,
         capabilities: None,
+        purposes: None,
     };
     c.update_acl("did:key:zAdmin", req).await.unwrap();
 }
@@ -1178,7 +1180,7 @@ async fn preview_delete_context_returns_summary() {
         json!({
             "id": "primary",
             "keys": ["k1"],
-            "webvh_dids": [],
+            "dids": [],
             "acl_entries_removed": [],
             "acl_entries_updated": [],
             "did_templates": []
@@ -1428,22 +1430,46 @@ async fn create_did_webvh_posts() {
     assert_eq!(r.scid, "Qabc");
 }
 
+fn did_summary_json(did: &str, method: &str) -> Value {
+    json!({
+        "did": did,
+        "method": method,
+        "contextId": "primary",
+        "level": 1,
+        "primary": false,
+        "deactivated": false,
+        "alsoKnownAs": [],
+        "createdAt": "2026-11-17T10:00:00Z",
+        "updatedAt": "2026-11-17T10:00:00Z"
+    })
+}
+
 #[tokio::test]
-async fn list_dids_webvh_filters_by_context() {
+async fn list_dids_sends_the_filters_and_reads_every_page() {
     let server = MockServer::start().await;
+    // Page two, matched first on its cursor.
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
         .and(auth_match())
         .and(body_partial_json(json!({
-            "type": TASK_WEBVH_DIDS_LIST,
-            // camelCase: the payload is built from `ListDidsWebvhBody`, which
-            // emits the canonical spelling rather than whatever a hand-written
-            // literal happened to say.
-            "payload": {"contextId": "primary", "serverId": "s1"}
+            "type": TASK_VTA_DIDS_LIST,
+            "payload": {"contextId": "primary", "methods": ["webs", "key"], "cursor": "c1"}
+        })))
+        .respond_with(tt_ok(json!({ "dids": [did_summary_json("did:key:z6MkB", "key")] })).await)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(body_partial_json(json!({
+            "type": TASK_VTA_DIDS_LIST,
+            "payload": {"contextId": "primary", "methods": ["webs", "key"]}
         })))
         .respond_with(
             tt_ok(json!({
-                "dids": [webvh_did_record_json("did:webvh:Qabc:server.example.com:primary")]
+                "dids": [did_summary_json("did:webs:h.example:p:EAid", "webs")],
+                "nextCursor": "c1"
             }))
             .await,
         )
@@ -1451,11 +1477,16 @@ async fn list_dids_webvh_filters_by_context() {
         .mount(&server)
         .await;
     let c = client(&server).await;
-    let r = c
-        .list_dids_webvh(Some("primary"), Some("s1"))
+    let all = c
+        .list_dids(&vta_sdk::client::DidListFilter {
+            context_id: Some("primary".into()),
+            methods: Some(vec!["webs".into(), "key".into()]),
+            ..Default::default()
+        })
         .await
         .unwrap();
-    assert_eq!(r.dids.len(), 1);
+    let dids: Vec<String> = all.iter().map(|d| d.did.to_string()).collect();
+    assert_eq!(dids, ["did:webs:h.example:p:EAid", "did:key:z6MkB"]);
 }
 
 #[tokio::test]
@@ -2432,6 +2463,7 @@ async fn mount_unsupported(
 
 /// `rooms/keys/act/0.10` only: answered there, and never asked at an older version.
 #[tokio::test]
+#[allow(deprecated)] // the SDK sends act 0.10 until it moves to 0.11
 async fn room_act_goes_at_0_10_only() {
     let server = MockServer::start().await;
     let member = "did:webvh:example.com:people:alice";
@@ -2656,6 +2688,8 @@ async fn room_owner_register_never_falls_back_to_0_1() {
             owner_did: Some("did:webvh:example.com:people:alice"),
             retention_days: None,
             retention_policy: None,
+            record_retention: None,
+            signal_delay: None,
         })
         .await
         .expect_err("no 0.2");

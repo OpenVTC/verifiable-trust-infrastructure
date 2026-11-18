@@ -464,7 +464,7 @@ mod tests {
             key: ed25519_dalek::VerifyingKey::from_bytes(&pub_bytes).unwrap(),
         };
         let opts = VerificationOptions::default();
-        let result = verify(&sd_jwt, &verifier, &hasher, &opts, None).expect("verify");
+        let result = verify(&sd_jwt, &verifier, &hasher, &opts).expect("verify");
         assert!(result.is_verified());
         // After verification + disclosure reconstruction, the disclosed claims
         // are recoverable in the verified claim set.
@@ -500,7 +500,7 @@ mod tests {
             key: ed25519_dalek::VerifyingKey::from_bytes(&wrong_pub).unwrap(),
         };
         let opts = VerificationOptions::default();
-        assert!(verify(&sd_jwt, &verifier, &hasher, &opts, None).is_err());
+        assert!(verify(&sd_jwt, &verifier, &hasher, &opts).is_err());
     }
 
     #[test]

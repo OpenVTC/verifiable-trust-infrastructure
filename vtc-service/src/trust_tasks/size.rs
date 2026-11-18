@@ -22,7 +22,7 @@
 //! # Three rules on top of the number
 //!
 //! - **Served types only.** A limit is in force only while this node serves the
-//!   type ([`super::DISPATCHED_URIS`], and the `rooms/*` family's own
+//!   type ([`super::dispatched_uris`], and the `rooms/*` family's own
 //!   dispatcher). The spine verifies a document's proof —
 //!   canonicalising the whole document and resolving its signer's DID — before
 //!   it refuses a type it does not route, so a raised limit on a type nobody
@@ -138,7 +138,7 @@ fn declared(type_uri: &str) -> Option<usize> {
 
 /// Every type this node serves: the spine's own, and the `rooms/*` family's.
 fn served_uris() -> Vec<&'static str> {
-    let mut all: Vec<&'static str> = super::DISPATCHED_URIS.to_vec();
+    let mut all: Vec<&'static str> = super::dispatched_uris();
     all.extend(crate::rooms::handlers::served_uris());
     all
 }
@@ -661,7 +661,7 @@ mod tests {
             POLICY_UPSERT_MAX_DOCUMENT_BYTES
         );
         // And on this build, every served limit is at most the door's cap.
-        for uri in super::super::DISPATCHED_URIS {
+        for uri in super::super::dispatched_uris() {
             assert!(
                 max_document_bytes(uri) <= largest_max_document_bytes(),
                 "{uri}"
@@ -939,7 +939,7 @@ mod tests {
         assert!(served_upsert(POLICY_UPSERT) >= len);
         let limit_for = |issuer: &str| document_from(issuer, POLICY_UPSERT, len);
         // `policy/upsert` is served on this build.
-        assert!(super::super::DISPATCHED_URIS.contains(&POLICY_UPSERT));
+        assert!(super::super::dispatched_uris().contains(&POLICY_UPSERT));
         for (i, issuer) in [admin, key].into_iter().enumerate() {
             assert!(
                 check_for_known_issuer(&vtc.state, &limit_for(issuer), &format!("ip:{i}"), 0)

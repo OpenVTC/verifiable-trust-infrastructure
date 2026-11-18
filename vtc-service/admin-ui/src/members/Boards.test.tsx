@@ -4,6 +4,7 @@
 // (VTI-BRD-033).
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -138,7 +139,7 @@ function withWallet(heldIds: string[] = []) {
 
 function renderWith(node: React.ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">{node}</ConfirmDialogProvider></QueryClientProvider>);
 }
 
 beforeEach(() => {

@@ -38,12 +38,17 @@ Status: **implemented** (`vtc/boards/*` 0.1). Specification: VTI Community Board
    delegated document (`member_portal::delegation::accept`). Facilitator tasks resolve the
    signer through `member_signer` only, which never accepts it (VTI-BRD-051).
 
+7. **Facilitators by appointment** (VTI-BRD-090 – 093, `vtc/boards/facilitators/*`). A
+   facilitator is appointed as groups appoint managers: a resource grant `vtc.boards.manage` at
+   `board:<id>` on the appointee's entry, beside their role, so a member with no administrative
+   role may hold it. The grant, its review when the appointer departs or stops facilitating, and
+   its withdrawal are one module for both kinds (`acl::appointment`); `ResourceGrant::confers`
+   answers for the exact board only. Who facilitates is read with its own task
+   (`facilitators/list`) rather than a member of `vtc/boards/show`, because what a board shows
+   its audience does not change with who runs it, and `show/0.1` stays as it is.
+
 ## Open
 
-- **Appointing a facilitator who is not an administrator.** Today a qualified facilitator is an
-  ACL entry whose capability scope lists `vtc.boards.manage` at `board:<id>`, which takes an
-  administrative role. Groups solved the same need with `managers/add` (a resource grant).
-  Boards have no such task yet; it needs a spec change.
 - **Notes rate limit** is per process and in memory (10 per minute per author). It resets on
   restart and is not shared between replicas.
 - **Anonymous proposals** and **batched tickets**: the chapter's two open issues.

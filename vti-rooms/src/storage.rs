@@ -7,7 +7,15 @@
 //! room_records/v2:<len>:<roomId>:<key>           -> Record
 //! room_epoch_links/v2:<len>:<roomId>:<epoch>     -> EpochLink   (room_epoch_links keyspace)
 //! room-commit/v2:<len>:<roomId>:<epoch>          -> commit      (room_epoch_links keyspace)
+//! room_leaf/v1:<len>:<roomId>:<key>              -> leaf hash   (room_records keyspace)
+//! room_by_version/v1:<len>:<roomId>:<version>    -> record key  (room_records keyspace)
+//! room_head/v1:<len>:<roomId>                    -> tree head   (room_records keyspace)
 //! ```
+//!
+//! The last three are the record indexes (`index` module): each record's leaf hash, the
+//! room in version order, and the room's cached tree head, written in the same atomic batch
+//! as the record they describe, and built from the records the first time a room written
+//! before they existed is read or written.
 //!
 //! `<len>` is the room identifier's length in bytes, in decimal. A room identifier is a
 //! DID and contains `:` itself, so without it the key of one room's row could be the key
@@ -36,6 +44,10 @@ use vti_common::identifier::validate_did;
 use vti_common::store::KeyspaceHandle;
 
 use super::{Record, RecordStatus, Room};
+
+mod index;
+#[cfg(test)]
+mod index_tests;
 use crate::wire::EpochLink;
 
 /// `rooms:<roomId>`.
@@ -53,7 +65,7 @@ const LEGACY_RECORDS_PREFIX: &str = "room_records:";
 const LEGACY_EPOCH_LINKS_PREFIX: &str = "room_epoch_links:";
 const LEGACY_COMMITS_PREFIX: &str = "room-commit:";
 
-fn room_key(room_id: &str) -> String {
+pub(crate) fn room_key(room_id: &str) -> String {
     format!("{ROOMS_PREFIX}{room_id}")
 }
 
@@ -535,6 +547,7 @@ async fn move_row(
     old: Vec<u8>,
     value: Vec<u8>,
     new: String,
+    also_remove: Option<String>,
 ) -> Result<Result<(), String>, AppError> {
     let mut batch = vti_common::store::Batch::new();
     batch
@@ -542,6 +555,9 @@ async fn move_row(
         .require_absent(new.clone())
         .insert_raw(new.clone(), value)
         .remove(old.clone());
+    if let Some(k) = also_remove {
+        batch.remove(k);
+    }
     Ok(match ks.apply_batch(batch).await? {
         vti_common::store::BatchOutcome::Applied => Ok(()),
         vti_common::store::BatchOutcome::Refused { check: 0 } => {
@@ -589,7 +605,10 @@ pub async fn migrate_room_keys(
             continue;
         };
         let new = record_key(&room_id, &record.key);
-        match move_row(records, k.clone(), v, new).await? {
+        // The room's index no longer accounts for its records, so its head goes in the same
+        // batch and the next reader rebuilds the index (`index` module).
+        let head = index::head_key(&room_id);
+        match move_row(records, k.clone(), v, new, Some(head)).await? {
             Ok(()) => out.records += 1,
             Err(why) => out.left.push(format!("{}: {why}", lossy(&k))),
         }
@@ -612,7 +631,7 @@ pub async fn migrate_room_keys(
                 continue;
             };
             let new = format!("{}{epoch:010}", room_scope(current, &room_id));
-            match move_row(epoch_links, k.clone(), v, new).await? {
+            match move_row(epoch_links, k.clone(), v, new, None).await? {
                 Ok(()) => *count += 1,
                 Err(why) => out.left.push(format!("{}: {why}", lossy(&k))),
             }
@@ -665,6 +684,9 @@ pub async fn purge_room_rows(
 ) -> Result<PurgedRows, AppError> {
     let mut out = PurgedRows::default();
 
+    // The index first, head before rows: an interrupted purge leaves the room unindexed,
+    // and a read before the next attempt rebuilds it from what records remain.
+    index::purge(records, room_id).await?;
     for k in records.prefix_keys(record_prefix(room_id)).await? {
         records.remove(k).await?;
         out.records += 1;
@@ -716,6 +738,7 @@ pub async fn put_record(
     now: u64,
 ) -> Result<Record, AppError> {
     let mut room = get_room(rooms, room_id).await?;
+    index::ensure(records, room_id).await?;
 
     let existing = get_record(records, room_id, &record.key).await.ok();
 
@@ -793,16 +816,68 @@ pub async fn put_record(
     // the version a body was sealed at when it stores it"). Whatever an earlier body at this
     // key was sealed at no longer applies.
     record.sealed_version = record.sealed.as_ref().map(|_| room.next_version);
+    // The host's own times and first author (`rooms/records/put/0.5` Host items 16–17),
+    // whichever put version wrote this: they are the host's metadata, not the writer's, so
+    // what a caller supplied is replaced. A record's first version sets `createdAt` and
+    // `createdBy`; every later one keeps what the first recorded — `None` included, for a
+    // record stored before this host kept them, which stays unknown rather than guessed.
+    // Every put stores a new author body, so `bodyStoredAt` is now.
+    match &existing {
+        Some(current) => {
+            record.created_at = current.created_at;
+            record.created_by = current.created_by.clone();
+        }
+        None => {
+            record.created_at = Some(now);
+            // The author it authenticated, where the tier discloses one — `None` on a
+            // private room, which was refused above if it carried one.
+            record.created_by = record.author.clone();
+        }
+    }
+    record.body_stored_at = Some(now);
     record.version = room.next_version;
     record.updated_at = now;
     room.next_version += 1;
     room.updated_at = now;
 
-    records
-        .insert(record_key(room_id, &record.key), &record)
-        .await?;
+    write_record(records, room_id, existing.as_ref(), &record).await?;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(record)
+}
+
+/// Write `record` over `existing` (what its key held, if anything), with its index rows,
+/// in one batch. The room must be indexed ([`index::ensure`]).
+async fn write_record(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    existing: Option<&Record>,
+    record: &Record,
+) -> Result<(), AppError> {
+    let mut batch = vti_common::store::Batch::new();
+    batch.insert(record_key(room_id, &record.key), record)?;
+    index::stage(&mut batch, room_id, existing, Some(record))?;
+    index::apply(records, batch).await
+}
+
+/// Remove `existing` and its index rows, in one batch. The room must be indexed.
+async fn remove_record(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    existing: &Record,
+) -> Result<(), AppError> {
+    let mut batch = vti_common::store::Batch::new();
+    batch.remove(record_key(room_id, &existing.key));
+    index::stage(&mut batch, room_id, Some(existing), None)?;
+    index::apply(records, batch).await
+}
+
+/// Make the room's record indexes rebuild from its records on their next use.
+///
+/// For a host that wrote a record row directly through [`record_storage_key`] (a test
+/// ageing a record, say): the indexes are kept in step by this module's writes, and a
+/// row written around them leaves them describing the record it replaced.
+pub async fn reindex_room(records: &KeyspaceHandle, room_id: &str) -> Result<(), AppError> {
+    index::forget(records, room_id).await
 }
 
 /// Store a record **pulled from a primary**, exactly as the primary assigned it.
@@ -860,9 +935,9 @@ pub async fn store_mirrored_record(
     room.next_version = record.version + 1;
     room.updated_at = now;
 
-    records
-        .insert(record_key(room_id, &record.key), &record)
-        .await?;
+    index::ensure(records, room_id).await?;
+    let existing = get_record(records, room_id, &record.key).await.ok();
+    write_record(records, room_id, existing.as_ref(), &record).await?;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(record)
 }
@@ -945,23 +1020,6 @@ pub async fn list_records(
     Ok(out)
 }
 
-/// The room's data commitment — the root of its record tree.
-///
-/// Over **every** record the room holds, never the page being returned: a
-/// page-scoped root is one a host satisfies by construction and could never
-/// fail, which would let a member feel checked while checking nothing.
-///
-/// # Why this is not cached
-///
-/// It scans and hashes the room on every call, which is real work a cache would
-/// avoid. A cache would also have to be invalidated by every put, curate and
-/// prune, and **a stale root is worse than a slow one**: it is a *wrong*
-/// commitment, and the failure it produces is an honest host appearing to
-/// equivocate — the exact accusation this machinery exists to make credible.
-///
-/// So: correct first, and cache when there is a measurement saying where. The
-/// natural shape is a root kept beside the room row and updated on write, which
-/// is a different change with its own invariant to hold.
 /// The largest page a host will serve, however much a caller asks for.
 ///
 /// A listing used to be unbounded: `limit` was applied with `take` and anything
@@ -983,43 +1041,185 @@ pub struct Page {
     pub cursor: Option<String>,
 }
 
-/// The cursor's shape: the version of the last record on the page.
+/// Which end of the room a listing starts from (`rooms/records/list/0.7` *Order*).
+///
+/// `OldestFirst` is ascending `version`, what every listing before 0.7 returns and what an
+/// incremental sync reads in. `NewestFirst` is descending `version`: a reader opening a
+/// conversation at its newest records reads the room's head first and pages backwards,
+/// with `since_version` still a lower bound.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RecordOrder {
+    #[default]
+    OldestFirst,
+    NewestFirst,
+}
+
+/// The cursor's shape: the order it continues in, and the version of the last record on
+/// the page — `v<N>` (oldest first: continue *above* `N`) or `n<N>` (newest first:
+/// continue *below* `N`).
 ///
 /// # Why it is not authenticated, and does not need to be
 ///
 /// `rooms/records/list/0.1` calls this an opaque token and says a host MUST NOT
 /// accept one it did not issue, which reads as though it wants a signature. It
 /// does not, and pretending otherwise would be security theatre with a key
-/// nobody has: a cursor here expresses *start above version N*, which is
-/// precisely what `sinceVersion` already lets any caller ask for directly. A
-/// forged cursor can skip a caller's own records and nothing else.
+/// nobody has: a cursor here expresses *start above version N* (or *below* it,
+/// newest first), which is what `sinceVersion` — or a shorter listing — already
+/// lets any caller ask for directly. A forged cursor can skip a caller's own
+/// records and nothing else.
 ///
-/// What the host does enforce is the **shape**, so a value from somewhere else
-/// is refused rather than silently reinterpreted.
-fn encode_cursor(version: u64) -> String {
-    format!("v{version}")
+/// What the host does enforce is the **shape**, so a value from somewhere else is
+/// refused rather than silently reinterpreted — and the **order**: a cursor read in the
+/// direction it was not issued for would skip records or repeat them, and nothing on the
+/// page would show which (`rooms/records/list/0.7` *Order* item 5).
+fn encode_cursor(version: u64, order: RecordOrder) -> String {
+    match order {
+        RecordOrder::OldestFirst => format!("v{version}"),
+        RecordOrder::NewestFirst => format!("n{version}"),
+    }
 }
 
-fn decode_cursor(cursor: &str) -> Result<u64, AppError> {
-    cursor
-        .strip_prefix('v')
-        .and_then(|rest| rest.parse::<u64>().ok())
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "`{cursor}` is not a cursor this host issued; continue a listing with the \
+/// Why a cursor is refused: it is not this host's shape, or it was issued under the other
+/// order. Both are `rooms/records/list:invalidCursor` on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CursorError {
+    /// Not a cursor this host issues.
+    NotIssued(String),
+    /// A cursor this host issued under the other [`RecordOrder`].
+    OtherOrder(String),
+    /// A cursor this host issued under another `sinceVersion` or `beforeVersion`
+    /// (`rooms/records/list/0.8`).
+    OtherBounds(String),
+}
+
+impl std::fmt::Display for CursorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotIssued(c) => write!(
+                f,
+                "`{c}` is not a cursor this host issued; continue a listing with the \
                  `cursor` from its previous page, or start again without one"
-            ))
-        })
+            ),
+            Self::OtherOrder(c) => write!(
+                f,
+                "cursor `{c}` was issued under the other `order`; continue a listing with \
+                 the `order` it began with, or start again without a cursor"
+            ),
+            Self::OtherBounds(c) => write!(
+                f,
+                "cursor `{c}` was issued under another `sinceVersion` or `beforeVersion`; \
+                 continue a listing with the bounds it began with, or start again without a \
+                 cursor"
+            ),
+        }
+    }
 }
 
-/// One page of a room's records, ordered by version, with an honest cursor.
+impl std::error::Error for CursorError {}
+
+impl From<CursorError> for AppError {
+    fn from(e: CursorError) -> Self {
+        AppError::Validation(e.to_string())
+    }
+}
+
+/// The version a cursor continues from, if it is this host's and was issued under `order`.
+pub fn decode_cursor(cursor: &str, order: RecordOrder) -> Result<u64, CursorError> {
+    let (issued_under, rest) = if let Some(rest) = cursor.strip_prefix('v') {
+        (RecordOrder::OldestFirst, rest)
+    } else if let Some(rest) = cursor.strip_prefix('n') {
+        (RecordOrder::NewestFirst, rest)
+    } else {
+        return Err(CursorError::NotIssued(cursor.to_string()));
+    };
+    // Digits only: `u64::from_str` would also take a leading `+`.
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(CursorError::NotIssued(cursor.to_string()));
+    }
+    let version = rest
+        .parse::<u64>()
+        .map_err(|_| CursorError::NotIssued(cursor.to_string()))?;
+    if issued_under != order {
+        return Err(CursorError::OtherOrder(cursor.to_string()));
+    }
+    Ok(version)
+}
+
+/// A listing's version bounds (`rooms/records/list/0.8`): `since_version` from below and
+/// `before_version` from above, both exclusive, under either [`RecordOrder`].
 ///
-/// # The filters are the caller's to repeat
-///
-/// A cursor carries **position and nothing else**. A caller that continues with
-/// a different `prefix` or `since_version` gets that different query resumed
-/// from this position, which is a coherent thing to ask for and almost never
-/// what anyone means. Repeat the filters.
+/// A cursor issued for a bounded listing names its bounds, and is accepted only under the
+/// same ones ([`decode_bounded_cursor`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VersionBounds {
+    /// Only records whose current version is above this.
+    pub since_version: Option<u64>,
+    /// Only records whose current version is below this.
+    pub before_version: Option<u64>,
+}
+
+impl VersionBounds {
+    /// Whether no record can lie in the band: `beforeVersion <= sinceVersion + 1`
+    /// (`rooms/records/list/0.8`: an empty page, not an error).
+    pub fn is_empty(&self) -> bool {
+        match self.before_version {
+            Some(before) => before <= self.since_version.unwrap_or(0).saturating_add(1),
+            None => false,
+        }
+    }
+}
+
+/// A cursor for a bounded listing: [`encode_cursor`]'s position and order, then `s<since>`
+/// and `b<before>` for the bounds it was issued under, each only when present. A listing
+/// with neither bound issues exactly the cursor 0.7 does.
+fn encode_bounded_cursor(version: u64, order: RecordOrder, bounds: VersionBounds) -> String {
+    let mut c = encode_cursor(version, order);
+    if let Some(s) = bounds.since_version {
+        c.push_str(&format!("s{s}"));
+    }
+    if let Some(b) = bounds.before_version {
+        c.push_str(&format!("b{b}"));
+    }
+    c
+}
+
+/// The version a bounded listing's cursor continues from, if it is this host's and was
+/// issued under `order` **and** `bounds` (`rooms/records/list/0.8`: a cursor issued under
+/// another `order`, `sinceVersion` or `beforeVersion` is `invalidCursor`).
+pub fn decode_bounded_cursor(
+    cursor: &str,
+    order: RecordOrder,
+    bounds: VersionBounds,
+) -> Result<u64, CursorError> {
+    let not_issued = || CursorError::NotIssued(cursor.to_string());
+    // `<o><N>[s<S>][b<B>]`, each number digits only.
+    let digits = |s: &str| -> Result<u64, CursorError> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(not_issued());
+        }
+        s.parse::<u64>().map_err(|_| not_issued())
+    };
+    let (head, before) = match cursor.split_once('b') {
+        Some((head, b)) => (head, Some(digits(b)?)),
+        None => (cursor, None),
+    };
+    let (position, since) = match head.split_once('s') {
+        Some((p, s)) => (p, Some(digits(s)?)),
+        None => (head, None),
+    };
+    let version = decode_cursor(position, order).map_err(|e| match e {
+        CursorError::NotIssued(_) => not_issued(),
+        _ => CursorError::OtherOrder(cursor.to_string()),
+    })?;
+    if since != bounds.since_version || before != bounds.before_version {
+        return Err(CursorError::OtherBounds(cursor.to_string()));
+    }
+    Ok(version)
+}
+
+/// One page of a room's records, oldest first, with an honest cursor: what every listing
+/// before `rooms/records/list/0.7` serves. See [`list_records_page_in`].
 pub async fn list_records_page(
     records: &KeyspaceHandle,
     room_id: &str,
@@ -1028,19 +1228,71 @@ pub async fn list_records_page(
     cursor: Option<&str>,
     limit: Option<usize>,
 ) -> Result<Page, AppError> {
-    // A cursor and a watermark say the same kind of thing, so the later of the
-    // two wins rather than one silently overriding the other.
-    let floor = match cursor {
-        Some(c) => Some(decode_cursor(c)?.max(since_version.unwrap_or(0))),
-        None => since_version,
-    };
-    let mut all = list_records(records, room_id, key_prefix, floor).await?;
+    list_records_page_in(
+        records,
+        room_id,
+        key_prefix,
+        since_version,
+        cursor,
+        limit,
+        RecordOrder::OldestFirst,
+    )
+    .await
+}
 
+/// One page of a room's records in `order`, with an honest cursor.
+///
+/// # The filters are the caller's to repeat
+///
+/// A cursor carries **position and direction, nothing else**. A caller that continues with
+/// a different `prefix` or `since_version` gets that different query resumed from this
+/// position, which is a coherent thing to ask for and almost never what anyone means.
+/// Repeat the filters.
+///
+/// # Newest first
+///
+/// Rows in descending `version`, continuing downward page by page; `since_version` is still
+/// a **lower** bound, so a newest-first catch-up ends at the reader's watermark; tombstones
+/// are returned exactly as oldest first returns them (`rooms/records/list/0.7` *Order*
+/// items 2–4).
+///
+/// # A seek, not a scan
+///
+/// Read through the room's version index (`index` module), which every write keeps in the
+/// same batch as the record: a page reads the version rows it walks and the records it
+/// returns, so a caller polling with `since_version` pays for what changed, not for the
+/// room (#2595).
+pub async fn list_records_page_in(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    key_prefix: Option<&str>,
+    since_version: Option<u64>,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+    order: RecordOrder,
+) -> Result<Page, AppError> {
+    let position = cursor.map(|c| decode_cursor(c, order)).transpose()?;
     let page = limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
+    let (above, below) = match order {
+        // A cursor and a watermark say the same kind of thing, so the later of the two
+        // wins rather than one silently overriding the other.
+        RecordOrder::OldestFirst => (
+            match position {
+                Some(after) => Some(after.max(since_version.unwrap_or(0))),
+                None => since_version,
+            },
+            None,
+        ),
+        // The watermark bounds the listing from below, the cursor from above.
+        RecordOrder::NewestFirst => (since_version, position),
+    };
+    // One more than the page, to know whether another follows.
+    let mut all = index::page(records, room_id, key_prefix, above, below, order, page + 1).await?;
+
     let more = all.len() > page;
     all.truncate(page);
     let cursor = more
-        .then(|| all.last().map(|r| encode_cursor(r.version)))
+        .then(|| all.last().map(|r| encode_cursor(r.version, order)))
         .flatten();
     Ok(Page {
         records: all,
@@ -1048,13 +1300,86 @@ pub async fn list_records_page(
     })
 }
 
+/// One page of a room's records in `order` within `bounds`, with a cursor bound to the
+/// order and the bounds (`rooms/records/list/0.8`).
+///
+/// `bounds.before_version` is an exclusive upper bound on every page, beside
+/// `since_version` from below; when no version can lie between them the page is empty,
+/// not an error. Newest first, a page's upper bound is the lower of the cursor's position
+/// and `before_version`; oldest first, the walk stops at `before_version`. Both are seeks on
+/// the room's version index, so "load older" from a version reads only the rows it returns.
+pub async fn list_records_bounded(
+    records: &KeyspaceHandle,
+    room_id: &str,
+    key_prefix: Option<&str>,
+    bounds: VersionBounds,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+    order: RecordOrder,
+) -> Result<Page, AppError> {
+    let position = cursor
+        .map(|c| decode_bounded_cursor(c, order, bounds))
+        .transpose()?;
+    if bounds.is_empty() {
+        return Ok(Page {
+            records: Vec::new(),
+            cursor: None,
+        });
+    }
+    let page = limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
+    let since = bounds.since_version;
+    let (above, below) = match order {
+        RecordOrder::OldestFirst => (
+            match position {
+                Some(after) => Some(after.max(since.unwrap_or(0))),
+                None => since,
+            },
+            bounds.before_version,
+        ),
+        RecordOrder::NewestFirst => (
+            since,
+            match (position, bounds.before_version) {
+                (Some(p), Some(b)) => Some(p.min(b)),
+                (p, b) => p.or(b),
+            },
+        ),
+    };
+    let mut all = index::page(records, room_id, key_prefix, above, below, order, page + 1).await?;
+    let more = all.len() > page;
+    all.truncate(page);
+    let cursor = more
+        .then(|| {
+            all.last()
+                .map(|r| encode_bounded_cursor(r.version, order, bounds))
+        })
+        .flatten();
+    Ok(Page {
+        records: all,
+        cursor,
+    })
+}
+
+/// The room's data commitment — the root of its record tree — with its count and head
+/// version.
+///
+/// Over **every** record the room holds, never the page being returned: a
+/// page-scoped root is one a host satisfies by construction and could never
+/// fail, which would let a member feel checked while checking nothing.
+///
+/// # Cached, and never stale
+///
+/// Kept beside the records (`index` module): every leaf hash is computed once, when its
+/// record is written, and the head is cached in a row every write replaces with a stale
+/// marker in the same batch. **A stale root is worse than a slow one** — it is a *wrong*
+/// commitment, and the failure it produces is an honest host appearing to equivocate — so
+/// a head is cached only over the marker it was computed after, and a write in between
+/// leaves it uncached. The commitment is byte-for-byte [`crate::merkle::tree_head`] over
+/// the records.
 pub async fn tree_head(
     records: &KeyspaceHandle,
     room_id: &str,
 ) -> Result<crate::merkle::TreeHead, AppError> {
-    let mut all = list_records(records, room_id, None, None).await?;
-    crate::merkle::tree_head(&mut all)
-        .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))
+    Ok(index::head(records, room_id, None).await?.0)
 }
 
 /// The room's data commitment **and** the trace for one record, from one scan.
@@ -1069,7 +1394,8 @@ pub async fn tree_head(
 /// because it discredits the mechanism rather than the host.
 ///
 /// The specification requires the same snapshot for both. One function is how
-/// that requirement is held rather than remembered.
+/// that requirement is held rather than remembered: both come from one read of the
+/// room's leaf rows.
 ///
 /// `None` for the trace means the key is not in the room, which a caller that
 /// has just read the record can only see as a race with a retraction — the root
@@ -1086,26 +1412,7 @@ pub async fn tree_head_with_trace(
     ),
     AppError,
 > {
-    let mut all = list_records(records, room_id, None, None).await?;
-    // Ordering is the commitment's, so the index has to come from the sorted
-    // set — `tree_head` sorts in place, which is why this reads the position
-    // afterwards rather than before.
-    all.sort_by(|a, b| a.key.cmp(&b.key));
-    let leaves = all
-        .iter()
-        .map(|r| crate::merkle::leaf_hash(&r.committed()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| AppError::Internal(format!("commit the records of `{room_id}`: {e}")))?;
-    let head = crate::merkle::TreeHead {
-        root: crate::merkle::root_of(&leaves),
-        record_count: leaves.len() as u64,
-        head_version: all.iter().map(|r| r.version).max().unwrap_or(0),
-    };
-    let trace = all
-        .iter()
-        .position(|r| r.key == key)
-        .and_then(|index| crate::merkle::inclusion_proof(&leaves, index));
-    Ok((head, trace))
+    index::head(records, room_id, Some(key)).await
 }
 
 /// What one curation changes.
@@ -1160,7 +1467,9 @@ pub async fn curate_record(
         pinned,
         expected_version,
     } = curation;
+    index::ensure(records, room_id).await?;
     let mut record = get_record(records, room_id, key).await?;
+    let before = record.clone();
 
     if let Some(expected) = expected_version
         && record.version != expected
@@ -1209,7 +1518,7 @@ pub async fn curate_record(
     room.next_version += 1;
     room.updated_at = now;
 
-    records.insert(record_key(room_id, key), &record).await?;
+    write_record(records, room_id, Some(&before), &record).await?;
     rooms.insert(room_key(room_id), &room).await?;
     Ok(record)
 }
@@ -1224,13 +1533,9 @@ pub async fn purge_record(
     room_id: &str,
     key: &str,
 ) -> Result<(), AppError> {
-    let k = record_key(room_id, key);
-    if records.get_raw(k.clone()).await?.is_none() {
-        return Err(AppError::NotFound(format!(
-            "record `{key}` not found in `{room_id}`"
-        )));
-    }
-    records.remove(k).await
+    index::ensure(records, room_id).await?;
+    let existing = get_record(records, room_id, key).await?;
+    remove_record(records, room_id, &existing).await
 }
 
 /// The records a prune of `kinds` at `now` would remove under `retention`
@@ -1286,8 +1591,14 @@ pub async fn remove_pruned(
     room.last_prune = Some(mark);
     room.updated_at = now;
     rooms.insert(room_key(room_id), &room).await?;
+    index::ensure(records, room_id).await?;
     for key in keys {
-        records.remove(record_key(room_id, key)).await?;
+        match get_record(records, room_id, key).await {
+            Ok(existing) => remove_record(records, room_id, &existing).await?,
+            // Gone already: a prune that died part-way, finished by this one.
+            Err(AppError::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(mark)
 }
@@ -1304,6 +1615,24 @@ pub async fn set_record_retention(
     let previous = std::mem::replace(&mut room.record_retention, retention);
     room.updated_at = now;
     rooms.insert(room_key(room_id), &room).await?;
+    Ok(previous)
+}
+
+/// Record the room's signal delay (`rooms/signal-delay/set/0.1` item 3). Returns the one it
+/// replaced — `randomised` for a room that never set one. A request naming the setting in
+/// force writes nothing (item 4).
+pub async fn set_signal_delay(
+    rooms: &KeyspaceHandle,
+    room_id: &str,
+    delay: crate::signal_delay::SignalDelay,
+    now: u64,
+) -> Result<crate::signal_delay::SignalDelay, AppError> {
+    let mut room = get_room(rooms, room_id).await?;
+    let previous = std::mem::replace(&mut room.signal_delay, delay);
+    if previous != delay {
+        room.updated_at = now;
+        rooms.insert(room_key(room_id), &room).await?;
+    }
     Ok(previous)
 }
 
@@ -1403,6 +1732,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }
@@ -1421,6 +1751,9 @@ mod tests {
             cleartext: None,
             author: None,
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 
@@ -1437,6 +1770,9 @@ mod tests {
             cleartext: Some(serde_json::json!({ "body": "hello" })),
             author: Some("did:key:zBob".into()),
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 
@@ -1639,6 +1975,357 @@ mod tests {
             .unwrap();
         assert_eq!(page.records.len(), 3);
         assert!(page.cursor.is_none());
+    }
+
+    /// A room of `n` open records `k0`…`k{n-1}`, at versions 1…n.
+    async fn room_of(n: u64) -> (tempfile::TempDir, KeyspaceHandle, KeyspaceHandle) {
+        let (d, rooms, rec) = open().await;
+        create_room(&rooms, &room("r1", Visibility::Open))
+            .await
+            .unwrap();
+        for i in 0..n {
+            put_record(
+                &rooms,
+                &rec,
+                "r1",
+                open_record(&format!("k{i}")),
+                None,
+                i + 1,
+            )
+            .await
+            .unwrap();
+        }
+        (d, rooms, rec)
+    }
+
+    async fn newest(
+        rec: &KeyspaceHandle,
+        since: Option<u64>,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<Page, AppError> {
+        list_records_page_in(
+            rec,
+            "r1",
+            None,
+            since,
+            cursor,
+            Some(limit),
+            RecordOrder::NewestFirst,
+        )
+        .await
+    }
+
+    fn versions(page: &Page) -> Vec<u64> {
+        page.records.iter().map(|r| r.version).collect()
+    }
+
+    /// `rooms/records/list/0.7` *Order* item 2: newest first is descending `version`, and
+    /// each page its cursor leads to continues downward, so paging to the end reads the
+    /// room from its head down — every record exactly once.
+    #[tokio::test]
+    async fn newest_first_pages_downward_from_the_head() {
+        let (_d, _rooms, rec) = room_of(7).await;
+        let first = newest(&rec, None, None, 3).await.unwrap();
+        assert_eq!(versions(&first), [7, 6, 5]);
+        let c1 = first.cursor.clone().expect("four remain");
+        let second = newest(&rec, None, Some(&c1), 3).await.unwrap();
+        assert_eq!(versions(&second), [4, 3, 2]);
+        let c2 = second.cursor.clone().expect("one remains");
+        let last = newest(&rec, None, Some(&c2), 3).await.unwrap();
+        assert_eq!(versions(&last), [1]);
+        assert!(last.cursor.is_none(), "the end of the listing says so");
+    }
+
+    /// Item 3: `sinceVersion` is a lower bound under either order, so a newest-first
+    /// catch-up ends at the reader's watermark rather than at the room's first record.
+    #[tokio::test]
+    async fn newest_first_stops_at_the_watermark() {
+        let (_d, _rooms, rec) = room_of(6).await;
+        let first = newest(&rec, Some(3), None, 2).await.unwrap();
+        assert_eq!(versions(&first), [6, 5]);
+        let rest = newest(&rec, Some(3), first.cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        assert_eq!(versions(&rest), [4], "nothing at or below the watermark");
+        assert!(rest.cursor.is_none());
+    }
+
+    /// Item 4: tombstones are returned newest first exactly as oldest first returns them —
+    /// a retraction moves its record to the head.
+    #[tokio::test]
+    async fn newest_first_returns_tombstones() {
+        let (_d, rooms, rec) = room_of(3).await;
+        curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "k0",
+            Curation {
+                status: Some(RecordStatus::Retracted),
+                pinned: None,
+                expected_version: None,
+            },
+            10,
+        )
+        .await
+        .unwrap();
+        let page = newest(&rec, None, None, 10).await.unwrap();
+        assert_eq!(
+            page.records[0].key, "k0",
+            "the retraction is the newest change"
+        );
+        assert_eq!(page.records[0].status, RecordStatus::Retracted);
+        assert_eq!(page.records.len(), 3);
+    }
+
+    /// Item 5: a cursor belongs to the order it was issued under, and is refused under the
+    /// other — read the other way it would skip records or repeat them.
+    #[tokio::test]
+    async fn a_cursor_is_refused_under_the_other_order() {
+        let (_d, _rooms, rec) = room_of(4).await;
+        let oldest = list_records_page(&rec, "r1", None, None, None, Some(2))
+            .await
+            .unwrap();
+        let up = oldest.cursor.expect("two remain");
+        assert_eq!(
+            newest(&rec, None, Some(&up), 2)
+                .await
+                .unwrap_err()
+                .to_string(),
+            AppError::from(CursorError::OtherOrder(up.clone())).to_string()
+        );
+        let down = newest(&rec, None, None, 2).await.unwrap().cursor.unwrap();
+        assert!(
+            list_records_page(&rec, "r1", None, None, Some(&down), Some(2))
+                .await
+                .is_err(),
+            "a newest-first cursor continues no oldest-first listing"
+        );
+        assert_eq!(
+            decode_cursor(&down, RecordOrder::OldestFirst),
+            Err(CursorError::OtherOrder(down.clone()))
+        );
+        for bad in ["412", "n", "n+4", "x4", "nNaN"] {
+            assert_eq!(
+                decode_cursor(bad, RecordOrder::NewestFirst),
+                Err(CursorError::NotIssued(bad.into())),
+                "{bad}"
+            );
+        }
+    }
+
+    /// *A room that moves while it is listed*: a record edited between two newest-first
+    /// pages takes a version above the listing's first row, so the rest of the listing does
+    /// not return it — and a reader that, having read to the end, takes the FIRST page's
+    /// highest version as its watermark finds it on the next catch-up. A watermark from a
+    /// later page would have skipped nothing here only by luck; from the first page it is
+    /// guaranteed.
+    #[tokio::test]
+    async fn an_edit_while_paging_is_found_from_the_first_pages_watermark() {
+        let (_d, rooms, rec) = room_of(6).await;
+        let first = newest(&rec, None, None, 2).await.unwrap();
+        assert_eq!(versions(&first), [6, 5]);
+        let watermark = first.records[0].version;
+
+        // `k1` (version 2), not yet listed, is edited: it moves to version 7.
+        let mut edit = open_record("k1");
+        edit.cleartext = Some(serde_json::json!({ "body": "edited" }));
+        let edited = put_record(&rooms, &rec, "r1", edit, None, 20)
+            .await
+            .unwrap();
+        assert_eq!(edited.version, 7);
+
+        let mut seen: Vec<u64> = versions(&first);
+        let mut cursor = first.cursor;
+        while let Some(c) = cursor {
+            let page = newest(&rec, None, Some(&c), 2).await.unwrap();
+            seen.extend(versions(&page));
+            cursor = page.cursor;
+        }
+        assert_eq!(
+            seen,
+            [6, 5, 4, 3, 1],
+            "the moved record is not met again below"
+        );
+
+        let catch_up = newest(&rec, Some(watermark), None, 10).await.unwrap();
+        assert_eq!(versions(&catch_up), [7]);
+        assert_eq!(catch_up.records[0].key, "k1");
+    }
+
+    /// The order changes which rows a page carries, never what the room holds (item 6):
+    /// a whole room read newest first is the room read oldest first, reversed.
+    #[tokio::test]
+    async fn both_orders_read_the_same_room() {
+        let (_d, _rooms, rec) = room_of(5).await;
+        let mut down = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = newest(&rec, None, cursor.as_deref(), 2).await.unwrap();
+            down.extend(versions(&page));
+            match page.cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        let up = list_records_page(&rec, "r1", None, None, None, None)
+            .await
+            .unwrap();
+        let mut up = versions(&up);
+        up.reverse();
+        assert_eq!(down, up);
+    }
+
+    async fn bounded(
+        rec: &KeyspaceHandle,
+        since: Option<u64>,
+        before: Option<u64>,
+        cursor: Option<&str>,
+        limit: usize,
+        order: RecordOrder,
+    ) -> Result<Page, AppError> {
+        list_records_bounded(
+            rec,
+            "r1",
+            None,
+            VersionBounds {
+                since_version: since,
+                before_version: before,
+            },
+            cursor,
+            Some(limit),
+            order,
+        )
+        .await
+    }
+
+    /// `rooms/records/list/0.8`: `beforeVersion` is an exclusive upper bound on every page,
+    /// so "load older" from the lowest version a reader holds pages down from just below it
+    /// — no cursor kept between the two — and to the room's first record.
+    #[tokio::test]
+    async fn before_version_loads_older_newest_first() {
+        let (_d, _rooms, rec) = room_of(9).await;
+        let head = bounded(&rec, None, None, None, 3, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&head), [9, 8, 7]);
+        // The app restarted and lost the cursor; it holds versions 7 – 9.
+        let older = bounded(&rec, None, Some(7), None, 3, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&older), [6, 5, 4]);
+        let c = older.cursor.clone().expect("three remain");
+        let rest = bounded(&rec, None, Some(7), Some(&c), 3, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&rest), [3, 2, 1]);
+        assert!(rest.cursor.is_none());
+    }
+
+    /// Under oldest first the bound applies too: the band (since, before), ascending.
+    #[tokio::test]
+    async fn before_version_bounds_an_oldest_first_listing() {
+        let (_d, _rooms, rec) = room_of(9).await;
+        let first = bounded(&rec, Some(2), Some(7), None, 2, RecordOrder::OldestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&first), [3, 4]);
+        let c = first.cursor.clone().expect("more below the bound");
+        let second = bounded(
+            &rec,
+            Some(2),
+            Some(7),
+            Some(&c),
+            2,
+            RecordOrder::OldestFirst,
+        )
+        .await
+        .unwrap();
+        assert_eq!(versions(&second), [5, 6]);
+        assert!(
+            second.cursor.is_none(),
+            "the bound is the end of this listing, though the room goes on"
+        );
+    }
+
+    /// `beforeVersion <= sinceVersion + 1` leaves no version in the band: an empty page,
+    /// not an error.
+    #[tokio::test]
+    async fn an_empty_band_is_an_empty_page() {
+        let (_d, _rooms, rec) = room_of(5).await;
+        for (since, before) in [(Some(3), 4), (Some(3), 3), (Some(4), 2), (None, 1)] {
+            for order in [RecordOrder::OldestFirst, RecordOrder::NewestFirst] {
+                let page = bounded(&rec, since, Some(before), None, 10, order)
+                    .await
+                    .unwrap();
+                assert!(page.records.is_empty(), "{since:?}..{before}");
+                assert!(page.cursor.is_none());
+            }
+        }
+        let one = bounded(&rec, Some(3), Some(5), None, 10, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(versions(&one), [4], "since + 2 leaves exactly one version");
+    }
+
+    /// A cursor belongs to the order, `sinceVersion` and `beforeVersion` it was issued
+    /// under; under any other it is refused (`invalidCursor`), never read as a position in
+    /// another band. A listing with neither bound issues 0.7's cursor.
+    #[tokio::test]
+    async fn a_bounded_cursor_is_refused_under_other_bounds() {
+        let (_d, _rooms, rec) = room_of(9).await;
+        let page = bounded(&rec, Some(1), Some(8), None, 2, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        let c = page.cursor.expect("more remain");
+        assert_eq!(c, "n6s1b8");
+        for (since, before) in [
+            (None, Some(8)),
+            (Some(1), None),
+            (Some(2), Some(8)),
+            (Some(1), Some(9)),
+        ] {
+            assert!(
+                matches!(
+                    decode_bounded_cursor(
+                        &c,
+                        RecordOrder::NewestFirst,
+                        VersionBounds {
+                            since_version: since,
+                            before_version: before
+                        }
+                    ),
+                    Err(CursorError::OtherBounds(_))
+                ),
+                "{since:?} {before:?}"
+            );
+        }
+        let same = VersionBounds {
+            since_version: Some(1),
+            before_version: Some(8),
+        };
+        assert!(matches!(
+            decode_bounded_cursor(&c, RecordOrder::OldestFirst, same),
+            Err(CursorError::OtherOrder(_))
+        ));
+        for bad in ["n6s1b", "n6sb8", "x6", "n6b8s1", "n+6"] {
+            assert!(
+                matches!(
+                    decode_bounded_cursor(bad, RecordOrder::NewestFirst, same),
+                    Err(CursorError::NotIssued(_)) | Err(CursorError::OtherBounds(_))
+                ),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            decode_bounded_cursor(&c, RecordOrder::NewestFirst, same).unwrap(),
+            6
+        );
+        let unbounded = bounded(&rec, None, None, None, 2, RecordOrder::NewestFirst)
+            .await
+            .unwrap();
+        assert_eq!(unbounded.cursor.as_deref(), Some("n8"), "0.7's shape");
     }
 
     /// The head's three values describe one set, and they are read from it.
@@ -2330,6 +3017,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
             ..room(id, visibility)
@@ -2733,6 +3421,7 @@ mod purge_and_freeze_tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }
@@ -2751,6 +3440,9 @@ mod purge_and_freeze_tests {
             cleartext: Some(serde_json::json!({ "body": "hello" })),
             author: Some("did:key:zBob".into()),
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 
@@ -3116,6 +3808,330 @@ mod purge_and_freeze_tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+}
+
+/// The host's record times and first author (`rooms/records/put/0.5` Host items 16–17), and
+/// how `rooms/records/list/0.6` and `rooms/records/get/0.3` serve them (trust-tasks-tf #1027).
+#[cfg(test)]
+mod record_times_tests {
+    use super::*;
+    use crate::Visibility;
+    use serde_json::json;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    async fn open() -> (tempfile::TempDir, KeyspaceHandle, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let rooms = store.keyspace(crate::ROOMS_KEYSPACE).unwrap();
+        let records = store.keyspace(crate::ROOM_RECORDS_KEYSPACE).unwrap();
+        (dir, rooms, records)
+    }
+
+    fn room(visibility: Visibility) -> Room {
+        Room {
+            room_id: "r1".into(),
+            owner_did: "did:key:zOwner".into(),
+            visibility,
+            retention_policy: crate::RetentionPolicy::Chained,
+            anchor_cadence: Default::default(),
+            epoch: 1,
+            next_version: 1,
+            retention_days: 90,
+            epoch_expires_at: None,
+            created_at: 0,
+            updated_at: 0,
+            mirror_of: None,
+            record_retention: None,
+            last_prune: None,
+            signal_delay: Default::default(),
+            epoch_floor: None,
+            frozen_at: None,
+        }
+    }
+
+    /// A write as a host builds it: the author where the tier discloses one, and host times
+    /// a writer tried to choose, which the store replaces.
+    fn write(visibility: Visibility, author: &str, cleartext: serde_json::Value) -> Record {
+        let open = visibility.stores_cleartext();
+        Record {
+            key: "k".into(),
+            version: 0,
+            epoch: (!open).then_some(1),
+            status: RecordStatus::Active,
+            pinned: false,
+            sealed: (!open).then(|| "c2VhbGVk".to_string()),
+            nonce: (!open).then(|| "bm9uY2U".to_string()),
+            sealed_version: None,
+            cleartext: open.then_some(cleartext),
+            author: visibility.discloses_actor().then(|| author.to_string()),
+            updated_at: 0,
+            created_at: Some(1),
+            created_by: Some("did:key:zForged".into()),
+            body_stored_at: Some(1),
+        }
+    }
+
+    fn curation(status: Option<RecordStatus>, pinned: Option<bool>) -> Curation {
+        Curation {
+            status,
+            pinned,
+            expected_version: None,
+        }
+    }
+
+    /// Host items 16–17 on both tiers that record an author: `createdAt` and `createdBy` are
+    /// set by the first version and never move — not by an edit (by another member too), a
+    /// pin, a demotion or a retraction — while `bodyStoredAt` moves with each put and with
+    /// nothing else. What a writer put in any of them is replaced.
+    #[tokio::test]
+    async fn created_at_and_by_are_set_once_and_body_stored_at_moves_only_with_a_body() {
+        for visibility in [Visibility::Open, Visibility::Attributed] {
+            let (_d, rooms, rec) = open().await;
+            create_room(&rooms, &room(visibility)).await.unwrap();
+
+            let first = put_record(
+                &rooms,
+                &rec,
+                "r1",
+                write(visibility, "did:key:zAlice", json!({ "body": "one" })),
+                None,
+                100,
+            )
+            .await
+            .unwrap();
+            assert_eq!(first.created_at, Some(100), "{visibility:?}");
+            assert_eq!(first.created_by.as_deref(), Some("did:key:zAlice"));
+            assert_eq!(
+                first.body_stored_at,
+                Some(100),
+                "first version: equals createdAt"
+            );
+
+            // An edit, by someone else: a new body, the first version's creation kept.
+            let edited = put_record(
+                &rooms,
+                &rec,
+                "r1",
+                write(visibility, "did:key:zBob", json!({ "body": "two" })),
+                None,
+                200,
+            )
+            .await
+            .unwrap();
+            assert_eq!(edited.created_at, Some(100));
+            assert_eq!(edited.created_by.as_deref(), Some("did:key:zAlice"));
+            assert_eq!(edited.body_stored_at, Some(200));
+
+            for (when, c) in [
+                (300, curation(None, Some(true))),
+                (400, curation(Some(RecordStatus::Deprecated), None)),
+                (500, curation(Some(RecordStatus::Retracted), None)),
+            ] {
+                let curated = curate_record(&rooms, &rec, "r1", "k", c, when)
+                    .await
+                    .unwrap();
+                assert_eq!(curated.updated_at, when);
+                assert_eq!(curated.created_at, Some(100), "curation at {when}");
+                assert_eq!(curated.created_by.as_deref(), Some("did:key:zAlice"));
+                assert_eq!(curated.body_stored_at, Some(200), "no new body at {when}");
+            }
+            let stored = get_record(&rec, "r1", "k").await.unwrap();
+            assert_eq!(stored.created_at, Some(100));
+            assert_eq!(stored.created_by.as_deref(), Some("did:key:zAlice"));
+        }
+    }
+
+    /// Host item 17: a `private` room's host records no author, so it has none to keep or
+    /// serve. The times are kept on every tier.
+    #[tokio::test]
+    async fn created_by_is_never_recorded_on_a_private_room() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room(Visibility::Private))
+            .await
+            .unwrap();
+        let stored = put_record(
+            &rooms,
+            &rec,
+            "r1",
+            write(Visibility::Private, "did:key:zAlice", json!({})),
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored.created_by, None);
+        assert_eq!(stored.created_at, Some(100));
+        assert_eq!(stored.body_stored_at, Some(100));
+        let row = stored.metadata_v3(Visibility::Private);
+        assert!(row.get("createdBy").is_none(), "{row}");
+        assert_eq!(row["createdAt"], "1970-01-01T00:01:40Z");
+        assert_eq!(row["bodyStoredAt"], "1970-01-01T00:01:40Z");
+    }
+
+    /// A record stored before the host kept these times reads cleanly, serves none of them,
+    /// and keeps `createdAt` and `createdBy` unknown after an edit — they describe the first
+    /// version, which this host did not time. Only the new body's time is known.
+    #[tokio::test]
+    async fn a_record_stored_before_the_times_serves_them_absent() {
+        let (_d, rooms, rec) = open().await;
+        let mut r = room(Visibility::Open);
+        r.next_version = 8;
+        create_room(&rooms, &r).await.unwrap();
+        // A row as an earlier host wrote it: none of the three members.
+        let legacy = json!({
+            "key": "k",
+            "version": 7,
+            "epoch": null,
+            "status": "active",
+            "cleartext": { "body": "old", "kind": "message" },
+            "author": "did:key:zAlice",
+            "updatedAt": 50,
+        });
+        rec.insert(record_key("r1", "k"), &legacy).await.unwrap();
+
+        let stored = get_record(&rec, "r1", "k").await.unwrap();
+        assert_eq!(stored.created_at, None);
+        assert_eq!(stored.created_by, None);
+        assert_eq!(stored.body_stored_at, None);
+        let row = stored.metadata_v3(Visibility::Open);
+        for absent in ["createdAt", "createdBy", "bodyStoredAt"] {
+            assert!(row.get(absent).is_none(), "{absent} guessed: {row}");
+        }
+        assert_eq!(row["kind"], "message");
+
+        let edited = put_record(
+            &rooms,
+            &rec,
+            "r1",
+            write(Visibility::Open, "did:key:zAlice", json!({ "body": "new" })),
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(edited.created_at, None);
+        assert_eq!(edited.created_by, None);
+        assert_eq!(edited.body_stored_at, Some(100));
+    }
+
+    /// list/0.6: `kind` exactly as the open record's cleartext carries it, absent where it
+    /// carries none and on a tombstone, and never on a sealed tier.
+    #[tokio::test]
+    async fn kind_is_served_on_an_open_room_only_and_never_on_a_tombstone() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room(Visibility::Open)).await.unwrap();
+        let mut r = write(
+            Visibility::Open,
+            "did:key:zAlice",
+            json!({ "body": "hi", "kind": "message" }),
+        );
+        let stored = put_record(&rooms, &rec, "r1", r.clone(), None, 100)
+            .await
+            .unwrap();
+        let row = stored.metadata_v3(Visibility::Open);
+        assert_eq!(row["kind"], "message");
+        assert_eq!(row["createdBy"], "did:key:zAlice");
+        assert_eq!(row["bodyStoredAt"], row["createdAt"]);
+        // 0.5's rows are unchanged.
+        let v2 = stored.metadata();
+        for m in ["kind", "createdAt", "createdBy", "bodyStoredAt"] {
+            assert!(v2.get(m).is_none(), "{m} on a 0.5 row: {v2}");
+        }
+
+        // None carried: none served, not a default.
+        r.key = "plain".into();
+        r.cleartext = Some(json!({ "body": "note" }));
+        let plain = put_record(&rooms, &rec, "r1", r, None, 110).await.unwrap();
+        assert!(plain.metadata_v3(Visibility::Open).get("kind").is_none());
+
+        let tomb = curate_record(
+            &rooms,
+            &rec,
+            "r1",
+            "k",
+            curation(Some(RecordStatus::Retracted), None),
+            120,
+        )
+        .await
+        .unwrap();
+        let row = tomb.metadata_v3(Visibility::Open);
+        assert!(
+            row.get("kind").is_none(),
+            "a tombstone keeps no body: {row}"
+        );
+        assert_eq!(row["createdBy"], "did:key:zAlice");
+
+        // A sealed tier never serves it, whatever a row holds.
+        for v in [Visibility::Attributed, Visibility::Private] {
+            assert!(stored.metadata_v3(v).get("kind").is_none(), "{v:?}");
+        }
+        assert!(
+            stored
+                .metadata_v3(Visibility::Private)
+                .get("createdBy")
+                .is_none()
+        );
+    }
+
+    /// get/0.3's members are not committed: removing them (and `blobs`) from the response,
+    /// as the specification tells a reader to, leaves exactly the committed record — so the
+    /// leaf a reader hashes is the one in the host's tree, and its trace reaches the root.
+    #[tokio::test]
+    async fn the_get_0_3_leaf_is_unchanged_by_the_record_times() {
+        let (_d, rooms, rec) = open().await;
+        create_room(&rooms, &room(Visibility::Attributed))
+            .await
+            .unwrap();
+        let stored = put_record(
+            &rooms,
+            &rec,
+            "r1",
+            write(Visibility::Attributed, "did:key:zAlice", json!({})),
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+        let (head, trace) = tree_head_with_trace(&rec, "r1", "k").await.unwrap();
+        let trace = trace.expect("a held record has a trace");
+
+        let mut body = serde_json::to_value(crate::wire::GetRecordResponse::of(
+            &stored,
+            Some(&head),
+            Some(trace.clone()),
+        ))
+        .unwrap();
+        for (name, value) in stored.host_times(Visibility::Attributed) {
+            body[name] = value;
+        }
+        assert!(body.get("createdAt").is_some() && body.get("createdBy").is_some());
+        // What get/0.3 *The leaf preimage is this response* removes.
+        let obj = body.as_object_mut().unwrap();
+        for m in [
+            "dataCommitment",
+            "recordCount",
+            "headVersion",
+            "trace",
+            "ext",
+            "blobs",
+            "createdAt",
+            "createdBy",
+            "bodyStoredAt",
+        ] {
+            obj.remove(m);
+        }
+        let reassembled: crate::wire::CommittedRecord = serde_json::from_value(body).unwrap();
+        let leaf = crate::merkle::leaf_hash(&reassembled).unwrap();
+        assert_eq!(leaf, crate::merkle::leaf_hash(&stored.committed()).unwrap());
+        assert!(
+            crate::merkle::verify_inclusion(&head.root, &leaf, &trace),
+            "the reassembled leaf reaches the host's root"
         );
     }
 }

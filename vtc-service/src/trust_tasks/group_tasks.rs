@@ -21,10 +21,11 @@
 //! A dynamic group's members are computed from its rule (`groups::dynamic`):
 //! `members/{add,remove}` refuse it, `leave` opts out and `join` undoes that.
 
+use super::routing::{Routes, on};
 use chrono::Utc;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
+use vtc_audit::{AuditEvent, GroupChangedData, GroupMembershipChangedData};
 use vti_common::error::AppError;
 use vti_common::pagination::Cursor;
 use vti_specs::vtc::groups::{
@@ -60,44 +61,26 @@ use crate::groups::{self, Audience, Group, JoinPolicy, JoinRequest, Membership, 
 use crate::rooms::community::HolderError;
 use crate::server::AppState;
 
-pub(crate) const CREATE_TYPE: &str = <group_create::Payload as Payload>::TYPE_URI;
-pub(crate) const UPDATE_TYPE: &str = <group_update::Payload as Payload>::TYPE_URI;
-pub(crate) const DELETE_TYPE: &str = <group_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <group_list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
 pub(crate) const SHOW_TYPE: &str = <group_show::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_ADD_TYPE: &str = <members_add::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_REMOVE_TYPE: &str = <members_remove::Payload as Payload>::TYPE_URI;
-pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_TYPE: &str = <group_join::Payload as Payload>::TYPE_URI;
-pub(crate) const LEAVE_TYPE: &str = <group_leave::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const REQUESTS_LIST_TYPE: &str = <requests_list::Payload as Payload>::TYPE_URI;
-pub(crate) const REQUESTS_DECIDE_TYPE: &str = <requests_decide::Payload as Payload>::TYPE_URI;
-pub(crate) const MANAGERS_ADD_TYPE: &str = <managers_add::Payload as Payload>::TYPE_URI;
-pub(crate) const MANAGERS_REMOVE_TYPE: &str = <managers_remove::Payload as Payload>::TYPE_URI;
-pub(crate) const BINDINGS_ADD_TYPE: &str = <bindings_add::Payload as Payload>::TYPE_URI;
-pub(crate) const BINDINGS_REMOVE_TYPE: &str = <bindings_remove::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const MEMBERS_LIST_TYPE: &str = <members_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <group_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const BINDINGS_LIST_TYPE: &str = <bindings_list::Payload as Payload>::TYPE_URI;
 
-/// Every type this module serves.
-pub(crate) const URIS: &[&str] = &[
-    CREATE_TYPE,
-    UPDATE_TYPE,
-    DELETE_TYPE,
-    LIST_TYPE,
-    SHOW_TYPE,
-    MEMBERS_ADD_TYPE,
-    MEMBERS_REMOVE_TYPE,
-    MEMBERS_LIST_TYPE,
-    JOIN_TYPE,
-    LEAVE_TYPE,
-    REQUESTS_LIST_TYPE,
-    REQUESTS_DECIDE_TYPE,
-    MANAGERS_ADD_TYPE,
-    MANAGERS_REMOVE_TYPE,
-    BINDINGS_ADD_TYPE,
-    BINDINGS_REMOVE_TYPE,
-    BINDINGS_LIST_TYPE,
-];
+pub(crate) const DELETE_TYPE: &str = <group_delete::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_ADD_TYPE: &str = <members_add::Payload as Payload>::TYPE_URI;
+pub(crate) const MEMBERS_REMOVE_TYPE: &str = <members_remove::Payload as Payload>::TYPE_URI;
+pub(crate) const BINDINGS_ADD_TYPE: &str = <bindings_add::Payload as Payload>::TYPE_URI;
+pub(crate) const BINDINGS_REMOVE_TYPE: &str = <bindings_remove::Payload as Payload>::TYPE_URI;
 
 macro_rules! codes {
     ($($name:ident = $module:ident :: $code:ident;)*) => {
@@ -166,32 +149,30 @@ codes! {
     BINDINGS_LIST_ERR_NOT_FOUND = bindings_list::NOT_FOUND;
 }
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc).await,
-        UPDATE_TYPE => handle_update(state, ctx, doc).await,
-        DELETE_TYPE => handle_delete(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        MEMBERS_ADD_TYPE => handle_members_add(state, ctx, doc).await,
-        MEMBERS_REMOVE_TYPE => handle_members_remove(state, ctx, doc).await,
-        MEMBERS_LIST_TYPE => handle_members_list(state, ctx, doc).await,
-        JOIN_TYPE => handle_join(state, ctx, doc).await,
-        LEAVE_TYPE => handle_leave(state, ctx, doc).await,
-        REQUESTS_LIST_TYPE => handle_requests_list(state, ctx, doc).await,
-        REQUESTS_DECIDE_TYPE => handle_requests_decide(state, ctx, doc).await,
-        MANAGERS_ADD_TYPE => handle_managers_add(state, ctx, doc).await,
-        MANAGERS_REMOVE_TYPE => handle_managers_remove(state, ctx, doc).await,
-        BINDINGS_ADD_TYPE => handle_bindings_add(state, ctx, doc).await,
-        BINDINGS_REMOVE_TYPE => handle_bindings_remove(state, ctx, doc).await,
-        BINDINGS_LIST_TYPE => handle_bindings_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes =
+        on!(routes, group_create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, group_update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+    let routes =
+        on!(routes, group_delete::Payload => |state, ctx, doc| handle_delete(state, ctx, doc));
+    let routes = on!(routes, group_list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, group_show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes =
+        on!(routes, members_add::Payload => |state, ctx, doc| handle_members_add(state, ctx, doc));
+    let routes = on!(routes, members_remove::Payload => |state, ctx, doc| handle_members_remove(state, ctx, doc));
+    let routes = on!(routes, members_list::Payload => |state, ctx, doc| handle_members_list(state, ctx, doc));
+    let routes = on!(routes, group_join::Payload => |state, ctx, doc| handle_join(state, ctx, doc));
+    let routes =
+        on!(routes, group_leave::Payload => |state, ctx, doc| handle_leave(state, ctx, doc));
+    let routes = on!(routes, requests_list::Payload => |state, ctx, doc| handle_requests_list(state, ctx, doc));
+    let routes = on!(routes, requests_decide::Payload => |state, ctx, doc| handle_requests_decide(state, ctx, doc));
+    let routes = on!(routes, managers_add::Payload => |state, ctx, doc| handle_managers_add(state, ctx, doc));
+    let routes = on!(routes, managers_remove::Payload => |state, ctx, doc| handle_managers_remove(state, ctx, doc));
+    let routes = on!(routes, bindings_add::Payload => |state, ctx, doc| handle_bindings_add(state, ctx, doc));
+    let routes = on!(routes, bindings_remove::Payload => |state, ctx, doc| handle_bindings_remove(state, ctx, doc));
+    on!(routes, bindings_list::Payload => |state, ctx, doc| handle_bindings_list(state, ctx, doc))
 }
 
 // ─── shared ───────────────────────────────────────────────────────────────
@@ -390,6 +371,25 @@ async fn standing(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
 ) -> Result<Standing, TrustTaskOutcome> {
+    standing_signed(state, ctx, doc).await.map(|(who, _)| who)
+}
+
+/// How a group task was signed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SignedWith {
+    /// The signer's own key (or a console key for its administrator).
+    Own,
+    /// The member portal's delegated sign-in key, acting for the member.
+    Portal,
+}
+
+/// [`standing`], and whether the document was signed with the portal's
+/// delegated key.
+async fn standing_signed(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<(Standing, SignedWith), TrustTaskOutcome> {
     let delegated = match ctx.verified_signer.as_deref() {
         Some(signer) => crate::member_portal::delegation::accept(
             state,
@@ -401,13 +401,32 @@ async fn standing(
         .map_err(|e| app_error_to_reject(doc, &e))?,
         None => None,
     };
-    let did = match delegated {
-        Some(member) => member,
-        None => member_signer(state, ctx, doc).await?.did,
+    let (did, signed) = match delegated {
+        Some(member) => (member, SignedWith::Portal),
+        None => (member_signer(state, ctx, doc).await?.did, SignedWith::Own),
     };
     Standing::read(state, &did)
         .await
+        .map(|who| (who, signed))
         .map_err(|e| app_error_to_reject(doc, &e))
+}
+
+/// A badge owner's act on the badge's group takes the owner's own key, never
+/// the portal's delegated key (VTI-BDG-095), as the badge's own owner tasks
+/// do. Every other group is unaffected.
+fn badge_owner_key(
+    doc: &TrustTask<Value>,
+    group: &Group,
+    signed: SignedWith,
+) -> Result<(), TrustTaskOutcome> {
+    if group.badge_id.is_some() && signed == SignedWith::Portal {
+        return Err(denied(
+            doc,
+            "this group backs a badge: its owners act on it with their own key, not the \
+             portal's sign-in key",
+        ));
+    }
+    Ok(())
 }
 
 /// The group a manager acts on: `notFound` where the caller may not see it,
@@ -659,6 +678,7 @@ async fn handle_create(
         authority,
         authority_credential,
         did_log_path: minted.did_log_path,
+        badge_id: None,
         created_at: now,
         created_by: who.entry_id.clone(),
         updated_at: now,
@@ -712,6 +732,14 @@ async fn handle_update(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    // A badge group is the badge's (VTI-BDG-012): its name, who may ask for it and who
+    // sees its holders follow the badge, changed with vtc/badges/update.
+    if before.badge_id.is_some() {
+        return denied(
+            &doc,
+            "this group backs a badge: change it with vtc/badges/update",
+        );
+    }
     let dynamic = before.kind == groups::GroupKind::Dynamic;
     let mut next = before.clone();
     let mut changed = Vec::new();
@@ -902,6 +930,14 @@ async fn handle_delete(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    // A badge group goes only with its badge: vtc/badges/retire deletes it and
+    // revokes what the badge gave (VTI-BDG-012).
+    if group.badge_id.is_some() {
+        return denied(
+            &doc,
+            "this group backs a badge: retire the badge with vtc/badges/retire",
+        );
+    }
     // Item 5: deleting a group carrying authority takes it from every member,
     // a reduction of each (VTI-DIR-104).
     let carries = match groups::authority::carries_authority(state, &group.group_id).await {
@@ -1024,6 +1060,8 @@ async fn handle_list(
     let all: Vec<Group> = match groups::all(state.directory.ks()).await {
         Ok(g) => g
             .into_iter()
+            // A badge group is the badge's (VTI-BDG-012): listed with the badges, never here.
+            .filter(|g| g.badge_id.is_none())
             .filter(|g| who.sees(g))
             .filter(|g| !mine || who.member_of.contains(&g.group_id))
             .filter(|g| {
@@ -1193,9 +1231,10 @@ async fn admit(
     did: &str,
     entry_id: &str,
     source: &str,
+    given_by: Option<&str>,
 ) -> Result<Membership, Failure> {
     let issued = if group.issues_credentials {
-        Some(groups::credential::issue(state, group, did).await?)
+        Some(groups::credential::issue_admitting(state, group, did, entry_id, given_by).await?)
     } else {
         None
     };
@@ -1265,6 +1304,15 @@ async fn handle_members_add(
             "This group is dynamic: its rule decides who is in it.",
         );
     }
+    // A badge is given by an offer the member accepts, never by adding them to its group
+    // (VTI-BDG-020).
+    if group.badge_id.is_some() {
+        return denied(
+            &doc,
+            "this group backs a badge: give the badge with vtc/badges/awards/offer, which the \
+             member accepts",
+        );
+    }
     // Item 2.
     let did = match active_entry(state, entry_id).await {
         Ok(Some(d)) => d,
@@ -1293,7 +1341,7 @@ async fn handle_members_add(
     if let Err(reject) = authority_admission_gate(state, &who, &did, &group, &doc).await {
         return reject;
     }
-    let m = match admit(state, &group, &did, entry_id, "added").await {
+    let m = match admit(state, &group, &did, entry_id, "added", None).await {
         Ok(m) => m,
         Err(f) => {
             return admit_refusal(
@@ -1433,7 +1481,7 @@ async fn handle_members_remove(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -1447,6 +1495,9 @@ async fn handle_members_remove(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     if group.kind == groups::GroupKind::Dynamic {
         return declared(
             &doc,
@@ -1587,6 +1638,23 @@ async fn end_membership(
         entry_id,
         change,
         reason_of(doc),
+    )
+    .await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    // A badge group's holding ends with the membership: leaving declines the badge, a
+    // removal takes it back (VTI-BDG-013, 023, 063).
+    if let Err(e) = crate::badges::on_group_exit(
+        state,
+        group,
+        entry_id,
+        &who.did,
+        if change == "left" {
+            crate::badges::GroupExit::Left
+        } else {
+            crate::badges::GroupExit::Removed
+        },
     )
     .await
     {
@@ -1889,7 +1957,7 @@ async fn handle_join(
         );
     }
     // Item 4.
-    let m = match admit(state, &group, &who.did, &entry_id, "joined").await {
+    let m = match admit(state, &group, &who.did, &entry_id, "joined", None).await {
         Ok(m) => m,
         Err(f) => {
             return admit_refusal(
@@ -2057,6 +2125,19 @@ async fn leave_dynamic(
     };
     if let Err(e) =
         audit_membership(state, &who.did, &group.group_id, entry_id, "optedOut", None).await
+    {
+        return app_error_to_reject(doc, &e);
+    }
+    // Opting out of an automatic badge's group is declining the badge (VTI-BDG-013).
+    if held.is_some()
+        && let Err(e) = crate::badges::on_group_exit(
+            state,
+            group,
+            entry_id,
+            &who.did,
+            crate::badges::GroupExit::Left,
+        )
+        .await
     {
         return app_error_to_reject(doc, &e);
     }
@@ -2246,7 +2327,7 @@ async fn handle_requests_decide(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -2297,6 +2378,9 @@ async fn handle_requests_decide(
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     let mut member = None;
     if approve {
         // Item 2: re-checked now. A requester who has left, or a group that no
@@ -2307,7 +2391,16 @@ async fn handle_requests_decide(
         };
         match did {
             Some(did) if group.join_policy == JoinPolicy::Request => {
-                match admit(state, &group, &did, &r.entry_id, "requestApproved").await {
+                match admit(
+                    state,
+                    &group,
+                    &did,
+                    &r.entry_id,
+                    "requestApproved",
+                    who.entry_id.as_deref(),
+                )
+                .await
+                {
                     Ok(m) => member = Some(m),
                     Err(f) => {
                         return admit_refusal(
@@ -2362,7 +2455,7 @@ async fn handle_managers_add(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -2377,6 +2470,9 @@ async fn handle_managers_add(
         Ok(g) => g,
         Err(reject) => return reject,
     };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     let did = match active_entry(state, entry_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
@@ -2435,7 +2531,7 @@ async fn handle_managers_remove(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let who = match standing(state, ctx, &doc).await {
+    let (who, signed) = match standing_signed(state, ctx, &doc).await {
         Ok(s) => s,
         Err(reject) => return reject,
     };
@@ -2450,6 +2546,9 @@ async fn handle_managers_remove(
             Ok(g) => g,
             Err(reject) => return reject,
         };
+    if let Err(reject) = badge_owner_key(&doc, &group, signed) {
+        return reject;
+    }
     // Item 2: managers of one group do not remove one another.
     let own = who.entry_id.as_deref() == Some(entry_id);
     if !own && !who.manages_all {
@@ -2637,6 +2736,13 @@ async fn bindings_add_authority(
     use crate::groups::authority::{self, AuthorityBinding};
     use crate::groups::bindings::{self, Binding};
     // Item 3: a dynamic group never carries authority (VTI-DIR-103).
+    if group.badge_id.is_some() {
+        return declared(
+            doc,
+            BINDINGS_ADD_ERR_GROUP_NOT_ELIGIBLE,
+            "A badge group never carries authority (VTI-BDG-012).",
+        );
+    }
     if group.kind == groups::GroupKind::Dynamic || group.join_policy != JoinPolicy::Closed {
         return declared(
             doc,

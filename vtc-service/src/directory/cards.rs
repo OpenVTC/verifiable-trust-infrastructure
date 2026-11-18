@@ -66,6 +66,38 @@ pub async fn by_did(ks: &KeyspaceHandle, did: &str) -> Result<Option<Card>, AppE
     }
 }
 
+/// The whole `entry:<did>` index, DID → entry identifier, in one scan — what
+/// [`entry_of`] reads one DID at a time.
+pub async fn entry_index(
+    ks: &KeyspaceHandle,
+) -> Result<std::collections::HashMap<String, String>, AppError> {
+    let prefix = b"entry:";
+    Ok(ks
+        .prefix_iter_raw(prefix.to_vec())
+        .await?
+        .into_iter()
+        .filter_map(|(k, v)| {
+            let did = String::from_utf8(k[prefix.len()..].to_vec()).ok()?;
+            Some((did, String::from_utf8(v).ok()?))
+        })
+        .collect())
+}
+
+/// Every stored card's row, by entry identifier, undecoded — a caller decodes
+/// only the cards it uses, and an unreadable one fails only that use, as
+/// [`get`] does.
+pub async fn raw_cards(
+    ks: &KeyspaceHandle,
+) -> Result<std::collections::HashMap<String, Vec<u8>>, AppError> {
+    let prefix = b"card:";
+    Ok(ks
+        .prefix_iter_raw(prefix.to_vec())
+        .await?
+        .into_iter()
+        .filter_map(|(k, v)| Some((String::from_utf8(k[prefix.len()..].to_vec()).ok()?, v)))
+        .collect())
+}
+
 /// Every stored card.
 pub async fn all(ks: &KeyspaceHandle) -> Result<Vec<Card>, AppError> {
     ks.prefix_iter_raw(b"card:".to_vec())

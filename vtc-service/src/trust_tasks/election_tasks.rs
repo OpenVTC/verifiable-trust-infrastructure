@@ -41,15 +41,16 @@
 //! (`vti_voting::audit`). Auditors' attestations are evidence beside that, never instead of it.
 //! A certified result authorizes nothing by itself (item 12).
 
+use super::routing::{Routes, on};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::{Payload, RejectReason, TrustTask};
-use vti_common::audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
+use trust_tasks_rs::{RejectReason, TrustTask};
+use vtc_audit::{AuditEvent, ElectionChangedData, ElectionTicketIssuedData};
 use vti_specs::vtc::elections::{
     ballot_boxes::list::v0_1 as ballot_boxes_list, cancel::v0_1 as cancel,
     certify::v0_1 as certify, close::v0_1 as close, create::v0_5 as create, list::v0_5 as list,
-    show::v0_6 as show, tickets::issue::v0_3 as issue,
+    show::v0_6 as show, tickets::issue::v0_3 as issue, tombstones::show::v0_1 as tombstone_show,
 };
 // Still served: a client composing a manifest under voting/_shared/0.2 or 0.3 sends these. The
 // 0.2 schema holds `textReleaseThreshold` to 10 or more (VTI-VOT-065), and neither carries a
@@ -72,26 +73,34 @@ use crate::elections::store::{self, ElectionRecord};
 use crate::error::AppError;
 use crate::server::AppState;
 
-pub(crate) const CREATE_TYPE: &str = <create::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by create/0.5, and still served
-pub(crate) const CREATE_0_4_TYPE: &str = <create_0_4::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by create/0.5, and still served
-pub(crate) const CREATE_0_3_TYPE: &str = <create_0_3::Payload as Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const TOMBSTONE_SHOW_TYPE: &str =
+    <tombstone_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const SHOW_TYPE: &str = <show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[allow(deprecated)] // superseded by show/0.6, and still served
+#[cfg(test)]
+pub(crate) const SHOW_0_3_TYPE: &str = <show_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[allow(deprecated)] // superseded by show/0.6, and still served
+#[cfg(test)]
+pub(crate) const SHOW_0_2_TYPE: &str = <show_0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const LIST_TYPE: &str = <list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 #[allow(deprecated)] // superseded by list/0.5, and still served
-pub(crate) const LIST_0_3_TYPE: &str = <list_0_3::Payload as Payload>::TYPE_URI;
-pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by show/0.6, and still served
-pub(crate) const SHOW_0_3_TYPE: &str = <show_0_3::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by show/0.6, and still served
-pub(crate) const SHOW_0_2_TYPE: &str = <show_0_2::Payload as Payload>::TYPE_URI;
-pub(crate) const CLOSE_TYPE: &str = <close::Payload as Payload>::TYPE_URI;
-pub(crate) const CANCEL_TYPE: &str = <cancel::Payload as Payload>::TYPE_URI;
-pub(crate) const ISSUE_TYPE: &str = <issue::Payload as Payload>::TYPE_URI;
-#[allow(deprecated)] // superseded by tickets/issue/0.3, and still served
-pub(crate) const ISSUE_0_1_TYPE: &str = <issue_0_1::Payload as Payload>::TYPE_URI;
-pub(crate) const CERTIFY_TYPE: &str = <certify::Payload as Payload>::TYPE_URI;
-pub(crate) const BALLOT_BOXES_LIST_TYPE: &str = <ballot_boxes_list::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const LIST_0_3_TYPE: &str = <list_0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const BALLOT_BOXES_LIST_TYPE: &str =
+    <ballot_boxes_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+pub(crate) const TOMBSTONE_ERR_ELECTION_UNKNOWN: &str =
+    tombstone_show::error_codes::ELECTION_UNKNOWN.code;
 
 // The declared codes, read from the generated bindings: the handlers emit these, and the
 // error-code census names each as the constant its witness asserts.
@@ -143,48 +152,29 @@ pub(crate) const CERTIFY_ERR_ELECTION_UNKNOWN: &str = certify::error_codes::ELEC
 pub(crate) const CERTIFY_ERR_NOT_TALLIED: &str = certify::error_codes::NOT_TALLIED.code;
 pub(crate) const CERTIFY_ERR_RESULT_MISMATCH: &str = certify::error_codes::RESULT_MISMATCH.code;
 
-/// Every URI [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    CREATE_TYPE,
-    CREATE_0_4_TYPE,
-    CREATE_0_3_TYPE,
-    LIST_TYPE,
-    LIST_0_3_TYPE,
-    SHOW_TYPE,
-    SHOW_0_3_TYPE,
-    SHOW_0_2_TYPE,
-    CLOSE_TYPE,
-    CANCEL_TYPE,
-    ISSUE_TYPE,
-    ISSUE_0_1_TYPE,
-    CERTIFY_TYPE,
-    BALLOT_BOXES_LIST_TYPE,
-];
-
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        CREATE_TYPE => handle_create(state, ctx, doc, Shared::V0_4).await,
-        CREATE_0_4_TYPE => handle_create(state, ctx, doc, Shared::V0_3).await,
-        CREATE_0_3_TYPE => handle_create(state, ctx, doc, Shared::V0_2).await,
-        LIST_TYPE => handle_list(state, ctx, doc, false).await,
-        LIST_0_3_TYPE => handle_list(state, ctx, doc, true).await,
-        SHOW_TYPE => handle_show(state, ctx, doc, Shared::V0_4).await,
-        SHOW_0_3_TYPE => handle_show(state, ctx, doc, Shared::V0_3).await,
-        SHOW_0_2_TYPE => handle_show(state, ctx, doc, Shared::V0_2).await,
-        CLOSE_TYPE => handle_close(state, ctx, doc).await,
-        CANCEL_TYPE => handle_cancel(state, ctx, doc).await,
-        ISSUE_TYPE => handle_issue(state, ctx, doc, true).await,
-        ISSUE_0_1_TYPE => handle_issue(state, ctx, doc, false).await,
-        CERTIFY_TYPE => handle_certify(state, ctx, doc).await,
-        BALLOT_BOXES_LIST_TYPE => handle_ballot_boxes_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+#[allow(deprecated)] // superseded versions stay served beside their successors
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, create::Payload => |state, ctx, doc| handle_create(state, ctx, doc, Shared::V0_4));
+    let routes = on!(routes, create_0_4::Payload => |state, ctx, doc| handle_create(state, ctx, doc, Shared::V0_3));
+    let routes = on!(routes, create_0_3::Payload => |state, ctx, doc| handle_create(state, ctx, doc, Shared::V0_2));
+    let routes =
+        on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc, false));
+    let routes =
+        on!(routes, list_0_3::Payload => |state, ctx, doc| handle_list(state, ctx, doc, true));
+    let routes =
+        on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc, Shared::V0_4));
+    let routes = on!(routes, show_0_3::Payload => |state, ctx, doc| handle_show(state, ctx, doc, Shared::V0_3));
+    let routes = on!(routes, show_0_2::Payload => |state, ctx, doc| handle_show(state, ctx, doc, Shared::V0_2));
+    let routes = on!(routes, close::Payload => |state, ctx, doc| handle_close(state, ctx, doc));
+    let routes = on!(routes, cancel::Payload => |state, ctx, doc| handle_cancel(state, ctx, doc));
+    let routes =
+        on!(routes, issue::Payload => |state, ctx, doc| handle_issue(state, ctx, doc, true));
+    let routes =
+        on!(routes, issue_0_1::Payload => |state, ctx, doc| handle_issue(state, ctx, doc, false));
+    let routes = on!(routes, certify::Payload => |state, ctx, doc| handle_certify(state, ctx, doc));
+    let routes = on!(routes, ballot_boxes_list::Payload => |state, ctx, doc| handle_ballot_boxes_list(state, ctx, doc));
+    on!(routes, tombstone_show::Payload => |state, ctx, doc| handle_tombstone_show(state, ctx, doc))
 }
 
 /// Which voting/_shared manifest a `create` or `show` request's version carries: 0.2 (create
@@ -519,25 +509,22 @@ async fn handle_create(
 /// The default and largest page.
 const DEFAULT_LIMIT: usize = 20;
 
+/// The family name election cursors are tagged under ([`super::offset_cursor`]).
+const CURSOR_FAMILY: &str = "vtc/elections/list";
+
+/// What a cursor is bound to: the caller and the filter (list item 4).
+fn cursor_binding(caller: &str, filter: Option<&str>) -> String {
+    let filter = filter.unwrap_or("");
+    format!("{}|{caller}|{filter}", caller.len())
+}
+
 /// A cursor names an offset, bound to the caller and the filter (list item 4).
-fn cursor_for(caller: &str, filter: Option<&str>, offset: usize) -> String {
-    format!("{offset}.{}", cursor_mac(caller, filter, offset))
+fn cursor_for(key: &[u8; 32], caller: &str, filter: Option<&str>, offset: usize) -> String {
+    super::offset_cursor::mint(key, CURSOR_FAMILY, &cursor_binding(caller, filter), offset)
 }
 
-fn cursor_mac(caller: &str, filter: Option<&str>, offset: usize) -> String {
-    let mut h = Sha256::new();
-    h.update(b"vtc/elections/list/cursor/v1\0");
-    for part in [caller, filter.unwrap_or(""), &offset.to_string()] {
-        h.update((part.len() as u64).to_be_bytes());
-        h.update(part.as_bytes());
-    }
-    hex::encode(&h.finalize()[..12])
-}
-
-fn offset_of(cursor: &str, caller: &str, filter: Option<&str>) -> Option<usize> {
-    let (n, mac) = cursor.split_once('.')?;
-    let offset: usize = n.parse().ok()?;
-    (cursor_mac(caller, filter, offset) == mac).then_some(offset)
+fn offset_of(key: &[u8; 32], cursor: &str, caller: &str, filter: Option<&str>) -> Option<usize> {
+    super::offset_cursor::read(key, CURSOR_FAMILY, &cursor_binding(caller, filter), cursor)
 }
 
 /// `vtc/elections/list/0.5` (items 1 – 6), and 0.3, whose payload is the same. Both list an
@@ -567,9 +554,13 @@ async fn handle_list(
     let limit = doc.payload["limit"].as_u64().map_or(DEFAULT_LIMIT, |l| {
         usize::try_from(l).unwrap_or(DEFAULT_LIMIT)
     });
+    let key = match super::offset_cursor::key(state).await {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
     let offset = match doc.payload["cursor"].as_str() {
         None => 0,
-        Some(c) => match offset_of(c, &who, filter) {
+        Some(c) => match offset_of(&key, c, &who, filter) {
             Some(o) => o,
             None => {
                 return reject_with(
@@ -624,8 +615,9 @@ async fn handle_list(
         items.push(item);
     }
     let mut body = json!({ "elections": items });
-    if offset + limit < seen.len() {
-        body["nextCursor"] = json!(cursor_for(&who, filter, offset + limit));
+    let next = offset.saturating_add(limit);
+    if next < seen.len() {
+        body["nextCursor"] = json!(cursor_for(&key, &who, filter, next));
     }
     success_response(&doc, body)
 }
@@ -660,6 +652,55 @@ fn indeterminate(doc: &TrustTask<Value>, reference: &str) -> TrustTaskOutcome {
 /// refused `unsupportedVersion` under 0.3 and 0.2, naming 0.6, and one releasing text below 10
 /// under 0.2, naming 0.3 — never answered in a shape the version forbids, and only to a caller
 /// who may see it.
+/// `tombstones/show/0.1` (items 1 – 4, VTI-BRD-009): what the community keeps of an election on a
+/// deleted board, to an active member or an elections manager. No tombstone and an unreadable
+/// one are the same `electionUnknown`.
+async fn handle_tombstone_show(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let (who, manager) = match caller(state, ctx, &doc).await {
+        Ok(c) => c,
+        Err(reject) => return reject,
+    };
+    if let Err(reject) = parse_spec_payload::<tombstone_show::Payload>(&doc) {
+        return reject;
+    }
+    // Item 1: a manager, or an active member.
+    let reader = manager
+        || match crate::member_portal::active::active_member(state, &who).await {
+            Ok(m) => m.is_some(),
+            Err(e) => return app_error_to_reject(&doc, &e),
+        };
+    let election_id = doc.payload["electionId"].as_str().unwrap_or_default();
+    // Item 2: looked up only for a reader, so no one else learns whether it exists.
+    let kept = if reader {
+        match store::tombstone(state.elections.ks(), election_id).await {
+            Ok(t) => t,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    } else {
+        None
+    };
+    let Some(t) = kept else {
+        return unknown(&doc, TOMBSTONE_ERR_ELECTION_UNKNOWN);
+    };
+    // Items 3 – 4: as kept; a tombstone holds nothing else.
+    let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut body = json!({
+        "electionId": t.election_id,
+        "manifestDigest": t.manifest_digest,
+        "ballotBox": t.ballot_box,
+        "checkpoints": t.checkpoints,
+        "deletedAt": stamp(t.deleted_at),
+    });
+    if let Some(at) = t.remove_at {
+        body["removeAt"] = json!(stamp(at));
+    }
+    success_response(&doc, body)
+}
+
 async fn handle_show(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -968,7 +1009,7 @@ async fn handle_issue(
         return reject;
     }
     let election_id = doc.payload["electionId"].as_str().unwrap_or_default();
-    let doc_digest = match serde_json::to_vec(&doc) {
+    let doc_digest = match serde_json_canonicalizer::to_vec(&doc) {
         Ok(bytes) => hex::encode(Sha256::digest(bytes)),
         Err(e) => return app_error_to_reject(&doc, &AppError::Internal(e.to_string())),
     };

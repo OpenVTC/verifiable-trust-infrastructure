@@ -53,7 +53,8 @@ pub use vti_rooms::wire::{
     PutRecordResponse, ROOMS_CREATE_V2_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
     ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE,
     ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_V2_TYPE,
-    ROOMS_RECORDS_PUT_V3_TYPE, RelayedCommit, SealedContent,
+    ROOMS_RECORDS_GET_V3_TYPE, ROOMS_RECORDS_LIST_V6_TYPE, ROOMS_RECORDS_PUT_V3_TYPE,
+    RelayedCommit, SealedContent,
 };
 
 /// A caller's standing in one room.
@@ -207,6 +208,10 @@ impl VtcClient {
     /// Presents exactly as a write does, and needs no session — which is the point on a
     /// sealed room: authorizing reads by session would hand the host a member identifier on
     /// every access, and a period of those reconstructs the membership the tier withholds.
+    ///
+    /// Asked as `rooms/records/get/0.3`, whose answer carries the host's `createdAt`,
+    /// `createdBy` and `bodyStoredAt`; a host that answers `unsupportedType` predates it,
+    /// and is asked again as `0.2`, whose answer has none of them.
     pub async fn get_record(
         &self,
         session: &RoomSession,
@@ -219,13 +224,26 @@ impl VtcClient {
             "key": key,
             "presentation": session.presentation,
         });
-        self.room_task(
-            ROOMS_RECORDS_GET_V2_TYPE,
-            payload,
-            signer_did,
-            private_key_multibase,
-        )
-        .await
+        match self
+            .room_task(
+                ROOMS_RECORDS_GET_V3_TYPE,
+                payload.clone(),
+                signer_did,
+                private_key_multibase,
+            )
+            .await
+        {
+            Err(e) if is_unsupported_type(&e) => {
+                self.room_task(
+                    ROOMS_RECORDS_GET_V2_TYPE,
+                    payload,
+                    signer_did,
+                    private_key_multibase,
+                )
+                .await
+            }
+            other => other,
+        }
     }
 
     /// List record metadata.
@@ -238,6 +256,11 @@ impl VtcClient {
     /// `cursor` continues a previous page. **A listing is not complete until the response's
     /// `cursor` is absent** — a page shorter than the one asked for says nothing, which is
     /// why this takes the token rather than leaving callers to guess from a length.
+    ///
+    /// Asked as `rooms/records/list/0.6`, whose rows carry an `open` record's `kind` and the
+    /// host's `createdAt`, `createdBy` and `bodyStoredAt`; a host that answers
+    /// `unsupportedType` predates it and is asked again as `0.5`. A cursor is the host's,
+    /// whichever version issued it.
     pub async fn list_records(
         &self,
         session: &RoomSession,
@@ -260,15 +283,27 @@ impl VtcClient {
         if let Some(c) = cursor {
             payload["cursor"] = serde_json::json!(c);
         }
-        let mut value = self
+        let mut value = match self
             .room_task(
-                vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
-                payload,
+                ROOMS_RECORDS_LIST_V6_TYPE,
+                payload.clone(),
                 signer_did,
                 private_key_multibase,
             )
-            .await?;
-        // `rooms/records/list/0.5` names the continuation token `nextCursor`; the listing
+            .await
+        {
+            Err(e) if is_unsupported_type(&e) => {
+                self.room_task(
+                    vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
+                    payload,
+                    signer_did,
+                    private_key_multibase,
+                )
+                .await?
+            }
+            other => other?,
+        };
+        // `rooms/records/list/0.5` and `0.6` name the continuation token `nextCursor`; the listing
         // type reads it as `cursor`.
         if let Some(obj) = value.as_object_mut()
             && let Some(next) = obj.remove("nextCursor")
@@ -390,6 +425,132 @@ impl VtcClient {
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("prune response is not a rooms/epoch/prune/0.2 response: {e}"),
+        })
+    }
+
+    /// Arm, or re-arm, a watch on the room (`rooms/watch/0.1`): the host sends one
+    /// content-free `rooms/changed/0.1` signal to `address` the first time the room's
+    /// latest version is above `since_version` — at once if it already is — and nothing more
+    /// until the watch is armed again.
+    ///
+    /// Needs `read`, as a listing does. `address` is a DID whose keys the member (or its
+    /// agent) holds and through which it receives Trust Task documents; on a `private` room
+    /// it **must** be one used for nothing else. `since_version` is the highest version
+    /// read to; `None` lets the host take the room's latest, which may miss a change made
+    /// since the last listing. `lease_secs` (60 – 2592000) asks how long the watch lasts if
+    /// it does not fire; the host may grant less and says what it granted in `expiresAt`.
+    #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
+    pub async fn watch(
+        &self,
+        session: &RoomSession,
+        address: &str,
+        since_version: Option<u64>,
+        lease_secs: Option<u64>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_1::Response, VtcError> {
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+            "address": address,
+        });
+        if let Some(v) = since_version {
+            payload["sinceVersion"] = serde_json::json!(v);
+        }
+        if let Some(l) = lease_secs {
+            payload["leaseSeconds"] = serde_json::json!(l);
+        }
+        self.watch_task(payload, signer_did, private_key_multibase)
+            .await
+    }
+
+    /// Cancel the watch on the room and `address` (`rooms/watch/0.1` with `cancel`). A watch
+    /// the host does not hold answers `armed: false` too, so a retry is harmless.
+    #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
+    pub async fn cancel_watch(
+        &self,
+        session: &RoomSession,
+        address: &str,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_1::Response, VtcError> {
+        let payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+            "address": address,
+            "cancel": true,
+        });
+        self.watch_task(payload, signer_did, private_key_multibase)
+            .await
+    }
+
+    #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
+    async fn watch_task(
+        &self,
+        payload: serde_json::Value,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_1::Response, VtcError> {
+        use trust_tasks_rs::Payload as _;
+        let value = self
+            .room_task(
+                vti_specs::rooms::watch::v0_1::Payload::TYPE_URI,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("watch response is not a rooms/watch/0.1 response: {e}"),
+        })
+    }
+
+    /// Arm, or renew, a **live** watch on the room (`rooms/watch/0.2` with `live: true`,
+    /// trust-tasks-tf #1087): the host sends a `rooms/changed/0.1` to `address` each time the
+    /// room moves past the version it last signalled, coalesced to at most one a second,
+    /// until the lease — at most 120 seconds from this request — ends. Renew with the same
+    /// call about every 60 seconds while the room is on screen; `since_version` may be `None`
+    /// on a renewal, which keeps the version last signalled as the watermark. Cancel it with
+    /// [`Self::cancel_watch`] when the screen closes.
+    ///
+    /// Only on a room whose signal delay is `none`: the host refuses any other with
+    /// `rooms/watch:liveNotPermitted` (a [`VtcError`] carrying that code), leaving any watch
+    /// at `address` as it was. Treat the watch as live only when the response says
+    /// `live: true` — a host that implements only 0.1 arms a one-shot watch.
+    pub async fn watch_live(
+        &self,
+        session: &RoomSession,
+        address: &str,
+        since_version: Option<u64>,
+        lease_secs: Option<u64>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<vti_specs::rooms::watch::v0_2::Response, VtcError> {
+        use trust_tasks_rs::Payload as _;
+        let mut payload = serde_json::json!({
+            "roomId": session.room_id,
+            "presentation": session.presentation,
+            "address": address,
+            "live": true,
+        });
+        if let Some(v) = since_version {
+            payload["sinceVersion"] = serde_json::json!(v);
+        }
+        if let Some(l) = lease_secs {
+            payload["leaseSeconds"] = serde_json::json!(l);
+        }
+        let value = self
+            .room_task(
+                vti_specs::rooms::watch::v0_2::Payload::TYPE_URI,
+                payload,
+                signer_did,
+                private_key_multibase,
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("watch response is not a rooms/watch/0.2 response: {e}"),
         })
     }
 
@@ -763,11 +924,26 @@ fn prune_payload(
     payload
 }
 
+/// Whether a refusal says the host does not serve the task's type at all — the framework's
+/// `unsupportedType` — so a reader may ask again at an earlier version. Any other refusal is
+/// the answer.
+fn is_unsupported_type(e: &VtcError) -> bool {
+    let VtcError::Http { body, .. } = e else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(body).is_ok_and(|doc| {
+        doc["payload"]["code"] == "unsupportedType" || doc["code"] == "unsupportedType"
+    })
+}
+
+#[allow(deprecated)] // list/0.5 and get/0.2 are still read from hosts that predate 0.6 and 0.3
 fn is_room_read(type_uri: &str) -> bool {
     use trust_tasks_rs::Payload as _;
     use vti_specs::rooms;
     [
         ROOMS_RECORDS_GET_V2_TYPE,
+        ROOMS_RECORDS_GET_V3_TYPE,
+        ROOMS_RECORDS_LIST_V6_TYPE,
         ROOMS_EPOCH_CHAIN_V2_TYPE,
         ROOMS_EPOCH_COMMITS_TYPE,
         rooms::records::list::v0_5::Payload::TYPE_URI,

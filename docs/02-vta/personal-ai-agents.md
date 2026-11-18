@@ -244,7 +244,7 @@ human passkey approval.
 ```bash
 pnm services webauthn enable --url https://vta.example.com
 pnm approvals list
-pnm approvals require https://trusttasks.org/spec/acl/grant/0.2 --reauth
+pnm approvals require https://trusttasks.org/spec/acl/grant/0.3 --reauth
 ```
 
 When a gated op is initiated, the agent's request returns a step-up challenge;
@@ -262,20 +262,56 @@ instead, over any transport.
 ## Step 6 — Agent memory (optional, but the reason most agents want a VTA)
 
 An agent that forgets everything between runs is a tool. The VTA carries a
-per-context key/value store for what an agent should remember about its user —
-`vta/memory/{put,list,delete}/0.1` — and because it lives on the VTA rather than
-in the agent runtime, the memory survives the runtime being replaced, is audited
-(`memory.put` / `.list` / `.delete`), and is included in the VTA's encrypted
-backups.
+per-context store for what an agent should remember about its user, and because
+it lives on the VTA rather than in the agent runtime, the memory survives the
+runtime being replaced, is audited (`memory.put` / `.list` / `.get` /
+`.delete`), and is included in the VTA's encrypted backups.
 
-Two gates apply, in this order. **Capability**: `MemoryRead` for
-`memory/list/0.1`, `MemoryWrite` for `put` and `delete` — so a `reader` can be
-given the memory without being given the ability to rewrite it. **Context
+The store is versioned (#2115). `vta/memory/put/0.3` (and 0.2) returns each item's
+`version`; a write that sends `expectedVersion` applies only if the item is
+still at that version (`0`: only if nothing is there), and otherwise fails with
+`versionConflict` carrying the current version and value, so two agents — or one
+agent on two devices — cannot silently overwrite each other.
+`vta/memory/delete/0.3` leaves a tombstone, and `vta/memory/list/0.3` is either a
+page of a context (`prefix`, `cursor`, `limit`) or a change feed from
+`sinceVersion` that carries those tombstones, so a second device's copy
+converges. `vta/memory/get/0.2` recalls up to 256 named items at once. The 0.1
+tasks (`put`, `list`, `delete`) still work against the same store; the registry
+marks them superseded, and they are withdrawn on its schedule, so move clients to
+0.3 (`get` 0.2). 0.2 (`get` 0.1) is served too; it carries no `purpose`.
+
+Three gates apply. **Capability**: `MemoryRead` for `list` and `get`,
+`MemoryWrite` for `put` and `delete` — so a `reader` can be given the memory
+without being given the ability to rewrite it. An entry with `MemoryWrite` but
+not `MemoryRead` is told that an item changed when its conditional write
+conflicts, but never what the item now says. **Context
 access**: `require_context(contextId)`, the same check the context-scoped key
 tasks use, which makes the trust context the isolation boundary — a context-A
 agent cannot read, write, or delete context-B memory. The least-privilege grant
 for a memory-only agent is an ACL entry with role `application` naming exactly
 one context; `application` carries both memory capabilities.
+
+**Purpose** (VTI-ACL-100 – 110, #2120): the entry also states what its subject
+may use what it reads for — `any`, or a list of `personalisation`,
+`taskExecution`, `analytics`, `modelTraining` or absolute IRIs. Every read of
+memory is held to it: a `get`, a `list` that returns values, and a conflict
+that would hand back the current value. A request names its purpose
+(`purpose` on `get/0.2` and the 0.3 tasks; `pnm memory recall --purpose`); one
+the entry does not grant is refused with `purposeNotGranted`, which discloses
+nothing, and every read's audit row carries its purpose — `unstated` where a
+request under `any` named none. `any` never grants `modelTraining`: that needs
+an entry that names it. An entry listing exactly one purpose applies it to a
+request that names none, so clients that predate purposes keep working; under
+an entry listing more, they are refused until they name one. Entries written
+before purposes existed are rewritten to `any` at boot.
+
+Give an agent the purposes its task needs, not `any` (VTI-VTA-044):
+
+```bash
+pnm acl create --did <agent did:key> --role application --contexts my-agent-memory \
+  --purposes personalisation,taskExecution
+pnm acl update <agent did:key> --purposes taskExecution   # narrowing: applies at its next read
+```
 
 ```bash
 # One context per agent (or per domain) — this is the isolation boundary.
@@ -286,12 +322,16 @@ pnm contexts create --name my-agent-memory
 pnm acl create --did <agent did:key> --role application --contexts my-agent-memory
 ```
 
-From a client, `VtaClient::{memory_put, memory_list, memory_delete}` drive the
-three tasks through the generic Trust-Task dispatcher, so they ride TSP, DIDComm
-or REST according to what both DID documents advertise — the agent writes no
-transport code.
+From a client, `VtaClient::{memory_put_versioned, memory_delete_versioned,
+memory_list_page, memory_get}` drive the 0.2 tasks through the generic
+Trust-Task dispatcher, so they ride TSP, DIDComm or REST according to what both
+DID documents advertise — the agent writes no transport code. The 0.1 methods
+(`memory_put`, `memory_list`, `memory_delete`) are deprecated.
 
-From the operator side the same three tasks are `pnm memory`:
+From the operator side the same tasks are `pnm memory`. `recall <key>` is a
+`get`, `recall` pages through the whole context, and `wipe` deletes each item
+only at the version it listed, so an item another writer changed after you
+confirmed stops the wipe instead of going with it:
 
 ```bash
 pnm memory plant favourite-colour green --context my-agent-memory
@@ -307,6 +347,25 @@ there — indistinguishable from an empty one. `wipe` needs both capabilities
 (it lists before it deletes) and is N round-trips, not atomic — there is no
 bulk-delete task — so re-running it after a partial failure is safe and
 finishes the job.
+
+**Who read or changed it.** Every memory call is in the VTA's audit trail,
+attributed to the DID that made it: `memory.put` and `memory.delete` with the
+item they touched, `memory.get` with each item it returned, `memory.list` with
+how many and a digest of which. `pnm memory history` shows it, newest first:
+
+```bash
+pnm memory history --context my-agent-memory
+pnm memory history --context my-agent-memory --actor <agent did> --from 2026-11-01T00:00:00Z
+```
+
+The trail never holds a memory key. A key names what was remembered — often a
+person — and the trail is a hash chain that cannot be edited, so anything in it
+could never be erased (VTI-AUD-005). Each item is named instead by a keyed
+commitment under the audit key (`hmac-sha256:<key id>:<hex>`): the same item
+always gets the same one, so rows about one item can be matched, and only the
+VTA can tell which key a commitment stands for. Audit rows written before this
+change named their item in the clear; they leave the trail only at the retention
+sweep. Reading the trail is an administrator's act, as for `pnm audit list`.
 
 Two boundaries worth stating before anything is stored here:
 

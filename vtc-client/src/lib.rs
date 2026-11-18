@@ -104,10 +104,17 @@ const SESSION_TIMEOUT_SECS: u64 = 60;
 pub mod acl;
 pub mod actions;
 pub mod boards;
+mod connect;
 pub mod elections;
 pub mod git_ns;
 pub mod members;
 pub mod rooms;
+mod send;
+pub mod signin;
+pub mod step_up;
+
+pub use connect::SessionIdentity;
+pub use send::{VtcTransport, supported_type_uris};
 
 /// The Trust Task type URI of each admin verb this client sends as a signed
 /// document.
@@ -378,6 +385,40 @@ pub enum VtcError {
     /// bound, …). Caught before anything is sent.
     #[error("invalid request payload: {0}")]
     InvalidPayload(String),
+    /// [`VtcClient::send_task`] was asked for a Type URI it will not send: a
+    /// version this client does not pin, or a `#response` URI. Nothing was
+    /// sent — an unpinned version has no schema to check a payload against,
+    /// and "nothing to check" is not a reason to send it.
+    #[error("will not send {type_uri}: {reason}")]
+    UnpinnedTask {
+        /// The Type URI as the caller gave it.
+        type_uri: String,
+        /// Why it is not sendable.
+        reason: String,
+    },
+    /// [`VtcClient::connect_resolved`] found no transport it may use: the
+    /// community advertises none the choice permits, or advertises one that
+    /// could not be opened. A session the community advertises is never
+    /// silently replaced by HTTPS.
+    #[error("no usable transport to {vtc_did}: {detail}")]
+    NoTransport {
+        /// The community.
+        vtc_did: String,
+        /// What was advertised, what was tried, and what would permit HTTPS.
+        detail: String,
+    },
+    /// Wallet sign-in ([`VtcClient::sign_in_request`] and its siblings) was
+    /// refused, or the portal answered in a shape this client cannot use.
+    /// `code` is the community's own (`auth/oob/request:purposeUnsupported`,
+    /// …) or this client's (`wrongCommunity`, `audienceNotServed`,
+    /// `linkTooLong`, `unexpectedShape`).
+    #[error("sign-in refused ({code}): {message}")]
+    SignIn {
+        code: String,
+        message: String,
+        /// The refusal's `details`, as sent.
+        details: serde_json::Value,
+    },
     /// The VTC refused a Trust Task sent over a DIDComm or TSP session.
     ///
     /// Carries the `trust-task-error` document as the VTC wrote it — the
@@ -944,7 +985,13 @@ impl VtcClient {
         )
         .await
         .map_err(|e| VtcError::Session(e.to_string()))?;
-        Ok(Self::over_session(documents, client_did, vtc_did, rest_url))
+        Ok(Self::over_session(
+            documents,
+            client_did,
+            vtc_did,
+            rest_url,
+            HolderKey::from_did_key(client_did, private_key_multibase).ok(),
+        ))
     }
 
     /// The same, over **TSP**, for a community that advertises `#tsp`.
@@ -972,17 +1019,28 @@ impl VtcClient {
         )
         .await
         .map_err(|e| VtcError::Session(e.to_string()))?;
-        Ok(Self::over_session(documents, client_did, vtc_did, rest_url))
+        Ok(Self::over_session(
+            documents,
+            client_did,
+            vtc_did,
+            rest_url,
+            HolderKey::from_did_key(client_did, private_key_multibase).ok(),
+        ))
     }
 
     /// Wrap a connected session. One place to build the pairing, so a further
     /// `connect_*` variant cannot forget the REST half.
     #[cfg(feature = "didcomm")]
+    ///
+    /// `signer` is the session identity's own key, kept for what only the
+    /// HTTPS door serves — wallet sign-in ([`signin`]) — and never for the
+    /// admin verbs, which go over the session while there is one.
     fn over_session(
         documents: vta_sdk::client::VtaClient,
         client_did: &str,
         vtc_did: &str,
         rest_url: Option<&str>,
+        signer: Option<HolderKey>,
     ) -> Self {
         Self {
             http: vta_sdk::http::rest_client(),
@@ -991,7 +1049,7 @@ impl VtcClient {
                 .trim_end_matches('/')
                 .to_string(),
             vtc_did: vtc_did.to_string(),
-            signer: None,
+            signer,
             documents: Some(documents),
             session_did: Some(client_did.to_string()),
         }

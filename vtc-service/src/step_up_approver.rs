@@ -44,8 +44,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use uuid::Uuid;
-use vti_common::audit::{AuditEvent, StepUpApproverData};
-use vti_common::auth::extractor::AuthClaims;
+use vtc_audit::{AuditEvent, StepUpApproverData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_specs::auth::step_up::approver::attest::v0_1 as attest;
@@ -309,7 +308,7 @@ async fn is_delegated_key(state: &AppState, signer: &str) -> Result<bool, AppErr
 /// does not manage the factors of an administrator wider than itself.
 pub(crate) async fn admin_covers(
     state: &AppState,
-    actor: &AuthClaims,
+    actor: &crate::acl::AdminActor,
     subject: &str,
 ) -> Result<bool, AppError> {
     let Some(actor_entry) = crate::acl::get_acl_entry(&state.acl_ks, &actor.did).await? else {
@@ -1224,6 +1223,14 @@ pub async fn claim_start_v0_3(
         // at it must not be free). Answered alike, so the count is no oracle.
         let wrong = count_wrong_install_code(state, &jti).await?;
         if wrong >= MAX_WRONG_CODES {
+            // A voided invitation is withdrawn like a revoked one: the entry
+            // it wrote, unclaimed, goes with it (#2660).
+            crate::install::ops::invites::withdraw_invite_grant(
+                state,
+                "vtc/install/claim/start",
+                &jti,
+            )
+            .await?;
             store.delete_token(&jti).await?;
             state
                 .step_up_approvers_ks
@@ -1301,7 +1308,7 @@ pub async fn claim_finish_v0_3(
     signer: &str,
     payload: &claim_finish::Payload,
     statement: &Value,
-) -> Result<crate::routes::install::ClaimedSetupSession> {
+) -> Result<crate::install::ops::ClaimedSetupSession> {
     use claim_finish::error_codes as codes;
     let ks = &state.step_up_approvers_ks;
     let claim_id = payload.claim_id.as_str();
@@ -1382,7 +1389,7 @@ pub async fn claim_finish_v0_3(
     // parked for it would never take effect, leaving the invited
     // administrator unable to answer a step-up. Such a binding takes effect
     // here, with the claim.
-    let invitation = crate::routes::install::has_administrator(state).await?;
+    let invitation = crate::install::ops::has_administrator(state).await?;
     // Item 6: consume the claim and the token, bind the approver — parked for
     // the bootstrap on a fresh community — and mint the setup-session token.
     state
@@ -1391,6 +1398,11 @@ pub async fn claim_finish_v0_3(
         .await
         .map_err(|e| refused(codes::INVALID_TOKEN, e.to_string()))?;
     ks.remove(claim_key(claim_id)).await?;
+    // The entry the invitation wrote expires with it until claimed (#2660);
+    // the claim makes it the administrator's own. After the token is spent, so
+    // a crash between leaves an entry that lapses rather than a permanent one
+    // whose token is still open.
+    crate::install::ops::invites::confirm_invite_grant(state, &claim.admin_did).await?;
     let session_expires =
         now_epoch().saturating_add(crate::install::INSTALL_SESSION_DEFAULT_TTL_SECS);
     let pending = PendingInstallBinding {
@@ -1435,13 +1447,15 @@ pub async fn claim_finish_v0_3(
         audit_installed(state, &jti, &pending).await?;
     }
     info!(jti = %claim.jti, admin_did = %claim.admin_did, approver = %approver_did, invitation, "install claim 0.3 completed");
-    Ok(crate::routes::install::issue_setup_session(
-        state,
-        install_signer,
-        claim.admin_did,
-        &claim.jti,
+    Ok(
+        crate::install::ops::issue_setup_session(
+            state,
+            install_signer,
+            claim.admin_did,
+            &claim.jti,
+        )
+        .await?,
     )
-    .await?)
 }
 
 /// The approver an install claim 0.3 parked for `(install_jti, admin_did)`,

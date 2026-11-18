@@ -19,12 +19,25 @@ name = "vta-enclave"
 path = "src/main.rs"
 
 [features]
-default = ["rest", "didcomm", "tsp"]
+default = ["rest", "didcomm", "tsp", "jemalloc"]
+## Use jemalloc as the binary's global allocator (set in src/main.rs; a library
+## must never impose an allocator on its consumers). On by default: with the
+## system allocator (glibc malloc) freed pages are kept in the process's arenas,
+## so RSS ratchets up to its high-water mark and stays there — which reads as a
+## leak in monitoring even when the live heap is flat. jemalloc's decay-based
+## purging returns them, so RSS tracks live memory. Disable
+## (`--no-default-features`) to profile against the system allocator.
+jemalloc = ["dep:tikv-jemallocator"]
+
 rest = ["vta-service/rest"]
 didcomm = ["vta-service/didcomm"]
 # TSP transport pass-through. On by default, as it is for `vta-service`.
 tsp = ["vta-service/tsp"]
 webvh = ["vta-service/webvh"]
+# A did:webs as the VTA's own identity (`[tee.kms] vta_did_webs`, alpha). Off by
+# default, so an image built without it is unchanged; with it, first boot can
+# mint and publish a key-role did:webs (design note did-webs-in-the-vta §4, S8).
+webs = ["vta-service/webs"]
 vsock-store = ["vta-service/vsock-store"]
 vsock-log = ["dep:tokio-vsock"]
 # Fleet (`BAKE_CONFIG=false`) build: fetch + apply the allowlisted tenant-config
@@ -33,20 +46,33 @@ vsock-log = ["dep:tokio-vsock"]
 tenant-overlay = ["dep:vta-tee", "vta-tee/tenant-overlay"]
 
 [dependencies]
-vta-service = { path = "../vta-service", version = "0.74", default-features = false, features = ["tee"] }
-vti-common = { path = "../vti-common", version = "0.57", features = ["encryption"] }
+vta-service = { path = "../vta-service", version = "0.83", default-features = false, features = ["tee"] }
 # Direct dep only for the `tenant-overlay` fetch entry point; the rest of the
 # TEE bootstrap is reached through `vta_service::tee`. Optional so a baked build
 # links no overlay code.
-vta-tee = { path = "../vta-tee", version = "0.34", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.43", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 base64 = { workspace = true }
-sha2 = { workspace = true }
-serde_json = { workspace = true }
 tokio-vsock = { workspace = true, optional = true }
 
-[lints]
-workspace = true
+# jemalloc for the binary (see the `jemalloc` feature). Not available on MSVC;
+# the cfg gate in src/main.rs falls back to the system allocator there.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+# The workspace lint table with `unsafe_code` at `deny`, not `forbid` (#2658):
+# this crate exports jemalloc's `_rjem_malloc_conf` tuning symbol from
+# src/main.rs, which needs `#[unsafe(export_name)]`. That statement carries
+# `#[allow(unsafe_code)]` beside its SAFETY comment.
+# `scripts/check-workspace-lints.py` holds this table to `[workspace.lints]`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"

@@ -44,7 +44,7 @@ pub fn code_for(prior: &VtcAclEntry, after: Option<&VtcAclEntry>) -> &'static st
         None => "revoked",
         // Its administrative role (or its community role) moved.
         Some(a)
-            if crate::routes::acl::role_string(a) != crate::routes::acl::role_string(prior)
+            if crate::acl::ops::role_string(a) != crate::acl::ops::role_string(prior)
                 || a.role != prior.role =>
         {
             "demoted"
@@ -171,14 +171,14 @@ pub(crate) fn notice_payload(
         "code": code_for(prior, after),
         // The administrative role (`member` for none): what the reduction
         // was of (vtc-admin-roles.md §6).
-        "previousRole": crate::routes::acl::role_string(prior),
+        "previousRole": crate::acl::ops::role_string(prior),
         "agreement": agreement.wire(),
         "decidedAt": decided_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "decidedBy": decided_by,
     });
     // Absent exactly when revoked.
     if let Some(a) = after {
-        v["resultingRole"] = json!(crate::routes::acl::role_string(a));
+        v["resultingRole"] = json!(crate::acl::ops::role_string(a));
     }
     // Absent and empty are different claims; only a given reason is carried.
     if let Some(r) = reason.filter(|r| !r.trim().is_empty()) {

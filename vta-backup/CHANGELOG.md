@@ -2,6 +2,179 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.42.0...vta-backup-v0.43.0) — 2026-11-15
+
+
+## [0.42.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.41.0...vta-backup-v0.42.0) — 2026-11-14
+
+
+### Build & CI
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Documentation
+
+- Operator guides, CLI remediation strings and the crate map match the tree, checked in CI ([#2706](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2706))
+
+* fix(cli): operator-facing remediation strings name commands that parse
+
+  Every error, hint and --help string that tells an operator what to run now
+  names a command the current pnm / vta / cnm accepts ([#2631](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2631)): the retired
+  `pnm webvh …` / `vta webvh …` surface becomes `did-mgmt servers|dids …`,
+  `pnm auth login` (pnm has none) becomes `pnm setup`, `pnm acl delete`
+  takes the DID positionally, `list-domains` sits under `dids`, the backup
+  descriptor hints no longer name `pnm backup save|restore`, and stale doc
+  comments (`pnm passkey-enroll-token`, `vta export-mnemonic`, `cnm community
+  info`) are corrected. A pnm and a vta test parse each remediation command
+  through Cli::try_parse_from.
+
+  The --template help is derived from vta_sdk::did_templates::BUILTIN_NAMES
+  and no longer lists the retired did-hosting-* template names ([#2635](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2635)). The
+  `rooms keys key-package` help gives the 14-day KeyPackage lifetime the code
+  holds ([#2632](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2632)), and `rooms prune` no longer says a prune reaches the host
+  only: members' VTAs discard rungs at or below the epoch floor ([#2633](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2633)).
+
+
+
+## [0.41.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.40.0...vta-backup-v0.41.0) — 2026-11-12
+
+
+### Added
+
+- **vta**: A TEE VTA can take a key-role did:webs as its own DID at first boot ([#2696](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2696))
+
+A TEE operator asks for a key-role did:webs as the enclave's identity with
+  `[tee.kms.vta_did_webs]` (server_did, domain, optional path / server_id), in an
+  image built with vta-enclave's new `webs` feature and `[dids] webs_enabled`.
+  Additive: absent, first boot is unchanged; exclusive with `vta_did_template`.
+
+  First boot mints it inside the enclave from the KMS-bootstrapped seed through
+  `operations::did_webs::create_own_identity` — the one create `vta setup`'s
+  `create_webs` now calls too, on first-boot authority (no claims; refused once
+  the VTA has an identity; no transport reaches it) — records it unpublished and
+  persists the DID as `tee:vta_did`, so later boots restore it store-first. A
+  boot that died before that adopts what it minted. Startup publishes it exactly
+  as for a plain VTA (`publish_own_webs_identity`, self-certifying
+  `did/register/0.1`). A refused mint is fatal on Nitro: never another
+  identifier (VTI-KEY-001, VTI-KEY-009).
+
+  The enclave proxy allowlists the identity's host and domain from the same
+  table; `extract_host_from_did` reads did:webs and honours a `%3A` port for
+  every method (it dropped the port before).
+
+  A restore that replaces another identity now detaches did:webs slots as well
+  as did:webvh ones: the record keeps its slot and loses its server, so nothing
+  is published to the source's host.
+
+- **vta**: Create, get and list did:webs DIDs (operation layer; no wire yet) ([#2561](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2561))
+
+Step 4 of docs/05-design-notes/did-webs-in-the-vta.md, without the Trust Task
+  handlers: the vta/webs/dids/* family is being specified, and the handlers will
+  call these operations.
+
+  - `webs` keyspace (vta-keyspaces): in ALL and BACKED_UP (a restored VTA must
+    be able to continue the key event log); purged with its context
+    (context_delete_effect Purged, and the purge is real:
+    webs_store::purge_context, read on `contextId` alone so it runs without the
+    feature); Orphaned for a DID deletion until vta/webs/dids/delete exists.
+    `Keyspaces::webs` is not feature-gated, since a gated field changes the
+    struct for every crate that builds one once any crate enables it.
+  - `webs_store`: one WebsDidRecord per DID (the published keri.cesr, the
+    ControllerState, the signing, successor and key agreement key ids).
+  - `operations::did_webs::create_did_webs`: KeyMint and context gates; refused
+    unless `[dids] webs_enabled` (new, default false, VTA_DIDS_WEBS_ENABLED);
+    Ed25519 signing, X25519 key agreement and one pre-rotated successor derived
+    under the context's base as did:webvh's are; KERI v2 inception (kt 1, nt 1)
+    through affinidi-did-webs create_controlled; designated #didcomm and #tsp
+    through this VTA's mediator; published to the did-hosting server as
+    `method: "webs"` at slot `{path}/{AID}`, then (R2.1) key records and the
+    row. The DID is computed as the host builds it, and a host that answers
+    with another DID leaves nothing recorded. `get_did_webs` / `list_did_webs`.
+  - `WebvhHostClient::publish_webs` and a `WebsHost` seam the operation is
+    tested through.
+  - vta-service feature `webs` (default on, not in vta-enclave), with
+    affinidi-did-webs 0.12 (`create`), affinidi-keri 0.7, keri-core 0.7,
+    keri-crypto 0.7. `affinidi-keri` brings LMDB (heed) that the controller
+    path does not use; making it optional upstream is a follow-up.
+  - Census entries: one raw seed access in did_webs/mod.rs (fresh keys at
+    allocated paths), and two `mnemonic` slot paths that are not BIP-39.
+
+
+
+### Fixed
+
+- **vta-service**: Check a backup upload's token before reading its body, and read only its declared size ([#2692](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2692))
+
+`POST /backup/blob/{bundle_id}` read the whole request body, up to the
+  100 MB branch limit, before it looked the bundle up or checked the
+  `X-Backup-Token`. Every request held its body in memory first, whatever
+  its token.
+
+  The upload now runs in this order:
+
+  - `vta_backup::ops::blob::admit_import_upload` looks the bundle up and
+    checks the token, the kind, the state and the expiry. No body is read.
+  - A `Content-Length` that differs from the bundle's `expectedSizeBytes` is
+    refused (400) without reading the body. So is a bundle whose declared
+    size is over the 100 MB ceiling.
+  - The body is then read chunk by chunk and refused (400) as soon as it
+    passes the declared size. A client that sends nothing for 30 s is
+    dropped (408).
+  - At most two uploads are read at once, one per bundle: a second upload
+    for the same bundle is 409, a third concurrent one is 503. The slot set
+    is a plain mutex that is never held across an await.
+  - `vta_backup::ops::blob::stage_import_blob` checks the size and SHA-256,
+    then reads the record again and re-checks the state, expiry and token.
+    So a bundle accepted, aborted or expired while the body was being read
+    is not written over.
+
+  `write_import_blob` remains as admit-then-stage for callers that already
+  hold the bytes.
+
+
+
+## [0.40.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.39.0...vta-backup-v0.40.0) — 2026-11-10
+
+
+## [0.39.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.38.0...vta-backup-v0.39.0) — 2026-11-09
+
+
+## [0.38.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.37.0...vta-backup-v0.38.0) — 2026-11-05
+
+
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.36.0...vta-backup-v0.37.0) — 2026-11-05
+
+
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.35.0...vta-backup-v0.36.0) — 2026-11-05
+
+
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.34.0...vta-backup-v0.35.0) — 2026-11-04
+
+
 ## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.33.0...vta-backup-v0.34.0) — 2026-11-04
 
 

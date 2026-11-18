@@ -64,7 +64,48 @@ pub struct AuthClaims {
 /// so the browser sends it on `/v1/*` API calls; `HttpOnly` keeps
 /// JS on any path from reading it, and `SameSite=Strict` blocks
 /// cross-site CSRF.
-pub const ADMIN_SESSION_COOKIE: &str = "vtc_admin_session";
+///
+/// The `__Host-` prefix (RFC 6265bis §4.1.3.2) makes the browser refuse the
+/// cookie unless it is `Secure`, `Path=/` and carries no `Domain`, so a
+/// sibling subdomain can neither set nor overwrite it (#2661). A cookie under
+/// the name before the prefix, [`LEGACY_ADMIN_SESSION_COOKIE`], is still read
+/// for one release so a deployed console is not signed out by the upgrade.
+pub const ADMIN_SESSION_COOKIE: &str = "__Host-vtc_admin_session";
+
+/// The name [`ADMIN_SESSION_COOKIE`] had before its `__Host-` prefix: read,
+/// after the prefixed name, for one release; never written, only cleared.
+pub const LEGACY_ADMIN_SESSION_COOKIE: &str = "vtc_admin_session";
+
+/// The name [`ADMIN_REFRESH_COOKIE`] had before its `__Host-` prefix: read,
+/// after the prefixed name, for one release; never written, only cleared.
+pub const LEGACY_ADMIN_REFRESH_COOKIE: &str = "vtc_admin_refresh";
+
+/// The admin session cookie's value: [`ADMIN_SESSION_COOKIE`], else the
+/// [`LEGACY_ADMIN_SESSION_COOKIE`] a console signed in before the rename holds.
+pub fn admin_session_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
+    cookie_value(headers, ADMIN_SESSION_COOKIE)
+        .or_else(|| cookie_value(headers, LEGACY_ADMIN_SESSION_COOKIE))
+}
+
+/// The admin refresh cookie's value: [`ADMIN_REFRESH_COOKIE`], else the
+/// [`LEGACY_ADMIN_REFRESH_COOKIE`].
+pub fn admin_refresh_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
+    cookie_value(headers, ADMIN_REFRESH_COOKIE)
+        .or_else(|| cookie_value(headers, LEGACY_ADMIN_REFRESH_COOKIE))
+}
+
+/// The token of the request's `Authorization: Bearer` header, by exactly the
+/// rule the extractors read it with (one header; the scheme matched without
+/// regard to case, with nothing before it). `None` when there is no such
+/// header. Anything that decides by "does this request carry a bearer" — the
+/// VTC's CSRF gate — must decide with this, so that it never skips a check
+/// for a header the extractor would then ignore in favour of a cookie.
+pub fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    use axum_extra::headers::HeaderMapExt as _;
+    headers
+        .typed_get::<Authorization<Bearer>>()
+        .map(|auth| auth.token().to_string())
+}
 
 /// Name of the companion refresh cookie set by the same two flows.
 ///
@@ -81,7 +122,9 @@ pub const ADMIN_SESSION_COOKIE: &str = "vtc_admin_session";
 /// attaches automatically is a different proposition. `routing::csrf`
 /// must therefore treat a request bearing this cookie as session-
 /// authenticated — see `has_session_cookie` there.
-pub const ADMIN_REFRESH_COOKIE: &str = "vtc_admin_refresh";
+///
+/// `__Host-`-prefixed for the reason [`ADMIN_SESSION_COOKIE`] is.
+pub const ADMIN_REFRESH_COOKIE: &str = "__Host-vtc_admin_refresh";
 
 impl<S: AuthState> FromRequestParts<S> for AuthClaims {
     type Rejection = AppError;
@@ -198,7 +241,7 @@ async fn presented_token<S: AuthState>(
         .await
         .ok()
         .map(|TypedHeader(auth)| (auth.token().to_string(), TokenSource::Bearer));
-    bearer.or_else(|| cookie_token(parts, ADMIN_SESSION_COOKIE).map(|t| (t, TokenSource::Cookie)))
+    bearer.or_else(|| admin_session_cookie(&parts.headers).map(|t| (t, TokenSource::Cookie)))
 }
 
 async fn authenticate_token<S: AuthState>(
@@ -714,7 +757,7 @@ impl<S: AuthState> FromRequestParts<S> for WriteAuth {
 pub fn presents_credential(headers: &axum::http::HeaderMap) -> bool {
     use axum_extra::headers::HeaderMapExt as _;
     headers.typed_get::<Authorization<Bearer>>().is_some()
-        || cookie_value(headers, ADMIN_SESSION_COOKIE).is_some()
+        || admin_session_cookie(headers).is_some()
 }
 
 /// Record user activity on the browser session named by the request's
@@ -740,7 +783,7 @@ pub async fn touch_cookie_session_for<S: AuthState>(
     state: &S,
     did: &str,
 ) -> bool {
-    let Some(token) = cookie_value(headers, ADMIN_SESSION_COOKIE) else {
+    let Some(token) = admin_session_cookie(headers) else {
         return false;
     };
     let Ok((claims, session)) = authenticate_token(&token, state).await else {
@@ -760,10 +803,6 @@ pub async fn touch_cookie_session_for<S: AuthState>(
             false
         }
     }
-}
-
-fn cookie_token(parts: &Parts, name: &str) -> Option<String> {
-    cookie_value(&parts.headers, name)
 }
 
 fn cookie_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
@@ -1274,5 +1313,52 @@ mod tests {
         );
         assert!(!touch_cookie_session_for(&forged, &state, did).await);
         assert_eq!(last_seen(&state, did).await, before);
+    }
+}
+
+#[cfg(test)]
+mod cookie_name_tests {
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    /// #2661: the `__Host-` name is read first; the name before the rename
+    /// still signs a console in for one release.
+    #[test]
+    fn issue_2661_the_prefixed_admin_cookies_win_and_the_legacy_names_still_read() {
+        let both = headers(&[(
+            "cookie",
+            "vtc_admin_session=old; __Host-vtc_admin_session=new; vtc_admin_refresh=r0",
+        )]);
+        assert_eq!(admin_session_cookie(&both).as_deref(), Some("new"));
+        assert_eq!(admin_refresh_cookie(&both).as_deref(), Some("r0"));
+        let legacy = headers(&[("cookie", "vtc_admin_session=old")]);
+        assert_eq!(admin_session_cookie(&legacy).as_deref(), Some("old"));
+        assert!(admin_session_cookie(&headers(&[("cookie", "session=x")])).is_none());
+    }
+
+    /// The bearer the CSRF gate trusts is exactly the one the extractor reads.
+    #[test]
+    fn bearer_token_reads_as_the_extractor_does() {
+        assert_eq!(
+            bearer_token(&headers(&[("authorization", "Bearer abc")])).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            bearer_token(&headers(&[("authorization", "bearer abc")])).as_deref(),
+            Some("abc")
+        );
+        assert!(bearer_token(&headers(&[("authorization", " Bearer abc")])).is_none());
+        assert!(bearer_token(&headers(&[("authorization", "Basic abc")])).is_none());
+        assert!(bearer_token(&headers(&[])).is_none());
     }
 }

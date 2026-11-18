@@ -427,16 +427,25 @@ pub trait CheckShape {
     fn check_shape(&self) -> Result<(), ShapeError>;
 }
 
-fn schema_error(e: trust_tasks_rs::validate::ValidationError) -> ShapeError {
+fn schema_error(e: crate::schema_cache::SchemaError) -> ShapeError {
     ShapeError::Schema(e.messages().join("; "))
 }
 
 /// Validate a generated payload or response against the schema its type embeds.
 fn against_own_schema<P: trust_tasks_rs::Payload + Serialize>(value: &P) -> Result<(), ShapeError> {
-    use trust_tasks_rs::validate::ValidatedPayload;
     let json = serde_json::to_value(value).map_err(|e| ShapeError::Schema(e.to_string()))?;
-    P::validate_value(&json).map_err(schema_error)
+    crate::schema_cache::check_payload::<P>(&json).map_err(schema_error)
 }
+
+/// The schema text for each definition, built once (#2622) and kept for the
+/// life of the process, keyed by the embedded schema's address and length (a
+/// `&'static str`, so the pair names its content) and the definition. The set
+/// is fixed by the call sites, so the texts are leaked rather than evicted, and
+/// [`crate::schema_cache::SCHEMAS`] keeps each compiled once.
+type DefinitionKey = (usize, usize, String);
+type DefinitionCache = std::sync::RwLock<std::collections::HashMap<DefinitionKey, &'static str>>;
+static DEFINITIONS: std::sync::LazyLock<DefinitionCache> =
+    std::sync::LazyLock::new(Default::default);
 
 /// Validate `json` against the definition `name` in the schema `P` embeds — for
 /// a value that travels inside a payload rather than as one: a card inside a
@@ -447,16 +456,33 @@ pub(crate) fn against_definition<P: trust_tasks_rs::Payload>(
 ) -> Result<(), ShapeError> {
     let unavailable = |why: &str| ShapeError::Schema(format!("{}: {why}", P::TYPE_URI));
     let embedded = P::PAYLOAD_SCHEMA.ok_or_else(|| unavailable("embeds no schema"))?;
-    let parsed: Value = serde_json::from_str(embedded).map_err(|e| unavailable(&e.to_string()))?;
-    let defs = parsed
-        .get("$defs")
-        .filter(|defs| defs.get(name).is_some())
-        .ok_or_else(|| unavailable(&format!("defines no `{name}`")))?;
-    let schema = serde_json::json!({
-        "$defs": defs,
-        "$ref": format!("#/$defs/{name}"),
-    });
-    trust_tasks_rs::validate::against_schema(&schema.to_string(), json).map_err(schema_error)
+    let key = (embedded.as_ptr() as usize, embedded.len(), name.to_string());
+    let cached = DEFINITIONS
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&key)
+        .copied();
+    let schema: &'static str = match cached {
+        Some(schema) => schema,
+        None => {
+            let parsed: Value =
+                serde_json::from_str(embedded).map_err(|e| unavailable(&e.to_string()))?;
+            let defs = parsed
+                .get("$defs")
+                .filter(|defs| defs.get(name).is_some())
+                .ok_or_else(|| unavailable(&format!("defines no `{name}`")))?;
+            let text = serde_json::json!({
+                "$defs": defs,
+                "$ref": format!("#/$defs/{name}"),
+            })
+            .to_string();
+            let mut map = DEFINITIONS.write().unwrap_or_else(|p| p.into_inner());
+            map.entry(key.clone())
+                .or_insert_with(|| Box::leak(text.into_boxed_str()));
+            map[&key]
+        }
+    };
+    crate::schema_cache::check(schema, json).map_err(schema_error)
 }
 
 fn against_own_definition<P: trust_tasks_rs::Payload>(
@@ -482,8 +508,7 @@ pub fn read_checked<P>(json: &Value) -> Result<P, ShapeError>
 where
     P: trust_tasks_rs::Payload + DeserializeOwned + CheckShape,
 {
-    use trust_tasks_rs::validate::ValidatedPayload;
-    P::validate_value(json).map_err(schema_error)?;
+    crate::schema_cache::check_payload::<P>(json).map_err(schema_error)?;
     let parsed: P =
         serde_json::from_value(json.clone()).map_err(|e| ShapeError::Schema(e.to_string()))?;
     parsed.check_shape()?;
@@ -535,8 +560,7 @@ pub fn read_request(
     json: &Value,
     document_issuer: &str,
 ) -> Result<request::v0_1::Payload, ShapeError> {
-    use trust_tasks_rs::validate::ValidatedPayload;
-    request::v0_1::Payload::validate_value(json).map_err(schema_error)?;
+    crate::schema_cache::check_payload::<request::v0_1::Payload>(json).map_err(schema_error)?;
     let parsed: request::v0_1::Payload =
         serde_json::from_value(json.clone()).map_err(|e| ShapeError::Schema(e.to_string()))?;
     check_request(&parsed, document_issuer)?;

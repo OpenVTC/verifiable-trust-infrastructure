@@ -16,6 +16,7 @@ pub(crate) async fn run(
         AclCommands::Get { did } => acl::cmd_acl_get(client, &did).await,
         AclCommands::Create {
             did,
+            did_flag,
             role,
             label,
             contexts,
@@ -27,11 +28,16 @@ pub(crate) async fn run(
             approve_contexts,
             allowed_keys,
             capabilities,
+            purposes,
         } => match resolve_expires_at(expires.as_deref()) {
             Ok(expires_at) => {
+                let purposes = match acl::purposes_from_flags(purposes, false) {
+                    Ok(p) => p,
+                    Err(e) => return Err(e),
+                };
                 acl::cmd_acl_create(
                     client,
-                    did,
+                    did.or(did_flag).ok_or("a DID is required")?,
                     role,
                     label,
                     contexts,
@@ -43,6 +49,7 @@ pub(crate) async fn run(
                     allowed_keys,
                     capabilities,
                     handoff,
+                    purposes,
                 )
                 .await
             }
@@ -62,7 +69,11 @@ pub(crate) async fn run(
             allowed_keys_unrestricted,
             capabilities,
             capabilities_all,
+            purposes,
+            purposes_any,
+            reason,
         } => {
+            let purposes = acl::purposes_from_flags(purposes, purposes_any)?;
             let approve_scope =
                 acl::approve_scope_from_flags(approve_all, approve_contexts, approve_none);
             let allowed_keys =
@@ -79,16 +90,24 @@ pub(crate) async fn run(
                 approve_scope,
                 allowed_keys,
                 capabilities,
+                purposes,
+                reason.as_deref(),
             )
             .await
         }
         AclCommands::ChangeRole {
             did,
+            did_flag,
             from_role,
             to_role,
             reason,
-        } => acl::cmd_acl_change_role(client, &did, &from_role, &to_role, reason).await,
-        AclCommands::Delete { did } => acl::cmd_acl_delete(client, &did).await,
+        } => {
+            let did = did.or(did_flag).ok_or("a DID is required")?;
+            acl::cmd_acl_change_role(client, &did, &from_role, &to_role, reason).await
+        }
+        AclCommands::Delete { did, reason, yes } => {
+            acl::cmd_acl_delete(client, &did, reason.as_deref(), yes).await
+        }
     }
 }
 

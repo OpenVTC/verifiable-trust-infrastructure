@@ -3,12 +3,17 @@
 //! Served when:
 //!
 //! - The `website` cargo feature is on, AND
-//! - `website.root_dir` is unset in the daemon config.
+//! - neither `website.root_dir` nor `website.landing_dir` is set in
+//!   the daemon config.
 //!
 //! As soon as the operator sets `root_dir`, the filesystem-backed
 //! handler in [`crate::website::serve`] takes over and this default
 //! is unreachable. The default exists purely so a fresh
 //! `cargo run` produces a working `GET /` instead of a 503.
+//!
+//! `website.landing_dir` replaces just this page with the operator's
+//! own, read from disk per request ([`serve_dir`]); [`export`] writes
+//! this one out as its starting point.
 //!
 //! Source lives at `vtc-service/website-default/` and is baked at
 //! compile time via [`include_dir::include_dir!`]. The CSP layer
@@ -80,9 +85,167 @@ pub async fn serve(req: Request<Body>) -> Response {
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "response build").into_response())
 }
 
+/// Boot check for `website.landing_dir`
+/// ([`crate::website::paths::check_operator_dir`]): a readable `index.html`,
+/// nothing world-writable.
+pub fn check_landing_dir(dir: &std::path::Path) -> Result<(), String> {
+    crate::website::paths::check_operator_dir(dir, "the landing page", "vtc website export")
+}
+
+/// `vtc website export <dir>`: write the built-in landing page to `dir`, to
+/// customise and serve with `website.landing_dir`. Refuses a directory that
+/// already holds anything, so an earlier customisation is never overwritten.
+pub fn export(dir: &std::path::Path) -> Result<(), String> {
+    if let Ok(mut entries) = std::fs::read_dir(dir)
+        && entries.next().is_some()
+    {
+        return Err(format!(
+            "{} is not empty — export into a new or empty directory so nothing \
+             already there is overwritten",
+            dir.display()
+        ));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    DEFAULT_SITE_DIR
+        .extract(dir)
+        .map_err(|e| format!("writing to {}: {e}", dir.display()))
+}
+
+/// Axum handler with `website.landing_dir` set: [`serve`]'s contract —
+/// directory requests and misses fall back to `index.html`, served as HTML —
+/// read from `dir` on every request, so an operator's edit shows on the next
+/// load. Every path goes through the website's path-safety chain
+/// ([`crate::website::paths::canonical_within_root`]): no hidden files, no
+/// escaping `dir` (symlinks included), no executables. Responses are
+/// revalidated (`no-cache`) for the same reason.
+pub async fn serve_dir(dir: &std::path::Path, req: Request<Body>) -> Response {
+    let raw_path = req.uri().path();
+    let rel = if raw_path == "/" || raw_path.ends_with('/') {
+        "/index.html"
+    } else {
+        raw_path
+    };
+    let resolve = |rel: &str| {
+        crate::website::paths::canonical_within_root(dir, rel, &[])
+            .ok()
+            .filter(|p| p.is_file())
+    };
+    let (path, mime) = match resolve(rel) {
+        Some(p) => {
+            let mime = mime_guess::from_path(&p).first_or_octet_stream();
+            let mime = if mime == mime_guess::mime::TEXT_HTML {
+                "text/html; charset=utf-8".to_string()
+            } else {
+                mime.to_string()
+            };
+            (p, mime)
+        }
+        None => match resolve("/index.html") {
+            Some(p) => (p, "text/html; charset=utf-8".to_string()),
+            None => return (StatusCode::NOT_FOUND, "landing page not found").into_response(),
+        },
+    };
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::NOT_FOUND, "landing page not found").into_response(),
+    };
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(bytes))
+        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "response build").into_response())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn get(path: &str) -> Request<Body> {
+        Request::builder().uri(path).body(Body::empty()).unwrap()
+    }
+
+    async fn body_of(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    /// The exported page is the built-in one, passes the boot check, and is
+    /// served from disk — an edit shows on the next request, no restart.
+    #[tokio::test]
+    async fn exported_landing_page_serves_from_disk_and_follows_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("landing");
+        export(&target).unwrap();
+        check_landing_dir(&target).unwrap();
+
+        let resp = serve_dir(&target, get("/")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        let body = body_of(resp).await;
+        assert_eq!(body.as_bytes(), lookup("/index.html").unwrap());
+
+        let css = serve_dir(&target, get("/site.css")).await;
+        assert!(
+            css.headers()[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/css")
+        );
+
+        std::fs::write(target.join("index.html"), "<h1>Our community</h1>").unwrap();
+        let body = body_of(serve_dir(&target, get("/")).await).await;
+        assert_eq!(body, "<h1>Our community</h1>");
+        // An unknown path falls back to the page, as HTML.
+        let resp = serve_dir(&target, get("/about")).await;
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+
+        let err = export(&target).unwrap_err();
+        assert!(err.contains("not empty"), "{err}");
+    }
+
+    /// Nothing outside the directory, and no hidden file, is ever served.
+    #[tokio::test]
+    async fn landing_dir_serves_nothing_outside_it() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("landing");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("index.html"), "page").unwrap();
+        std::fs::write(target.join(".env"), "secret").unwrap();
+        std::fs::write(root.path().join("outside.txt"), "secret").unwrap();
+
+        for path in ["/.env", "/../outside.txt", "/%2e%2e/outside.txt"] {
+            let body = body_of(serve_dir(&target, get(path)).await).await;
+            assert_eq!(body, "page", "{path} must fall back to the page");
+        }
+    }
+
+    #[test]
+    fn landing_dir_check_requires_index_and_refuses_world_writable() {
+        let empty = tempfile::tempdir().unwrap();
+        let err = check_landing_dir(empty.path()).unwrap_err();
+        assert!(err.contains("vtc website export"), "{err}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let index = dir.path().join("index.html");
+            std::fs::write(&index, "page").unwrap();
+            check_landing_dir(dir.path()).unwrap();
+            std::fs::set_permissions(&index, std::fs::Permissions::from_mode(0o666)).unwrap();
+            let err = check_landing_dir(dir.path()).unwrap_err();
+            assert!(err.contains("world-writable"), "{err}");
+        }
+    }
 
     #[test]
     fn embedded_dir_has_index() {
@@ -168,6 +331,17 @@ mod tests {
             js.contains("\"vtc-admin-theme\"") && shared.contains("\"vtc-admin-theme\""),
             "the home page and the console store the theme under one key"
         );
+    }
+
+    /// The home page draws the logo the community stored before `logoUrl`, as
+    /// the console and the member portal do (`chosenLogo`): only the stored one
+    /// is on this origin, which the page's CSP requires.
+    #[test]
+    fn site_prefers_the_stored_logo_over_the_logo_url() {
+        let js = std::str::from_utf8(lookup("/site.js").expect("site.js embedded")).unwrap();
+        let stored = js.find("profile.logo.url").expect("reads the stored logo");
+        let url = js.find(": profile.logoUrl").expect("falls back to logoUrl");
+        assert!(stored < url, "the stored logo is tried first");
     }
 
     #[test]

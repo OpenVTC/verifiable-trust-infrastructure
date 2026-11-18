@@ -771,6 +771,60 @@ pub fn guard_foreign_url(url: &str, policy: EndpointPolicy) -> Result<(), Foreig
     }
 }
 
+/// Vet a Trust-Task REST endpoint a peer advertised in its DID document
+/// (`TrustTaskHTTPS`, `VTARest`) before a **service** posts a document to it,
+/// then send through [`foreign_fetch_client_for`] with the same `policy`.
+///
+/// The endpoint is chosen by whoever controls the peer's DID document, so a
+/// service dialling it from inside its own network must not reach loopback or
+/// private services by default:
+///
+/// - `https://` to a public host passes; anything else
+///   [`guard_foreign_url`] decides under `policy` (private-network, loopback
+///   and local-only names only with the opt-in; link-local, cloud-metadata
+///   and reserved targets never).
+/// - `http://` passes only to an exact loopback host ([`is_https_or_loopback`])
+///   **and** only with the opt-in, so a lookalike name such as
+///   `127.0.0.1.example.net` is refused under either policy.
+/// - Userinfo, any other scheme, and an unparseable URL are refused.
+///
+/// Stricter than [`guard_vta_endpoint`], which admits loopback without the
+/// opt-in because it vets the VTA a *client* chose to talk to.
+pub fn guard_peer_endpoint(url: &str, policy: EndpointPolicy) -> Result<(), ForeignFetchError> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| ForeignFetchError::Blocked(format!("invalid peer endpoint URL: {e}")))?;
+    // Checked before anything that echoes the URL.
+    if parsed.username() != "" || parsed.password().is_some() {
+        return Err(ForeignFetchError::Blocked(
+            "peer endpoint must not embed credentials (userinfo) in the URL".into(),
+        ));
+    }
+    match parsed.scheme() {
+        "https" => guard_foreign_url(url, policy),
+        "http" => {
+            if !is_https_or_loopback(url) {
+                return Err(ForeignFetchError::Blocked(format!(
+                    "refusing plaintext http:// peer endpoint {}: only a loopback host may \
+                     use http://",
+                    parsed.origin().ascii_serialization()
+                )));
+            }
+            if policy.allow_private {
+                Ok(())
+            } else {
+                Err(ForeignFetchError::Blocked(format!(
+                    "peer endpoint {} is a loopback host; to reach one, set \
+                     {ALLOW_PRIVATE_ENDPOINTS_ENV}=1",
+                    parsed.origin().ascii_serialization()
+                )))
+            }
+        }
+        other => Err(ForeignFetchError::Blocked(format!(
+            "peer endpoint uses unsupported scheme `{other}://`"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1403,5 +1457,60 @@ mod tests {
             &u("https://a.example/"),
             &u("https://a.example:8443/")
         ));
+    }
+
+    // ── guard_peer_endpoint ─────────────────────────────────────────────────
+
+    #[test]
+    fn peer_endpoint_public_https_passes_under_either_policy() {
+        for p in [
+            EndpointPolicy::public_only(),
+            EndpointPolicy::private_allowed(),
+        ] {
+            guard_peer_endpoint("https://room.example.com/", p).expect("public https");
+        }
+    }
+
+    #[test]
+    fn peer_endpoint_loopback_and_private_need_the_opt_in() {
+        for u in [
+            "http://127.0.0.1:9099",
+            "http://localhost:8080/",
+            "http://[::1]:8080/",
+            "https://127.0.0.1/",
+            "https://10.0.0.5",
+            "https://192.168.0.2/",
+            "https://sidecar.internal/",
+        ] {
+            let e = guard_peer_endpoint(u, EndpointPolicy::public_only())
+                .expect_err(u)
+                .to_string();
+            assert!(e.contains(ALLOW_PRIVATE_ENDPOINTS_ENV), "{u}: {e}");
+            guard_peer_endpoint(u, EndpointPolicy::private_allowed()).expect(u);
+        }
+    }
+
+    #[test]
+    fn peer_endpoint_refusals_the_opt_in_does_not_lift() {
+        for u in [
+            "http://example.com/",
+            "http://127.0.0.1.example.net/",
+            "http://localhost.example.net/",
+            "http://10.0.0.5/",
+            "https://169.254.169.254/",
+            "https://metadata.google.internal/",
+            "https://[fe80::1]/",
+            "https://user:pw@example.com/",
+            "ftp://example.com/",
+            "not a url",
+        ] {
+            for p in [
+                EndpointPolicy::public_only(),
+                EndpointPolicy::private_allowed(),
+            ] {
+                let e = guard_peer_endpoint(u, p).expect_err(u).to_string();
+                assert!(!e.contains("pw@"), "{u}: {e}");
+            }
+        }
     }
 }

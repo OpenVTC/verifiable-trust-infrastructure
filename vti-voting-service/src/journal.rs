@@ -11,22 +11,68 @@
 //! Every write is followed by `sync_data` before the ballot box answers, so an answer is never
 //! given for something a crash could lose. A torn final record (a crash mid-write) is
 //! truncated away on open: its answer was never sent.
+//!
+//! Each election's files are opened once and kept open, under a lock of their own (#2604):
+//! elections are journalled side by side, and an append is a write and a `sync_data`, not an
+//! open, a directory creation, a write and a `sync_data`.
 
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use vti_voting::service::{Journal, Restored, StoredElection};
 
 pub struct FileJournal {
     root: PathBuf,
-    /// Serialises writers. The ballot box is driven under one lock already; this keeps the
-    /// journal correct on its own.
-    lock: Mutex<()>,
+    /// The elections written to since this process started, by directory name: each one's
+    /// files, under a lock of its own. The service drives each election under its own lock
+    /// already; this keeps the journal correct on its own.
+    open: Mutex<HashMap<String, Arc<Mutex<ElectionFiles>>>>,
+}
+
+/// One election's directory and its logs, opened on first use and kept open.
+struct ElectionFiles {
+    dir: PathBuf,
+    entries: Option<File>,
+    receipts: Option<File>,
+}
+
+impl ElectionFiles {
+    /// Append `record` to the log in `slot` (opened as `name` in the election's directory)
+    /// and sync it. A write that fails is cut back off, so the next record does not follow a
+    /// torn one.
+    fn append(&mut self, which: Log, record: &[u8]) -> std::io::Result<()> {
+        let (slot, name) = match which {
+            Log::Entries => (&mut self.entries, "entries.log"),
+            Log::Receipts => (&mut self.receipts, "receipts.log"),
+        };
+        let f = match slot {
+            Some(f) => f,
+            None => slot.insert(
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.dir.join(name))?,
+            ),
+        };
+        let before = f.metadata()?.len();
+        let written = f.write_all(record).and_then(|()| f.sync_data());
+        if written.is_err() {
+            let _ = f.set_len(before);
+            *slot = None;
+        }
+        written
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Log {
+    Entries,
+    Receipts,
 }
 
 impl std::fmt::Debug for FileJournal {
@@ -48,12 +94,6 @@ fn dir_name(community: &str, election_id: &str) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn append_record(path: &Path, record: &[u8]) -> std::io::Result<()> {
-    let mut f = OpenOptions::new().create(true).append(true).open(path)?;
-    f.write_all(record)?;
-    f.sync_data()
-}
-
 impl FileJournal {
     /// Open (creating) the journal under `root`.
     ///
@@ -63,14 +103,30 @@ impl FileJournal {
         fs::create_dir_all(root)?;
         Ok(Self {
             root: root.to_path_buf(),
-            lock: Mutex::new(()),
+            open: Mutex::new(HashMap::new()),
         })
     }
 
-    fn dir(&self, community: &str, election_id: &str) -> std::io::Result<PathBuf> {
-        let d = self.root.join(dir_name(community, election_id));
-        fs::create_dir_all(&d)?;
-        Ok(d)
+    /// The election's files, its directory created on first use.
+    fn files(
+        &self,
+        community: &str,
+        election_id: &str,
+    ) -> Result<Arc<Mutex<ElectionFiles>>, String> {
+        let name = dir_name(community, election_id);
+        let mut open = self.open.lock().map_err(|e| e.to_string())?;
+        if let Some(f) = open.get(&name) {
+            return Ok(Arc::clone(f));
+        }
+        let dir = self.root.join(&name);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let files = Arc::new(Mutex::new(ElectionFiles {
+            dir,
+            entries: None,
+            receipts: None,
+        }));
+        open.insert(name, Arc::clone(&files));
+        Ok(files)
     }
 
     /// Everything the journal holds, for [`vti_voting::service::BallotBox::restore`].
@@ -169,10 +225,9 @@ impl Journal for FileJournal {
         election_id: &str,
         e: &StoredElection,
     ) -> Result<(), String> {
-        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
-        let dir = self
-            .dir(community, election_id)
-            .map_err(|e| e.to_string())?;
+        let files = self.files(community, election_id)?;
+        let files = files.lock().map_err(|e| e.to_string())?;
+        let dir = &files.dir;
         let path = dir.join("election.json");
         let tmp = dir.join("election.json.tmp");
         let bytes = serde_json::to_vec(e).map_err(|e| e.to_string())?;
@@ -189,15 +244,15 @@ impl Journal for FileJournal {
         _index: u64,
         bytes: &[u8],
     ) -> Result<(), String> {
-        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
-        let dir = self
-            .dir(community, election_id)
-            .map_err(|e| e.to_string())?;
         let len = u32::try_from(bytes.len()).map_err(|_| "entry too large".to_string())?;
         let mut record = Vec::with_capacity(4 + bytes.len());
         record.extend(len.to_be_bytes());
         record.extend(bytes);
-        append_record(&dir.join("entries.log"), &record).map_err(|e| e.to_string())
+        let files = self.files(community, election_id)?;
+        let mut files = files.lock().map_err(|e| e.to_string())?;
+        files
+            .append(Log::Entries, &record)
+            .map_err(|e| e.to_string())
     }
 
     fn receipt(
@@ -207,15 +262,15 @@ impl Journal for FileJournal {
         leaf: u64,
         token: &str,
     ) -> Result<(), String> {
-        let _guard = self.lock.lock().map_err(|e| e.to_string())?;
-        let dir = self
-            .dir(community, election_id)
-            .map_err(|e| e.to_string())?;
         let len = u32::try_from(token.len()).map_err(|_| "token too large".to_string())?;
         let mut record = Vec::with_capacity(12 + token.len());
         record.extend(leaf.to_be_bytes());
         record.extend(len.to_be_bytes());
         record.extend(token.as_bytes());
-        append_record(&dir.join("receipts.log"), &record).map_err(|e| e.to_string())
+        let files = self.files(community, election_id)?;
+        let mut files = files.lock().map_err(|e| e.to_string())?;
+        files
+            .append(Log::Receipts, &record)
+            .map_err(|e| e.to_string())
     }
 }

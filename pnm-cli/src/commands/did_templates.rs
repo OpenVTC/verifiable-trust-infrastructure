@@ -46,7 +46,13 @@ pub(crate) async fn run_online(
             file,
             context,
         } => did_templates::cmd_update(client, &name, context.as_deref(), file).await,
-        DidTemplateCommands::Delete { name, context } => {
+        DidTemplateCommands::Delete { name, context, yes } => {
+            if !vta_cli_common::confirm::confirm_or_cancel(
+                &format!("delete the stored template `{name}`"),
+                yes,
+            )? {
+                return Ok(());
+            }
             did_templates::cmd_delete(client, &name, context.as_deref()).await
         }
         DidTemplateCommands::Export { name, context } => {

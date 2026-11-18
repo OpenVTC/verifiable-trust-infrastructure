@@ -447,3 +447,154 @@ async fn upload_key_chunks_land_and_are_charged_to_the_owner() {
         refused.body
     );
 }
+
+// ─── Over DIDComm (#2294) ────────────────────────────────────────────────────
+//
+// The same budgets apply off the HTTPS door, keyed by the transport-authenticated
+// sender instead of an address, and a presenter's budget is one budget whichever
+// transport it uses.
+
+/// Send `doc` over DIDComm from `sender`.
+async fn didcomm_from(vtc: &TestVtc, sender: &str, doc: &Value) -> (StatusCode, Value) {
+    vtc.receive_over_didcomm(sender, &serde_json::to_vec(doc).unwrap())
+        .await
+}
+
+/// A room limiter's refusal over DIDComm: the framework's `unavailable`, with
+/// a `retryAfter`, in place of the HTTPS door's `429`.
+fn assert_refused_with_retry(status: StatusCode, body: &Value) {
+    assert!(!status.is_success(), "admitted: {body}");
+    assert_eq!(body["payload"]["code"], "unavailable", "{body}");
+    assert!(
+        body["payload"]["retryAfter"].is_string(),
+        "no retryAfter: {body}"
+    );
+}
+
+/// The case the Keyring wallet reported: over DIDComm an upload chunk past
+/// 64 KiB took the large-document budget of five a minute, so a file of more
+/// than five such chunks stalled. Charged to the room budgets, every chunk lands.
+#[tokio::test]
+async fn over_didcomm_an_upload_of_more_large_chunks_than_the_large_document_budget_lands() {
+    let vtc = TestVtc::builder().build().await;
+    let f = hosted(&vtc).await;
+    let (bytes, digests, manifest) = big_blob(8, 3);
+    let owner = f.owner.did.as_str();
+    let upload_key = Party::new();
+    let begun = vtc
+        .state
+        .room_files
+        .begin_v2(
+            &f.room,
+            owner,
+            Some(owner),
+            manifest,
+            vti_rooms::blobs::UploadOffer {
+                upload_key_did: Some(upload_key.did.clone()),
+                direct_parts: None,
+            },
+        )
+        .await
+        .unwrap();
+    let upload_id = begun.upload_id.to_string();
+    for (i, c) in bytes.chunks(65_536).enumerate() {
+        let doc = key_chunk(&upload_key, &upload_id, i, c, &digests[i]).await;
+        assert!(serde_json::to_vec(&doc).unwrap().len() > 64 * 1024);
+        let (status, body) = didcomm_from(&vtc, &upload_key.did, &doc).await;
+        assert_eq!(status, StatusCode::OK, "chunk {i}: {body}");
+    }
+    vtc.state
+        .room_files
+        .commit_as(
+            vti_rooms::blobs::UploadCaller::V2(&upload_key.did),
+            &upload_id,
+        )
+        .await
+        .expect("every chunk arrived");
+}
+
+/// The presenter's budget in a room is charged over DIDComm too, and it is the
+/// same budget the HTTPS door charges: switching transport buys nothing.
+#[tokio::test]
+async fn over_didcomm_the_presenter_budget_is_the_one_https_charges() {
+    let vtc = TestVtc::builder()
+        .with_room_rate_limits(RoomRateLimitsConfig {
+            presenter_burst: Some(3),
+            presenter_interval_ms: Some(3_600_000),
+            ..Default::default()
+        })
+        .build()
+        .await;
+    let f = hosted(&vtc).await;
+    let read = || async {
+        signed(
+            &f.owner,
+            INFO,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+        )
+        .await
+    };
+    for i in 0..2 {
+        let r = post_from(&vtc, NAT, &read().await).await;
+        assert_eq!(r.status, StatusCode::OK, "https read {i}: {}", r.body);
+    }
+    let (status, body) = didcomm_from(&vtc, &f.owner.did, &read().await).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the third read, over DIDComm: {body}"
+    );
+
+    let (status, body) = didcomm_from(&vtc, &f.owner.did, &read().await).await;
+    assert_refused_with_retry(status, &body);
+    assert_eq!(
+        post_from(&vtc, NAT, &read().await).await.limiter.as_deref(),
+        Some("room-presenter"),
+        "and the HTTPS door sees the same spent budget"
+    );
+}
+
+/// A sender whose documents its room never authorizes is held to its own room
+/// ceiling over DIDComm, after a handful, and another sender is untouched.
+#[tokio::test]
+async fn over_didcomm_an_unauthorized_flood_stops_at_the_sender_ceiling() {
+    let vtc = TestVtc::builder()
+        .with_room_rate_limits(RoomRateLimitsConfig {
+            address_burst: Some(60),
+            address_interval_ms: Some(3_600_000),
+            ..Default::default()
+        })
+        .build()
+        .await;
+    let f = hosted(&vtc).await;
+    let flooder = Party::new();
+    let mut sent = 0;
+    loop {
+        sent += 1;
+        assert!(sent <= 10, "no refusal after {sent} unauthorized documents");
+        let doc = signed(
+            &flooder,
+            INFO,
+            json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+        )
+        .await;
+        let (status, body) = didcomm_from(&vtc, &flooder.did, &doc).await;
+        assert!(!status.is_success(), "the room authorized a stranger");
+        if body["payload"]["code"] == "unavailable" {
+            assert_refused_with_retry(status, &body);
+            break;
+        }
+    }
+    let doc = signed(
+        &f.owner,
+        INFO,
+        json!({ "roomId": f.room.room_id, "presentation": f.as_owner() }),
+    )
+    .await;
+    let (status, body) = didcomm_from(&vtc, &f.owner.did, &doc).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the flood cost another sender: {body}"
+    );
+}

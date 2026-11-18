@@ -304,12 +304,40 @@ pub async fn get(
     ks.get(election_key(election_id)).await
 }
 
-/// Write `record`.
+/// Write `record` whole. Only for a record nobody else can be writing — one just made, or
+/// one written under [`WRITE_LOCK`]; every change to a stored election goes through
+/// [`update`].
 ///
 /// # Errors
 /// A store failure.
 pub async fn put(ks: &KeyspaceHandle, record: &ElectionRecord) -> Result<(), AppError> {
     ks.insert(election_key(&record.election_id), record).await
+}
+
+/// Every change to a stored election is a read, a change and a write under this lock, so two
+/// writers — a task, the board's closing in the background, the sweeper's tick — never write
+/// over what the other just wrote. Held only from the read to the write, never across a call
+/// to the ballot box (R1.3).
+pub(crate) static WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Apply `change` to the election under `election_id` as it is stored now, and write it:
+/// `None` when there is no such election. `change` sets only the fields its caller decided,
+/// never a whole record read earlier.
+///
+/// # Errors
+/// A store failure.
+pub async fn update<T>(
+    ks: &KeyspaceHandle,
+    election_id: &str,
+    change: impl FnOnce(&mut ElectionRecord) -> T,
+) -> Result<Option<T>, AppError> {
+    let _guard = WRITE_LOCK.lock().await;
+    let Some(mut rec) = get(ks, election_id).await? else {
+        return Ok(None);
+    };
+    let out = change(&mut rec);
+    put(ks, &rec).await?;
+    Ok(Some(out))
 }
 
 /// Write `record` only when no election holds its identifier: `false` when one does.

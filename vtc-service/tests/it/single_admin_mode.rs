@@ -10,7 +10,7 @@
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use vti_common::audit::AuditEvent;
+use vtc_audit::AuditEvent;
 use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
@@ -112,7 +112,7 @@ async fn list(fix: &Fixture, who: &Party, view: &str) -> Value {
 }
 
 /// Every `SingleAdminMode` audit row's `event`, and its severity.
-async fn mode_rows(fix: &Fixture) -> Vec<vti_common::audit::SingleAdminModeData> {
+async fn mode_rows(fix: &Fixture) -> Vec<vtc_audit::SingleAdminModeData> {
     fix.vtc
         .state
         .audit_ks
@@ -120,12 +120,12 @@ async fn mode_rows(fix: &Fixture) -> Vec<vti_common::audit::SingleAdminModeData>
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .filter_map(|env| match env.event {
             AuditEvent::SingleAdminMode(d) => {
                 assert_eq!(
                     AuditEvent::SingleAdminMode(d.clone()).severity(),
-                    vti_common::audit::AuditSeverity::Critical
+                    vtc_audit::AuditSeverity::Critical
                 );
                 Some(d)
             }
@@ -134,7 +134,7 @@ async fn mode_rows(fix: &Fixture) -> Vec<vti_common::audit::SingleAdminModeData>
         .collect()
 }
 
-async fn waived(fix: &Fixture) -> Vec<vti_common::audit::SingleAdminModeData> {
+async fn waived(fix: &Fixture) -> Vec<vtc_audit::SingleAdminModeData> {
     mode_rows(fix)
         .await
         .into_iter()
@@ -515,7 +515,7 @@ async fn vti_apv_022_a_reduction_keeps_its_cooling_off() {
 async fn vti_apv_022_boot_audits_the_mode_in_effect_and_its_changes() {
     let fix = fixture(false).await;
     let state = &fix.vtc.state;
-    let events = |rows: Vec<vti_common::audit::SingleAdminModeData>| {
+    let events = |rows: Vec<vtc_audit::SingleAdminModeData>| {
         rows.into_iter().map(|d| d.event).collect::<Vec<_>>()
     };
 

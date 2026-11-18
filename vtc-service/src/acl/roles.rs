@@ -179,8 +179,7 @@ pub async fn holders(ks: &KeyspaceHandle, name: &str) -> Result<u32, AppError> {
 /// Whether `name` is reserved: a built-in role, or `member` — the 0.2 wire's
 /// "no administrative role" (`acl/_shared/0.2`).
 pub fn is_reserved(name: &str) -> bool {
-    name == crate::routes::acl::NO_ADMIN_ROLE
-        || AdminRole::BUILT_IN.iter().any(|r| r.as_str() == name)
+    name == crate::acl::ops::NO_ADMIN_ROLE || AdminRole::BUILT_IN.iter().any(|r| r.as_str() == name)
 }
 
 fn epoch_rfc3339(secs: u64) -> String {

@@ -168,6 +168,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // epoch state from it.
     trust_tasks::TASK_ROOMS_OWNER_ANCHOR_0_1,
     trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2,
+    trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3,
     // Admission advances the room's epoch at its host (and may first ask it which
     // epoch it is at).
     trust_tasks::TASK_ROOMS_OWNER_GROUP_ADD_0_3,
@@ -181,7 +182,12 @@ pub const RELAYS_ONWARD: &[&str] = &[
     trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
     trust_tasks::TASK_ROOMS_KEYS_BACKFILL_0_2,
     trust_tasks::TASK_ROOMS_KEYS_READ_0_1,
+    // Up to 32 host requests, each with its checks, and a repair.
+    trust_tasks::TASK_ROOMS_KEYS_READ_0_2,
     trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
+    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4,
+    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5,
+    trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_6,
     // The profile walk fetches one location per epoch down to where it finds one, and a
     // write lists, seals and puts — each a call to the room's host.
     trust_tasks::TASK_ROOMS_KEYS_PROFILE_READ_0_1,

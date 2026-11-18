@@ -1,0 +1,108 @@
+# CLAUDE.md — vtc-mcp
+
+Crate guidance. The workspace `CLAUDE.md` applies too.
+
+## What this crate is
+
+(The crate's full entry from the workspace `CLAUDE.md` crate map.)
+
+MCP server bridging a Verifiable Trust Community to MCP tools over stdio (or, with `--listen`, loopback HTTP shared by every host on the machine), for a member's or an administrator's AI assistant. A native Trust Task client: every tool call is one signed document `vtc-client` sends in-process over the transport the community's DID document advertises (TSP > DIDComm > HTTPS, `VtcClient::connect_resolved`) — never a `cnm`/`pnm` subprocess, never a CLI's stored login. Two generic tools (`vtc_list_operations`, catalogued from the pinned specification bundles; `vtc_call`) plus discovery, whoami and status. Runs every call through the guard and recorder in `vti-mcp-common`. Docs: `docs/03-vtc/vtc-mcp.md` (operator page), `docs/05-design-notes/vtc-mcp.md` (design); the Claude Code skill is `skills/vtc-community/SKILL.md`. `publish = false`
+
+## Rules
+
+- **The catalog is the specification.** `vtc_list_operations` reads every
+  entry — description, schema, error codes — from `vti_specs::schema_index`.
+  Never hand-write a description of a task, and never add a typed wrapper
+  per family: `vtc_call` over `VtcClient::send_task` is how every family is
+  reached, the ones with no typed client (`vtc/groups/*`, `vtc/directory/*`,
+  `vtc/notifications/*`) included.
+- **Unpinned is refused.** A Type URI the index does not know is never sent
+  (`VtcError::UnpinnedTask`); `None` from the index means "not pinned", never
+  "nothing to check".
+- **A session the community advertises is never replaced by HTTPS.** `auto`
+  errors with what was advertised and what failed; `--transport rest` is the
+  operator's explicit way to post signed documents for a diagnosis.
+- **A refusal is a tool result, not a protocol error** (#2594):
+  `server::outcome` turns `VtcError::Refused` into a `ToolError` of kind
+  `refused` carrying the community's code and document, and `vtc_call`
+  refuses a URI the community's discovery answer does not list (`notServed`)
+  before sending. `ErrorData` is only for an argument outside its domain.
+- **A parked operation is an outcome.** `VtcError::Parked` becomes a
+  successful result with `status: "parked"` naming the action; it is never
+  an error and never resent.
+- **One identity, no fall-through.** Rung 1 (bundle) or rung 2 (`did:key`);
+  both or half is an error; nothing serves degraded. There is no rung that
+  replays an operator's login, and none is to be added.
+- **Placement decisions live in `vti-mcp-common`.** This crate keeps what is
+  the community bridge's alone: its tools, their annotations (asserted
+  against the shared classifier), the ladder, the catalog.
+- **The guides are the docs, embedded** (`src/guides.rs`, `include_str!` of
+  `docs/03-vtc/*.md`): never a second description of the community. Editing
+  a guide changes what this bridge serves at its next build; a guide moved or
+  renamed breaks the build, which is the point.
+- **A prompt names only pinned tasks.** Every slug in a workflow's steps or
+  in backticks in its text is held to `vti_specs::schema_index` by
+  `every_slug_a_prompt_names_is_pinned`. A prompt is procedural and short —
+  preconditions, ordered steps, which park and for whom, what the member sees
+  — and links the guide rather than restating it.
+- **A workflow tool is a thin orchestrator** (`src/workflows.rs`): it sends
+  the steps of one workflow in order, each through `begin` under its own
+  Trust Task URI (so `--read-only`, `--deny` and `--confirm` apply per step),
+  stops at the first step that is refused, parked, refused locally or
+  declined, and returns how far it got. It takes a step's payload as the
+  task's own JSON and derives only the identifiers later steps need from the
+  answers; it never builds a payload the specification does not describe, and
+  never retries. `every_workflow_uri_is_pinned` holds its URIs.
+- **Signing in is the person's act.** `vtc_sign_in` / `_finish` / `_cancel`
+  (`src/signin.rs` over `vtc_client::signin`) are the starter's half of
+  `auth/oob/*`: the bridge's own key opens the request over the HTTPS door,
+  presenting the portal's origin and naming itself as `vtc-mcp/<version>`,
+  and the person approves in their wallet after comparing the match number.
+  The bridge never approves, never shows a number as anything but the
+  person's to compare, and holds no session beyond what `redeem` armed for its
+  key. A member sign-in delegates the portal families; an admin sign-in is a
+  console session only.
+- **An administrator's standing is a signing-key delegation**
+  (`vtc_enrol_signing_key`): the bridge sends `auth/signing-key/enroll/0.2`
+  signed by its own key, carrying the identity's signed
+  `auth/signing-key/authorize/0.1` (the console's *Authorize another key*, signed through the wallet, or
+  `cnm access authorize-key`) whose payload
+  is exactly the enrolment's terms. It refuses an authorization naming another
+  key before sending, never builds or alters the terms, and holds no
+  authorization after use. The delegation never answers a step-up or signs a
+  `task-consent/decision` — those stay with the person's own factor.
+- **A step-up is handed to the person, never answered.** A refusal carrying
+  `details.stepUpHandoff` becomes a successful result with `status:
+  "stepUpRequired"` and the `step-up` link (`vtc_client::step_up`,
+  VTI-LNK-127), its contact the community that issued the refusal. The result
+  carries the link, the subject and the community's reason — never the
+  inline request's challenge or binding as something to approve. A workflow
+  stops at that step. The bridge never reads the handle itself.
+- **An agent key reused at a second community is warned about, never refused**
+  (`src/key_reuse.rs`, VTI-KEY-005, VTI-KEY-006): the bridge keeps an owner-only local note
+  of the communities each agent DID signed in to and reports a reuse as
+  `keyReuseWarning` in `vtc_whoami` / `vtc_status`. Only the key holder can see
+  reuse; a community knows only its own records.
+- **`--listen` is loopback, a token, and no browsers — none of it optional**
+  (`vti_mcp_common::listen`, named for this bridge in `src/listen.rs`; design note D7). The endpoint speaks with the bridge's
+  standing, so: `check_loopback` before binding, with no flag to widen it; a
+  bearer token on every request, compared in constant time, its file
+  owner-only and refused otherwise; `Origin` refused and `Host` loopback. One
+  process serves every host because the mediator holds one socket per DID —
+  never answer "two sessions" by starting two bridges on one key. State that
+  must be per host (an elicitation) goes on the calling session's peer, never
+  on the shared bridge.
+- **Several communities are several bridges in one process, never one
+  bridge with a `community` argument** (`src/communities.rs`, design note
+  D7a). `--communities` builds a `VtcMcp` per section — its own client,
+  identity, guard, recorder, sign-in — and serves each at `/mcp/<name>`
+  (`vti_mcp_common::listen::router_many`); nothing at `/mcp`. One agent DID
+  for two sections is refused (VTI-KEY-005, VTI-KEY-006); what is policy is
+  fatal, a key that cannot be used degrades only its community. Key material
+  is named by owner-only files, never written in the TOML.
+- **Deciding an action always asks the human.** `vtc_actions_decide` re-derives
+  the action's summary from the payload that would run (`verify_action`),
+  refuses on any mismatch, and puts the summary and match code in front of
+  the operator through the host whatever `--confirm` says; no host, no
+  decision. The decision is this identity vouching for someone else's
+  authority (`task-consent/decision` is `Sensitive` in the shared table).

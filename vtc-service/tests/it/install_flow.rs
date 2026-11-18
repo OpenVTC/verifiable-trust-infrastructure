@@ -25,7 +25,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
-use vti_common::audit::{AuditEnvelope, AuditEvent};
+use vtc_audit::{AuditEnvelope, AuditEvent};
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use vtc_service::install::{

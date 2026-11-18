@@ -34,7 +34,7 @@ use crate::install::{InstallTokenSigner, InstallTokenStore};
 use crate::server::AppState;
 use crate::store::Store;
 use crate::supervisor::SupervisorKind;
-use vti_common::audit::{AuditKeyStore, AuditWriter};
+use vtc_audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
 
 /// The default `vtc_did` used by [`TestVtc`] — a sentinel that satisfies
@@ -112,18 +112,16 @@ pub fn test_community_x25519_public() -> [u8; 32] {
     x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*secret)).to_bytes()
 }
 
-/// Pin jsonwebtoken's default `CryptoProvider` to `aws_lc` once per
-/// process. The workspace compiles `jsonwebtoken` with only the
-/// `aws_lc_rs` backend; when `cargo test` unifies features across crates
-/// the auto-select panics unless one provider is installed explicitly.
-/// Idempotent — safe to call from every test file.
-pub fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
+/// The Ed25519 public key a test community's signer holds (`with_signers`): what its
+/// DID document publishes, and what `vtc/storage/credentials/recipient` answers with.
+pub fn test_community_ed25519_public() -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(&SIGNER_SEED)
+        .verifying_key()
+        .to_bytes()
 }
+
+/// The fixtures both services share live in `vti_common::test_support` (#2572).
+pub use vti_common::test_support::{build_offline_atm, init_jwt_provider};
 
 /// Builder for a tempdir-backed in-process VTC under test.
 ///
@@ -533,6 +531,9 @@ impl TestVtcBuilder {
         let audit_checkpoint_ks = store
             .keyspace("audit_checkpoint")
             .expect("audit_checkpoint ks");
+        let audit_index_ks = store
+            .keyspace(crate::store::keyspaces::AUDIT_INDEX)
+            .expect("audit_index ks");
         let consumed_invitations_ks = store
             .keyspace("consumed_invitations")
             .expect("consumed_invitations ks");
@@ -565,6 +566,12 @@ impl TestVtcBuilder {
         let boards_ks = store
             .keyspace(crate::store::keyspaces::BOARDS)
             .expect("boards ks");
+        let badges_ks = store
+            .keyspace(crate::store::keyspaces::BADGES)
+            .expect("badges ks");
+        let badge_images_ks = store
+            .keyspace(crate::store::keyspaces::BADGE_IMAGES)
+            .expect("badge_images ks");
         let oid4vp_keys_ks = store
             .keyspace(crate::store::keyspaces::OID4VP_KEYS)
             .expect("oid4vp_keys ks");
@@ -656,7 +663,10 @@ impl TestVtcBuilder {
         }
         // Sealed storage credentials, as `server::run` attaches them: opened with the
         // signer's key, encrypted under a fixed test storage key.
-        if let Some(seed) = credential_signer.as_ref().and_then(|s| s.ed25519_seed()) {
+        if let Some((seed, root)) = credential_signer
+            .as_ref()
+            .and_then(|s| Some((s.ed25519_seed()?, s.derivation_root()?)))
+        {
             room_storage
                 .set_sealed_credentials(Arc::new(
                     crate::rooms::storage_credentials::SealedCredentials::new(
@@ -665,6 +675,7 @@ impl TestVtcBuilder {
                             .expect("storage_credentials ks"),
                         [0x5Au8; 32],
                         &seed,
+                        root.as_bytes(),
                     ),
                 ))
                 .await
@@ -736,6 +747,26 @@ impl TestVtcBuilder {
             self.ballot_boxes
         };
 
+        // Watches, signalling as the service does; a test lends its own `Signals` with
+        // `state.room_watches.set_signals`.
+        let room_watches = Arc::new(vti_rooms::watch::RoomWatches::new(
+            store
+                .keyspace(crate::store::keyspaces::ROOM_WATCHES)
+                .expect("room_watches ks"),
+            rooms_ks.clone(),
+            room_revocations_ks.clone(),
+        ));
+        if credential_signer.is_some() && did_resolver.is_some() {
+            room_watches.set_signals(Arc::new(crate::rooms::watch::VtcSignals {
+                peers: crate::outbound::PeerTasks {
+                    didcomm: didcomm_cell.clone(),
+                    signer: credential_signer.clone(),
+                    replies: pending_replies.clone(),
+                    resolver: did_resolver.clone(),
+                },
+            }));
+        }
+
         let state = AppState {
             // Fixed key: a test never needs the counter to be unguessable, and
             // a deterministic one keeps a failure reproducible.
@@ -774,6 +805,7 @@ impl TestVtcBuilder {
             room_records_ks,
             room_epoch_links_ks,
             room_revocations_ks,
+            room_watches,
             room_files,
             room_storage,
             community_rooms: crate::rooms::community::CommunityRooms::new(
@@ -788,6 +820,7 @@ impl TestVtcBuilder {
                     .expect("directory ks"),
                 self.directory,
             )),
+            community_logo: Arc::new(crate::community::logo::LogoState::default()),
             elections: Arc::new(crate::elections::Elections::new(
                 store
                     .keyspace(crate::store::keyspaces::ELECTIONS)
@@ -797,6 +830,7 @@ impl TestVtcBuilder {
             audit_ks,
             audit_key_ks,
             audit_checkpoint_ks,
+            audit_index_ks,
             outbox_ks,
             tsp_relationships_ks,
             consumed_invitations_ks,
@@ -811,6 +845,8 @@ impl TestVtcBuilder {
             member_pushes_ks,
             notifications_ks,
             boards_ks,
+            badges_ks,
+            badge_images_ks,
             oid4vp_signers: {
                 for record in &self.oid4vp_identities {
                     crate::oid4vp::put_identity(&oid4vp_keys_ks, record)
@@ -855,6 +891,7 @@ impl TestVtcBuilder {
             didcomm: didcomm_cell,
             git_ns,
             large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
+            room_limiters: Default::default(),
             did_self_check: Arc::new(crate::did_self_check::DidSelfCheck::new()),
         };
 
@@ -903,6 +940,26 @@ pub struct TestVtc {
 }
 
 impl TestVtc {
+    /// Send `body` as DIDComm delivers a Trust Task from `sender_did` (the
+    /// transport-authenticated sender), through the same entry point the
+    /// DIDComm and TSP receivers use; returns the status and the document.
+    pub async fn receive_over_didcomm(
+        &self,
+        sender_did: &str,
+        body: &[u8],
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let ctx = crate::trust_tasks::JoinAuthCtx {
+            transport: crate::join::JoinTransport::DIDComm,
+            sender_did: Some(sender_did.to_string()),
+            verified_signer: None,
+        };
+        let out = crate::trust_tasks::dispatch_trust_task_core(&self.state, &ctx, body).await;
+        (
+            out.status,
+            serde_json::from_slice(&out.body).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
     /// Start building a customised VTC.
     pub fn builder() -> TestVtcBuilder {
         TestVtcBuilder::default()
@@ -1123,27 +1180,6 @@ impl Drop for MockVtc {
     }
 }
 
-/// Build a fully-offline [`ATM`](affinidi_tdk::messaging::ATM) for unit tests
-/// that need `atm.unpack` without a live mediator. No secrets and no network
-/// mode are configured, so it can unpack a **plaintext** DIDComm envelope
-/// (which needs no keys) but not decrypt a JWE — exactly what the
-/// plaintext-forgery regression needs. Pair with [`MockVtc::start_with_atm`].
-pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
-    use affinidi_tdk::common::TDKSharedState;
-    use affinidi_tdk::common::config::TDKConfig;
-    use affinidi_tdk::messaging::config::ATMConfig;
-
-    let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
-        .await
-        .expect("TDK shared state");
-    affinidi_tdk::messaging::ATM::new(
-        ATMConfig::builder().build().expect("ATM config"),
-        std::sync::Arc::new(tdk),
-    )
-    .await
-    .expect("offline ATM")
-}
-
 /// Every Trust Task URI this VTC's dispatcher serves: its own list plus the
 /// `rooms/*` verbs it hosts.
 ///
@@ -1151,11 +1187,47 @@ pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
 /// it covers a verb the moment it is dispatched — which is the property the
 /// DIDComm envelope parity test (`tests/didcomm_envelope_binding.rs`) holds.
 pub fn served_trust_task_uris() -> Vec<&'static str> {
-    crate::trust_tasks::DISPATCHED_URIS
+    crate::trust_tasks::dispatched_uris()
         .iter()
         .chain(vti_rooms::wire::ROOMS_DISPATCHED_URIS)
         .copied()
         .collect()
+}
+
+/// An ACL entry as the fixtures seed one: `did` holding `role` with `admin`
+/// authority, written at install time, with no label, expiry, grants or
+/// suspension.
+pub fn seeded_acl_entry(
+    did: &str,
+    role: crate::acl::VtcRole,
+    admin: crate::acl::AdminAuthority,
+) -> crate::acl::VtcAclEntry {
+    crate::acl::VtcAclEntry {
+        did: did.into(),
+        admin,
+        delegated_by: None,
+        role,
+        label: None,
+        created_at: 0,
+        created_by: "did:key:vtc-install".into(),
+        updated_at: None,
+        updated_by: None,
+        expires_at: None,
+        resource_grants: Vec::new(),
+        group_grants: Vec::new(),
+        label_set_by_subject: false,
+        suspension: None,
+    }
+}
+
+/// Seed `did` into `acl` holding `role` with the authority the role implies
+/// — the fixture every test that needs "an administrator" or "a member"
+/// starts from (#2579: one fixture, not one per test module).
+pub async fn seed_acl(acl: &crate::store::KeyspaceHandle, did: &str, role: crate::acl::VtcRole) {
+    let admin = role.implied_authority();
+    crate::acl::store_acl_entry(acl, &seeded_acl_entry(did, role, admin))
+        .await
+        .expect("seed ACL row");
 }
 
 #[cfg(all(feature = "transport-harness", feature = "tsp"))]
@@ -2412,9 +2484,13 @@ mod transport_harness {
                     .await
                     .expect("bind the TSP peer's transport"),
             );
-            let service = Arc::new(MessagingService::new(
+            let service = Arc::new(MessagingService::with_receipts(
                 transport,
                 Arc::new(InMemoryOutboxStore::default()),
+                Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+                    (*atm).clone(),
+                    profile.clone(),
+                )),
             ));
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let mut stream = service.subscribe();

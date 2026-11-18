@@ -65,6 +65,7 @@ impl From<AppError> for ListServicesError {
 pub async fn list_services(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
     auth: &AuthClaims,
 ) -> Result<ServicesListResponse, ListServicesError> {
     auth.require_super_admin()
@@ -89,12 +90,25 @@ pub async fn list_services(
 
     let vta_did = cfg_view
         .vta_did
+        .clone()
         .ok_or(ListServicesError::VtaDidNotConfigured)?;
     // A did:scid VTA DID's services are its log's (VTI-KEY-161).
     let vta_did = match webvh_store::log_did_for(webvh_ks, &vta_did).await? {
         Some(log_did) => log_did,
         None => vta_did,
     };
+
+    // A did:webs VTA's document is derived from the key event stream it
+    // holds; its services are its designated services (`webs_backing`).
+    #[cfg(feature = "webs")]
+    if vta_did.starts_with("did:webs:") {
+        let current_doc = super::webs_backing::current_document(webs_ks, &vta_did)
+            .await
+            .map_err(ListServicesError::Storage)?
+            .ok_or_else(|| ListServicesError::VtaDidRecordMissing(vta_did.clone()))?;
+        return Ok(from_document(&cfg_view, &current_doc));
+    }
+    let _ = webs_ks;
 
     // For non-webvh DIDs (e.g. did:key), there is no on-chain DID document
     // to inspect. Report service state from config only.
@@ -131,12 +145,18 @@ pub async fn list_services(
         .ok_or_else(|| ListServicesError::VtaDidLogMissing(vta_did.clone()))?;
     let current_doc = crate::operations::protocol::document::current_document_from_log(&did_log)?;
 
+    Ok(from_document(&cfg_view, &current_doc))
+}
+
+/// The service view of `current_doc`, the VTA's current DID document, against
+/// the config's flags.
+fn from_document(cfg_view: &ConfigView, current_doc: &serde_json::Value) -> ServicesListResponse {
     // Pull the kind-specific config from the on-chain doc — it's
     // the source of truth for what SDK consumers will resolve.
-    let rest_url = current_rest_service(&current_doc).map(|s| s.url);
-    let webauthn_url = current_webauthn_service(&current_doc).map(|s| s.url);
-    let tsp_mediator = current_tsp_service(&current_doc).map(|s| s.mediator_did);
-    let didcomm = current_didcomm_service(&current_doc);
+    let rest_url = current_rest_service(current_doc).map(|s| s.url);
+    let webauthn_url = current_webauthn_service(current_doc).map(|s| s.url);
+    let tsp_mediator = current_tsp_service(current_doc).map(|s| s.mediator_did);
+    let didcomm = current_didcomm_service(current_doc);
     let (didcomm_mediator, didcomm_routing_keys) = match didcomm {
         Some(svc) => (Some(svc.mediator_did), svc.routing_keys),
         None => (None, Vec::new()),
@@ -165,7 +185,7 @@ pub async fn list_services(
         },
     ];
 
-    Ok(ServicesListResponse { services })
+    ServicesListResponse { services }
 }
 
 struct ConfigView {
@@ -215,6 +235,7 @@ mod tests {
         })
         .unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let webs_ks = store.keyspace(crate::keyspaces::WEBS).unwrap();
         let context_admin = AuthClaims {
             did: "did:key:z6Mk-context-admin".into(),
             role: Role::Admin,
@@ -226,7 +247,7 @@ mod tests {
             acr: String::new(),
         };
 
-        let err = list_services(&config, &webvh_ks, &context_admin)
+        let err = list_services(&config, &webvh_ks, &webs_ks, &context_admin)
             .await
             .unwrap_err();
         assert!(
@@ -253,9 +274,10 @@ mod tests {
         })
         .unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let webs_ks = store.keyspace(crate::keyspaces::WEBS).unwrap();
         let super_admin = AuthClaims::unsafe_local_cli_super_admin("test");
 
-        let err = list_services(&config, &webvh_ks, &super_admin)
+        let err = list_services(&config, &webvh_ks, &webs_ks, &super_admin)
             .await
             .unwrap_err();
         assert!(matches!(err, ListServicesError::VtaDidNotConfigured));
@@ -288,9 +310,10 @@ mod tests {
         })
         .unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let webs_ks = store.keyspace(crate::keyspaces::WEBS).unwrap();
         let super_admin = AuthClaims::unsafe_local_cli_super_admin("test");
 
-        let response = list_services(&config, &webvh_ks, &super_admin)
+        let response = list_services(&config, &webvh_ks, &webs_ks, &super_admin)
             .await
             .unwrap();
 
@@ -358,6 +381,7 @@ mod tests {
         })
         .unwrap();
         let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let webs_ks = store.keyspace(crate::keyspaces::WEBS).unwrap();
 
         // Stage a webvh record + log line so list_services can read
         // the on-chain document. Service array deliberately puts
@@ -408,7 +432,7 @@ mod tests {
             .unwrap();
 
         let super_admin = AuthClaims::unsafe_local_cli_super_admin("test");
-        let response = list_services(&config, &webvh_ks, &super_admin)
+        let response = list_services(&config, &webvh_ks, &webs_ks, &super_admin)
             .await
             .unwrap();
 

@@ -105,7 +105,7 @@ async function patchAclLabel(args: {
     {
       subject: args.entry.subject,
       label: args.label === "" ? null : args.label,
-      reason: "label updated from the admin UI",
+      reason: "label updated from the operator console",
     },
     args.confirmGesture,
   );
@@ -1299,7 +1299,7 @@ function EditCapabilitiesForm({ entry, onDone }: { entry: AclEntry; onDone: () =
           : grantRequest({ subject: entry.subject, role: entry.role, capabilities: picked }).entry
               .capabilities;
       return updateAcl(
-        { subject: entry.subject, capabilities, reason: "capabilities edited in the admin UI" },
+        { subject: entry.subject, capabilities, reason: "capabilities edited in the operator console" },
         confirmGesture,
       );
     },

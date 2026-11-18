@@ -352,7 +352,7 @@ fn app_state_tombstone() -> AppStateRecord {
 /// witness would stop testing the shape the VTA actually stores.
 fn declarative_module() -> String {
     vta_sdk::approvals::synthesize_rego(&[vta_sdk::approvals::ApprovalRule::reauth(
-        uris::TASK_ACL_GRANT_0_2,
+        uris::TASK_ACL_GRANT_0_3,
     )])
 }
 
@@ -360,7 +360,7 @@ fn declarative_module() -> String {
 fn declarative_ext() -> Value {
     json!({
         vta_sdk::approvals::EXT_KEY_RULES: [
-            { "taskType": uris::TASK_ACL_GRANT_0_2, "requires": "reauth" }
+            { "taskType": uris::TASK_ACL_GRANT_0_3, "requires": "reauth" }
         ],
         vta_sdk::approvals::EXT_KEY_APPROVER_SETS: {},
     })
@@ -874,8 +874,8 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "patterns": ["acl/*"] }),
                 to_v(vti_common::trust_task::discovery::respond_v0_4(
                     [
-                        "https://trusttasks.org/spec/acl/grant/0.2",
-                        "https://trusttasks.org/spec/acl/revoke/0.2",
+                        "https://trusttasks.org/spec/acl/grant/0.3",
+                        "https://trusttasks.org/spec/acl/revoke/0.3",
                     ],
                     &specs::trust_task_discovery::v0_4::Payload::default(),
                 ))
@@ -889,8 +889,8 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "patterns": ["acl/*"] }),
                 to_v(vti_common::trust_task::discovery::respond_v0_3(
                     [
-                        "https://trusttasks.org/spec/acl/grant/0.2",
-                        "https://trusttasks.org/spec/acl/revoke/0.2",
+                        "https://trusttasks.org/spec/acl/grant/0.3",
+                        "https://trusttasks.org/spec/acl/revoke/0.3",
                     ],
                     &specs::trust_task_discovery::v0_3::Payload::default(),
                 ))
@@ -1069,7 +1069,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── acl ─────────────────────────────────────────────────
         (
-            uris::TASK_ACL_LIST_0_3,
+            uris::TASK_ACL_LIST_0_4,
             checked!(
                 specs::acl::list::v0_3::Payload,
                 specs::acl::list::v0_3::Response,
@@ -1089,7 +1089,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_GRANT_0_2,
+            uris::TASK_ACL_GRANT_0_3,
             checked!(
                 specs::acl::grant::v0_2::Payload,
                 specs::acl::grant::v0_2::Response,
@@ -1098,7 +1098,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_SHOW_0_2,
+            uris::TASK_ACL_SHOW_0_3,
             checked!(
                 specs::acl::show::v0_2::Payload,
                 specs::acl::show::v0_2::Response,
@@ -1107,7 +1107,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_UPDATE_0_2,
+            uris::TASK_ACL_UPDATE_0_3,
             checked!(
                 specs::acl::update::v0_2::Payload,
                 specs::acl::update::v0_2::Response,
@@ -1141,7 +1141,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_CHANGE_ROLE_0_2,
+            uris::TASK_ACL_CHANGE_ROLE_0_3,
             checked!(
                 specs::acl::change_role::v0_2::Payload,
                 specs::acl::change_role::v0_2::Response,
@@ -1155,7 +1155,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
-            uris::TASK_ACL_REVOKE_0_2,
+            uris::TASK_ACL_REVOKE_0_3,
             checked!(
                 specs::acl::revoke::v0_2::Payload,
                 specs::acl::revoke::v0_2::Response,
@@ -2146,6 +2146,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     format: None,
                     id: Some("cred-1".into()),
                     context_id: Some("ctx-a".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::ReceiveResponse {
                     id: "cred-1".into(),
@@ -2228,6 +2229,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2244,6 +2246,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2261,6 +2264,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
                     force: true,
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2277,6 +2281,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2293,6 +2298,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(cred_vault::CredLifecycleBody {
                     id: "cred-1".into(),
                     reason: Some("holder offboarded".into()),
+                    ext: None,
                 }),
                 to_v(cred_vault::CredLifecycleResponse {
                     id: "cred-1".into(),
@@ -2669,6 +2675,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_VTA_PCS_VOTER_READ_0_7,
+            checked!(
+                specs::vta::pcs::voter::read::v0_7::Payload,
+                specs::vta::pcs::voter::read::v0_7::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "member": MEMBER_DID,
+                    "read": "tombstone", "payload": { "electionId": "agm-2027" } }),
+                json!({ "document": {
+                    "id": "urn:uuid:3f6b9d2e-81c4-4a7f-9e05-6d1c2b8a4f75",
+                    "type": "https://trusttasks.org/spec/vtc/elections/tombstones/show/0.1",
+                    "issuer": MEMBER_DID, "recipient": PCS_COMMUNITY, "issuedAt": TS,
+                    "payload": { "electionId": "agm-2027" },
+                    "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+                        "verificationMethod": "did:key:z6MkpVoteCastKey2222222222222222222222222222222#z6MkpVoteCastKey2222222222222222222222222222222",
+                        "proofPurpose": "authentication", "created": TS, "proofValue": PCS_B58 } } })
+            ),
+        ),
+        (
             uris::TASK_VTA_PCS_VOTER_ACCEPT_0_1,
             checked!(
                 specs::vta::pcs::voter::accept::v0_1::Payload,
@@ -2742,6 +2765,16 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     "checkpoint": { "type": "https://trusttasks.org/spec/voting/board/head/0.1#response", "issuer": VOTING_BOX },
                     "inclusion": { "leafIndex": 41, "treeSize": 213, "entryHash": VOTING_DIGEST, "path": [VOTING_DIGEST] } }),
                 json!({ "electionId": "agm-2027", "status": "included", "leafIndex": 41 })
+            ),
+        ),
+        (
+            uris::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1,
+            checked!(
+                specs::vta::pcs::voter::receipts::list::v0_1::Payload,
+                specs::vta::pcs::voter::receipts::list::v0_1::Response,
+                json!({ "contextId": "personal", "community": PCS_COMMUNITY, "electionId": "agm-2027" }),
+                json!({ "electionId": "agm-2027", "ballotBox": VOTING_BOX,
+                    "receipts": [{ "type": "https://trusttasks.org/spec/voting/ballot/cast/0.1#response", "issuer": VOTING_BOX }] })
             ),
         ),
         // ─── vta/pcs — the encrypted levels ─────────────────────
@@ -3018,6 +3051,86 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        (
+            uris::TASK_ROOMS_KEYS_WATCH_0_1,
+            checked!(
+                specs::rooms::keys::watch::v0_1::Payload,
+                specs::rooms::keys::watch::v0_1::Response,
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "rooms": [
+                        { "roomId": "did:webvh:example.com:rooms:deal", "sinceVersion": 412 },
+                        { "roomId": "did:webvh:example.com:rooms:board" }
+                    ],
+                    "leaseSeconds": 604800
+                }),
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "watches": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:deal",
+                            "armed": true,
+                            "expiresAt": "2026-01-08T00:00:00Z"
+                        },
+                        {
+                            "roomId": "did:webvh:example.com:rooms:board",
+                            "armed": false,
+                            "refused": "hostRefused",
+                            "hostCode": "rooms/watch:limitReached"
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_WATCH_0_2,
+            checked!(
+                specs::rooms::keys::watch::v0_2::Payload,
+                specs::rooms::keys::watch::v0_2::Response,
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "rooms": [
+                        { "roomId": "did:webvh:example.com:rooms:standup", "sinceVersion": 2071 },
+                        { "roomId": "did:webvh:example.com:rooms:deal" }
+                    ],
+                    "leaseSeconds": 120,
+                    "live": true
+                }),
+                json!({
+                    "member": "did:webvh:example.com:people:alice",
+                    "host": "did:web:rooms.example.com",
+                    "watches": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:standup",
+                            "armed": true,
+                            "live": true,
+                            "expiresAt": "2026-01-01T00:02:00Z"
+                        },
+                        {
+                            "roomId": "did:webvh:example.com:rooms:deal",
+                            "armed": false,
+                            "refused": "hostRefused",
+                            "hostCode": "rooms/watch:liveNotPermitted"
+                        }
+                    ]
+                })
+            ),
+        ),
+        // ─── rooms/changed: a watch's signal ─────────────────────
+        // One-way: the specification declares no response and this VTA answers
+        // nothing, so the response side is the empty acknowledgement.
+        (
+            uris::TASK_ROOMS_CHANGED_0_1,
+            checked!(
+                specs::rooms::changed::v0_1::Payload,
+                Acknowledgement,
+                json!({ "roomId": "did:webvh:QmRoom:rooms.example:deal", "latestVersion": 415 }),
+                json!({})
+            ),
+        ),
         // ─── notifications/* + vta/notifications/* ──────────────
         (
             uris::TASK_NOTIFICATIONS_NOTIFY_0_1,
@@ -3141,6 +3254,39 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        (
+            uris::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1,
+            checked!(
+                specs::vta::collection::settings::show::v0_1::Payload,
+                specs::vta::collection::settings::show::v0_1::Response,
+                json!({ "contextId": "personal" }),
+                json!({
+                    "setting": {
+                        "contextId": "personal",
+                        "collectByDefault": true,
+                        "suspendedByOperator": false
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_COLLECTION_SETTINGS_SET_0_1,
+            checked!(
+                specs::vta::collection::settings::set::v0_1::Payload,
+                specs::vta::collection::settings::set::v0_1::Response,
+                json!({ "contextId": "personal", "collectByDefault": false }),
+                json!({
+                    "setting": {
+                        "contextId": "personal",
+                        "collectByDefault": false,
+                        "suspendedByOperator": false,
+                        "changedBy": "did:key:z6MkDesktopClient",
+                        "changedAt": TS
+                    },
+                    "changed": true
+                })
+            ),
+        ),
         // ─── vta/memory ──────────────────────────────────────────
         (
             uris::TASK_VTA_MEMORY_PUT_0_1,
@@ -3175,6 +3321,190 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 to_v(MemoryDeleteBody::new("ctx-a".into(), "greeting".into())),
                 to_v(MemoryDeleteResponse {
                     key: "greeting".into(),
+                })
+            ),
+        ),
+        // Versioned memory (#2115). As for app-state below, the fixtures carry
+        // the members the design turns on: a version, a tombstone with no
+        // value, a change-feed page with its watermark and cursor.
+        (
+            uris::TASK_VTA_MEMORY_PUT_0_2,
+            checked!(
+                specs::vta::memory::put::v0_2::Payload,
+                specs::vta::memory::put::v0_2::Response,
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "value": "billing@acme.example",
+                    "expectedVersion": 47
+                }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "version": 53,
+                    "wasCreated": false,
+                    "updatedAt": "2026-11-09T12:05:01+00:00",
+                    "valueBytes": 20
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_DELETE_0_2,
+            checked!(
+                specs::vta::memory::delete::v0_2::Payload,
+                specs::vta::memory::delete::v0_2::Response,
+                json!({ "contextId": "ctx-a", "key": "contact/billing", "expectedVersion": 53 }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "existed": true,
+                    "version": 54,
+                    "deletedAt": "2026-11-09T13:00:01+00:00"
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_LIST_0_2,
+            checked!(
+                specs::vta::memory::list::v0_2::Payload,
+                specs::vta::memory::list::v0_2::Response,
+                json!({ "contextId": "ctx-a", "sinceVersion": 52, "limit": 2 }),
+                json!({
+                    "items": [
+                        {
+                            "contextId": "ctx-a",
+                            "key": "contact/billing",
+                            "version": 54,
+                            "deleted": true,
+                            "updatedAt": "2026-11-09T13:00:01+00:00",
+                            "deletedAt": "2026-11-09T13:00:01+00:00"
+                        },
+                        {
+                            "contextId": "ctx-a",
+                            "key": "preference/format",
+                            "version": 55,
+                            "value": "PDF",
+                            "valueBytes": 3,
+                            "deleted": false,
+                            "createdAt": "2026-11-09T13:30:00+00:00",
+                            "updatedAt": "2026-11-09T13:30:00+00:00"
+                        }
+                    ],
+                    "nextCursor": "opaque",
+                    "highWatermark": 57,
+                    "tombstoneRetentionSeconds": 2592000
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_GET_0_1,
+            checked!(
+                specs::vta::memory::get::v0_1::Payload,
+                specs::vta::memory::get::v0_1::Response,
+                json!({ "contextId": "ctx-a", "keys": ["preference/format", "contact/billing"] }),
+                json!({
+                    "items": [{
+                        "contextId": "ctx-a",
+                        "key": "preference/format",
+                        "version": 55,
+                        "value": "PDF",
+                        "valueBytes": 3,
+                        "deleted": false,
+                        "updatedAt": "2026-11-09T13:30:00+00:00"
+                    }],
+                    "missing": ["contact/billing"]
+                })
+            ),
+        ),
+        // Purpose of use (#2120): the same, with the `purpose` each request
+        // is made for.
+        (
+            uris::TASK_VTA_MEMORY_PUT_0_3,
+            checked!(
+                specs::vta::memory::put::v0_3::Payload,
+                specs::vta::memory::put::v0_3::Response,
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "value": "billing@acme.example",
+                    "expectedVersion": 47,
+                    "purpose": "personalisation"
+                }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "version": 53,
+                    "wasCreated": false,
+                    "updatedAt": "2026-11-09T12:05:01+00:00",
+                    "valueBytes": 20
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_DELETE_0_3,
+            checked!(
+                specs::vta::memory::delete::v0_3::Payload,
+                specs::vta::memory::delete::v0_3::Response,
+                json!({ "contextId": "ctx-a", "key": "contact/billing", "expectedVersion": 53, "purpose": "taskExecution" }),
+                json!({
+                    "contextId": "ctx-a",
+                    "key": "contact/billing",
+                    "existed": true,
+                    "version": 54,
+                    "deletedAt": "2026-11-09T13:00:01+00:00"
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_LIST_0_3,
+            checked!(
+                specs::vta::memory::list::v0_3::Payload,
+                specs::vta::memory::list::v0_3::Response,
+                json!({ "contextId": "ctx-a", "sinceVersion": 52, "limit": 2, "purpose": "https://w3id.org/dpv#ServicePersonalisation" }),
+                json!({
+                    "items": [
+                        {
+                            "contextId": "ctx-a",
+                            "key": "contact/billing",
+                            "version": 54,
+                            "deleted": true,
+                            "updatedAt": "2026-11-09T13:00:01+00:00",
+                            "deletedAt": "2026-11-09T13:00:01+00:00"
+                        },
+                        {
+                            "contextId": "ctx-a",
+                            "key": "preference/format",
+                            "version": 55,
+                            "value": "PDF",
+                            "valueBytes": 3,
+                            "deleted": false,
+                            "createdAt": "2026-11-09T13:30:00+00:00",
+                            "updatedAt": "2026-11-09T13:30:00+00:00"
+                        }
+                    ],
+                    "nextCursor": "opaque",
+                    "highWatermark": 57,
+                    "tombstoneRetentionSeconds": 2592000
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_MEMORY_GET_0_2,
+            checked!(
+                specs::vta::memory::get::v0_2::Payload,
+                specs::vta::memory::get::v0_2::Response,
+                json!({ "contextId": "ctx-a", "keys": ["preference/format", "contact/billing"], "purpose": "personalisation" }),
+                json!({
+                    "items": [{
+                        "contextId": "ctx-a",
+                        "key": "preference/format",
+                        "version": 55,
+                        "value": "PDF",
+                        "valueBytes": 3,
+                        "deleted": false,
+                        "updatedAt": "2026-11-09T13:30:00+00:00"
+                    }],
+                    "missing": ["contact/billing"]
                 })
             ),
         ),
@@ -3647,6 +3977,228 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_BROWSE_0_4,
+            checked!(
+                specs::rooms::keys::browse::v0_4::Payload,
+                specs::rooms::keys::browse::v0_4::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community"
+                }),
+                // An open room's row as list/0.6 serves it, passed through: when the host
+                // first stored it and by whom, when it stored this body, and its kind.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "giXFLTGBdnnQJRoIsktuIg",
+                        "version": 412,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "createdAt": "2025-12-31T09:14:02Z",
+                        "createdBy": "did:webvh:example.com:people:alice",
+                        "bodyStoredAt": "2025-12-31T09:14:02Z",
+                        "kind": "message"
+                    }],
+                    "complete": true,
+                    "verification": {
+                        "priorRoots": "notChecked",
+                        "anchor": "notChecked",
+                        "count": "agrees",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 1,
+                            "headVersion": 412
+                        }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_BROWSE_0_5,
+            checked!(
+                specs::rooms::keys::browse::v0_5::Payload,
+                specs::rooms::keys::browse::v0_5::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "order": "newestFirst",
+                    "limit": 50,
+                    "maxPages": 1
+                }),
+                // The newest page of a conversation: stopped at `maxPages`, so not complete,
+                // not comparable, and the host's cursor for the page before it.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "q4bZ0sYw9LkVnT2xHcRe1A",
+                        "version": 30412,
+                        "epoch": 7,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }],
+                    "complete": false,
+                    "nextCursor": "n30412",
+                    "verification": {
+                        "priorRoots": "noneHeld",
+                        "anchor": "notChecked",
+                        "count": "notComparable",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 30120,
+                            "headVersion": 30412
+                        }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_BROWSE_0_6,
+            checked!(
+                specs::rooms::keys::browse::v0_6::Payload,
+                specs::rooms::keys::browse::v0_6::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "order": "newestFirst",
+                    "beforeVersion": 30412,
+                    "limit": 50,
+                    "maxPages": 1
+                }),
+                // "Load older" from the lowest version held: bounded above, so never
+                // comparable against the room's count, and the host's cursor for the page
+                // before it — bound to the same `beforeVersion`.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "records": [{
+                        "key": "q4bZ0sYw9LkVnT2xHcRe1A",
+                        "version": 30411,
+                        "epoch": 7,
+                        "status": "active",
+                        "updatedAt": "2026-01-01T00:00:00Z",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    }],
+                    "complete": false,
+                    "nextCursor": "n30411b30412",
+                    "verification": {
+                        "priorRoots": "noneHeld",
+                        "anchor": "notChecked",
+                        "count": "notComparable",
+                        "head": {
+                            "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                            "recordCount": 30120,
+                            "headVersion": 30412
+                        }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_READ_0_2,
+            checked!(
+                specs::rooms::keys::read::v0_2::Payload,
+                specs::rooms::keys::read::v0_2::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "keys": ["giXFLTGBdnnQJRoIsktuIg", "Hc7pY2wQe9tLmB4sVn1KxA", "q1Zr8mVbT0yWl3nK5xHc2A"]
+                }),
+                // The batch form: a record, a key the host does not hold, and one not come to.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "results": [
+                        {
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "version": 412,
+                            "status": "active",
+                            "updatedAt": "2026-01-01T00:00:00Z",
+                            "createdAt": "2025-12-31T09:14:02Z",
+                            "createdBy": "did:webvh:example.com:people:alice",
+                            "bodyStoredAt": "2025-12-31T09:14:02Z",
+                            "author": "did:webvh:example.com:people:alice",
+                            "plaintext": "eyJ0aXRsZSI6IlByaWNpbmcgaG9sZHMifQ",
+                            "verification": {
+                                "trace": "verified",
+                                "priorRoots": "agree",
+                                "anchor": "notChecked",
+                                "head": {
+                                    "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                                    "recordCount": 118,
+                                    "headVersion": 412
+                                }
+                            }
+                        },
+                        {
+                            "key": "Hc7pY2wQe9tLmB4sVn1KxA",
+                            "error": {
+                                "code": "rooms/keys/read:hostRefused",
+                                "message": "room host refused: notFound",
+                                "retryable": false,
+                                "details": { "code": "notFound", "reason": "no such record" }
+                            }
+                        },
+                        {
+                            "key": "q1Zr8mVbT0yWl3nK5xHc2A",
+                            "error": { "code": "rooms/keys/read:notAttempted", "retryable": true }
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_READ_0_3,
+            checked!(
+                specs::rooms::keys::read::v0_3::Payload,
+                specs::rooms::keys::read::v0_3::Response,
+                json!({
+                    "purpose": "personalisation",
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "host": "did:webvh:example.com:northwind-community",
+                    "keys": ["giXFLTGBdnnQJRoIsktuIg", "Hc7pY2wQe9tLmB4sVn1KxA", "q1Zr8mVbT0yWl3nK5xHc2A"]
+                }),
+                // The batch form: a record, a key the host does not hold, and one not come to.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "results": [
+                        {
+                            "key": "giXFLTGBdnnQJRoIsktuIg",
+                            "version": 412,
+                            "status": "active",
+                            "updatedAt": "2026-01-01T00:00:00Z",
+                            "createdAt": "2025-12-31T09:14:02Z",
+                            "createdBy": "did:webvh:example.com:people:alice",
+                            "bodyStoredAt": "2025-12-31T09:14:02Z",
+                            "author": "did:webvh:example.com:people:alice",
+                            "plaintext": "eyJ0aXRsZSI6IlByaWNpbmcgaG9sZHMifQ",
+                            "verification": {
+                                "trace": "verified",
+                                "priorRoots": "agree",
+                                "anchor": "notChecked",
+                                "head": {
+                                    "dataCommitment": "zQmbWqxBEKC3P8tqsKc98xmWNzrzDtRLMiMPL8wBuTGsMnR",
+                                    "recordCount": 118,
+                                    "headVersion": 412
+                                }
+                            }
+                        },
+                        {
+                            "key": "Hc7pY2wQe9tLmB4sVn1KxA",
+                            "error": {
+                                "code": "rooms/keys/read:hostRefused",
+                                "message": "room host refused: notFound",
+                                "retryable": false,
+                                "details": { "code": "notFound", "reason": "no such record" }
+                            }
+                        },
+                        {
+                            "key": "q1Zr8mVbT0yWl3nK5xHc2A",
+                            "error": { "code": "rooms/keys/read:notAttempted", "retryable": true }
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_SEAL_0_2,
             checked!(
                 specs::rooms::keys::seal::v0_2::Payload,
@@ -3654,6 +4206,27 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 1,
+                    "plaintext": "eyJyb29tSWQiOiJkaWQ6d2Vidmg6ZXhhbXBsZS5jb206cm9vbXM6bm9ydGh3aW5kIn0",
+                    "signAsPrincipal": true
+                }),
+                json!({
+                    "sealed": {
+                        "ciphertext": "3QhV1sVvR0m5xAqZ7Aw2mQnR4vBk8QLp3wXc9TgYw",
+                        "nonce": "b0Zt8Qm2Yq1sVvR0",
+                        "epoch": 4
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_SEAL_0_3,
+            checked!(
+                specs::rooms::keys::seal::v0_3::Payload,
+                specs::rooms::keys::seal::v0_3::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "Hc7pY2wQe9tLmB4sVn1KxA",
                     "version": 1,
                     "plaintext": "eyJyb29tSWQiOiJkaWQ6d2Vidmg6ZXhhbXBsZS5jb206cm9vbXM6bm9ydGh3aW5kIn0",
                     "signAsPrincipal": true
@@ -3755,6 +4328,72 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_ACT_0_11,
+            checked!(
+                specs::rooms::keys::act::v0_11::Payload,
+                specs::rooms::keys::act::v0_11::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a8",
+                        "type": "https://trusttasks.org/spec/rooms/records/list/0.6#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:13:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a8",
+                        "type": "https://trusttasks.org/spec/rooms/records/list/0.6#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:webvh:example.com:northwind-community",
+                        "issuedAt": "2026-01-01T00:13:00Z",
+                        "payload": { "roomId": "did:webvh:example.com:rooms:northwind" },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_ACT_0_12,
+            checked!(
+                specs::rooms::keys::act::v0_12::Payload,
+                specs::rooms::keys::act::v0_12::Response,
+                json!({
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a9",
+                        "type": "https://trusttasks.org/spec/rooms/watch/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:web:rooms.example.com",
+                        "issuedAt": "2026-01-01T00:14:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "address": "did:webvh:example.com:people:alice-watches",
+                            "sinceVersion": 41
+                        }
+                    }
+                }),
+                json!({
+                    "principal": "did:webvh:example.com:people:alice",
+                    "document": {
+                        "id": "urn:uuid:00000000-0000-4000-8000-0000000000a9",
+                        "type": "https://trusttasks.org/spec/rooms/watch/0.1#request",
+                        "issuer": "did:webvh:example.com:people:alice",
+                        "recipient": "did:web:rooms.example.com",
+                        "issuedAt": "2026-01-01T00:14:00Z",
+                        "payload": {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "address": "did:webvh:example.com:people:alice-watches",
+                            "sinceVersion": 41
+                        },
+                        "proof": { "type": "DataIntegrityProof" }
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_LIST_0_2,
             checked!(
                 specs::rooms::keys::list::v0_2::Payload,
@@ -3774,6 +4413,51 @@ fn table() -> Vec<(&'static str, Conformance)> {
                             }
                         }
                     ]
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_LIST_0_3,
+            checked!(
+                specs::rooms::keys::list::v0_3::Payload,
+                specs::rooms::keys::list::v0_3::Response,
+                json!({ "includePersonal": true }),
+                json!({
+                    "rooms": [
+                        {
+                            "roomId": "did:webvh:example.com:rooms:northwind",
+                            "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                            "epoch": 4,
+                            "earliestReadableEpoch": 1,
+                            "personal": {
+                                "label": "Northwind tender",
+                                "updatedAt": "2026-01-01T00:00:00Z"
+                            },
+                            "readMarker": {
+                                "version": 415,
+                                "createdAt": "2026-01-01T10:14:02Z"
+                            }
+                        }
+                    ]
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1,
+            checked!(
+                specs::rooms::keys::read_marker::set::v0_1::Payload,
+                specs::rooms::keys::read_marker::set::v0_1::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "readMarker": { "version": 408, "createdAt": "2026-01-01T09:58:41Z" },
+                    "rewind": true
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "readMarker": { "version": 408, "createdAt": "2026-01-01T09:58:41Z" },
+                    "moved": true
                 })
             ),
         ),
@@ -3888,6 +4572,26 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         "status": "refused",
                         "code": "rooms/revocations/put:notAppendOnly"
                     }
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_OWNER_REGISTER_0_3,
+            checked!(
+                specs::rooms::owner::register::v0_3::Payload,
+                specs::rooms::owner::register::v0_3::Response,
+                // A room meant as a conversation, stating both settings at creation.
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:standup",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "visibility": "attributed",
+                    "recordRetention": { "tombstoneDays": 7, "recordDays": 365 },
+                    "signalDelay": "none"
+                }),
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:standup",
+                    "host": "did:webvh:example.org:rooms-mirror",
+                    "epoch": 1
                 })
             ),
         ),
@@ -4007,6 +4711,23 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3,
+            checked!(
+                specs::rooms::owner::issue_authority::v0_3::Payload,
+                specs::rooms::owner::issue_authority::v0_3::Response,
+                json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "signingKeyId": "room-northwind-signing",
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "actions": ["read"],
+                    "validUntil": "2026-02-01T00:00:00Z",
+                    "purposes": { "scope": "listed", "purposes": ["taskExecution"] }
+                }),
+                json!({ "credential": "eyJhbGciOiJFZERTQSJ9.room-credential",
+                    "credentialId": "urn:uuid:11111111-1111-4111-8111-111111111111" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_OPEN_0_2,
             checked!(
                 specs::rooms::keys::open::v0_2::Payload,
@@ -4025,11 +4746,48 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_ROOMS_KEYS_OPEN_0_3,
+            checked!(
+                specs::rooms::keys::open::v0_3::Payload,
+                specs::rooms::keys::open::v0_3::Response,
+                json!({
+                    "purpose": "taskExecution",
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "key": "giXFLTGBdnnQJRoIsktuIg",
+                    "version": 1,
+                    "sealed": {
+                        "ciphertext": "1ep1PJuf8-yNmTndwcuMxA",
+                        "nonce": "AAAAAAAAAAAAAAAA",
+                        "epoch": 1
+                    }
+                }),
+                json!({ "plaintext": "YSBkZWNpc2lvbg" })
+            ),
+        ),
+        (
             uris::TASK_ROOMS_KEYS_FILE_KEY_0_2,
             checked!(
                 specs::rooms::keys::file_key::v0_2::Payload,
                 specs::rooms::keys::file_key::v0_2::Response,
                 json!({
+                    "roomId": "did:webvh:example.com:rooms:northwind",
+                    "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+                    "purpose": "open",
+                    "epoch": 5
+                }),
+                json!({
+                    "key": "qPm3rH0xU1d5wR6x0yTq8ZbV7k2nC4aE9fG1hJ3kL5M",
+                    "epoch": 5
+                })
+            ),
+        ),
+        (
+            uris::TASK_ROOMS_KEYS_FILE_KEY_0_3,
+            checked!(
+                specs::rooms::keys::file_key::v0_3::Payload,
+                specs::rooms::keys::file_key::v0_3::Response,
+                json!({
+                    "purposeOfUse": "https://w3id.org/dpv#ServicePersonalisation",
                     "roomId": "did:webvh:example.com:rooms:northwind",
                     "fileId": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
                     "purpose": "open",
@@ -4793,7 +5551,164 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // Gated with their dispatch entries: the sweep requires the two to agree in
+    // both directions.
+    #[cfg(feature = "webs")]
+    for (uri, req, resp) in webs_witnesses() {
+        t.push((
+            uri,
+            Conformance::Checked(Witness {
+                request: req.0,
+                parse_request: req.1,
+                validate_request: req.2,
+                response: resp.0,
+                parse_response: resp.1,
+            }),
+        ));
+    }
+
     t
+}
+
+/// `vta/webs/dids/*/0.1` and `create/0.2` — the did:webs lifecycle.
+#[cfg(feature = "webs")]
+#[allow(deprecated)] // create/0.1 is superseded by 0.2, still served
+fn webs_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
+    use specs::vta::webs::dids as ws;
+
+    const DID: &str =
+        "did:webs:hosting.example:personas:EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+    const AID: &str = "EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+    const SLOT: &str = "personas/EKYLUMmNPZeEs77Zvclf0bSN5IN-mLfLpx2ySb-HDlk4";
+    const VERSION: &str = "1:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqao";
+    const SIGNING: &str = "DHr0-I-mMN7h6cLMOTRJkkfPuMd0vgQPrOk4Y3edaHjr";
+    const KA: &str = "CAbcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    let record = || {
+        json!({
+            "did": DID, "aid": AID, "contextId": "personal", "serverId": "host-1",
+            "domain": "hosting.example", "slot": SLOT,
+            "keriCesrUrl": format!("https://hosting.example/{SLOT}/keri.cesr"),
+            "didJsonUrl": format!("https://hosting.example/{SLOT}/did.json"),
+            "sequenceNumber": 1, "versionId": VERSION,
+            "signingKeyId": format!("{DID}#{SIGNING}"), "signingKey": SIGNING,
+            "nextKeyId": format!("{DID}#pre-rotation-0"),
+            "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+            "alsoKnownAs": [DID],
+            "services": [{ "id": "#didcomm", "type": ["DIDCommMessaging"],
+              "serviceEndpoint": [{ "accept": ["didcomm/v2"], "uri": "did:web:mediator.example" }] }],
+            "deactivated": false, "primary": false,
+            "createdAt": "2026-11-11T09:00:00Z", "updatedAt": "2026-11-11T09:00:00Z"
+        })
+    };
+    vec![
+        (
+            uris::TASK_VTA_WEBS_DIDS_CREATE_0_1,
+            (
+                json!({ "contextId": "personal", "serverId": "host-1", "path": "personas",
+                  "addMediatorService": true, "setPrimary": false }),
+                parses::<ws::create::v0_1::Payload>,
+                validates::<ws::create::v0_1::Payload>,
+            ),
+            (
+                json!({
+                    "did": DID, "aid": AID, "contextId": "personal", "serverId": "host-1",
+                    "domain": "hosting.example", "slot": SLOT,
+                    "keriCesrUrl": format!("https://hosting.example/{SLOT}/keri.cesr"),
+                    "didJsonUrl": format!("https://hosting.example/{SLOT}/did.json"),
+                    "signingKeyId": format!("{DID}#{SIGNING}"), "signingKey": SIGNING,
+                    "nextKeyId": format!("{DID}#pre-rotation-0"),
+                    "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+                    "sequenceNumber": 1, "versionId": VERSION, "alsoKnownAs": [DID],
+                    "serviceIds": ["#didcomm"], "createdAt": "2026-11-11T09:00:00Z"
+                }),
+                parses::<ws::create::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_CREATE_0_2,
+            (
+                json!({ "contextId": "personal", "serverId": "host-1", "didClass": "service",
+                  "path": "witnesses", "template": "ai-agent",
+                  "templateVars": { "MEDIATOR_DID": "did:web:mediator.example" } }),
+                parses::<ws::create::v0_2::Payload>,
+                validates::<ws::create::v0_2::Payload>,
+            ),
+            (
+                json!({
+                    "did": DID, "aid": AID, "contextId": "personal", "didClass": "service",
+                    "serverId": "host-1", "domain": "hosting.example", "slot": SLOT,
+                    "keriCesrUrl": format!("https://hosting.example/{SLOT}/keri.cesr"),
+                    "didJsonUrl": format!("https://hosting.example/{SLOT}/did.json"),
+                    "signingKeyId": format!("{DID}#{SIGNING}"), "signingKey": SIGNING,
+                    "nextKeyId": format!("{DID}#pre-rotation-0"),
+                    "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+                    "sequenceNumber": 1, "versionId": VERSION, "alsoKnownAs": [DID],
+                    "serviceIds": ["#tsp", "#vta-didcomm"], "template": "ai-agent",
+                    "templateScope": "builtin", "templateKind": "ai-agent",
+                    "createdAt": "2026-11-11T09:00:00Z"
+                }),
+                parses::<ws::create::v0_2::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_GET_0_1,
+            (
+                json!({ "did": DID, "includeKeriCesr": false }),
+                parses::<ws::get::v0_1::Payload>,
+                validates::<ws::get::v0_1::Payload>,
+            ),
+            (
+                json!({ "record": record() }),
+                parses::<ws::get::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_UPDATE_0_1,
+            (
+                json!({ "did": DID, "expectedVersionId": VERSION,
+                  "services": { "mediator": true, "tsp": false } }),
+                parses::<ws::update::v0_1::Payload>,
+                validates::<ws::update::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": DID, "replaced": ["services"], "sequenceNumber": 2,
+                  "versionId": "2:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqab",
+                  "keyAgreementKeyId": format!("{DID}#{KA}"), "keyAgreementKey": KA,
+                  "alsoKnownAs": [DID], "serviceIds": ["#didcomm"] }),
+                parses::<ws::update::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_ROTATE_KEYS_0_1,
+            (
+                json!({ "did": DID, "expectedVersionId": VERSION }),
+                parses::<ws::rotate_keys::v0_1::Payload>,
+                validates::<ws::rotate_keys::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": DID, "sequenceNumber": 2,
+                  "versionId": "2:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqab",
+                  "signingKeyId": format!("{DID}#DNext"), "signingKey": "DNext",
+                  "nextKeyId": format!("{DID}#pre-rotation-1"),
+                  "retiredKeyId": format!("{DID}#{SIGNING}"), "resumed": false }),
+                parses::<ws::rotate_keys::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_WEBS_DIDS_DELETE_0_1,
+            (
+                json!({ "did": DID }),
+                parses::<ws::delete::v0_1::Payload>,
+                validates::<ws::delete::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": DID, "deactivated": true, "newlyDeactivated": true,
+                  "versionId": "2:EBfdlu8R27Fbx-ehrqwImnK-8Cm79sqbAQ4MmvEAYqab",
+                  "slotRemoved": true }),
+                parses::<ws::delete::v0_1::Response>,
+            ),
+        ),
+    ]
 }
 
 type ReqParts = (Value, ParseFn, ValidateFn);
@@ -5714,6 +6629,54 @@ fn backup_and_management_witnesses() -> Vec<(&'static str, ReqParts, RespParts)>
     ]
 }
 
+/// `DidSummary`s as the engines build them (`operations::dids`), one per
+/// shape: a did:webvh with method details, a did:webs with a class, a did:key
+/// with neither.
+fn did_summaries() -> Vec<Value> {
+    use crate::operations::dids::DidSummary;
+    let at = chrono::DateTime::parse_from_rfc3339("2026-11-17T10:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let base = |did: &str, method: &'static str| DidSummary {
+        did: did.into(),
+        method,
+        context_id: Some("personal".into()),
+        class: None,
+        level: 1,
+        primary: false,
+        deactivated: false,
+        server_id: None,
+        label: None,
+        signing_key_id: None,
+        key_agreement_key_id: None,
+        also_known_as: Vec::new(),
+        created_at: at,
+        updated_at: at,
+        method_details: None,
+    };
+    let mut webvh = base("did:webvh:QmScid:example.com:personal", "webvh");
+    webvh.primary = true;
+    webvh.server_id = Some("prod".into());
+    webvh.signing_key_id = Some("did:webvh:QmScid:example.com:personal#key-0".into());
+    webvh.method_details = json!({ "scid": "QmScid", "mnemonic": "personal",
+        "portable": false, "logEntryCount": 1, "preRotationCount": 0 })
+    .as_object()
+    .cloned();
+    let mut webs = base("did:webs:example.com:p:EAid", "webs");
+    webs.class = Some("persona");
+    webs.deactivated = true;
+    webs.also_known_as = vec!["did:keri:EAid".into()];
+    webs.method_details = json!({ "aid": "EAid", "slot": "p/EAid", "domain": "example.com",
+        "sequenceNumber": 2, "keriCesrUrl": "https://example.com/p/EAid/keri.cesr",
+        "didJsonUrl": "https://example.com/p/EAid/did.json" })
+    .as_object()
+    .cloned();
+    let mut key = base("did:key:z6Mkhold", "key");
+    key.label = Some("holder".into());
+    key.signing_key_id = Some("did:key:z6Mkhold#z6Mkhold".into());
+    vec![webvh.to_value(), webs.to_value(), key.to_value()]
+}
+
 #[allow(deprecated)] // vta/webvh/dids/rotate-keys/1.0: still served; whether to move is a pending decision
 fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
     use specs::vta::{contexts as ctx, services as svc, webvh as wv};
@@ -5789,14 +6752,15 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (context_record(), parses::<ctx::update::v1_0::Response>),
         ),
         (
-            // 1.1: `did` may be `null`, which clears the context's DID.
-            uris::TASK_CONTEXTS_UPDATE_DID_1_1,
+            // `did` may be `null`, which clears the context's DID; 1.2 refuses
+            // a string naming an identity the VTA does not hold there.
+            uris::TASK_CONTEXTS_UPDATE_DID_1_2,
             (
                 json!({ "id": "personal", "did": null }),
-                parses::<ctx::update_did::v1_1::Payload>,
-                validates::<ctx::update_did::v1_1::Payload>,
+                parses::<ctx::update_did::v1_2::Payload>,
+                validates::<ctx::update_did::v1_2::Payload>,
             ),
-            (context_record(), parses::<ctx::update_did::v1_1::Response>),
+            (context_record(), parses::<ctx::update_did::v1_2::Response>),
         ),
         (
             uris::TASK_CONTEXTS_SECRETS_1_0,
@@ -5831,45 +6795,99 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
-            uris::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
+            uris::TASK_CONTEXTS_PREVIEW_DELETE_2_0,
             (
                 json!({ "id": "personal" }),
-                parses::<ctx::preview_delete::v1_0::Payload>,
-                validates::<ctx::preview_delete::v1_0::Payload>,
+                parses::<ctx::preview_delete::v2_0::Payload>,
+                validates::<ctx::preview_delete::v2_0::Payload>,
             ),
             (
-                // These four are arrays of ids, not counts. The names read like
-                // tallies and do not behave like them — precisely what a witness
-                // written by hand gets wrong and the round-trip check exists to catch.
-                json!({ "id": "personal", "keys": ["k-1"], "webvhDids": [],
-                 "aclEntriesRemoved": ["did:key:zRemoved"], "aclEntriesUpdated": [] }),
-                parses::<ctx::preview_delete::v1_0::Response>,
+                // Serialised from the type the service answers with, so a
+                // member it renames cannot pass by a hand-written literal.
+                // `dids` names every method's identities (2.0).
+                serde_json::to_value(
+                    vta_sdk::protocols::context_management::delete::DeleteContextPreviewResultBody {
+                        id: "personal".into(),
+                        keys: vec!["k-1".into()],
+                        dids: vec![
+                            "did:webvh:QmX:host.example:p".into(),
+                            "did:webs:host.example:p:EAid".into(),
+                        ],
+                        acl_entries_removed: vec!["did:key:zRemoved".into()],
+                        ..Default::default()
+                    },
+                )
+                .expect("the preview serialises"),
+                parses::<ctx::preview_delete::v2_0::Response>,
             ),
         ),
         (
-            // 1.1: `abandonHostCopies`, and the orphans it leaves reported.
-            uris::TASK_CONTEXTS_DELETE_1_1,
+            // `abandonHostCopies`, and the orphans it leaves reported — of any
+            // method (1.2).
+            uris::TASK_CONTEXTS_DELETE_1_2,
             (
                 json!({ "id": "personal", "force": true, "abandonHostCopies": true }),
-                parses::<ctx::delete::v1_1::Payload>,
-                validates::<ctx::delete::v1_1::Payload>,
+                parses::<ctx::delete::v1_2::Payload>,
+                validates::<ctx::delete::v1_2::Payload>,
             ),
             (
                 json!({ "id": "personal", "deleted": true,
-                        "daemonCleanupErrors": ["did:webvh:QmX:host.example:p: host down"] }),
-                parses::<ctx::delete::v1_1::Response>,
+                        "daemonCleanupErrors": ["did:webs:host.example:p:EAid: host down"] }),
+                parses::<ctx::delete::v1_2::Response>,
             ),
         ),
         (
-            uris::TASK_WEBVH_DIDS_LIST_1_0,
+            uris::TASK_VTA_DIDS_LIST_0_1,
             (
-                json!({}),
-                parses::<wv::dids::list::v1_0::Payload>,
-                validates::<wv::dids::list::v1_0::Payload>,
+                json!({ "contextId": "personal", "methods": ["webvh", "webs", "key"],
+                        "includeDeactivated": true, "limit": 10 }),
+                parses::<vti_specs::vta::dids::list::v0_1::Payload>,
+                validates::<vti_specs::vta::dids::list::v0_1::Payload>,
             ),
             (
-                json!({ "dids": [did_record()] }),
-                parses::<wv::dids::list::v1_0::Response>,
+                json!({ "dids": did_summaries(), "nextCursor": "ZGlkcy1hZnRlcg" }),
+                parses::<vti_specs::vta::dids::list::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_DIDS_GET_0_1,
+            (
+                json!({ "did": did }),
+                parses::<vti_specs::vta::dids::get::v0_1::Payload>,
+                validates::<vti_specs::vta::dids::get::v0_1::Payload>,
+            ),
+            (
+                json!({ "did": did_summaries()[0] }),
+                parses::<vti_specs::vta::dids::get::v0_1::Response>,
+            ),
+        ),
+        (
+            uris::TASK_VTA_DIDS_METHODS_LIST_0_1,
+            (
+                json!({}),
+                parses::<vti_specs::vta::dids::methods::list::v0_1::Payload>,
+                validates::<vti_specs::vta::dids::methods::list::v0_1::Payload>,
+            ),
+            (
+                json!({ "methods": [
+                    crate::operations::dids::MethodInfo {
+                        method: "webs",
+                        listed: true,
+                        creatable: true,
+                        classes: vec!["relationship", "persona"],
+                        operations: vec![uris::TASK_VTA_WEBS_DIDS_GET_0_1],
+                    }
+                    .to_value(),
+                    crate::operations::dids::MethodInfo {
+                        method: "key",
+                        listed: true,
+                        creatable: false,
+                        classes: Vec::new(),
+                        operations: Vec::new(),
+                    }
+                    .to_value(),
+                ] }),
+                parses::<vti_specs::vta::dids::methods::list::v0_1::Response>,
             ),
         ),
         (

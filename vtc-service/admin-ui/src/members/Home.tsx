@@ -7,6 +7,7 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Award,
   BellRing,
   Boxes,
   Check,
@@ -23,6 +24,7 @@ import {
 } from "lucide-react";
 
 import { vtcDid, type MemberMe } from "./api";
+import { badgesHref, listMine } from "./badges-api";
 import { listAllBoards } from "./boards-api";
 import { boardHref } from "./Boards";
 import { listFields, showCard } from "./directory-api";
@@ -30,6 +32,8 @@ import { electionHref } from "./Elections";
 import { viewRepos } from "./git-api";
 import { listGroups } from "./groups-api";
 import {
+  badgesAttention,
+  badgesStatus,
   boardsAttention,
   boardsStatus,
   electionsAttention,
@@ -45,6 +49,7 @@ import { MemberAvatar, nameOf, text } from "./member-card";
 import { Passkeys } from "./Passkeys";
 import { walletElections } from "./wallet-elections";
 import { walletRooms } from "./wallet-rooms";
+import { formatDate, shortenDid } from "@/lib/format";
 
 const STALE = 30_000;
 
@@ -83,6 +88,7 @@ export function Home({ me }: { me: MemberMe }) {
   });
   const boards = useQuery({ queryKey: ["boards"], queryFn: listAllBoards, retry: false, staleTime: STALE });
   const groups = useQuery({ queryKey: ["groups", "list"], queryFn: listGroups, retry: false, staleTime: STALE });
+  const badges = useQuery({ queryKey: ["badges", "mine"], queryFn: listMine, retry: false, staleTime: STALE });
   const git = useQuery({ queryKey: ["git", "view"], queryFn: viewRepos, retry: false, staleTime: STALE });
 
   const c = card.data?.card;
@@ -96,6 +102,7 @@ export function Home({ me }: { me: MemberMe }) {
     ...roomsAttention(rw ? offers : null),
     ...electionsAttention(elections, electionHref),
     ...boardsAttention(boards, boardHref),
+    ...badgesAttention(badges, badgesHref),
   ];
 
   return (
@@ -135,7 +142,7 @@ export function Home({ me }: { me: MemberMe }) {
           </div>
           <div>
             <dt>Member since</dt>
-            <dd>{new Date(me.joinedAt).toLocaleDateString(undefined, { dateStyle: "medium" })}</dd>
+            <dd>{formatDate(me.joinedAt)}</dd>
           </div>
           <div>
             <dt>Signed in with</dt>
@@ -180,6 +187,9 @@ export function Home({ me }: { me: MemberMe }) {
           </Tile>
           <Tile href="#/groups" icon={UsersRound} title="Groups" status={groupsStatus(groups)}>
             Join groups and see who is in them.
+          </Tile>
+          <Tile href={badgesHref} icon={Award} title="Badges" status={badgesStatus(badges)}>
+            Badges you earned and show on your card, and kudos you give other members.
           </Tile>
           <Tile href="#/boards" icon={SquareKanban} title="Boards" status={boardsStatus(boards)}>
             Propose ideas, leave notes and vote on what happens next.
@@ -272,7 +282,7 @@ function DidChip({ did }: { did: string }) {
   };
   return (
     <span className="ph-did">
-      <code title={did}>{did}</code>
+      <code title={did}>{shortenDid(did)}</code>
       <button type="button" className="btn btn-ghost btn-sm" onClick={copy} aria-label="Copy your DID">
         {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
       </button>
@@ -309,5 +319,5 @@ function visibilityLine(
 export function signInMethod(amr: string[]): string {
   if (amr.includes("passkey")) return "Passkey";
   if (amr.includes("oob")) return "Your wallet";
-  return "Your VTA (SIOPv2)";
+  return "Your VTA";
 }

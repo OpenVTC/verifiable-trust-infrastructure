@@ -1,7 +1,9 @@
-//! Acting **as** the member — `rooms/keys/act` 0.8, 0.9 and 0.10, and `rooms/keys/seal/0.2`.
-//! No earlier `act` is served. Every client in this workspace sends 0.10; `pnm-browser-plugin`
-//! sends 0.8, which keeps its own table until the plugin moves, and 0.9 stays served for a
-//! client not yet moved.
+//! Acting **as** the member — `rooms/keys/act` 0.8 to 0.12, and `rooms/keys/seal` 0.2 and
+//! 0.3. No earlier `act` is served. Act 0.12 (trust-tasks-tf #1040) adds `rooms/watch/0.1`
+//! for a client with an address of its own. Every client in this workspace sends act 0.10 and seal
+//! 0.2; `pnm-browser-plugin` sends act 0.8, which keeps its own table until the plugin moves,
+//! and 0.9 stays served for a client not yet moved. Act 0.11 and seal 0.3 (trust-tasks-tf
+//! #1027) are served for a client writing messages, replies and reactions.
 //!
 //! The member's own client (a `pnm` session, a wallet extension, a phone) holds no key of
 //! the persona the room admitted. These two tasks are how it writes and reads as that
@@ -215,9 +217,51 @@ pub(super) async fn handle_act_v0_10(
     .await
 }
 
+/// `rooms/keys/act/0.11`: 0.10, with `rooms/records/put/0.5` (`write`) and
+/// `rooms/records/list/0.6` and `rooms/records/get/0.3` (`read`) in the table, so a member
+/// writes a message or a reply to an open room and reads what its readers' rules need
+/// (trust-tasks-tf #1027). Completed exactly as their predecessors are: the `cleartext` is
+/// signed unaltered, and neither its new members nor the room's `recordMembers` are checked
+/// here — that is the writer's rule (put/0.5 Producer item 11).
+pub(super) async fn handle_act_v0_11(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_act(
+        state,
+        auth,
+        doc,
+        room_act::actable_0_11,
+        room_act::is_community_type_0_10,
+    )
+    .await
+}
+
+/// `rooms/keys/act/0.12`: 0.11, with `rooms/watch/0.1` (`read`) in the table, for a client
+/// that receives at an address of its own (trust-tasks-tf #1040). Completed as a listing is:
+/// the recipient does not read, check or change `address`, `sinceVersion` or `leaseSeconds`
+/// (Recipient item 6). Which DID the address may be binds the producer alone (Producer
+/// item 6), and is checked by the client (`pnm rooms watch --via-host`).
+pub(super) async fn handle_act_v0_12(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_act(
+        state,
+        auth,
+        doc,
+        room_act::actable_0_12,
+        room_act::is_community_type_0_10,
+    )
+    .await
+}
+
 /// One `rooms/keys/act` request, against the closed table of the version it names
-/// (Recipient item 1). 0.10 extends 0.9, which extends 0.8 — the same request, response and
-/// error codes — so all three are read and answered as 0.10's types; only the tables differ.
+/// (Recipient item 1). 0.11 extends 0.10, which extends 0.9 and 0.8 — the same request,
+/// response and error codes — so all are read and answered as 0.11's types; only the tables
+/// differ.
 async fn handle_act(
     state: &AppState,
     auth: &AuthClaims,
@@ -225,7 +269,7 @@ async fn handle_act(
     actable: fn(&str) -> Option<Option<&'static str>>,
     community: fn(&str) -> bool,
 ) -> TrustTaskOutcome {
-    use vti_specs::rooms::keys::act::v0_10 as spec;
+    use vti_specs::rooms::keys::act::v0_12 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -506,7 +550,7 @@ async fn complete_offer(
     room_id: Option<&str>,
     document: Value,
 ) -> Result<room_act::Completed, TrustTaskOutcome> {
-    use vti_specs::rooms::keys::act::v0_10::error_codes as codes;
+    use vti_specs::rooms::keys::act::v0_12::error_codes as codes;
 
     // Item 2b: the named `issuer`, never one picked for the caller — not the only persona
     // held, not one inferred from the offer.
@@ -593,13 +637,50 @@ fn decode_b64(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
 }
 
 /// `rooms/keys/seal/0.2`. Without `signAsPrincipal` it is 0.1; with it, the body is signed
-/// as its `author` — a member the caller acts as — before it is sealed.
+/// as its `author` — a member the caller acts as — before it is sealed. A body carrying a
+/// member `recordMembers` governs is refused `bodyInvalid`, as a 0.2 key holder refuses it
+/// (`rooms/keys/seal/0.3`, *What changed from 0.2*): 0.3 is how a writer learns that its key
+/// holder accepts them, so 0.2 never does.
 pub(super) async fn handle_seal_v0_2(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use vti_specs::rooms::keys::seal::v0_2 as spec;
+    handle_seal(state, auth, doc, BodyMembers::V0_2).await
+}
+
+/// `rooms/keys/seal/0.3`: 0.2, accepting under `signAsPrincipal` a body carrying `kind`,
+/// `inReplyTo`, `writtenAt` or `editedAt`, or a `file` with `width`, `height` or `preview`
+/// (Recipient item 3; trust-tasks-tf #1027). Each is checked against its schema and signed as
+/// given. Not against the room's `recordMembers`: that is the writer's rule, and the
+/// specification says the key holder does not apply it.
+pub(super) async fn handle_seal_v0_3(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_seal(state, auth, doc, BodyMembers::V0_3).await
+}
+
+/// Which `SealedRecordBody` members a `rooms/keys/seal` version accepts under
+/// `signAsPrincipal`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyMembers {
+    /// 0.2: the base set and provenance; none of the members `recordMembers` governs.
+    V0_2,
+    /// 0.3: 0.2's, and every member `recordMembers` governs.
+    V0_3,
+}
+
+/// One `rooms/keys/seal` request. 0.3 extends 0.2 — the same request, response and error
+/// codes — so both are read and answered as 0.3's types; only the bodies they accept differ.
+async fn handle_seal(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    members: BodyMembers,
+) -> TrustTaskOutcome {
+    use vti_specs::rooms::keys::seal::v0_3 as spec;
 
     if let Err(r) = super::helpers::require_capability(
         state,
@@ -637,7 +718,7 @@ pub(super) async fn handle_seal_v0_2(
     let key = req.key.as_str();
 
     let (member, plaintext) = if sign {
-        let body = match unsigned_body(&plaintext) {
+        let body = match unsigned_body(&plaintext, members) {
             Ok(b) => b,
             Err(why) => {
                 return reject_declared(&doc, spec::error_codes::BODY_INVALID, why);
@@ -674,10 +755,11 @@ pub(super) async fn handle_seal_v0_2(
             Err(e) => return app_error_to_reject(&doc, e),
         };
         // Item 1: the group state of the member the request concerns — the author's, and
-        // never another member's this VTA also serves.
-        match room_groups::load(&state.room_groups_ks, &member).await {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+        // never another member's this VTA also serves. A current membership: state a
+        // removal ended opens what it could, and seals nothing (`rooms/keys/open/0.2`).
+        match room_groups::holds_current(&state.room_groups_ks, &member).await {
+            Ok(true) => {}
+            Ok(false) => {
                 return reject_declared(
                     &doc,
                     spec::error_codes::NOT_A_MEMBER,
@@ -792,12 +874,19 @@ const BODY_MEMBERS: &[&str] = &[
     "validFor",
     "validUntil",
     "file",
+    // What a record is to a reader, what it answers, when it was written and edited
+    // (trust-tasks-tf #1027): accepted from `rooms/keys/seal/0.3` only (`BodyMembers`).
+    "kind",
+    "inReplyTo",
+    "writtenAt",
+    "editedAt",
 ];
 const BODY_REQUIRED: &[&str] = &["roomId", "key", "version", "author"];
 
 /// Decode an unsigned `SealedRecordBody` (`bodyInvalid` otherwise): JSON, an object, no
-/// `proof`, no unknown member, every required one present and of the right shape.
-fn unsigned_body(plaintext: &[u8]) -> Result<Value, String> {
+/// `proof`, no member `members` does not accept, every required one present and of the right
+/// shape.
+fn unsigned_body(plaintext: &[u8], members: BodyMembers) -> Result<Value, String> {
     let value: Value =
         serde_json::from_slice(plaintext).map_err(|e| format!("the body is not JSON: {e}"))?;
     let obj = value
@@ -808,6 +897,20 @@ fn unsigned_body(plaintext: &[u8]) -> Result<Value, String> {
     }
     if let Some(unknown) = obj.keys().find(|k| !BODY_MEMBERS.contains(&k.as_str())) {
         return Err(format!("the body carries an unknown member `{unknown}`"));
+    }
+    match members {
+        // A 0.2 key holder predates them, inside `file` too: refused, never signed.
+        BodyMembers::V0_2 => {
+            if let Some(m) = vti_rooms::record_members::used(obj).first() {
+                return Err(format!(
+                    "the body carries `{m}`, which rooms/keys/seal/0.2 does not accept; \
+                     send rooms/keys/seal/0.3"
+                ));
+            }
+        }
+        // Their shape is the specification's; whether the room's writers may use them is
+        // the writer's to know, and not checked here (Recipient item 3).
+        BodyMembers::V0_3 => vti_rooms::record_members::check(obj)?,
     }
     if let Some(missing) = BODY_REQUIRED.iter().find(|k| !obj.contains_key(**k)) {
         return Err(format!("the body lacks `{missing}`"));
@@ -1123,7 +1226,7 @@ mod tests {
                 "{out}"
             );
             assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.3 response");
@@ -1199,7 +1302,7 @@ mod tests {
                 completed["proof"]["proofPurpose"], "authentication",
                 "{out}"
             );
-            serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+            serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
                 out["payload"].clone(),
             )
             .expect("a 0.8 response");
@@ -1349,7 +1452,7 @@ mod tests {
             "{out}"
         );
         assert!(out["payload"].get("expiresAt").is_none(), "{out}");
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.4 response");
@@ -1427,7 +1530,7 @@ mod tests {
             out["type"].as_str().is_some_and(|t| t.starts_with(ACT_0_8)),
             "{out}"
         );
-        serde_json::from_value::<vti_specs::rooms::keys::act::v0_10::Response>(
+        serde_json::from_value::<vti_specs::rooms::keys::act::v0_12::Response>(
             out["payload"].clone(),
         )
         .expect("a 0.2 response");
@@ -1524,6 +1627,7 @@ mod tests {
                 mirror_of: None,
                 record_retention: None,
                 last_prune: None,
+                signal_delay: Default::default(),
                 epoch_floor: None,
                 frozen_at: None,
             },
@@ -1630,6 +1734,214 @@ mod tests {
             .expect("the body verifies against the persona's key");
     }
 
+    /// The record case again with a **did:webs** persona: the VTA holds the
+    /// did:webs, completes the client's put as it, and a real host that knows
+    /// nothing but the document the did:webs host would serve verifies the proof,
+    /// authorizes the chain and records the did:webs as author. The body's proof
+    /// verifies under the key the did:webs key state names.
+    #[cfg(feature = "webs")]
+    #[tokio::test]
+    async fn a_record_written_by_a_did_webs_personas_own_client_is_the_personas() {
+        use crate::operations::did_webs::{
+            CreateDidWebsParams, WebsDeps, WebsHost, create_did_webs,
+        };
+        use crate::webvh_host::RequestUriResponse;
+
+        /// A did-hosting service that keeps the stream it was given.
+        #[derive(Default)]
+        struct Host(Mutex<Option<String>>);
+        impl WebsHost for Host {
+            async fn resolve_domain(&self, requested: Option<&str>) -> Result<String, AppError> {
+                Ok(requested.unwrap_or("hosting.example").to_string())
+            }
+            async fn publish(
+                &self,
+                mnemonic: &str,
+                keri_cesr: &str,
+                domain: Option<&str>,
+            ) -> Result<RequestUriResponse, AppError> {
+                *self.0.lock().unwrap() = Some(keri_cesr.to_string());
+                let label = domain.unwrap_or("hosting.example").replace(':', "%3A");
+                Ok(RequestUriResponse {
+                    did_url: format!(
+                        "https://{}/{mnemonic}/keri.cesr",
+                        domain.unwrap_or("hosting.example")
+                    ),
+                    mnemonic: mnemonic.to_string(),
+                    did_id: Some(format!("did:webs:{label}:{}", mnemonic.replace('/', ":"))),
+                })
+            }
+            async fn delete(&self, _: &str, _: Option<&str>) -> Result<(), AppError> {
+                Ok(())
+            }
+        }
+
+        let f = fixture(&["read", "write"]).await;
+        // Carol's persona is a did:webs this VTA holds, in a context of her own, so
+        // she is the room's only member her client may act as.
+        crate::contexts::create_context(&f.state.contexts_ks, "carol", "Carol")
+            .await
+            .expect("create context");
+        crate::test_support::seed_webvh_server(
+            &f.state.webvh_ks,
+            "host-1",
+            "did:web:hosting.example",
+        )
+        .await;
+        let mut config = f.state.config.read().await.clone();
+        config.dids.webs_enabled = true;
+        let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .expect("resolver");
+        let webs_host = Host::default();
+        let mut params = CreateDidWebsParams::new("carol", "host-1");
+        params.path = Some("people/carol".into());
+        params.add_tsp_service = Some(false);
+        let carol = create_did_webs(
+            &WebsDeps::from_app_state(&f.state, &config, &resolver),
+            &crate::test_support::super_admin_claims(),
+            params,
+            &webs_host,
+            "test",
+        )
+        .await
+        .expect("a did:webs persona");
+        let stream = webs_host.0.lock().unwrap().clone().expect("published");
+        let doc = affinidi_did_webs::resolve_from_artifacts(
+            &affinidi_did_webs::DidWebs::parse(&carol.did).unwrap(),
+            stream.as_bytes(),
+            None,
+        )
+        .expect("the published stream resolves");
+
+        grant(&f.state, &f.room, &carol.did, "carol", &["read", "write"]).await;
+        found_group(&f, &carol.did).await;
+        let client = crate::test_support::admin_claims_for_context("carol");
+
+        // A real host that resolves the did:webs from what its host serves.
+        let mut seen = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .expect("resolver");
+        seen.add_did_document(&carol.did, doc).await;
+        let host_dir = tempfile::tempdir().unwrap();
+        let host = room_host::open_state_with_resolver(
+            host_dir.path(),
+            vti_common::auth::TrustTaskVmResolver::new(seen),
+        )
+        .expect("a host");
+        vti_rooms::storage::create_room(
+            host.rooms(),
+            &vti_rooms::Room {
+                room_id: f.room.did.clone(),
+                owner_did: carol.did.clone(),
+                visibility: vti_rooms::Visibility::Attributed,
+                retention_policy: vti_rooms::RetentionPolicy::Chained,
+                anchor_cadence: Default::default(),
+                epoch: 1,
+                next_version: 1,
+                retention_days: 90,
+                epoch_expires_at: None,
+                created_at: 0,
+                updated_at: 0,
+                mirror_of: None,
+                record_retention: None,
+                last_prune: None,
+                signal_delay: Default::default(),
+                epoch_floor: None,
+                frozen_at: None,
+            },
+        )
+        .await
+        .expect("seed the room");
+
+        let unsigned_body = json!({
+            "roomId": f.room.did, "key": KEY, "version": 1, "author": carol.did,
+            "title": "Pricing holds", "body": "Agreed not to reprice.",
+        });
+        let sealed = seal(
+            &f.state,
+            &client,
+            json!({
+                "roomId": f.room.did, "key": KEY, "version": 1,
+                "plaintext": b64(&unsigned_body), "signAsPrincipal": true,
+            }),
+        )
+        .await;
+        assert!(
+            sealed["type"].as_str().unwrap().ends_with("#response"),
+            "{sealed}"
+        );
+        let out = act(
+            &f.state,
+            &client,
+            unsigned(
+                vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE,
+                "did:key:zHost",
+                json!({
+                    "roomId": f.room.did, "key": KEY, "expectedVersion": 0,
+                    "sealed": sealed["payload"]["sealed"],
+                }),
+            ),
+        )
+        .await;
+        assert!(
+            out["type"].as_str().unwrap().ends_with("#response"),
+            "{out}"
+        );
+        assert_eq!(out["payload"]["principal"], carol.did);
+        let completed = out["payload"]["document"].clone();
+        assert_eq!(completed["issuer"], carol.did);
+        assert_eq!(
+            completed["proof"]["verificationMethod"], carol.signing_key_id,
+            "{completed}"
+        );
+
+        let answer =
+            room_host::dispatch(&host, serde_json::to_string(&completed).unwrap().as_bytes()).await;
+        assert_eq!(answer.status, 200, "{}", answer.document);
+        let stored = vti_rooms::storage::get_record(host.records(), &f.room.did, KEY)
+            .await
+            .expect("the record");
+        assert_eq!(stored.author.as_deref(), Some(carol.did.as_str()));
+
+        let plaintext = room_groups::open_record(
+            &f.state.room_groups_ks,
+            &Member::new(&f.room.did, &carol.did).unwrap(),
+            KEY,
+            stored.version,
+            stored.sealed.as_deref().unwrap(),
+            stored.nonce.as_deref().unwrap(),
+            stored.epoch.unwrap(),
+        )
+        .await
+        .expect("the record opens");
+        let mut signed: Value = serde_json::from_slice(&plaintext).unwrap();
+        let proof: affinidi_data_integrity::DataIntegrityProof =
+            serde_json::from_value(signed.as_object_mut().unwrap().remove("proof").unwrap())
+                .unwrap();
+        assert_eq!(proof.proof_purpose, "assertionMethod");
+        assert_eq!(proof.verification_method, carol.signing_key_id);
+        let record: crate::keys::KeyRecord = f
+            .state
+            .keys_ks
+            .get(crate::keys::store_key(&carol.signing_key_id))
+            .await
+            .unwrap()
+            .expect("the signing key record");
+        let (_, multikey) = multibase::decode(&record.public_key).unwrap();
+        proof
+            .verify_with_public_key(
+                &signed,
+                &multikey[2..],
+                affinidi_data_integrity::VerifyOptions::new(),
+            )
+            .expect("the body verifies against the did:webs signing key");
+    }
+
     /// A file moved by the member's own client is the persona's too: the begin and the
     /// direct commit are completed as the persona, the bytes go straight to storage over
     /// the host's targets, and a proxied upload's chunks are signed by a single-use key —
@@ -1675,6 +1987,7 @@ mod tests {
                 mirror_of: None,
                 record_retention: None,
                 last_prune: None,
+                signal_delay: Default::default(),
                 epoch_floor: None,
                 frozen_at: None,
             },
@@ -2158,6 +2471,134 @@ mod tests {
         // And the good one seals.
         let out = seal(&f.state, &client, payload(&good, 1)).await;
         assert!(out["payload"]["sealed"]["ciphertext"].is_string(), "{out}");
+    }
+
+    async fn seal_v0_3(state: &AppState, auth: &AuthClaims, payload: Value) -> Value {
+        body(
+            handle_seal_v0_3(
+                state,
+                auth,
+                request(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_SEAL_0_3, payload),
+            )
+            .await,
+        )
+    }
+
+    /// **seal/0.3 accepts what 0.2 refuses** (Recipient item 3, trust-tasks-tf #1027): a
+    /// message answering another record, with when it was written and edited, and a file
+    /// carrying an image's size and preview. 0.2 refuses each of them `bodyInvalid`; 0.3 signs
+    /// the body as given — every member kept, under the persona's proof — and seals it. It
+    /// does not consult the room's `recordMembers`: this room has no profile at all.
+    #[tokio::test]
+    async fn seal_v0_3_accepts_what_0_2_refuses_and_signs_it_as_given() {
+        let f = fixture(&["read", "write"]).await;
+        found_group(&f, &f.alice.did).await;
+        let client = alice_client();
+        let payload = |body: &Value| {
+            json!({
+                "roomId": f.room.did, "key": KEY, "version": 1,
+                "plaintext": b64(body), "signAsPrincipal": true,
+            })
+        };
+        let base = json!({ "roomId": f.room.did, "key": KEY, "version": 1, "author": f.alice.did });
+        let with = |member: &str, value: Value| {
+            let mut b = base.clone();
+            b[member] = value;
+            b
+        };
+        let file = |member: &str, value: Value| {
+            let mut manifest = json!({ "fileId": "A".repeat(43), "name": "photo.png" });
+            manifest[member] = value;
+            with("file", manifest)
+        };
+        let governed = [
+            with("kind", json!("message")),
+            with(
+                "inReplyTo",
+                json!({ "key": "giXFLTGBdnnQJRoIsktuIg", "version": 2 }),
+            ),
+            with("writtenAt", json!("2026-01-01T00:00:00Z")),
+            with("editedAt", json!("2026-01-01T00:05:00.5Z")),
+            file("width", json!(640)),
+            file("height", json!(480)),
+            file(
+                "preview",
+                json!({ "mediaType": "image/webp", "data": "UklGRhIAAABXRUJQ" }),
+            ),
+        ];
+        for body in &governed {
+            let out = seal(&f.state, &client, payload(body)).await;
+            assert_eq!(
+                code(&out),
+                "rooms/keys/seal:bodyInvalid",
+                "0.2: {body} {out}"
+            );
+            let out = seal_v0_3(&f.state, &client, payload(body)).await;
+            assert!(
+                out["payload"]["sealed"]["ciphertext"].is_string(),
+                "0.3: {body} {out}"
+            );
+        }
+
+        // All of them at once, opened again: signed as the persona, every member as sent.
+        let mut message = with("kind", json!("message"));
+        message["body"] = json!("Do not reprice before renewal.");
+        message["inReplyTo"] = json!({ "key": "giXFLTGBdnnQJRoIsktuIg" });
+        message["writtenAt"] = json!("2026-01-01T00:00:00Z");
+        let out = seal_v0_3(&f.state, &client, payload(&message)).await;
+        let sealed = &out["payload"]["sealed"];
+        let opened = room_groups::open_record(
+            &f.state.room_groups_ks,
+            &Member::new(&f.room.did, &f.alice.did).unwrap(),
+            KEY,
+            1,
+            sealed["ciphertext"].as_str().unwrap(),
+            sealed["nonce"].as_str().unwrap(),
+            sealed["epoch"].as_u64().unwrap() as u32,
+        )
+        .await
+        .unwrap();
+        let mut signed: Value = serde_json::from_slice(&opened).unwrap();
+        assert!(signed["proof"].is_object(), "{signed}");
+        signed.as_object_mut().unwrap().remove("proof");
+        assert_eq!(signed, message);
+    }
+
+    /// seal/0.3 checks each new member's shape, and still refuses what 0.2 refuses: an
+    /// unknown member is unknown in both.
+    #[tokio::test]
+    async fn seal_v0_3_refuses_a_malformed_member() {
+        let f = fixture(&["read", "write"]).await;
+        found_group(&f, &f.alice.did).await;
+        let client = alice_client();
+        let base = json!({ "roomId": f.room.did, "key": KEY, "version": 1, "author": f.alice.did });
+        for (member, value) in [
+            ("kind", json!("Message")),
+            ("kind", json!("")),
+            ("inReplyTo", json!("giXFLTGBdnnQJRoIsktuIg")),
+            ("inReplyTo", json!({ "key": "k", "version": 0 })),
+            ("writtenAt", json!("2026-01-01T09:00:00+09:00")),
+            ("editedAt", json!("2026-01-01")),
+            ("file", json!({ "width": 0 })),
+            (
+                "file",
+                json!({ "preview": { "mediaType": "image/svg+xml", "data": "PHN2Zz4" } }),
+            ),
+            ("colour", json!("blue")),
+        ] {
+            let mut body = base.clone();
+            body[member] = value;
+            let out = seal_v0_3(
+                &f.state,
+                &client,
+                json!({
+                    "roomId": f.room.did, "key": KEY, "version": 1,
+                    "plaintext": b64(&body), "signAsPrincipal": true,
+                }),
+            )
+            .await;
+            assert_eq!(code(&out), "rooms/keys/seal:bodyInvalid", "{body} {out}");
+        }
     }
 
     /// Without `signAsPrincipal`, 0.2 is 0.1: the bytes are sealed exactly as given.

@@ -30,7 +30,7 @@
 //! - the REST tower layers (`tt` / `ttl` in `routes/mod.rs`), which cannot be
 //!   enumerated from a built `Router`, so they are read as source text — the
 //!   same blunt-but-confined technique `tests/trust_task_manifest.rs` uses;
-//! - [`super::DISPATCHED_URIS`], the document dispatcher's own list, which is
+//! - [`super::dispatched_uris`], the document dispatcher's own list, which is
 //!   what REST-as-document, DIDComm and TSP all route through.
 //!
 //! That union, filtered to what `schema_index::schema_for` resolves, is the
@@ -125,7 +125,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
 use trust_tasks_rs::validate::ValidatedPayload;
 
-use super::DISPATCHED_URIS;
+use super::dispatched_uris;
 
 /// The one place the sweep's family scope is written down. See the module
 /// docs' "Scope" section for why it is `vtc/` and not `spec/`.
@@ -141,7 +141,7 @@ const VTC_PREFIX: &str = "https://trusttasks.org/spec/vtc/";
 /// It is blunt, but the wiring is confined to `src/routes/` and a false
 /// positive here is a compile-visible string, not a silent pass.
 fn bound_uris() -> BTreeSet<String> {
-    let mut found: BTreeSet<String> = DISPATCHED_URIS
+    let mut found: BTreeSet<String> = dispatched_uris()
         .iter()
         .filter(|u| u.starts_with(VTC_PREFIX))
         .map(|u| (*u).to_owned())
@@ -414,7 +414,7 @@ fn sample_received_notification() -> serde_json::Value {
 }
 
 /// A network membership as `crate::networks` stores and answers it — the shared
-/// `vtc/_shared/0.6` `NetworkMembership` — with its admins group registered.
+/// `vtc/_shared/0.7` `NetworkMembership` — with its admins group registered.
 fn sample_network_membership() -> serde_json::Value {
     use crate::networks::{Membership, RegisteredGroup, State};
     let at = DateTime::parse_from_rfc3339("2026-11-03T10:00:00Z")
@@ -443,7 +443,7 @@ fn sample_network_membership() -> serde_json::Value {
             role: "admins".into(),
             group_id: "admins".into(),
             group_did: group.into(),
-            endpoint: "https://community.example.org/v1/networks/relay/admins".into(),
+            endpoint: "https://community.example.org/v1/trust-tasks".into(),
             registration: cred(vtc, group),
             acceptance: cred(net, group),
             registered_at: at,
@@ -796,7 +796,7 @@ fn credential() -> Value {
     })
 }
 
-/// A `MemberResponse` as `routes/members/read.rs:29` serialises one, with
+/// A `MemberResponse` as `members/ops/read.rs` serialises one, with
 /// every optional populated. Shared by list / show / update, which all
 /// return this type.
 fn member_response() -> Value {
@@ -822,7 +822,7 @@ fn member_response() -> Value {
 /// A `members/credentials/0.1` response as the route emits one.
 ///
 /// Built by the production projection
-/// (`routes::members::credentials::credentials_response`) over a member row
+/// (`members::ops::credentials::credentials_response`) over a member row
 /// populated the way issuance and receipt populate it, not transcribed: a
 /// fixture typed by hand here would keep passing after the projection changed.
 fn member_credentials_response() -> Value {
@@ -841,7 +841,7 @@ fn member_credentials_response() -> Value {
     ack["credentialSubject"] = json!({ "id": COMMUNITY_DID, "digestMultibase": "zQmExample" });
     member.record_member_vmc("urn:uuid:c0de1234-5678-4abc-9def-0123456789ab", ack, true);
     to_v(
-        crate::routes::members::credentials::credentials_response(&member)
+        crate::members::ops::credentials::credentials_response(&member)
             .expect("a populated member projects"),
     )
 }
@@ -976,9 +976,9 @@ const VEC_ID: &str = "urn:uuid:11111111-1111-4111-8111-111111111111";
 /// Serialised from the real `EndorsementRow`, not hand-written — see the
 /// `endorsements/revoke` note in the table (#1095) for why that matters.
 fn endorsement_row(
-    issued: crate::routes::endorsements::CredentialReference,
-) -> crate::routes::endorsements::EndorsementRow {
-    crate::routes::endorsements::EndorsementRow {
+    issued: crate::endorsements::ops::CredentialReference,
+) -> crate::endorsements::ops::EndorsementRow {
+    crate::endorsements::ops::EndorsementRow {
         endorsement_id: "11111111-1111-4111-8111-111111111111"
             .parse()
             .expect("fixture uuid"),
@@ -995,7 +995,7 @@ fn endorsement_row(
 /// is not on the stored row, and the credential itself rides on `issue` alone.
 fn endorsement() -> Value {
     serde_json::to_value(endorsement_row(
-        crate::routes::endorsements::CredentialReference {
+        crate::endorsements::ops::CredentialReference {
             credential_id: VEC_ID.into(),
             issued_at: Some(TS.parse().expect("fixture timestamp")),
             expires_at: None,
@@ -1180,7 +1180,7 @@ const KNOWN_DRIFT_COUNT: usize = 0;
 /// (`vta-sdk/src/protocols/members.rs:170`) fails this sweep — the typed
 /// witness re-serialises and the rename shows up. Adding
 /// `#[serde(rename = "wasRemoved")]` to `RemoveResponse.removed`
-/// (`routes/members/remove.rs:56`) does **not** — the transcribed witness
+/// (`members/ops/remove.rs`) does **not** — the transcribed witness
 /// keeps asserting the old spelling and the sweep stays green while the
 /// service breaks. That is the exact cost of the transcription, and it is why
 /// converting the table to typed fixtures is worth its own change rather than
@@ -1217,45 +1217,102 @@ fn table() -> Vec<Conformance> {
         ),
         // ─── network membership (`crate::networks`) ──────────────────
         checked!(
-            s::networks::list::v0_1::Payload,
-            s::networks::list::v0_1::Response,
+            s::networks::list::v0_2::Payload,
+            s::networks::list::v0_2::Response,
             json!({ "state": "acknowledged", "limit": 50 }),
             json!({ "items": [sample_network_membership()] })
         ),
         checked!(
-            s::networks::show::v0_1::Payload,
-            s::networks::show::v0_1::Response,
+            s::networks::show::v0_2::Payload,
+            s::networks::show::v0_2::Response,
             json!({ "network": "did:example:whn" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::join::v0_1::Payload,
-            s::networks::join::v0_1::Response,
+            s::networks::preview::v0_1::Payload,
+            s::networks::preview::v0_1::Response,
+            json!({ "url": "https://whn.example.org", "network": "did:example:whn" }),
+            json!({ "network": "did:example:whn", "url": "https://whn.example.org",
+                    "name": "World Health Network", "owner": "WHN Foundation",
+                    "framework": { "iri": "https://whn.example.org/governance", "version": "1.0" },
+                    "roles": [{ "name": "admins", "required": true }],
+                    "listed": true, "entryState": "listed" })
+        ),
+        checked!(
+            s::networks::join::v0_2::Payload,
+            s::networks::join::v0_2::Response,
             json!({ "url": "https://whn.example.org", "network": "did:example:whn",
                     "groups": [{ "role": "admins", "groupId": "admins" }] }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::repudiate::v0_1::Payload,
-            s::networks::repudiate::v0_1::Response,
+            s::networks::repudiate::v0_2::Payload,
+            s::networks::repudiate::v0_2::Response,
             json!({ "url": "https://whn.example.org", "network": "did:example:whn", "reason": "not ours" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::leave::v0_1::Payload,
-            s::networks::leave::v0_1::Response,
+            s::networks::leave::v0_2::Payload,
+            s::networks::leave::v0_2::Response,
             json!({ "network": "did:example:whn", "reason": "merged" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::groups::register::v0_1::Payload,
-            s::networks::groups::register::v0_1::Response,
+            s::networks::groups::register::v0_2::Payload,
+            s::networks::groups::register::v0_2::Response,
             json!({ "network": "did:example:whn", "role": "admins", "groupId": "admins" }),
             json!({ "membership": sample_network_membership() })
         ),
         checked!(
-            s::networks::evidence::v0_1::Payload,
-            s::networks::evidence::v0_1::Response,
+            s::networks::deliver::v0_1::Payload,
+            s::networks::deliver::v0_1::Response,
+            // The spec's own example.
+            json!({
+                "role": "admins",
+                "envelope": {
+                    "message": {
+                        "type": "VtnBroadcast",
+                        "id": "urn:uuid:00000000-0000-4000-8000-00000000b001",
+                        "origin": "did:example:whn",
+                        "role": "admins",
+                        "class": "notice",
+                        "subject": "Regional exercise",
+                        "body": "A coordination exercise runs on 12 November at 09:00 UTC.",
+                        "sentAt": "2026-11-03T09:59:00Z",
+                        "expiresAt": "2026-11-06T09:59:00Z",
+                        "proof": {
+                            "type": "DataIntegrityProof",
+                            "cryptosuite": "eddsa-jcs-2022",
+                            "proofPurpose": "assertionMethod",
+                            "verificationMethod": "did:example:whn#key-0",
+                            "proofValue": "z3abc"
+                        }
+                    },
+                    "hops": [
+                        {
+                            "type": "VtnRelayHop",
+                            "message": "urn:uuid:00000000-0000-4000-8000-00000000b001",
+                            "index": 0,
+                            "from": "did:example:whn",
+                            "to": "did:example:community-admins-group",
+                            "role": "admins",
+                            "at": "2026-11-03T09:59:01Z",
+                            "proof": {
+                                "type": "DataIntegrityProof",
+                                "cryptosuite": "eddsa-jcs-2022",
+                                "proofPurpose": "assertionMethod",
+                                "verificationMethod": "did:example:whn#key-0",
+                                "proofValue": "z3def"
+                            }
+                        }
+                    ]
+                }
+            }),
+            json!({ "status": "delivered" })
+        ),
+        checked!(
+            s::networks::evidence::v0_2::Payload,
+            s::networks::evidence::v0_2::Response,
             json!({ "network": "did:example:whn" }),
             json!({ "links": [{
                 "groupId": "admins", "groupDid": "did:example:community-admins",
@@ -1749,6 +1806,16 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
+            s::storage::credentials::recipient::v0_1::Payload,
+            s::storage::credentials::recipient::v0_1::Response,
+            json!({}),
+            json!({
+                "communityDid": "did:webs:vtc.example.com:EAbcAid",
+                "verificationMethod": "did:webs:vtc.example.com:EAbcAid#DKey",
+                "recipientKey": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            })
+        ),
+        checked!(
             s::storage::configs::retire::v0_3::Payload,
             s::storage::configs::retire::v0_3::Response,
             json!({ "configId": "local", "reason": "moving to object storage" }),
@@ -1794,7 +1861,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::admin::bootstrap::v0_1::Payload,
             s::admin::bootstrap::v0_1::Response,
-            // `BootstrapRequest` — routes/admin/bootstrap.rs. Sent
+            // `BootstrapRequest` — install/ops/bootstrap.rs. Sent
             // `setup_session_token` until it gained `rename_all`, so a
             // conforming client's body failed as a missing required field —
             // and `claim/finish` had been handing that client a
@@ -1805,11 +1872,11 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::admin::invites::create::v0_2::Payload,
             s::admin::invites::create::v0_2::Response,
-            // `CreateInviteRequest` — routes/admin/invites.rs: a wallet
+            // `CreateInviteRequest` — install/ops/invites.rs: a wallet
             // invitation names `did`; a passkey invitation omits it (that
             // shape is held by `single_admin_mode.rs`'s `assert_conforms`).
             json!({ "did": OTHER_DID, "ttlSeconds": 3600, "label": "ops laptop invite" }),
-            // `CreateInviteResponse` — routes/admin/invites.rs.
+            // `CreateInviteResponse` — install/ops/invites.rs.
             json!({
                 "jti": REQUEST_ID,
                 "kind": "wallet",
@@ -1824,7 +1891,7 @@ fn table() -> Vec<Conformance> {
             s::admin::invites::list::v0_2::Response,
             // The payload has no required member.
             json!({}),
-            // `ListInvitesResponse` / `InviteSummary` — routes/admin/invites.rs.
+            // `ListInvitesResponse` / `InviteSummary` — install/ops/invites.rs.
             json!({
                 "invites": [
                     { "jti": REQUEST_ID, "kind": "passkey", "status": "issued",
@@ -1840,7 +1907,7 @@ fn table() -> Vec<Conformance> {
             // The REST route carries `jti` in the path and ignores the body,
             // so the canonical payload is consumable as-is.
             json!({ "jti": REQUEST_ID }),
-            // `RevokeInviteResponse` — routes/admin/invites.rs:129.
+            // `RevokeInviteResponse` — install/ops/invites.rs.
             json!({ "jti": REQUEST_ID })
         ),
         // ─── auth ────────────────────────────────────────────────────
@@ -1857,16 +1924,16 @@ fn table() -> Vec<Conformance> {
             s::auth::recognise::challenge::v0_2::Payload,
             s::auth::recognise::challenge::v0_2::Response,
             json!({}),
-            // `RecogniseChallengeResponse` — routes/recognise.rs. `expiresAt`
+            // `RecogniseChallengeResponse` — recognition/recognise.rs. `expiresAt`
             // is an RFC 3339 date-time from 0.2 (0.1 typed it Unix seconds).
             json!({ "nonce": "b7c1e0a94f2d4e8ab5c36f01d9e27a3c", "expiresAt": TS })
         ),
         checked!(
             s::auth::recognise::v0_3::Payload,
             s::auth::recognise::v0_3::Response,
-            // `RecogniseRequest` — routes/recognise.rs:82.
+            // `RecogniseRequest` — recognition/recognise.rs.
             json!({ "presentation": { "type": ["VerifiablePresentation"], "nonce": "b7c1e0" } }),
-            // `RecogniseResponse` — routes/recognise.rs:102.
+            // `RecogniseResponse` — recognition/recognise.rs.
             json!({
                 "sessionId": "xc-6f2b1a7c-9d3e-4c58-b0a1-2e7d4f6a8b9c",
                 "data": {
@@ -1883,7 +1950,7 @@ fn table() -> Vec<Conformance> {
             s::backup::export::v0_1::Response,
             // What `handle_backup_export` (trust_tasks/mod.rs) parses.
             json!({ "password": "correct-horse-battery-staple", "includeAudit": true }),
-            // `ExportResponse` (routes/backup.rs), what `export_inner` answers
+            // `ExportResponse` (backup/ops.rs), what `export_inner` answers
             // with — the envelope was returned bare until #1059.
             json!({ "envelope": backup_envelope() })
         ),
@@ -1893,7 +1960,7 @@ fn table() -> Vec<Conformance> {
             s::ceremonies::list::v0_1::Response,
             json!({}),
             // `CeremonyListResponse` — a top-level array until #1094
-            // (routes/ceremonies.rs:320).
+            // (ceremony/listing.rs).
             json!({ "ceremonies": [{
                 "purpose": "directory",
                 "pkg": "vtc.directory",
@@ -1912,7 +1979,7 @@ fn table() -> Vec<Conformance> {
             json!({}),
             // `CommunityProfileResponse` — nested as of #1094, with
             // `registryStatus` inside the profile where the canonical
-            // component defines it (routes/community/profile.rs:39).
+            // component defines it (community/ops/profile.rs).
             {
                 let mut v = community_profile();
                 v.as_object_mut()
@@ -1935,7 +2002,7 @@ fn table() -> Vec<Conformance> {
                 "relationshipIdentifierDefault": "pairwise",
                 "extensions": { "tier": "gold" },
             }),
-            // `UpdateProfileResponse` — routes/community/profile.rs:196.
+            // `UpdateProfileResponse` — community/ops/profile.rs.
             json!({ "profile": community_profile(), "fieldsChanged": ["name", "logoUrl"] })
         ),
         // ─── config ──────────────────────────────────────────────────
@@ -1950,7 +2017,7 @@ fn table() -> Vec<Conformance> {
             s::config::export::v0_1::Response,
             json!({}),
             // `ExportResponse` / `ConfigExportDocument` —
-            // routes/admin/config.rs:476 / :460.
+            // community/ops/config.rs / :460.
             json!({
                 "document": {
                     "schemaVersion": 1,
@@ -1963,7 +2030,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::config::import::v0_1::Payload,
             s::config::import::v0_1::Response,
-            // `ImportRequest` — routes/admin/config.rs:524. The document is
+            // `ImportRequest` — community/ops/config.rs. The document is
             // whatever `export` handed back, so it carries the same extra
             // member.
             json!({
@@ -1975,7 +2042,7 @@ fn table() -> Vec<Conformance> {
                 },
                 "confirm": true,
             }),
-            // `ImportResponse` — routes/admin/config.rs:560.
+            // `ImportResponse` — community/ops/config.rs.
             json!({
                 "status": "imported",
                 "profileChanges": [{ "key": "name", "oldValue": "Old", "newValue": "New" }],
@@ -2100,7 +2167,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::endorsement_types::register::v0_1::Payload,
             s::endorsement_types::register::v0_1::Response,
-            // `RegisterBody` — routes/endorsement_types.rs:51.
+            // `RegisterBody` — endorsement_types/ops.rs.
             json!({
                 "typeUri": "https://skills.example.com/v1/rust",
                 "claimSchema": { "type": "object" },
@@ -2119,14 +2186,14 @@ fn table() -> Vec<Conformance> {
             s::endorsement_types::delete::v0_1::Payload,
             s::endorsement_types::delete::v0_1::Response,
             json!({ "typeUri": "https://skills.example.com/v1/rust" }),
-            // `DeleteResponse` — routes/endorsement_types.rs:178.
+            // `DeleteResponse` — endorsement_types/ops.rs.
             json!({ "typeUri": "https://skills.example.com/v1/rust" })
         ),
         // ─── endorsements ────────────────────────────────────────────
         checked!(
             s::endorsements::issue::v0_1::Payload,
             s::endorsements::issue::v0_1::Response,
-            // `IssueBody` — routes/endorsements.rs:57, `typeUri` as of #1096.
+            // `IssueBody` — endorsements/ops.rs, `typeUri` as of #1096.
             json!({
                 "subjectDid": DID,
                 "typeUri": "https://skills.example.com/v1/rust",
@@ -2135,8 +2202,8 @@ fn table() -> Vec<Conformance> {
             }),
             // `issue` is the one route that holds the credential and the
             // expiry it just computed; a read sends neither.
-            serde_json::to_value(crate::routes::endorsements::IssueResponse {
-                endorsement: endorsement_row(crate::routes::endorsements::CredentialReference {
+            serde_json::to_value(crate::endorsements::ops::IssueResponse {
+                endorsement: endorsement_row(crate::endorsements::ops::CredentialReference {
                     credential_id: VEC_ID.into(),
                     issued_at: Some(TS.parse().expect("fixture timestamp")),
                     expires_at: Some(TS.parse().expect("fixture timestamp")),
@@ -2173,9 +2240,9 @@ fn table() -> Vec<Conformance> {
             // over-reports. Building the fixture from the type the handler
             // actually returns closes that gap for this row: change the
             // struct and this fixture changes with it.
-            serde_json::to_value(crate::routes::endorsements::RevokeResponse {
+            serde_json::to_value(crate::endorsements::ops::RevokeResponse {
                 endorsement_id: "11111111-1111-4111-8111-111111111111".into(),
-                revocation: crate::routes::endorsements::RevocationDetail {
+                revocation: crate::endorsements::ops::RevocationDetail {
                     credential_id: "urn:uuid:22222222-2222-4222-8222-222222222222".into(),
                     revoked_at: "2026-08-23T09:00:00Z".into(),
                 },
@@ -2184,7 +2251,7 @@ fn table() -> Vec<Conformance> {
             .expect("RevokeResponse serialises")
         ),
         // ─── install ─────────────────────────────────────────────────
-        // The passkey install (`routes::install::{claim_start,claim_finish}`,
+        // The passkey install (`install::ops::{claim_start,claim_finish}`,
         // which build the start response from the generated type).
         checked!(
             s::install::claim::passkey::start::v0_1::Payload,
@@ -2200,7 +2267,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::install::claim::passkey::finish::v0_1::Payload,
             s::install::claim::passkey::finish::v0_1::Response,
-            // `ClaimFinishRequest` — routes/install.rs.
+            // `ClaimFinishRequest` — install/ops/mod.rs.
             json!({
                 "installToken": "eyJhbGciOiJFZERTQSJ9.e30.sig",
                 "registrationId": REQUEST_ID,
@@ -2244,9 +2311,9 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::invitations::issue::v0_1::Payload,
             s::invitations::issue::v0_1::Response,
-            // `IssueInvitationBody` — routes/invitations.rs:42.
+            // `IssueInvitationBody` — join/invitations.rs.
             json!({ "subjectDid": DID, "validityDays": 14, "role": "moderator" }),
-            // `IssueInvitationResponse` — routes/invitations.rs:59.
+            // `IssueInvitationResponse` — join/invitations.rs.
             json!({ "subjectDid": DID, "validUntil": TS, "vic": credential() })
         ),
         checked!(
@@ -2254,7 +2321,7 @@ fn table() -> Vec<Conformance> {
             s::invitations::list::v0_1::Response,
             json!({}),
             // `InvitationListResponse` / `InvitationListItem` —
-            // routes/invitations.rs:254 / :225.
+            // join/invitations.rs / :225.
             json!({
                 "invitations": [{
                     "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
@@ -2271,7 +2338,7 @@ fn table() -> Vec<Conformance> {
             s::invitations::revoke::v0_1::Payload,
             s::invitations::revoke::v0_1::Response,
             json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222" }),
-            // `RevokeResponse` — routes/invitations.rs:297.
+            // `RevokeResponse` — join/invitations.rs.
             json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
                     "revokedAt": TS, "newlyRevoked": true })
         ),
@@ -2279,7 +2346,7 @@ fn table() -> Vec<Conformance> {
             s::invitations::deliver::v0_1::Payload,
             s::invitations::deliver::v0_1::Response,
             // `deliver` takes and returns the generated types themselves
-            // (routes/invitations.rs); the response is the `offer` channel's.
+            // (join/invitations.rs); the response is the `offer` channel's.
             json!({ "id": "urn:uuid:22222222-2222-4222-8222-222222222222", "channel": "offer" }),
             json!({
                 "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
@@ -2309,10 +2376,10 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::join_requests::decide::v0_1::Payload,
             s::join_requests::decide::v0_1::Response,
-            // `DecideBody` — routes/join_requests/decide.rs:54; `id` is the
+            // `DecideBody` — join/ops/decide.rs; `id` is the
             // path segment and is consumable in the body.
             json!({ "id": REQUEST_ID, "decision": "approved", "reason": "verified out of band" }),
-            // `DecideResponse` — routes/join_requests/decide.rs:65. The
+            // `DecideResponse` — join/ops/decide.rs. The
             // approve arm populates both credentials; the reject arm omits
             // them and DOES conform, which is exactly why the witness has to
             // carry the approve arm.
@@ -2446,7 +2513,7 @@ fn table() -> Vec<Conformance> {
                 resend_credentials: true,
             }),
             // The rejected projection — the only one that carries the three
-            // members #1058 added (routes/join_requests/status.rs:140).
+            // members #1058 added (join/ops/status.rs).
             to_v(jr::JoinRequestStatusResponseBody {
                 request_id: uuid(),
                 status: "rejected".into(),
@@ -2468,10 +2535,10 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::admin_remove::v0_1::Payload,
             s::members::admin_remove::v0_1::Response,
-            // `RemoveBody` — routes/members/remove.rs:37; `did` is the path
+            // `RemoveBody` — members/ops/remove.rs; `did` is the path
             // segment and is consumable in the body.
             json!({ "did": DID, "disposition": "purge", "reason": "ToS violation" }),
-            // `RemoveResponse` — routes/members/remove.rs:53.
+            // `RemoveResponse` — members/ops/remove.rs.
             json!({ "did": DID, "disposition": "purge", "removed": true })
         ),
         checked!(
@@ -2545,7 +2612,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::update::v0_1::Payload,
             s::members::update::v0_1::Response,
-            // `UpdateMemberRequest` — routes/members/update.rs:57.
+            // `UpdateMemberRequest` — members/ops/update.rs.
             json!({ "did": DID, "role": "moderator", "label": "Ada Lovelace",
                     "publishConsent": true, "departurePreference": "historical",
                     "extensions": { "org": "acme" } }),
@@ -2570,16 +2637,16 @@ fn table() -> Vec<Conformance> {
             s::members::renew::v0_1::Payload,
             s::members::renew::v0_1::Response,
             json!({}),
-            // `RenewResponse` — routes/members/renew.rs:56.
+            // `RenewResponse` — members/ops/renew.rs.
             json!({ "did": DID, "vmc": credential(), "roleVac": credential(),
                     "personhood": true, "personhoodChanged": false })
         ),
         checked!(
             s::members::rotate_challenge::v0_1::Payload,
             s::members::rotate_challenge::v0_1::Response,
-            // `ChallengeBody` — routes/members/rotate.rs:193.
+            // `ChallengeBody` — members/ops/rotate.rs.
             json!({ "reason": "deviceLoss" }),
-            // `ChallengeResponse` — routes/members/rotate.rs:169.
+            // `ChallengeResponse` — members/ops/rotate.rs.
             json!({
                 "rotationId": REQUEST_ID,
                 "expiresAt": TS,
@@ -2590,10 +2657,10 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::rotate::v0_1::Payload,
             s::members::rotate::v0_1::Response,
-            // `FinishBody` — routes/members/rotate.rs:269.
+            // `FinishBody` — members/ops/rotate.rs.
             json!({ "rotationId": REQUEST_ID, "oldDid": DID, "newDid": OTHER_DID,
                     "oldSignature": "9a3f", "newSignature": "1c7b" }),
-            // `FinishResponse` — routes/members/rotate.rs:282.
+            // `FinishResponse` — members/ops/rotate.rs.
             json!({ "newDid": OTHER_DID, "method": "did:key",
                     "vmc": credential(), "roleVac": credential() })
         ),
@@ -2602,7 +2669,7 @@ fn table() -> Vec<Conformance> {
             s::members::self_remove::v0_1::Response,
             // The document form's body (vta-sdk). The REST route's
             // `RemoveBody` also accepts a `reason`, which it then ignores on
-            // self-remove (routes/members/remove.rs:86) — unspecced, but
+            // self-remove (members/ops/remove.rs) — unspecced, but
             // unreachable in any body a conforming client sends.
             to_v(jr::SelfRemoveBody {
                 disposition: Some("tombstone".into())
@@ -2616,17 +2683,17 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::solicit_vmc::v0_1::Payload,
             s::members::solicit_vmc::v0_1::Response,
-            // `RequestVmcBody` — routes/members/request_vmc.rs:26; the DID is
+            // `RequestVmcBody` — members/ops/request_vmc.rs; the DID is
             // the path segment.
             json!({ "memberDid": DID, "reason": "annual audit" }),
-            // `RequestVmcResponse` — routes/members/request_vmc.rs:35.
+            // `RequestVmcResponse` — members/ops/request_vmc.rs.
             json!({ "memberDid": DID, "requested": true, "threadId": REQUEST_ID })
         ),
         checked!(
             s::members::personhood::challenge::v0_1::Payload,
             s::members::personhood::challenge::v0_1::Response,
             json!({ "did": DID }),
-            // `ChallengeResponse` — routes/members/personhood.rs:138.
+            // `ChallengeResponse` — members/ops/personhood.rs.
             // The `ext` member carries the spoken match code. The
             // response schema is `additionalProperties: false`, so this
             // witness is what proves the code found a conformant home
@@ -2639,7 +2706,7 @@ fn table() -> Vec<Conformance> {
             s::members::personhood::assert::v0_2::Response,
             // The payload the spine's assert handler reads.
             json!({ "did": DID, "presentation": { "type": ["VerifiablePresentation"] } }),
-            // `AssertResponse` — routes/members/personhood.rs:206.
+            // `AssertResponse` — members/ops/personhood.rs.
             //
             // This note used to explain that the DELETE on the same mount
             // answered under *this* URI with `personhood: false`, and called
@@ -2656,7 +2723,7 @@ fn table() -> Vec<Conformance> {
             s::members::personhood::revoke::v0_1::Payload,
             s::members::personhood::revoke::v0_1::Response,
             json!({ "did": DID }),
-            // `RevokeResponse` — routes/members/personhood.rs:526. `vmc` and
+            // `RevokeResponse` — members/ops/personhood.rs. `vmc` and
             // `roleVac` are `skip_serializing_if`, so a revoke that re-mints
             // nothing sends neither; the component makes both optional and
             // pins `personhood` to `const false`.
@@ -2680,11 +2747,11 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::policies::test::v0_1::Payload,
             s::policies::test::v0_1::Response,
-            // `TestBody` — routes/policies/admin.rs:176; `id` is the path
+            // `TestBody` — policy/ops/admin.rs; `id` is the path
             // segment and is consumable in the body.
             json!({ "id": REQUEST_ID, "query": "data.vtc.directory.decision",
                     "input": { "purpose": "directory" } }),
-            // `TestResponse` — routes/policies/admin.rs:190.
+            // `TestResponse` — policy/ops/admin.rs.
             json!({ "id": REQUEST_ID, "purpose": "directory", "sha256": "3b9f0a1c8d2e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f809a1b2c3",
                     "result": { "result": [] } })
         ),
@@ -2693,7 +2760,7 @@ fn table() -> Vec<Conformance> {
             s::recognition::check::v0_1::Payload,
             s::recognition::check::v0_1::Response,
             json!({ "did": "did:web:other.example" }),
-            // `RecognitionCheck` — routes/recognition_admin.rs:31.
+            // `RecognitionCheck` — recognition/admin.rs.
             json!({ "did": "did:web:other.example", "recognised": false,
                     "registryConfigured": true, "error": "registry unreachable" })
         ),
@@ -2718,7 +2785,7 @@ fn table() -> Vec<Conformance> {
             })
         ),
         // The reconciler's operator surface. These fixtures are transcribed
-        // from what `routes/registry_admin.rs` actually builds, and every
+        // from what `registry/admin.rs` actually builds, and every
         // field an operator acts on is present: the member DID in the clear,
         // the registry's verbatim error, and the attempt count that separates
         // "answered and refused" from "never answered".
@@ -2726,7 +2793,7 @@ fn table() -> Vec<Conformance> {
             s::registry::sync_jobs::list::v0_2::Payload,
             s::registry::sync_jobs::list::v0_2::Response,
             json!({ "state": "failed", "limit": 50 }),
-            // `job_wire` — routes/registry_admin.rs. A failed row carries no
+            // `job_wire` — registry/admin.rs. A failed row carries no
             // `nextAttemptAt`: it has no schedule, and claiming one would be
             // the response asserting something untrue.
             json!({
@@ -2820,16 +2887,16 @@ fn table() -> Vec<Conformance> {
             // the service has never emitted: it groups halves by endpoint
             // pair and says whether the edge is reciprocated. Two wrongs
             // agreeing is what let this read as conformant.
-            serde_json::to_value(crate::routes::relationships::RelationshipsGraph {
+            serde_json::to_value(crate::relationships::ops::RelationshipsGraph {
                 nodes: vec![
-                    crate::routes::relationships::GraphNode { did: DID.into() },
-                    crate::routes::relationships::GraphNode {
+                    crate::relationships::ops::GraphNode { did: DID.into() },
+                    crate::relationships::ops::GraphNode {
                         did: OTHER_DID.into()
                     },
                 ],
-                edges: vec![crate::routes::relationships::GraphEdge {
+                edges: vec![crate::relationships::ops::GraphEdge {
                     endpoints: vec![DID.into(), OTHER_DID.into()],
-                    halves: vec![crate::routes::relationships::GraphHalf {
+                    halves: vec![crate::relationships::ops::GraphHalf {
                         id: REQUEST_ID.into(),
                         issuer_did: DID.into(),
                         subject_did: OTHER_DID.into(),
@@ -2889,8 +2956,8 @@ fn table() -> Vec<Conformance> {
             // `endorsements/revoke` note below — a hand-written fixture is
             // what let that row describe a shape the handler had stopped
             // sending.
-            serde_json::to_value(crate::routes::website::files::ListResponse {
-                items: vec![crate::routes::website::files::FileEntry {
+            serde_json::to_value(crate::website::ops::files::ListResponse {
+                items: vec![crate::website::ops::files::FileEntry {
                     path: "index.html".into(),
                     size: 2048,
                     etag: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
@@ -2913,8 +2980,8 @@ fn table() -> Vec<Conformance> {
             s::website::generations::list::v0_1::Response,
             json!({}),
             // Serialised from the real `GenerationsResponse` / `GenerationRow`.
-            serde_json::to_value(crate::routes::website::generations::GenerationsResponse {
-                generations: vec![crate::routes::website::generations::GenerationRow {
+            serde_json::to_value(crate::website::ops::generations::GenerationsResponse {
+                generations: vec![crate::website::ops::generations::GenerationRow {
                     generation: "1".into(),
                     current: false,
                     deployed_at: TS.parse().expect("fixture timestamp"),
@@ -2990,7 +3057,7 @@ fn table() -> Vec<Conformance> {
             s::website::deploy::v0_1::Payload,
             s::website::deploy::v0_1::Response,
             json!({ "uploadId": REQUEST_ID }),
-            to_v(crate::routes::website::deploy::DeployResponse {
+            to_v(crate::website::ops::deploy::DeployResponse {
                 deploy_mode: "managed".into(),
                 bundle_sha256: SITE_ETAG.into(),
                 bundle_size_bytes: 4096,
@@ -3025,7 +3092,7 @@ fn table() -> Vec<Conformance> {
             to_v(
                 // With the directory's disclosure statement the way
                 // `directory::disclosure` generates it from the base schema.
-                crate::routes::join_requests::manifest::response(
+                crate::join::ops::manifest::response(
                     COMMUNITY_DID.into(),
                     vec![crate::schemas::accepts::AcceptsCriterion {
                         id: "kernel-developer".into(),
@@ -3182,11 +3249,217 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "status": "closed"}"#).unwrap(),
             serde_json::from_str::<Value>(r#"{"board": {"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "title": "Trust Week Unconference", "description": "Propose a session for Friday. The sessions with the most support fill the twelve slots.", "status": "closed", "audience": {"kind": "members"}, "proposals": {"opensAt": "2026-11-02T00:00:00Z", "closesAt": "2026-11-10T00:00:00Z"}, "voting": {"opensAt": "2026-11-09T00:00:00Z", "closesAt": "2026-11-12T09:00:00Z"}, "topics": ["Identity", "Governance", "Voting"], "formats": ["Discussion", "Talk", "Workshop", "Demo"], "maxIdeasPerMember": 3, "selectionRule": "The twelve sessions the most members would attend.", "timetable": [{"slotId": "a-0900", "label": "Room A", "startsAt": "2026-11-13T01:00:00Z", "endsAt": "2026-11-13T02:00:00Z"}], "template": {"questions": [{"key": "attend", "type": "choice", "text": "Would you attend this session?", "options": [{"key": "yes", "label": "Yes, I'd attend"}, {"key": "no", "label": "Not for me"}], "minSelections": 1, "maxSelections": 1, "optional": false}], "secrecy": "open", "revote": "replace", "board": {"visibility": "public", "auditors": []}, "ballotBox": "did:example:ballot-box", "allowEarlyClose": false, "resultsBeforeClose": false, "textReleaseThreshold": 10}, "createdAt": "2026-11-01T03:00:00Z", "facilitator": true, "ideaCounts": {"proposed": 2, "open": 4, "selected": 0, "notSelected": 0, "declined": 0, "merged": 0, "withdrawn": 0}}}"#).unwrap()
         ),
+        #[cfg(feature = "voting")]
+        checked!(
+            s::elections::tombstones::show::v0_1::Payload,
+            s::elections::tombstones::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"electionId": "board.brd_Uc7N2qLm4Rt8Vx1Z.ida_Pk3Wq9Ls2Dn6Hy4B", "manifestDigest": "uEiDexampleManifestDigestNotReal000000000000000", "ballotBox": "did:example:ballot-box", "checkpoints": [], "deletedAt": "2026-11-20T09:00:01Z", "removeAt": "2027-11-20T09:00:01Z"}"#).unwrap()
+        ),
         checked!(
             s::boards::delete::v0_1::Payload,
             s::boards::delete::v0_1::Response,
             serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "reason": "Trust Week is over."}"#).unwrap(),
             serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "ideasRemoved": 18, "notesRemoved": 42, "electionsRemoved": 14, "tombstones": {"kept": 14, "removeAt": "2027-11-20T09:00:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::add::v0_1::Payload,
+            s::boards::facilitators::add::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "entryId": "dir_Q7m2K9xVb4Tz8LpR", "reason": "Carol convenes the security track."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": ["dir_Q7m2K9xVb4Tz8LpR"]}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::remove::v0_1::Payload,
+            s::boards::facilitators::remove::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "entryId": "dir_Q7m2K9xVb4Tz8LpR"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": []}"#).unwrap()
+        ),
+        checked!(
+            s::boards::facilitators::list::v0_1::Payload,
+            s::boards::facilitators::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"boardId": "brd_Uc7N2qLm4Rt8Vx1Z", "facilitators": [{"entryId": "dir_Q7m2K9xVb4Tz8LpR", "appointedAt": "2026-11-01T10:00:00Z", "appointedBy": "dir_K3n8P2xWc5Rz9MqT"}, {"entryId": "dir_T4v9L3xZd6Sq2NpW", "appointedAt": "2026-11-02T14:30:00Z", "reviewEndsAt": "2026-11-12T14:30:00Z"}]}"#).unwrap()
+        ),
+        // Member badges (VTI-BDG-*): each task's own request and response examples.
+        checked!(
+            s::badges::awards::list::v0_1::Payload,
+            s::badges::awards::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "state": "offered", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "offered", "offeredAt": "2026-11-05T18:00:00Z", "expiresAt": "2026-12-05T18:00:00Z"}, "hidden": false, "fields": {"displayName": "Sam N."}}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::offer::v0_1::Payload,
+            s::badges::awards::offer::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "to": ["dir_NoorElSayed00000", "dir_LenaWirth0000000"], "note": "Resin pour workshop, 25 October 2026"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"awards": [{"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "offered", "offeredAt": "2026-11-06T18:00:01Z", "expiresAt": "2026-12-06T18:00:01Z"}], "skipped": [{"entryId": "dir_LenaWirth0000000", "reason": "alreadyOffered"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::claims::create::v0_1::Payload,
+            s::badges::claims::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"claim": {"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40, "claims": 0, "state": "active", "createdAt": "2026-11-08T09:00:01Z", "createdBy": "dir_Pr1yaNatarajan00"}, "code": "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::claims::list::v0_1::Payload,
+            s::badges::claims::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40, "claims": 17, "state": "active", "createdAt": "2026-11-08T09:00:01Z", "createdBy": "dir_Pr1yaNatarajan00"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::claims::withdraw::v0_1::Payload,
+            s::badges::claims::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"claim": {"claimId": "bcl_T4nQ8mLw2Rx9Kv5Z", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "label": "Saturday joinery workshop", "validUntil": "2026-11-08T18:00:00Z", "limit": 40, "claims": 17, "state": "withdrawn", "createdAt": "2026-11-08T09:00:01Z", "createdBy": "dir_Pr1yaNatarajan00"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::claims::redeem::v0_1::Payload,
+            s::badges::claims::redeem::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"code": "Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_C7mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "state": "accepted", "offeredAt": "2026-11-08T11:30:00Z", "decidedAt": "2026-11-08T11:30:00Z", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-000000000901"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::share::v0_1::Payload,
+            s::badges::awards::share::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_Pr1yaNatarajan00", "givenBy": "dir_BenOkafor0000000", "note": "For the Saturday joinery workshop.", "state": "accepted", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-05T19:12:40Z", "credentialId": "urn:uuid:9f1b2c3d-4e5f-4a6b-8c7d-000000000777", "shared": {"verificationUrl": "https://harbourside.example/badges/shared/Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua", "bakedImageUrl": "https://harbourside.example/badges/shared/Qm7xV2kR9pLw4Nt8Hs3Fz6Bd1Yc5Je0Ua/image.png", "since": "2026-11-06T12:00:01Z"}}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::unshare::v0_1::Payload,
+            s::badges::awards::unshare::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_Pr1yaNatarajan00", "givenBy": "dir_BenOkafor0000000", "note": "For the Saturday joinery workshop.", "state": "accepted", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-05T19:12:40Z", "credentialId": "urn:uuid:9f1b2c3d-4e5f-4a6b-8c7d-000000000777"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::revoke::v0_1::Payload,
+            s::badges::awards::revoke::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N", "reason": "The workshop was cancelled; nobody hosted it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "revoked", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-06T12:00:01Z", "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::awards::withdraw::v0_1::Payload,
+            s::badges::awards::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_K3mT9pQx2Lw8Rv5N", "reason": "Offered to the wrong Sam; the host was Sam Ortiz."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3mT9pQx2Lw8Rv5N", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_SamNguyen0000000", "givenBy": "dir_Pr1yaNatarajan00", "note": "For the Saturday joinery workshop.", "state": "withdrawn", "offeredAt": "2026-11-05T18:00:00Z", "decidedAt": "2026-11-06T11:00:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::create::v0_1::Payload,
+            s::badges::create::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "holdersVisibleTo": "members", "owners": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "reason": "Workshops are the heart of the community; the hosts should wear it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 0, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000"}, "group": {"groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "groupDid": "did:webvh:QmGroupScid:community.example:group-dids:grp_Hs7Qm2Lk9Tn4Bv1X", "name": "Workshop host", "kind": "static", "joinPolicy": "request", "visibility": "members", "showMembers": "members", "issuesCredentials": true, "carriesAuthority": false, "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "memberCount": 0, "managers": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "credentialAuthorityValidUntil": "2027-11-06T09:00:01Z", "createdAt": "2026-11-06T09:00:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::holders::list::v0_1::Payload,
+            s::badges::holders::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"total": 2, "items": [{"entryId": "dir_BenOkafor0000000", "count": 3, "since": "2026-03-14T19:30:00Z", "latestAt": "2026-10-31T20:10:00Z", "fields": {"displayName": "Ben", "avatar": {"sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b", "mediaType": "image/webp", "size": 18342}}}, {"entryId": "dir_SamNguyen0000000", "count": 1, "since": "2026-09-02T17:45:00Z", "latestAt": "2026-09-02T17:45:00Z"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::images::get::v0_1::Payload,
+            s::badges::images::get::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "data": "iVBORw0KGgoAAAANSUhEUgAABAAAAAQA"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::images::upload::v0_1::Payload,
+            s::badges::images::upload::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"mediaType": "image/png", "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/webp", "size": 18342}, "expiresAt": "2026-11-07T08:55:01Z"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::kudos::give::v0_1::Payload,
+            s::badges::kudos::give::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "to": "dir_B3nOk4f0rRq9Wz2X", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_K3m8Qp2Vt7Xz4Ln9", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Tm4sV3g4K9xQ2bLp", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up.", "state": "offered", "offeredAt": "2026-11-06T10:30:01Z", "expiresAt": "2026-12-06T10:30:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::kudos::list::v0_1::Payload,
+            s::badges::kudos::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"direction": "received", "limit": 20}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"award": {"awardId": "awd_K3m8Qp2Vt7Xz4Ln9", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Tm4sV3g4K9xQ2bLp", "note": "Found the long sash clamps behind the bandsaw. Saved the glue-up.", "state": "offered", "offeredAt": "2026-11-06T10:30:01Z", "expiresAt": "2026-12-06T10:30:01Z"}, "badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "counterpart": {"displayName": "Tom\u00e1s"}}, {"award": {"awardId": "awd_P9r4Wn6Yc2Hs8Vq1", "badgeId": "bdg_Kd0sCl4mpWh1sp3r", "entryId": "dir_B3nOk4f0rRq9Wz2X", "givenBy": "dir_Pr1yaN4t7Rj2Qw8K", "state": "accepted", "offeredAt": "2026-10-28T19:00:00Z", "decidedAt": "2026-10-28T21:12:00Z"}, "badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "counterpart": {"displayName": "Priya"}}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::list::v0_1::Payload,
+            s::badges::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"kind": "community", "limit": 50}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"items": [{"badge": {"badgeId": "bdg_Nf2Rk7Lp9Xs3Qw5T", "kind": "community", "name": "One year aboard", "description": "A year in the community.", "criteria": "Twelve months of membership. Given by the community itself.", "image": {"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mediaType": "image/png", "size": 52200}, "repeatable": false, "requestable": false, "listed": true, "shareableOutside": false, "groupId": "grp_Lk8Tn2Vx4Rm9Qs7H", "state": "active", "holderCount": 213, "createdAt": "2026-03-01T08:00:00Z"}, "myCount": 1, "myState": "holder"}, {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z"}, "myCount": 0, "myState": "requested"}]}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::accept::v0_1::Payload,
+            s::badges::mine::accept::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_Qz7TpLW5k2N8xRb3"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_Qz7TpLW5k2N8xRb3", "badgeId": "bdg_W5k2N8xRb3Qz7TpL", "entryId": "dir_NoorElSayed00000", "givenBy": "dir_Pr1yaNatarajan00", "note": "Resin pour workshop, 25 October 2026", "state": "accepted", "offeredAt": "2026-11-06T18:00:01Z", "decidedAt": "2026-11-06T19:10:02Z", "credentialId": "urn:uuid:9c1d2e3f-4a5b-4c6d-8e7f-000000000777"}, "badge": {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 10, "createdAt": "2026-11-06T09:00:02Z"}, "count": 1, "since": "2026-11-06T19:10:02Z", "latestAt": "2026-11-06T19:10:02Z", "pinned": false, "hidden": false, "position": 7, "credentialId": "urn:uuid:9c1d2e3f-4a5b-4c6d-8e7f-000000000777", "credentialValidUntil": "2028-11-06T19:10:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::arrange::v0_1::Payload,
+            s::badges::mine::arrange::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"order": ["bdg_Kd0sCl4mpWh1sp3r", "bdg_W5k2N8xRb3Qz7TpL"], "pinned": ["bdg_Kd0sCl4mpWh1sp3r", "bdg_W5k2N8xRb3Qz7TpL"]}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badges": [{"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": true, "hidden": false, "position": 0}, {"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "createdAt": "2026-09-01T09:00:02Z"}, "count": 2, "since": "2026-09-14T18:00:00Z", "latestAt": "2026-10-19T18:30:00Z", "pinned": true, "hidden": false, "position": 1, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2028-10-19T18:30:00Z"}], "visibility": "members"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::decline::v0_1::Payload,
+            s::badges::mine::decline::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"awardId": "awd_H7q2Lm9Xc4Vt1Bz8"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"award": {"awardId": "awd_H7q2Lm9Xc4Vt1Bz8", "badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "entryId": "dir_Tm4sV3g4K9xQ2bLp", "givenBy": "dir_B3nOk4f0rRq9Wz2X", "note": "A year of Saturdays. Thank you.", "state": "declined", "offeredAt": "2026-11-05T20:00:00Z", "decidedAt": "2026-11-06T10:05:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::hide::v0_1::Payload,
+            s::badges::mine::hide::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": true, "position": 1}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::list::v0_1::Payload,
+            s::badges::mine::list::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badges": [{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "createdAt": "2026-09-01T09:00:02Z"}, "count": 2, "since": "2026-09-14T18:00:00Z", "latestAt": "2026-10-19T18:30:00Z", "pinned": true, "hidden": false, "position": 0, "credentialId": "urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "credentialValidUntil": "2028-10-19T18:30:00Z"}, {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": true, "position": 1}], "offers": [{"award": {"awardId": "awd_H7q2Lm9Xc4Vt1Bz8", "badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "entryId": "dir_Tm4sV3g4K9xQ2bLp", "givenBy": "dir_B3nOk4f0rRq9Wz2X", "note": "A year of Saturdays. Thank you.", "state": "offered", "offeredAt": "2026-11-05T20:00:00Z", "expiresAt": "2026-12-05T20:00:00Z"}, "badge": {"badgeId": "bdg_Yr1Ab0ardTn2Qx7V", "kind": "community", "name": "One year aboard", "description": "A year in the community.", "image": {"sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "mediaType": "image/png", "size": 30720}, "repeatable": false, "listed": true, "groupId": "grp_Yr1Ab0ardGr0upX2", "state": "active", "createdAt": "2026-09-01T09:10:00Z"}, "givenBy": {"displayName": "Ben"}}], "visibility": "members", "kudosTotal": 0}"#).unwrap()
+        ),
+        checked!(
+            s::badges::mine::show::v0_1::Payload,
+            s::badges::mine::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd0sCl4mpWh1sp3r"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badge": {"badgeId": "bdg_Kd0sCl4mpWh1sp3r", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 24576}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-10-02T09:05:00Z", "createdBy": "dir_Pr1yaN4t7Rj2Qw8K"}, "count": 3, "since": "2026-10-03T12:00:00Z", "latestAt": "2026-11-01T16:20:00Z", "pinned": false, "hidden": false, "position": 1}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::promote::v0_1::Payload,
+            s::badges::promote::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "requestable": false, "shareableOutside": false, "holdersVisibleTo": "members", "owners": ["dir_Pr1yaNatarajan00", "dir_TomasVrba0000000"], "reason": "Given four hundred times this year; the community should stand behind it."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "kind": "community", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/png", "size": 48120}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": false, "groupId": "grp_Qm4Vx8Tk2Rn7Hs1L", "state": "active", "holderCount": 0, "createdAt": "2026-11-06T09:05:02Z", "createdBy": "dir_TomasVrba0000000", "updatedAt": "2026-11-06T09:40:03Z"}, "group": {"groupId": "grp_Qm4Vx8Tk2Rn7Hs1L", "groupDid": "did:webvh:QmGroupScid:community.example:group-dids:grp_Qm4Vx8Tk2Rn7Hs1L", "name": "Clamp whisperer", "kind": "static", "joinPolicy": "closed", "visibility": "members", "showMembers": "members", "issuesCredentials": true, "carriesAuthority": false, "badgeId": "bdg_Kd3mR9vXs2Wq8LpN", "memberCount": 0, "managers": ["dir_Pr1yaNatarajan00", "dir_TomasVrba0000000"], "credentialAuthorityValidUntil": "2027-11-06T09:40:02Z", "createdAt": "2026-11-06T09:40:03Z"}, "holdersOffered": 37}"#).unwrap()
+        ),
+        checked!(
+            s::badges::retire::v0_1::Payload,
+            s::badges::retire::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "reason": "The workshop programme ended with the season."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "retired", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000", "retiredAt": "2026-11-06T09:30:03Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::settings::show::v0_1::Payload,
+            s::badges::settings::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730, "updatedAt": "2026-11-01T10:00:00Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::settings::update::v0_1::Payload,
+            s::badges::settings::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730}, "reason": "Stewards and the welcome team asked to make their own thank-you badges."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"settings": {"enabled": true, "kudosMakers": {"policy": "roles", "roles": ["steward"], "groups": ["grp_Hs7Qm2Lk9Tn4Bv1X"]}, "limits": {"kudosPerGiverPerDay": 10, "sameGiverSameMember": "day", "minTenureDays": 7, "kudosBadgesPerMakerPerMonth": 5, "maxPinned": 2}, "showKudosTotals": true, "automaticBadges": true, "membersMayRequest": true, "credentialValidDays": 730, "updatedAt": "2026-11-06T09:10:02Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::show::v0_1::Payload,
+            s::badges::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z"}, "myCount": 0, "myState": "requested", "owners": ["dir_Pr1yaNatarajan00", "dir_BenOkafor0000000"], "credentialRegime": "outside"}"#).unwrap()
+        ),
+        checked!(
+            s::badges::update::v0_1::Payload,
+            s::badges::update::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "criteria": "Hosted a workshop on the community calendar this year. A badge owner gives it after the session.", "requestable": false, "holdersVisibleTo": "groupMembers", "reason": "Owners give it after each session now; nobody needs to ask."}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted a workshop on the community calendar this year. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": false, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 12, "createdAt": "2026-11-06T09:00:02Z", "createdBy": "dir_AnnaReyes0000000", "updatedAt": "2026-11-06T09:20:01Z"}}"#).unwrap()
+        ),
+        checked!(
+            s::badges::wall::show::v0_1::Payload,
+            s::badges::wall::show::v0_1::Response,
+            serde_json::from_str::<Value>(r#"{"entryId": "dir_BenOkafor0000000"}"#).unwrap(),
+            serde_json::from_str::<Value>(r#"{"visibility": "members", "kudosTotal": 14, "entries": [{"badge": {"badgeId": "bdg_W5k2N8xRb3Qz7TpL", "kind": "community", "name": "Workshop host", "description": "Ran a workshop for the community.", "criteria": "Hosted any workshop on the community calendar. A badge owner gives it after the session.", "image": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "mediaType": "image/png", "size": 61440}, "repeatable": true, "requestable": true, "listed": true, "shareableOutside": true, "groupId": "grp_Hs7Qm2Lk9Tn4Bv1X", "state": "active", "holderCount": 2, "createdAt": "2026-03-01T09:00:02Z", "createdBy": "dir_AnnaReyes0000000"}, "count": 3, "since": "2026-03-14T19:30:00Z", "latestAt": "2026-10-31T20:10:00Z", "pinned": true}, {"badge": {"badgeId": "bdg_Kd8sPq2Vn4Xm7Rt1", "kind": "kudos", "name": "Clamp whisperer", "description": "Found the good clamps when nobody else could.", "image": {"sha256": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", "mediaType": "image/webp", "size": 18342}, "repeatable": true, "listed": true, "state": "active", "createdAt": "2026-11-06T09:05:01Z", "createdBy": "dir_TomasVega0000000"}, "count": 5, "since": "2026-11-06T12:00:00Z", "latestAt": "2026-11-06T14:30:00Z", "pinned": false}]}"#).unwrap()
         ),
         checked!(
             s::boards::list::v0_1::Payload,
@@ -3539,6 +3812,42 @@ fn table() -> Vec<Conformance> {
             json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "dryRun": true }),
             json!({ "stylesheet": ":root { --brand: #0a7f5c; }", "stored": false })
         ),
+        // The handlers build both answers as the generated types; these pin
+        // the request shapes each side sends. Removal (`remove: true`,
+        // `logo: null`) is exercised end to end by `tests/it/community_logo.rs`.
+        checked!(
+            s::community::logo::update::v0_1::Payload,
+            s::community::logo::update::v0_1::Response,
+            json!({ "image": { "mediaType": "image/png", "data": "iVBORw0KGgo" } }),
+            json!({
+                "logo": {
+                    "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
+                    "mediaType": "image/png",
+                    "size": 18342,
+                    "width": 512,
+                    "height": 256,
+                    "url": "https://community.example/v1/community/logo",
+                },
+                "stored": true,
+                "updatedAt": TS,
+            })
+        ),
+        checked!(
+            s::community::logo::show::v0_1::Payload,
+            s::community::logo::show::v0_1::Response,
+            json!({ "includeData": true }),
+            json!({
+                "logo": {
+                    "sha256": "3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b",
+                    "mediaType": "image/png",
+                    "size": 18342,
+                    "width": 512,
+                    "height": 256,
+                },
+                "data": "iVBORw0KGgo",
+                "updatedAt": TS,
+            })
+        ),
         checked!(
             s::community::requested_attributes::show::v0_1::Payload,
             s::community::requested_attributes::show::v0_1::Response,
@@ -3674,13 +3983,13 @@ fn table() -> Vec<Conformance> {
             s::vetting::revocations::list::v0_1::Response,
             json!({ "reviewState": "needsReview", "cursor": "o0", "limit": 50 }),
             json!({
-                "items": [to_v(crate::routes::vetting::VettingRevocationRow {
+                "items": [to_v(crate::vetting::ops::VettingRevocationRow {
                     issuer: OTHER_DID.into(),
                     statement_id: VEC_ID.into(),
                     statement_digest_multibase: "zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG".into(),
                     reason: Some("mistake".into()),
                     recorded_at: TS.parse().expect("fixture timestamp"),
-                    review_state: crate::routes::vetting::RevocationReviewState::NeedsReview,
+                    review_state: crate::vetting::ops::RevocationReviewState::NeedsReview,
                     affected_join_requests: vec![uuid()],
                     affected_members: vec![DID.into()],
                 })],
@@ -3690,7 +3999,7 @@ fn table() -> Vec<Conformance> {
             s::relationships::suspend::v0_2::Payload,
             s::relationships::suspend::v0_2::Response,
             json!({ "id": REQUEST_ID, "reason": "under review" }),
-            to_v(crate::routes::relationships::LifecycleResponse {
+            to_v(crate::relationships::ops::LifecycleResponse {
                 id: uuid(),
                 state: crate::relationships::InForce::Suspended {
                     since: TS.parse().expect("fixture timestamp"),
@@ -3701,7 +4010,7 @@ fn table() -> Vec<Conformance> {
             s::relationships::restore::v0_2::Payload,
             s::relationships::restore::v0_2::Response,
             json!({ "id": REQUEST_ID }),
-            to_v(crate::routes::relationships::LifecycleResponse {
+            to_v(crate::relationships::ops::LifecycleResponse {
                 id: uuid(),
                 state: crate::relationships::InForce::Yes,
             })
@@ -3711,7 +4020,7 @@ fn table() -> Vec<Conformance> {
             s::join_requests::vetting::show::v0_1::Response,
             json!({ "id": REQUEST_ID }),
             {
-                use crate::routes::join_requests::read as r;
+                use crate::join::ops::read as r;
                 to_v(r::JoinRequestVettingResponse {
                     request_id: uuid(),
                     vetting: Some(r::JoinRequestVetting {
@@ -3746,10 +4055,10 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::join_requests::query::v0_1::Payload,
             s::join_requests::query::v0_1::Response,
-            // `SendQueryRequest` (routes/join_requests/present.rs) is read, never
+            // `SendQueryRequest` (join/ops/present.rs) is read, never
             // written, so it has no `Serialize` to build this from.
             json!({ "holderDid": DID, "criterionId": "membership" }),
-            to_v(crate::routes::join_requests::present::SendQueryResponse {
+            to_v(crate::join::ops::present::SendQueryResponse {
                 thread_id: REQUEST_ID.into(),
                 holder_did: DID.into(),
                 query: vta_sdk::protocols::credential_exchange::QueryBody {
@@ -4021,7 +4330,7 @@ fn pcs_witnesses() -> Vec<Conformance> {
         // The community's own admin verb: turn hidden vetting on (or rotate its
         // parameters) for a criterion. Plain JSON fixtures rather than the generated
         // builder — the response nests `PublishedConfig`/`StoredConfig`, and this is
-        // exactly the shape `routes::vetting_hidden::publish_hidden_vetting_core`
+        // exactly the shape `vetting::hidden::publish_hidden_vetting_core`
         // builds, so the fixture doubles as a check that shape still matches.
         checked!(
             s::vetting::hidden::publish::v0_1::Payload,

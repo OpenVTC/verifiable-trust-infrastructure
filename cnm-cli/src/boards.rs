@@ -6,6 +6,8 @@
 //! - `create` takes `vtc.boards.manage` **and** `vtc.elections.manage`: the template decides
 //!   every election the board's facilitators will open (VTI-BRD-002).
 //! - `list`, `show` and `notes` read; `update`, `close` and `archive` change a board.
+//! - `facilitators add|remove|list` appoints a member a facilitator of one board, ends an
+//!   appointment, and reads who is appointed (VTI-BRD-090 – 093).
 //! - `decide` accepts an idea (opening its election from the template), declines, merges or
 //!   reopens it; `select` records a facilitator's choice once its election is tallied; `hide`
 //!   and `unhide` moderate notes.
@@ -125,6 +127,35 @@ pub enum BoardsCommands {
     },
     /// Show a hidden note again.
     Unhide { note_id: String },
+    /// Who facilitates one board by appointment, and appointing or removing them.
+    #[command(subcommand)]
+    Facilitators(FacilitatorsCommands),
+}
+
+#[derive(Subcommand)]
+pub enum FacilitatorsCommands {
+    /// Appoint an active member a facilitator of one board: vtc.boards.manage qualified to it,
+    /// delegated by you, who must facilitate the board yourself (VTI-BRD-090). A member with no
+    /// administrative role may be appointed.
+    Add {
+        board_id: String,
+        /// The member's directory entry (`dir_…`), never their DID.
+        entry_id: String,
+        /// Why, recorded with the appointment.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// End an appointment: your own, or anyone's with vtc.boards.manage unqualified
+    /// (VTI-BRD-091).
+    Remove {
+        board_id: String,
+        entry_id: String,
+        /// Why, recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// The board's appointed facilitators: when, by whom, and any review under way.
+    List { board_id: String },
 }
 
 /// A starting board: proposals from the next whole hour for a week, voting from two days
@@ -357,6 +388,23 @@ fn refusal(vtc: &Connected, err: VtcError, subject: &str) -> Box<dyn std::error:
             "{subject}'s election has no verified result yet: it is verified once voting closes and \
              the ballot box publishes its result. Try again later."
         ))
+    } else if text.contains("alreadyFacilitator") {
+        Some(format!(
+            "That member already facilitates {subject}, by an appointment or by holding \
+             vtc.boards.manage for every board."
+        ))
+    } else if text.contains("notFacilitator") {
+        Some(format!(
+            "That entry holds no appointment to {subject}. See who does with `{bin} boards \
+             facilitators list {subject}`; vtc.boards.manage held for every board is not an \
+             appointment, and is changed with `{bin} access`."
+        ))
+    } else if text.contains("entryNotFound") {
+        Some(
+            "No active member has that entry. Appoint a member by their directory entry \
+             (`dir_…`), not their DID."
+                .into(),
+        )
     } else if text.contains("reasonRequired") {
         Some("This needs --reason: the board's audience is shown it.".into())
     } else if text.contains("permissionDenied") || text.contains("Forbidden") {
@@ -699,7 +747,102 @@ async fn run_command(command: BoardsCommands, vtc: &Connected, keyring_key: &str
             println!("{GREEN}shown again{RESET} {BOLD}{note_id}{RESET}");
             Ok(())
         }
+        BoardsCommands::Facilitators(cmd) => facilitators(c, vtc, &key, cmd).await,
     }
+}
+
+async fn facilitators(
+    c: &vtc_client::VtcClient,
+    vtc: &Connected,
+    key: &vtc_client::HolderKey,
+    cmd: FacilitatorsCommands,
+) -> CliResult {
+    let (board_id, verb, entries) = match cmd {
+        FacilitatorsCommands::Add {
+            board_id,
+            entry_id,
+            reason,
+        } => {
+            let out = c
+                .boards_facilitators_add(&board_id, &entry_id, reason.as_deref(), key)
+                .await
+                .map_err(|e| refusal(vtc, e, &board_id))?;
+            if is_json_output() {
+                return Ok(print_json(&out)?);
+            }
+            (
+                board_id,
+                format!("appointed {entry_id}"),
+                serde_json::to_value(&out)?,
+            )
+        }
+        FacilitatorsCommands::Remove {
+            board_id,
+            entry_id,
+            reason,
+        } => {
+            let out = c
+                .boards_facilitators_remove(&board_id, &entry_id, reason.as_deref(), key)
+                .await
+                .map_err(|e| refusal(vtc, e, &board_id))?;
+            if is_json_output() {
+                return Ok(print_json(&out)?);
+            }
+            (
+                board_id,
+                format!("removed {entry_id}"),
+                serde_json::to_value(&out)?,
+            )
+        }
+        FacilitatorsCommands::List { board_id } => {
+            let out = c
+                .boards_facilitators_list(&board_id, key)
+                .await
+                .map_err(|e| refusal(vtc, e, &board_id))?;
+            if is_json_output() {
+                return Ok(print_json(&out)?);
+            }
+            let v = serde_json::to_value(&out)?;
+            let rows = v["facilitators"].as_array().cloned().unwrap_or_default();
+            if rows.is_empty() {
+                println!(
+                    "{DIM}nobody is appointed to {board_id}; holders of vtc.boards.manage for every \
+                     board facilitate it{RESET}"
+                );
+            }
+            for r in rows {
+                let by = r["appointedBy"]
+                    .as_str()
+                    .map(|b| format!(" by {b}"))
+                    .unwrap_or_default();
+                print!(
+                    "{BOLD}{}{RESET}  since {}{by}",
+                    r["entryId"].as_str().unwrap_or_default(),
+                    r["appointedAt"].as_str().unwrap_or_default()
+                );
+                match r["reviewEndsAt"].as_str() {
+                    Some(at) => println!(
+                        "  {YELLOW}under review{RESET}: withdrawn at {at} unless an administrator \
+                         re-affirms it"
+                    ),
+                    None => println!(),
+                }
+            }
+            return Ok(());
+        }
+    };
+    println!("{GREEN}{verb}{RESET} on {BOLD}{board_id}{RESET}");
+    let list = entries["facilitators"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if list.is_empty() {
+        println!("  {DIM}no facilitator is appointed now{RESET}");
+    } else {
+        let names: Vec<&str> = list.iter().filter_map(Value::as_str).collect();
+        println!("  appointed: {}", names.join(", "));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

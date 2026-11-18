@@ -527,21 +527,34 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
       refresh();
     },
   });
+  // The confirmations are asked in the click handlers, not in `mutationFn`:
+  // backing out is the operator's choice, never a refusal card (#2608).
+  const confirmClose = async () => {
+    const ok = await confirm({
+      title: `Close ${electionId} early?`,
+      message: "Voting ends now and the counts are final. It cannot be reopened.",
+      confirmLabel: "Close early",
+      destructive: true,
+    });
+    if (ok) close.mutate();
+  };
   const cancel = useMutation({
-    mutationFn: async () => {
-      const ok = await confirm({
-        title: `Cancel ${electionId}?`,
-        message: "Ticket issuance stops at once and is never resumed. The ballot box is then asked to cancel it.",
-        confirmLabel: "Cancel the election",
-      });
-      if (!ok) throw new Error("Not cancelled.");
-      return cancelElection(electionId, reason, gesture);
-    },
+    mutationFn: () => cancelElection(electionId, reason, gesture),
     onSuccess: () => {
       toast.push("success", `Cancelled ${electionId}.`);
       refresh();
     },
   });
+  const confirmCancel = async () => {
+    const ok = await confirm({
+      title: `Cancel ${electionId}?`,
+      message: "Ticket issuance stops at once and is never resumed. The ballot box is then asked to cancel it.",
+      confirmLabel: "Cancel the election",
+      cancelLabel: "Keep it",
+      destructive: true,
+    });
+    if (ok) cancel.mutate();
+  };
   let parsedAttestations: unknown[] | null = [];
   if (attestations.trim()) {
     try {
@@ -570,7 +583,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
       </Field>
       <div className="form-actions">
         {open && e.manifest.allowEarlyClose && (
-          <button type="button" className="secondary" onClick={() => close.mutate()} disabled={close.isPending}>
+          <button type="button" className="secondary" onClick={() => void confirmClose()} disabled={close.isPending}>
             Close early
           </button>
         )}
@@ -578,7 +591,7 @@ function ElectionActions({ electionId, e }: { electionId: string; e: Election })
           <button
             type="button"
             className="secondary destructive"
-            onClick={() => cancel.mutate()}
+            onClick={() => void confirmCancel()}
             disabled={cancel.isPending || !reason.trim()}
           >
             Cancel the election

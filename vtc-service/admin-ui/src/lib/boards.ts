@@ -23,6 +23,8 @@ import type {
   BoardUpdatePayload,
   BoardUpdateResponse,
   BoardDeleteResponse,
+  BoardFacilitatorsListResponse,
+  BoardFacilitatorsResponse,
 } from "./wire-types";
 
 export const BOARDS_MANAGE = "vtc.boards.manage";
@@ -38,12 +40,16 @@ const DECIDE = "https://trusttasks.org/spec/vtc/boards/ideas/decide/0.1";
 const SELECT = "https://trusttasks.org/spec/vtc/boards/ideas/select/0.1";
 const NOTES_LIST = "https://trusttasks.org/spec/vtc/boards/notes/list/0.1";
 const NOTES_HIDE = "https://trusttasks.org/spec/vtc/boards/notes/hide/0.1";
+const FACILITATORS_ADD = "https://trusttasks.org/spec/vtc/boards/facilitators/add/0.1";
+const FACILITATORS_REMOVE = "https://trusttasks.org/spec/vtc/boards/facilitators/remove/0.1";
+const FACILITATORS_LIST = "https://trusttasks.org/spec/vtc/boards/facilitators/list/0.1";
 
 export type Board = BoardShowResponse["board"];
 export type Idea = BoardShowResponse["ideas"][number];
 export type Note = BoardNotesListResponse["notes"][number];
 export type Template = Board["template"];
 export type Slot = NonNullable<Board["timetable"]>[number];
+export type Appointment = BoardFacilitatorsListResponse["facilitators"][number];
 
 const PAGE = 200;
 const MAX_PAGES = 20;
@@ -100,6 +106,27 @@ export const updateBoard = (p: BoardUpdatePayload) => postSignedTrustTask<BoardU
  */
 export const deleteBoard = (boardId: string, reason: string, confirm: ConfirmGesture) =>
   postSignedWithStepUp<BoardDeleteResponse>(DELETE, { boardId, reason }, confirm);
+
+// ── Facilitators by appointment (VTI-BRD-090 – 093) ──────────────────────────
+//
+// A facilitator appoints a member to facilitate this one board: `vtc.boards.manage` qualified
+// `board:<boardId>`, a grant on the member's own entry that names the appointer. Only the
+// appointee, or a holder of `vtc.boards.manage` for every board, ends an appointment.
+
+export const listFacilitators = (boardId: string) =>
+  postSignedRead<BoardFacilitatorsListResponse>(FACILITATORS_LIST, { boardId }).then((r) => r.facilitators);
+
+export const appointFacilitator = (boardId: string, entryId: string, reason?: string) =>
+  postSignedTrustTask<BoardFacilitatorsResponse>(FACILITATORS_ADD, {
+    boardId,
+    entryId,
+    ...(reason ? { reason } : {}),
+  }).then((r) => r.facilitators);
+
+export const removeFacilitator = (boardId: string, entryId: string) =>
+  postSignedTrustTask<BoardFacilitatorsResponse>(FACILITATORS_REMOVE, { boardId, entryId }).then(
+    (r) => r.facilitators,
+  );
 
 export type Decision = "accept" | "decline" | "merge" | "reopen";
 

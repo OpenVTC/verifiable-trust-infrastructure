@@ -25,5 +25,16 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  // What ships, and nothing else (#2430): `npm run build` type-checks this
+  // program, so it must resolve from this directory alone. The tests, their
+  // fixtures and the harness are checked by `tsconfig.test.json` (`npm run
+  // typecheck`, CI's Typecheck step), where a test may reach the vendored
+  // specification bundles through the `@vti-specs-vtc` alias.
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.test-data.ts",
+    "src/test"
+  ]
 }

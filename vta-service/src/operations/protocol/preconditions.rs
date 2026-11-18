@@ -8,7 +8,8 @@
 //! - read `vta_did` from the AppConfig (or fail
 //!   `VtaDidNotConfigured`),
 //! - load the `WebvhDidRecord` for it (or fail
-//!   `VtaDidRecordMissing`),
+//!   `VtaDidRecordMissing`) — or, for a `did:webs` VTA, its
+//!   `WebsDidRecord` ([`super::webs_backing`]),
 //! - load the on-disk `did.jsonl` (or fail `VtaDidLogMissing`),
 //! - parse the latest log entry's state into a JSON document (or
 //!   fail through `CurrentDocumentError`).
@@ -38,21 +39,39 @@ use super::document::{CurrentDocumentError, current_document_from_log};
 #[derive(Debug, Clone)]
 pub struct VtaDocState {
     /// The VTA's own DID, copied out of `AppConfig` so callers can
-    /// pass it through to [`crate::operations::did_webvh::
-    /// update_did_webvh`] without re-reading the config lock.
+    /// pass it through to the publish step without re-reading the config lock.
     pub vta_did: String,
-    /// The WebVH SCID for the VTA's DID. Stable across log entries.
-    pub scid: String,
-    /// Raw on-disk did.jsonl, exactly as the VTA published it.
-    /// Carried through so callers that need to splice the new entry
-    /// onto the existing log don't have to re-read.
-    pub did_log: String,
-    /// Latest log entry's `state` field as parsed JSON. Mutated by
-    /// the per-op `with_*_service` / `without_*_service` patchers.
+    /// The VTA's current DID document as JSON. Mutated by the per-op
+    /// `with_*_service` / `without_*_service` patchers.
     pub current_doc: JsonValue,
-    /// `WebvhDidRecord` for the VTA's DID — carried so callers that
-    /// pass it to `update_did_webvh` don't re-load.
-    pub record: WebvhDidRecord,
+    /// What the document is derived from, which is also what the publish step
+    /// ([`super::service_lifecycle::publish_patch`]) writes a new version of.
+    pub backing: VtaDocBacking,
+}
+
+/// What a VTA's own DID document is held as: the method-specific state the
+/// publish step needs and the generic path never reads.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum VtaDocBacking {
+    /// A `did:webvh` VTA: its record and its log. A new version is a new log
+    /// entry (`update_did_webvh`).
+    Webvh {
+        /// The WebVH SCID for the VTA's DID. Stable across log entries.
+        scid: String,
+        /// Raw on-disk did.jsonl, exactly as the VTA published it.
+        did_log: String,
+        /// `WebvhDidRecord` for the VTA's DID.
+        record: Box<WebvhDidRecord>,
+    },
+    /// A `did:webs` VTA (alpha, VTI-KEY-001): its record, whose key event
+    /// stream the document is derived from. A new version is a set of
+    /// interaction events replacing its designated services
+    /// (`update_did_webs`); see [`super::webs_backing`].
+    #[cfg(feature = "webs")]
+    Webs {
+        record: Box<crate::webs_store::WebsDidRecord>,
+    },
 }
 
 /// Failures from [`load_vta_doc_state`]. Each per-op error enum
@@ -67,6 +86,14 @@ pub enum ProtocolPreconditionError {
     VtaDidRecordMissing(String),
     #[error("VTA DID `{0}` has no published log on disk")]
     VtaDidLogMissing(String),
+    /// A `did:webs` VTA whose identity its host does not serve yet: first
+    /// boot publishes it (`server::publish_own_webs_identity`), and nothing is
+    /// published over it before then. Each op reports it as its
+    /// `VtaDidLogMissing` — the DID has no published log.
+    #[error(
+        "VTA DID `{0}` is not published yet; it is published at first boot — restart the VTA once its host accepts it"
+    )]
+    VtaDidNotPublished(String),
     #[error("the on-disk did.jsonl is empty — cannot read current document")]
     EmptyLog,
     #[error("storage error while loading VTA document state: {0}")]
@@ -90,9 +117,10 @@ impl From<CurrentDocumentError> for ProtocolPreconditionError {
     }
 }
 
-/// Load the four pieces of state every protocol op reads before doing
-/// anything else. Cheap — just a config read, two fjall lookups, and
-/// a JSON parse on the latest log entry.
+/// Load the state every protocol op reads before doing anything else: the
+/// VTA DID from the config, then its current document from its own store — a
+/// `did:webvh`'s log (`webvh_ks`), or a `did:webs`'s key event stream
+/// (`webs_ks`), switched on the DID's method.
 ///
 /// The config lock is acquired *and dropped* inside this function
 /// before the fjall I/O, matching the pattern the original per-op
@@ -101,6 +129,7 @@ impl From<CurrentDocumentError> for ProtocolPreconditionError {
 pub async fn load_vta_doc_state(
     config: &Arc<RwLock<AppConfig>>,
     webvh_ks: &KeyspaceHandle,
+    webs_ks: &KeyspaceHandle,
 ) -> Result<VtaDocState, ProtocolPreconditionError> {
     let vta_did = {
         let cfg = config.read().await;
@@ -108,6 +137,12 @@ pub async fn load_vta_doc_state(
             .clone()
             .ok_or(ProtocolPreconditionError::VtaDidNotConfigured)?
     };
+
+    #[cfg(feature = "webs")]
+    if vta_did.starts_with("did:webs:") {
+        return super::webs_backing::load(webs_ks, vta_did).await;
+    }
+    let _ = webs_ks;
 
     let record = webvh_store::get_did(webvh_ks, &vta_did)
         .await?
@@ -121,9 +156,11 @@ pub async fn load_vta_doc_state(
 
     Ok(VtaDocState {
         vta_did,
-        scid,
-        did_log,
         current_doc,
-        record,
+        backing: VtaDocBacking::Webvh {
+            scid,
+            did_log,
+            record: Box::new(record),
+        },
     })
 }

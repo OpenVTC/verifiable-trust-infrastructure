@@ -1,3 +1,36 @@
+// jemalloc as the global allocator (the `jemalloc` feature, on by default).
+// glibc malloc keeps freed pages in its arenas rather than returning them, so
+// RSS ratchets to the high-water mark and never falls back — indistinguishable
+// from a leak on a memory graph. jemalloc purges freed pages back to the OS.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// jemalloc tuning, read by jemalloc itself at startup via this well-known symbol.
+///
+/// `background_thread:true` runs the purger on its own thread, so freed pages
+/// are returned even while the process is idle (without it, purging only
+/// happens as a side effect of later allocator calls). `dirty_decay_ms` /
+/// `muzzy_decay_ms` are how long freed pages linger before being returned;
+/// 5s (default 10s) keeps RSS close to the live heap at negligible cost for an
+/// I/O-bound service.
+///
+/// The name is `_rjem_malloc_conf`, not `malloc_conf`: `tikv-jemalloc-sys`
+/// builds jemalloc with the `_rjem_` symbol prefix, so an unprefixed
+/// `malloc_conf` would be silently ignored.
+///
+/// SAFETY: exporting a symbol is unsafe because it could clash with another
+/// definition of the same name. This is the name jemalloc documents for
+/// exactly this, it is defined once (in the binary, never the library), and
+/// the value is the NUL-terminated static string jemalloc expects. The type is a
+/// reference to a fixed-size array, a thin pointer matching jemalloc's
+/// `const char *malloc_conf`; a `&[u8]` slice reference would be two words.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[allow(unsafe_code)]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static MALLOC_CONF: &[u8; 63] =
+    b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000\0";
+
 // Module tree is declared in lib.rs (so integration tests under
 // `tests/` can pull the same modules the binary uses). Re-import the
 // pieces this binary needs at the top level.
@@ -124,6 +157,17 @@ enum Commands {
         #[command(subcommand)]
         command: Oid4vpCommands,
     },
+    /// This VTC's own keys (offline — run on a **stopped** daemon).
+    ///
+    /// When the VTA rotates a did:webs VTC's key (`pnm webs rotate`), the VTC
+    /// takes over the new keys by a sealed hand-off: `request` writes a
+    /// request, `pnm keys bundle <context> --recipient <request>` seals the
+    /// keys to it, `refresh` checks them against the VTC's resolved document
+    /// and stores them.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommands,
+    },
     /// The admin console's files (offline).
     ///
     /// To customise the console's look and feel, export it to a directory,
@@ -134,6 +178,28 @@ enum Commands {
     AdminUi {
         #[command(subcommand)]
         command: AdminUiCommands,
+    },
+    /// The public landing page's files (offline).
+    ///
+    /// To give the community its own landing page, export the built-in one
+    /// to a directory, edit it there, and set `website.landing_dir` in
+    /// config.toml. The daemon serves that directory at `/` instead of the
+    /// page built into the binary, re-reading it on every request — no
+    /// rebuild, no restart, no second host.
+    Website {
+        #[command(subcommand)]
+        command: WebsiteCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebsiteCommands {
+    /// Write the landing page built into this binary to a new or empty
+    /// directory.
+    Export {
+        /// Directory to write into. Created if missing; refused if it
+        /// already holds anything.
+        dir: PathBuf,
     },
 }
 
@@ -148,6 +214,28 @@ enum AdminUiCommands {
         /// console; serve it with `admin_ui.members_dir`.
         #[arg(long)]
         members: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommands {
+    /// Write a sealed-transfer request for this VTC's current keys, and keep
+    /// its private half here until `refresh`.
+    Request {
+        /// Write the request here instead of to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Open the bundle `pnm keys bundle <context>` sealed to the request,
+    /// check its keys against this VTC's resolved did:webs document, and
+    /// store them in place of the keys the VTA rotated out.
+    Refresh {
+        /// The armored bundle file.
+        #[arg(long)]
+        bundle: PathBuf,
+        /// The digest `pnm keys bundle` printed, carried here separately.
+        #[arg(long)]
+        digest: String,
     },
 }
 
@@ -570,6 +658,19 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Keys { command }) => {
+            use vtc_service::keys_cli;
+            let result = match command {
+                KeysCommands::Request { out } => keys_cli::run_request(cli.config, out).await,
+                KeysCommands::Refresh { bundle, digest } => {
+                    keys_cli::run_refresh(cli.config, bundle, digest).await
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Oid4vp { command }) => {
             use vtc_service::oid4vp_cli;
             let result = match command {
@@ -634,6 +735,31 @@ async fn main() {
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Website { command }) => {
+            #[cfg(feature = "website")]
+            {
+                let WebsiteCommands::Export { dir } = command;
+                if let Err(e) = vtc_service::website::default_site::export(&dir) {
+                    eprintln!("Export failed: {e}");
+                    std::process::exit(1);
+                }
+                println!(
+                    "Landing page written to {}.\n\
+                     Edit it there, then set in config.toml and restart the daemon once:\n\n\
+                     [website]\n\
+                     landing_dir = \"{}\"\n\n\
+                     Later edits show on the next page load.",
+                    dir.display(),
+                    std::path::absolute(&dir).unwrap_or(dir.clone()).display()
+                );
+            }
+            #[cfg(not(feature = "website"))]
+            {
+                let _ = command;
+                eprintln!("website subcommands are unavailable (compiled without 'website')");
                 std::process::exit(1);
             }
         }
@@ -792,7 +918,7 @@ async fn run_invite_cli(
     ttl_seconds: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use chrono::{Duration as ChronoDuration, Utc};
-    use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+    use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry};
     use vtc_service::auth::session::now_epoch;
     use vtc_service::install::{
         InstallTokenSigner, InstallTokenStore, InvitedAuthority, mint_install_token,
@@ -824,8 +950,10 @@ async fn run_invite_cli(
         .ok_or("secret store has no VTC bundle — has setup completed?")?;
     let bundle = VtcKeyBundle::from_secret_store_bytes(&bundle_bytes)?;
 
-    let ed25519 = bundle.ed25519_private_bytes()?;
-    let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
+    // The daemon derives the install-token key from the derivation root
+    // (`server::init_auth`); a token minted under anything else never verifies.
+    let root = bundle.derivation_root()?;
+    let signer = InstallTokenSigner::from_master_seed(&*root)?;
 
     // Open the install + ACL keyspaces directly, which fjall allows only while
     // the daemon is stopped. Unlike most offline commands this one has an
@@ -900,7 +1028,11 @@ async fn run_invite_cli(
         Some(admin_did) => {
             // A wallet invitation. Ensure the ACL entry exists with Admin role:
             // the post-login flow gates on it.
+            //
+            // The entry expires with the invitation until it is claimed
+            // (#2660): the claim makes it permanent, a revocation removes it.
             let acl_already_present = get_acl_entry(&acl_ks, admin_did).await?.is_some();
+            let minted = mint_install_token(&signer, &vtc_did, admin_did, ttl_seconds)?;
             if !acl_already_present {
                 let entry = VtcAclEntry {
                     did: admin_did.to_string(),
@@ -920,7 +1052,15 @@ async fn run_invite_cli(
                     label_set_by_subject: false,
                     suspension: None,
                 };
-                store_acl_entry(&acl_ks, &entry).await?;
+                vtc_service::install::write_invite_entry(
+                    &acl_ks,
+                    &install_store,
+                    &minted.jti,
+                    entry.clone(),
+                    exp,
+                    None,
+                )
+                .await?;
                 // An unrestricted admin made offline, without the consent the
                 // daemon requires (VTI-APV-014) — audited as the break-glass on
                 // the next boot.
@@ -934,7 +1074,6 @@ async fn run_invite_cli(
                 )
                 .await?;
             }
-            let minted = mint_install_token(&signer, &vtc_did, admin_did, ttl_seconds)?;
             install_store
                 .record_issued(
                     &minted.jti,
@@ -948,7 +1087,7 @@ async fn run_invite_cli(
             acl_line = if acl_already_present {
                 "pre-existing (left untouched)".to_string()
             } else {
-                "created (role=admin)".to_string()
+                "created (role=admin), expiring with the invitation until it is claimed".to_string()
             };
             minted
         }
@@ -1048,6 +1187,9 @@ async fn run_enrol_approver_cli(
     eprintln!("The subject opens the URL, types the code, and signs the redemption with");
     eprintln!("their own DID through their wallet; their approver device signs the");
     eprintln!("enrolment statement. Five wrong codes void the invite.");
+    eprintln!();
+    eprintln!("Use an approver key this subject uses at no other community: two communities");
+    eprintln!("holding the same approver DID can tell the same person stands behind both.");
     eprintln!();
     eprintln!("Restart the daemon (`vtc`) first — it records this invite in the audit log");
     eprintln!("as an offline (break-glass) action when it starts.");

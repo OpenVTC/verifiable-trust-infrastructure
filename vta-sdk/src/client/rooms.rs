@@ -120,6 +120,7 @@ impl VtaClient {
     /// associated data. The host assigns versions from a room-wide counter, so
     /// a put that lands at another version does not open; the writer re-seals
     /// at the version the host reports and writes again.
+    #[allow(deprecated)] // seal/0.3 is served beside it; this SDK moves to it in a later PR
     pub async fn room_seal(
         &self,
         room_id: &str,
@@ -159,6 +160,7 @@ impl VtaClient {
     /// attributed to the member rather than to this client. An agent acting under an
     /// attenuated chain signs its own body and uses [`VtaClient::room_seal`] instead; the
     /// VTA refuses it this flag.
+    #[allow(deprecated)] // seal/0.3 is served beside it; this SDK moves to it in a later PR
     pub async fn room_seal_as_principal(
         &self,
         room_id: &str,
@@ -218,6 +220,7 @@ impl VtaClient {
     ///
     /// **Send the returned `document` to its `recipient` unaltered**, and to nobody else.
     /// Nothing in it names this client: the host records the member.
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     pub async fn room_act(
         &self,
         document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
@@ -233,6 +236,7 @@ impl VtaClient {
     /// Sent at 0.10 only: a VTA that does not serve it answers
     /// [`VtaError::UnsupportedTaskType`], and is upgraded rather than asked at an older
     /// version.
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     pub async fn room_act_community(
         &self,
         document: &vti_specs::rooms::keys::act::v0_10::UnsignedRoomRequest,
@@ -240,6 +244,7 @@ impl VtaClient {
         self.act_v0_10(json!({ "document": document })).await
     }
 
+    #[allow(deprecated)] // act/0.11 is served beside it; this SDK moves to it in a later PR
     async fn act_v0_10(
         &self,
         payload: Value,
@@ -270,6 +275,7 @@ impl VtaClient {
     /// **The key is secret, and opens that file for as long as its ciphertext
     /// exists.** Hold it for one encryption or decryption, never store or log
     /// it, and never hand it to web page script.
+    #[allow(deprecated)] // file-key 0.2 is still served; 0.3 adds only `purposeOfUse`, which this call names none of
     pub async fn room_file_key(
         &self,
         room_id: &str,
@@ -563,19 +569,29 @@ impl VtaClient {
     /// caller MUST treat it so: say so rather than present the room as ready. The VTA goes
     /// on delivering a `pending` list on its own; bring the host up to date at once with
     /// [`Self::room_owner_revoke`] naming it and no withdrawal. Never register again to
-    /// repair it. Sent at 0.2 only: a VTA that does not serve it answers
-    /// [`VtaError::UnsupportedTaskType`] and is upgraded rather than asked at 0.1.
+    /// repair it.
+    ///
+    /// Sent at **0.3** when the request states a `record_retention` or a `signal_delay`
+    /// (which 0.2 cannot carry), and at 0.2 otherwise — the request 0.2 and 0.3 share, so a
+    /// VTA not yet serving 0.3 still registers a room asking nothing new. Neither falls back:
+    /// a VTA that does not serve the version sent answers [`VtaError::UnsupportedTaskType`]
+    /// and is upgraded rather than asked at an older one, because a room registered without
+    /// the settings its owner stated is the failure `rooms/create` 0.3 exists to prevent.
     pub async fn room_owner_register(
         &self,
         request: RoomRegistration<'_>,
-    ) -> Result<vti_specs::rooms::owner::register::v0_2::Response, VtaError> {
+    ) -> Result<vti_specs::rooms::owner::register::v0_3::Response, VtaError> {
         let payload = serde_json::to_value(room_register_payload(&request)?)?;
+        let task = if request.record_retention.is_some() || request.signal_delay.is_some() {
+            trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_3
+        } else {
+            trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2
+        };
         // One host round trip for the registration and one for the room's list, over
         // whatever transport the host speaks.
         let timeout = ROOM_TT_TIMEOUT * 3;
-        let value = self
-            .dispatch_trust_task(trust_tasks::TASK_ROOMS_OWNER_REGISTER_0_2, payload, timeout)
-            .await?;
+        let value = self.dispatch_trust_task(task, payload, timeout).await?;
+        // 0.3's response is 0.2's.
         parse_response(value, "rooms/owner/register")
     }
 
@@ -648,6 +664,7 @@ impl VtaClient {
     /// the grant nothing else withdraws, so expiry is how it ends. An empty
     /// `actions` is refused rather than read as "everything". Call it inside
     /// [`VtaClient::idempotent`] (the task is `Keyed`).
+    #[allow(deprecated)] // 0.2 is served beside 0.3; a grant stating no purposes needs nothing more
     pub async fn room_owner_issue_authority(
         &self,
         room_id: &str,
@@ -662,6 +679,38 @@ impl VtaClient {
             .dispatch_trust_task(
                 trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2,
                 serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/owner/issue-authority")
+    }
+
+    /// `rooms/owner/issue-authority/0.3` — [`Self::room_owner_issue_authority`], the
+    /// credential stating `purposes`: what its subject may use the content it reads under
+    /// it for (VTI-ACL-110). The VTA refuses purposes wider than the caller's own entry
+    /// grants (VTI-ACL-107). Call it inside [`VtaClient::idempotent`] (the task is `Keyed`).
+    #[allow(deprecated)] // the 0.2 payload builder, whose members 0.3 extends
+    pub async fn room_owner_issue_authority_for(
+        &self,
+        room_id: &str,
+        signing_key_id: &str,
+        subject: &str,
+        actions: Vec<RoomAction>,
+        valid_until: chrono::DateTime<chrono::Utc>,
+        purposes: &crate::acl::PurposeScope,
+    ) -> Result<vti_specs::rooms::owner::issue_authority::v0_3::Response, VtaError> {
+        let mut payload = serde_json::to_value(room_issue_authority_payload(
+            room_id,
+            signing_key_id,
+            subject,
+            actions,
+            valid_until,
+        )?)?;
+        payload["purposes"] = serde_json::to_value(purposes)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3,
+                payload,
                 ROOM_TT_TIMEOUT,
             )
             .await?;
@@ -888,6 +937,100 @@ impl VtaClient {
             .await?;
         parse_response(value, "rooms/keys/label")
     }
+
+    /// `rooms/keys/list/0.3` — [`VtaClient::room_list`], with `include_personal` also
+    /// returning each entry's read marker ([`VtaClient::room_read_marker_set`]) in
+    /// `readMarker`, where the VTA holds one. Count unread messages against it; where it is
+    /// absent, against the client's own.
+    ///
+    /// A read marker is the member's alone, as the label is: never pass it, or a read state
+    /// derived from it, to a room's host, its owner, another member, a community or a
+    /// website.
+    pub async fn room_list_v0_3(
+        &self,
+        include_personal: bool,
+    ) -> Result<vti_specs::rooms::keys::list::v0_3::Response, VtaError> {
+        use vti_specs::rooms::keys::list::v0_3::Payload;
+        let mut payload = json!({});
+        if include_personal {
+            payload["includePersonal"] = Value::Bool(true);
+        }
+        let payload: Payload = serde_json::from_value(payload)
+            .map_err(|e| VtaError::Validation(format!("rooms/keys/list request: {e}")))?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_LIST_0_3,
+                serde_json::to_value(payload)?,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/list")
+    }
+
+    /// `rooms/keys/read-marker/set/0.1` — tell the VTA where `member` has now seen
+    /// `room_id`'s conversation up to: `version`, the highest room version shown to them,
+    /// and `created_at`, the host's `createdAt` of the newest message shown, exactly as the
+    /// host returned it.
+    ///
+    /// The VTA keeps the further of the marker it holds and this one, so two devices
+    /// setting at once agree; `rewind: true` ("mark as unread") takes this one even when it
+    /// is behind — `version` `0` and no `created_at` for the whole room. Adopt the
+    /// `readMarker` the response returns, whether or not it `moved`. Idempotent: a lost
+    /// reply can simply be asked again — but do not retry a forward set issued before a
+    /// rewind sent since.
+    ///
+    /// Set a marker only for what was actually shown to the person, when the view settles,
+    /// not per message.
+    pub async fn room_read_marker_set(
+        &self,
+        room_id: &str,
+        member: &str,
+        version: u64,
+        created_at: Option<&str>,
+        rewind: bool,
+    ) -> Result<vti_specs::rooms::keys::read_marker::set::v0_1::Response, VtaError> {
+        let payload = room_read_marker_payload(room_id, member, version, created_at, rewind)?;
+        let value = self
+            .dispatch_trust_task(
+                trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1,
+                payload,
+                ROOM_TT_TIMEOUT,
+            )
+            .await?;
+        parse_response(value, "rooms/keys/read-marker/set")
+    }
+}
+
+/// The `rooms/keys/read-marker/set/0.1` payload, checked against its schema. `created_at`
+/// is carried exactly as given — the string, never a reparsed timestamp.
+pub fn room_read_marker_payload(
+    room_id: &str,
+    member: &str,
+    version: u64,
+    created_at: Option<&str>,
+    rewind: bool,
+) -> Result<Value, VtaError> {
+    let mut marker = json!({ "version": version });
+    if let Some(t) = created_at {
+        marker["createdAt"] = json!(t);
+    }
+    let mut payload = json!({ "roomId": room_id, "member": member, "readMarker": marker });
+    if rewind {
+        payload["rewind"] = Value::Bool(true);
+    }
+    // Checked as the generated type reads it, then sent as built.
+    serde_json::from_value::<vti_specs::rooms::keys::read_marker::set::v0_1::Payload>(
+        payload.clone(),
+    )
+    .map_err(|e| VtaError::Validation(format!("rooms/keys/read-marker/set request: {e}")))?;
+    if let Some(schema) =
+        vti_specs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_READ_MARKER_SET_0_1)
+    {
+        crate::schema_cache::check(schema, &payload).map_err(|e| {
+            VtaError::Validation(format!("rooms/keys/read-marker/set request: {e}"))
+        })?;
+    }
+    Ok(payload)
 }
 
 impl VtaClient {
@@ -1064,7 +1207,7 @@ pub fn room_label_payload(
     if let Some(schema) =
         vti_specs::schema_index::schema_for(trust_tasks::TASK_ROOMS_KEYS_LABEL_0_1)
     {
-        trust_tasks_rs::validate::against_schema(schema, &serde_json::to_value(&payload)?)
+        crate::schema_cache::check(schema, &serde_json::to_value(&payload)?)
             .map_err(|e| VtaError::Validation(format!("rooms/keys/label request: {e}")))?;
     }
     Ok(payload)
@@ -1074,13 +1217,21 @@ pub fn room_label_payload(
 /// item type (`read`, `write`, `curate`, `admin`; parse one with `str::parse`).
 pub type RoomAction = vti_specs::rooms::owner::issue_authority::v0_2::PayloadActionsItem;
 
-/// A room's visibility tier, as `rooms/owner/register/0.2` names it (`open`,
+/// A room's visibility tier, as `rooms/owner/register/0.3` names it (`open`,
 /// `attributed`, `private`; parse one with `str::parse`).
-pub type RoomVisibility = vti_specs::rooms::owner::register::v0_2::Visibility;
+pub type RoomVisibility = vti_specs::rooms::owner::register::v0_3::Visibility;
 
 /// Whether a room keeps its history readable across a membership change
 /// (`chained`, `fromJoin`; parse one with `str::parse`).
-pub type RoomRetentionPolicy = vti_specs::rooms::owner::register::v0_2::RetentionPolicy;
+pub type RoomRetentionPolicy = vti_specs::rooms::owner::register::v0_3::RetentionPolicy;
+
+/// Whether a room's host waits a randomised interval before its watch signals
+/// (`rooms/_shared/0.2` `SignalDelay`: `randomised`, the default, or `none`, for a room
+/// used as a conversation; parse one with `str::parse`).
+pub type RoomSignalDelay = vti_specs::rooms::owner::register::v0_3::SignalDelay;
+
+/// How long a room keeps its records, by age (`rooms/_shared/0.2` `RecordRetention`).
+pub type RoomRecordRetention = vti_specs::rooms::owner::register::v0_3::RecordRetention;
 
 /// What [`VtaClient::room_owner_register`] asks for.
 #[derive(Debug, Clone)]
@@ -1097,23 +1248,34 @@ pub struct RoomRegistration<'a> {
     pub retention_days: Option<std::num::NonZeroU64>,
     /// Immutable once set; `None` takes the host's default for the life of the room.
     pub retention_policy: Option<RoomRetentionPolicy>,
+    /// How long the room keeps its records, by age — changed later with
+    /// `rooms/records/retention/set`. `None` states none: no record is ever eligible by
+    /// age. Stating one sends 0.3.
+    pub record_retention: Option<RoomRecordRetention>,
+    /// Whether the host waits a randomised interval before the room's watch signals —
+    /// changed later with `rooms/signal-delay/set`. `None` is `randomised`. Stating one
+    /// sends 0.3.
+    pub signal_delay: Option<RoomSignalDelay>,
 }
 
 fn room_register_payload(
     r: &RoomRegistration<'_>,
-) -> Result<vti_specs::rooms::owner::register::v0_2::Payload, VtaError> {
-    use vti_specs::rooms::owner::register::v0_2::Payload;
+) -> Result<vti_specs::rooms::owner::register::v0_3::Payload, VtaError> {
+    use vti_specs::rooms::owner::register::v0_3::Payload;
     let payload = Payload::builder()
         .room_id(r.room_id)
         .host(r.host_did)
         .visibility(r.visibility)
         .owner_did(r.owner_did.map(str::to_string))
         .retention_days(r.retention_days)
-        .retention_policy(r.retention_policy);
+        .retention_policy(r.retention_policy)
+        .record_retention(r.record_retention.clone())
+        .signal_delay(r.signal_delay);
     Payload::try_from(payload)
         .map_err(|e| VtaError::Validation(format!("rooms/owner/register request: {e}")))
 }
 
+#[allow(deprecated)] // the 0.2 payload, which 0.3 extends with `purposes`
 fn room_issue_authority_payload(
     room_id: &str,
     signing_key_id: &str,
@@ -1158,6 +1320,8 @@ mod tests {
             owner_did: Some("did:webvh:Qm:example.org:alice"),
             retention_days: std::num::NonZeroU64::new(30),
             retention_policy: Some("chained".parse().unwrap()),
+            record_retention: None,
+            signal_delay: None,
         }
     }
 
@@ -1185,6 +1349,22 @@ mod tests {
         let v = serde_json::to_value(room_register_payload(&r).unwrap()).unwrap();
         assert!(v.get("ownerDid").is_none(), "{v}");
         assert!(v.get("retentionPolicy").is_none(), "{v}");
+        assert!(v.get("signalDelay").is_none(), "{v}");
+    }
+
+    /// 0.3's two members go out as the specification names them, and only when stated.
+    #[test]
+    fn a_registration_states_its_record_retention_and_signal_delay() {
+        let mut r = registration();
+        r.signal_delay = Some("none".parse().unwrap());
+        r.record_retention =
+            Some(serde_json::from_value(json!({ "tombstoneDays": 7, "recordDays": 365 })).unwrap());
+        let v = serde_json::to_value(room_register_payload(&r).unwrap()).unwrap();
+        assert_eq!(v["signalDelay"], "none");
+        assert_eq!(
+            v["recordRetention"],
+            json!({ "tombstoneDays": 7, "recordDays": 365 })
+        );
     }
 
     /// "Confers nothing" and "confers everything" are the two readings of an empty

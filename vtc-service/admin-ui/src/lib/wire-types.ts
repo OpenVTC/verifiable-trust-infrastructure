@@ -124,7 +124,7 @@ export type EndorsementType = Schemas["EndorsementType"];
 export type EndorsementTypesPage = Schemas["Paginated_EndorsementType"];
 /** `{ endorsementType: … }`, what `endorsement-types/register/0.1` publishes. */
 export type EndorsementTypeRegistered = Schemas["RegisterResponse"];
-export type RegisterEndorsementTypeBody = Schemas["RegisterBody"];
+export type RegisterEndorsementTypeBody = Schemas["VtcEndorsementTypesRegisterV0_1Payload"];
 /** `{ typeUri }`, what `endorsement-types/delete/0.1` publishes. */
 export type EndorsementTypeDeleted = Schemas["VtcEndorsementTypesDeleteV0_1Response"];
 
@@ -284,6 +284,7 @@ export type RoomStorageMigrateResponse = Schemas["VtcRoomsStorageMigrateV0_3Resp
 // sealed; it is never a payload member and never leaves the page unsealed.
 export type StorageCredentialsSetPayload = Schemas["VtcStorageCredentialsSetV0_3Payload"];
 export type StorageCredentialsSetResponse = Schemas["VtcStorageCredentialsSetV0_3Response"];
+export type StorageCredentialsRecipientResponse = Schemas["VtcStorageCredentialsRecipientV0_1Response"];
 export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_3SealedCredentialCleartext"];
 
 // ── Data rooms the community itself owns ────────────────────────────────
@@ -352,6 +353,22 @@ export type DirectoryNotesListResponse = Schemas["VtcDirectoryNotesListV0_2Respo
 export type DirectoryNotesExportResponse = Schemas["VtcDirectoryNotesExportV0_1Response"];
 export type DirectoryExportResponse = Schemas["VtcDirectoryExportV0_2Response"];
 
+// ── Network memberships (`vtc/networks/*`) ───────────────────────────────
+export type NetworkMembership = Schemas["VtcNetworksListV0_2NetworkMembership"];
+export type NetworkRegisteredGroup = Schemas["VtcNetworksListV0_2RegisteredGroup"];
+export type NetworksListPayload = Schemas["VtcNetworksListV0_2Payload"];
+export type NetworksListResponse = Schemas["VtcNetworksListV0_2Response"];
+export type NetworksShowResponse = Schemas["VtcNetworksShowV0_2Response"];
+export type NetworkPreviewPayload = Schemas["VtcNetworksPreviewV0_1Payload"];
+export type NetworkPreviewResponse = Schemas["VtcNetworksPreviewV0_1Response"];
+export type NetworkJoinPayload = Schemas["VtcNetworksJoinV0_2Payload"];
+export type NetworkRoleAssignment = Schemas["VtcNetworksJoinV0_2RoleAssignment"];
+export type NetworkJoinResponse = Schemas["VtcNetworksJoinV0_2Response"];
+export type NetworkLeavePayload = Schemas["VtcNetworksLeaveV0_2Payload"];
+export type NetworkLeaveResponse = Schemas["VtcNetworksLeaveV0_2Response"];
+export type NetworkRepudiatePayload = Schemas["VtcNetworksRepudiateV0_2Payload"];
+export type NetworkRepudiateResponse = Schemas["VtcNetworksRepudiateV0_2Response"];
+
 // ── Community groups (`vtc/groups/*`) ────────────────────────────────────
 export type Group = Schemas["VtcGroupsListV0_2Group"];
 export type GroupMember = Schemas["VtcGroupsMembersAddV0_1GroupMember"];
@@ -370,6 +387,8 @@ export type BoardCreateResponse = Schemas["VtcBoardsCreateV0_1Response"];
 export type BoardUpdatePayload = Schemas["VtcBoardsUpdateV0_1Payload"];
 export type BoardUpdateResponse = Schemas["VtcBoardsUpdateV0_1Response"];
 export type BoardDeleteResponse = Schemas["VtcBoardsDeleteV0_1Response"];
+export type BoardFacilitatorsResponse = Schemas["VtcBoardsFacilitatorsAddV0_1Response"];
+export type BoardFacilitatorsListResponse = Schemas["VtcBoardsFacilitatorsListV0_1Response"];
 export type BoardListResponse = Schemas["VtcBoardsListV0_1Response"];
 export type BoardShowResponse = Schemas["VtcBoardsShowV0_1Response"];
 export type BoardIdeasProposeResponse = Schemas["VtcBoardsIdeasProposeV0_1Response"];
@@ -381,6 +400,49 @@ export type BoardNotesAddResponse = Schemas["VtcBoardsNotesAddV0_1Response"];
 export type BoardNotesListResponse = Schemas["VtcBoardsNotesListV0_1Response"];
 export type BoardNotesWithdrawResponse = Schemas["VtcBoardsNotesWithdrawV0_1Response"];
 export type BoardNotesHideResponse = Schemas["VtcBoardsNotesHideV0_1Response"];
+
+// ── Member badges (`vtc/badges/*`) ───────────────────────────────────────
+export type BadgeSettingsShowResponse = Schemas["VtcBadgesSettingsShowV0_1Response"];
+export type BadgeSettingsUpdatePayload = Schemas["VtcBadgesSettingsUpdateV0_1Payload"];
+export type BadgeSettingsUpdateResponse = Schemas["VtcBadgesSettingsUpdateV0_1Response"];
+export type BadgeCreatePayload = Schemas["VtcBadgesCreateV0_1Payload"];
+export type BadgeCreateResponse = Schemas["VtcBadgesCreateV0_1Response"];
+export type BadgeUpdatePayload = Schemas["VtcBadgesUpdateV0_1Payload"];
+export type BadgeUpdateResponse = Schemas["VtcBadgesUpdateV0_1Response"];
+export type BadgeRetireResponse = Schemas["VtcBadgesRetireV0_1Response"];
+export type BadgePromotePayload = Schemas["VtcBadgesPromoteV0_1Payload"];
+export type BadgePromoteResponse = Schemas["VtcBadgesPromoteV0_1Response"];
+export type BadgeListPayload = Schemas["VtcBadgesListV0_1Payload"];
+export type BadgeListResponse = Schemas["VtcBadgesListV0_1Response"];
+export type BadgeShowResponse = Schemas["VtcBadgesShowV0_1Response"];
+export type BadgeImagesUploadPayload = Schemas["VtcBadgesImagesUploadV0_1Payload"];
+export type BadgeImagesUploadResponse = Schemas["VtcBadgesImagesUploadV0_1Response"];
+export type BadgeImagesGetResponse = Schemas["VtcBadgesImagesGetV0_1Response"];
+export type BadgeAwardsOfferPayload = Schemas["VtcBadgesAwardsOfferV0_1Payload"];
+export type BadgeAwardsOfferResponse = Schemas["VtcBadgesAwardsOfferV0_1Response"];
+export type BadgeAwardsWithdrawResponse = Schemas["VtcBadgesAwardsWithdrawV0_1Response"];
+export type BadgeAwardsRevokeResponse = Schemas["VtcBadgesAwardsRevokeV0_1Response"];
+export type BadgeAwardsListPayload = Schemas["VtcBadgesAwardsListV0_1Payload"];
+export type BadgeAwardsListResponse = Schemas["VtcBadgesAwardsListV0_1Response"];
+export type BadgeHoldersListResponse = Schemas["VtcBadgesHoldersListV0_1Response"];
+export type BadgeWallShowResponse = Schemas["VtcBadgesWallShowV0_1Response"];
+export type BadgeMineListResponse = Schemas["VtcBadgesMineListV0_1Response"];
+export type BadgeMineAcceptResponse = Schemas["VtcBadgesMineAcceptV0_1Response"];
+export type BadgeAwardsShareResponse = Schemas["VtcBadgesAwardsShareV0_1Response"];
+export type BadgeClaimsCreateResponse = Schemas["VtcBadgesClaimsCreateV0_1Response"];
+export type BadgeClaimsListResponse = Schemas["VtcBadgesClaimsListV0_1Response"];
+export type BadgeClaimsWithdrawResponse = Schemas["VtcBadgesClaimsWithdrawV0_1Response"];
+export type BadgeClaimsRedeemResponse = Schemas["VtcBadgesClaimsRedeemV0_1Response"];
+export type BadgeAwardsUnshareResponse = Schemas["VtcBadgesAwardsUnshareV0_1Response"];
+export type BadgeMineDeclineResponse = Schemas["VtcBadgesMineDeclineV0_1Response"];
+export type BadgeMineHideResponse = Schemas["VtcBadgesMineHideV0_1Response"];
+export type BadgeMineShowResponse = Schemas["VtcBadgesMineShowV0_1Response"];
+export type BadgeMineArrangePayload = Schemas["VtcBadgesMineArrangeV0_1Payload"];
+export type BadgeMineArrangeResponse = Schemas["VtcBadgesMineArrangeV0_1Response"];
+export type BadgeKudosGivePayload = Schemas["VtcBadgesKudosGiveV0_1Payload"];
+export type BadgeKudosGiveResponse = Schemas["VtcBadgesKudosGiveV0_1Response"];
+export type BadgeKudosListPayload = Schemas["VtcBadgesKudosListV0_1Payload"];
+export type BadgeKudosListResponse = Schemas["VtcBadgesKudosListV0_1Response"];
 
 // ── Where identities are published (`vtc/config/did-hosting/list`) ──────
 export type DidHostingListResponse = Schemas["VtcConfigDidHostingListV0_1Response"];

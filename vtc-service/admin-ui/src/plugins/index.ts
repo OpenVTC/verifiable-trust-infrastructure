@@ -12,6 +12,7 @@
 // awkward, the API is wrong.
 
 import {
+  Award,
   BadgeCheck,
   Bell,
   BookUser,
@@ -24,6 +25,7 @@ import {
   LayoutDashboard,
   ListChecks,
   Network,
+  Waypoints,
   PenLine,
   ScanLine,
   Share2,
@@ -43,6 +45,7 @@ import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Actions } from "@/plugins/actions";
 import { Audit } from "@/plugins/audit";
+import { Badges } from "@/plugins/badges";
 import { Boards } from "@/plugins/boards";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
@@ -55,6 +58,7 @@ import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
+import { Networks } from "@/plugins/networks";
 import { Notifications } from "@/plugins/notifications";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
@@ -278,6 +282,34 @@ export function registerBuiltinPlugins(): void {
     iconComponent: Network,
     reactComponent: Recognition,
     capabilities: ["vtc.registry.admin"],
+  });
+
+  // The Verifiable Trust Networks this community belongs to (`vtc/networks/*`,
+  // docs/03-vtc/networks.md): join from a network's invitation
+  // (`/admin/networks?join=<url>&network=<did>`), leave, or reject a listing.
+  registerPlugin({
+    id: "networks",
+    group: "community",
+    label: "Networks",
+    path: "/networks",
+    iconComponent: Waypoints,
+    reactComponent: Networks,
+    capabilities: ["vtc.config.admin"],
+  });
+
+  // Member badges (docs/03-vtc/badges.md): holders of vtc.badges.admin define
+  // community badges and give any badge; a badge's owners (the managers of
+  // its badge group, vtc.groups.manage qualified to it) give theirs; holders
+  // of vtc.config.admin turn badges on and set the limits. Members hold,
+  // show and give kudos from the member portal.
+  registerPlugin({
+    id: "badges",
+    group: "community",
+    label: "Badges",
+    path: "/badges",
+    iconComponent: Award,
+    reactComponent: Badges,
+    capabilities: ["vtc.badges.admin", "vtc.groups.manage", "vtc.config.admin"],
   });
 
   registerPlugin({

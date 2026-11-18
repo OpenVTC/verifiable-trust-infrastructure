@@ -588,6 +588,29 @@ the mediator on a queued message) → `push/wake` → gateway → contentless pu
 device wakes → opens `MediatorSession` → drains the real `approve-request` →
 returns `approve-response` (§4.6).
 
+**The mediator as trigger (`messaging/wake/*`, #2663).** A device whose VTA
+holds no `DeviceBinding` for it — an approver another VTA pushes to — can still
+be woken, by its own mediator, at a sender's request:
+
+| Trust Task | Parties | Purpose |
+|---|---|---|
+| `messaging/wake/set` (`0.1`) | device → its own mediator | give the mediator the `WakeHandle` from `push/register` (`null` clears it). Send again whenever the gateway issues a new handle, and with `null` on sign-out or token rotation. Keep the mediator in `device/set-wake`'s `suggestedTriggers`, so the gateway admits it. |
+| `messaging/wake/request` (`0.1`) | any sender → the recipient's mediator | ask it to ring the device for messages the sender just queued, named by the id the mediator stores each under (`msgIds`, ≤ 8). Fire-and-forget: the answer is always an empty `{}` (no presence oracle). |
+
+The mediator rings only an account with a handle set, only for mail actually
+queued for it from that sender, never twice for one message, and paced. A VTA
+uses it only when the recipient has no ACL wake channel, once per push
+(VTI-TRN-070 – 074, VTI-APV-024). An older mediator refuses the task and the
+device collects on its next connection, as before.
+
+**Delivery receipts.** A sender asks a device to confirm it holds a pushed
+message (`messaging/receipt/0.1`, VTI-TRN-060 – 063): the DIDComm `delivery_id`
+header or the TSP envelope's `deliveryId`. Answer with a receipt to the
+authenticated sender, once the message is handed off, over the binding it came
+by — the only delivery evidence a sender on another mediator can get.
+`vta-sdk`'s `DIDCommSession` does it for any Rust client; a native agent that
+receives on its own socket implements the same.
+
 **Per-platform delivery:**
 - **APNs / FCM** — the gateway holds the app's Apple/Google credentials and
   delivers natively (token shapes mirror the `PushRegistration` schema).

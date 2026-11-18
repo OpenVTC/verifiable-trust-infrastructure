@@ -58,6 +58,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
     let audit_checkpoint_ks = store.keyspace("audit_checkpoint").unwrap();
+    let audit_index_ks = store.keyspace("audit_index").unwrap();
     let outbox_ks = store.keyspace("outbox").unwrap();
     let tsp_relationships_ks = store.keyspace("tsp_relationships").unwrap();
     let invitations_ks = store.keyspace("invitations").unwrap();
@@ -123,6 +124,8 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
         member_pushes_ks: store.keyspace("member_pushes").unwrap(),
         notifications_ks: store.keyspace("notifications").unwrap(),
         boards_ks: store.keyspace("boards").unwrap(),
+        badges_ks: store.keyspace("badges").unwrap(),
+        badge_images_ks: store.keyspace("badge_images").unwrap(),
         oid4vp_keys_ks: store.keyspace("oid4vp_keys").unwrap(),
         oid4vp_signers: Arc::new(vtc_service::oid4vp::VerifierSigners::new()),
         oid4vp_sessions_ks: store.keyspace("oid4vp_sessions").unwrap(),
@@ -136,6 +139,11 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
         room_records_ks: room_records_ks.clone(),
         room_epoch_links_ks: room_epoch_links_ks.clone(),
         room_revocations_ks: room_revocations_ks.clone(),
+        room_watches: std::sync::Arc::new(vti_rooms::watch::RoomWatches::new(
+            store.keyspace("room_watches").unwrap(),
+            rooms_ks.clone(),
+            room_revocations_ks.clone(),
+        )),
         room_files: std::sync::Arc::new(
             vtc_service::rooms::files::open_blob_host(
                 &store,
@@ -158,6 +166,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
                 .unwrap(),
             vtc_service::directory::model::Settings::default(),
         )),
+        community_logo: std::sync::Arc::new(vtc_service::community::logo::LogoState::default()),
         elections: std::sync::Arc::new(vtc_service::elections::Elections::new(
             store
                 .keyspace(vtc_service::store::keyspaces::ELECTIONS)
@@ -183,6 +192,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
         audit_ks,
         audit_key_ks,
         audit_checkpoint_ks,
+        audit_index_ks,
         outbox_ks,
         tsp_relationships_ks,
         audit_writer: None,
@@ -190,6 +200,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
         git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
+        room_limiters: Default::default(),
         large_document_budget: std::sync::Arc::new(
             vtc_service::trust_tasks::size::LargeDocumentBudget::new(),
         ),

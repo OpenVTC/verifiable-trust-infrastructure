@@ -124,6 +124,23 @@ pub struct SealedRecordBody {
     /// names in `blobs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<FileManifest>,
+    /// What kind of record this is — `message`, `reaction`, `note`, … — an open
+    /// lowerCamelCase set; a reader that does not know a kind shows the record as an
+    /// ordinary one. A writer uses it only where the room's profile lists `kind` in
+    /// `recordMembers` (trust-tasks-tf #1027), as it does each member below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The record this one answers, `{key, version?}` — a reply, or with `kind: reaction`
+    /// the record reacted to. Kept as received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<Value>,
+    /// When the author wrote it, RFC 3339 in UTC, as the author states it. A reader judges
+    /// it against the host's `createdAt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_at: Option<String>,
+    /// When the author last edited it, RFC 3339 in UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_at: Option<String>,
 }
 
 impl SealedRecordBody {
@@ -144,6 +161,10 @@ impl SealedRecordBody {
             valid_for: None,
             valid_until: None,
             file: None,
+            kind: None,
+            in_reply_to: None,
+            written_at: None,
+            edited_at: None,
         }
     }
 
@@ -213,6 +234,10 @@ impl SealedRecordBody {
         // the body's JSON so what is checked is what is signed.
         if let Ok(Value::Object(obj)) = serde_json::to_value(self) {
             vti_rooms::provenance::check(&obj).map_err(BodyError::Malformed)?;
+            // `kind`, `inReplyTo`, `writtenAt`, `editedAt` and the file's `width`, `height`
+            // and `preview`, against the specification's own shapes. Whether the room
+            // permits them is the writer's rule, applied before a body is built.
+            vti_rooms::record_members::check(&obj).map_err(BodyError::Malformed)?;
         }
         Ok(())
     }

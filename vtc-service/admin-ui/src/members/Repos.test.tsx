@@ -2,7 +2,8 @@
 // own, and linking a forge account — through the wallet, never the portal key.
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ viewRepos: vi.fn(), linkStatus: vi.fn() }));
@@ -59,9 +60,9 @@ function view(over: Partial<MemberGitView> = {}): MemberGitView {
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={qc}><ConfirmDialogProvider look="portal">
       <ReposPage hostDid={HOST} member={ME} />
-    </QueryClientProvider>,
+    </ConfirmDialogProvider></QueryClientProvider>,
   );
 }
 
@@ -156,6 +157,10 @@ describe("the Repos page", () => {
     );
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: /Unlink/ }));
+    // Confirmed first (#2607).
+    const dialog = await screen.findByRole("dialog");
+    expect(unlinkAccount).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Unlink" }));
     await waitFor(() =>
       expect(unlinkAccount).toHaveBeenCalledWith({
         hostDid: HOST,

@@ -1,12 +1,18 @@
 // Handlers share the `Result<_, Response>` shape via `parse_payload`.
 #![allow(clippy::result_large_err)]
 
-//! The collection slice (VTI-NTF-080 – 093, trust-tasks-tf #1023, #1024).
+//! The collection slice (VTI-NTF-080 – 098, trust-tasks-tf #1023, #1024,
+//! #1049).
 //!
 //! - `vta/collection/{claim,release,list}/0.1` — a client of the principal, with
 //!   standing in the identifier's context, claims, releases or lists who holds a
 //!   persona DID's one mediator connection ([`crate::operations::collection`]).
-//!   Served whether or not collection by default is enabled (VTI-NTF-093).
+//!   Served whether or not collection by default is enabled (VTI-NTF-097).
+//! - `vta/collection/settings/{show,set}/0.1` — a party with standing in a
+//!   context reads its collection-by-default setting, who last changed it and
+//!   whether the operator's suspension is in force (VTI-NTF-096); a party with
+//!   administrative authority over it changes it, applied before the answer
+//!   (VTI-NTF-095).
 //! - [`answer_collected`] — what the VTA does with a document it collected for a
 //!   persona DID (`crate::messaging::collector`). A `notifications/notify` or
 //!   `notifications/relay` is taken **exactly** as a deposit is: every layer
@@ -256,6 +262,79 @@ pub(super) async fn handle_list(
             &doc,
             RejectReason::InternalError {
                 reason: format!("unexpected refusal of a listing: {other:?}"),
+            },
+        ),
+    }
+}
+
+/// `vta/collection/settings/show/0.1`. See [`engine::show_setting`].
+pub(super) async fn handle_settings_show(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::settings::show::v0_1 as t;
+    if let Err(r) = parse_payload::<t::Payload>(&doc) {
+        return r;
+    }
+    let context = str_of(&doc.payload, "contextId")
+        .unwrap_or_default()
+        .to_string();
+    match engine::show_setting(state, auth, &context).await {
+        Ok(view) => respond::<t::Response>(&doc, json!({ "setting": view.to_wire() })),
+        Err(CollectionError::PermissionDenied) => permission_denied(&doc),
+        Err(CollectionError::App(e)) => app_error_to_reject(&doc, e),
+        Err(other) => reject_with(
+            &doc,
+            RejectReason::InternalError {
+                reason: format!("unexpected refusal of a settings read: {other:?}"),
+            },
+        ),
+    }
+}
+
+/// `vta/collection/settings/set/0.1`. See [`engine::set_setting`]; the audit
+/// row is written there, before the change is applied.
+pub(super) async fn handle_settings_set(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use spec::settings::set::v0_1 as t;
+    let parsed = match parse_payload::<t::Payload>(&doc) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let context = str_of(&doc.payload, "contextId")
+        .unwrap_or_default()
+        .to_string();
+    match engine::set_setting(
+        state,
+        auth,
+        &context,
+        parsed.collect_by_default,
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok(change) => respond::<t::Response>(
+            &doc,
+            json!({ "setting": change.setting.to_wire(), "changed": change.changed }),
+        ),
+        Err(CollectionError::PermissionDenied) => reject_with(
+            &doc,
+            RejectReason::PermissionDenied {
+                reason: "changing collection by default for a context needs administrative \
+                         authority over it: a context administrator of it or of an ancestor, \
+                         or a super-administrator (VTI-NTF-095)"
+                    .into(),
+            },
+        ),
+        Err(CollectionError::App(e)) => app_error_to_reject(&doc, e),
+        Err(other) => reject_with(
+            &doc,
+            RejectReason::InternalError {
+                reason: format!("unexpected refusal of a settings change: {other:?}"),
             },
         ),
     }

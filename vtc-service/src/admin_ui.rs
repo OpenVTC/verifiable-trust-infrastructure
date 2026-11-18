@@ -126,37 +126,11 @@ fn count_files_on_disk(dir: &Path) -> u32 {
 /// hands that to every local user. Fails closed — a VTC does not start serving a console it
 /// cannot vouch for, nor silently fall back to the baked one.
 pub fn check_serve_dir(dir: &Path) -> Result<(), String> {
-    let index = dir.join("index.html");
-    let meta = std::fs::metadata(&index).map_err(|e| {
-        format!(
-            "{}: cannot read index.html ({e}) — `vtc admin-ui export [--members] {}` \
-             writes the built-in one there to start from",
-            dir.display(),
-            dir.display()
-        )
-    })?;
-    if !meta.is_file() {
-        return Err(format!("{} is not a file", index.display()));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for path in [dir, index.as_path()] {
-            let mode = std::fs::metadata(path)
-                .map_err(|e| format!("{}: {e}", path.display()))?
-                .permissions()
-                .mode();
-            if mode & 0o002 != 0 {
-                return Err(format!(
-                    "{} is world-writable — anyone on this host could replace the \
-                     admin console; run `chmod o-w {}`",
-                    path.display(),
-                    path.display()
-                ));
-            }
-        }
-    }
-    Ok(())
+    crate::website::paths::check_operator_dir(
+        dir,
+        "the admin console",
+        "vtc admin-ui export [--members]",
+    )
 }
 
 /// `vtc admin-ui export [--members] <dir>`: write a baked bundle
@@ -367,11 +341,11 @@ mod tests {
     fn lookup_returns_bytes_for_known_files() {
         let bytes = lookup("/index.html").expect("index.html");
         let body = std::str::from_utf8(bytes).unwrap();
-        // Vite's `index.html` shim has `<title>VTC Admin</title>`
+        // Vite's `index.html` shim has `<title>Operator console</title>`
         // and a `<div id="root">` mount point. Both are stable
         // build-tool output.
         assert!(
-            body.contains("<title>VTC Admin</title>"),
+            body.contains("<title>Operator console</title>"),
             "index.html title drifted: {body}"
         );
         assert!(

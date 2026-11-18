@@ -326,3 +326,91 @@ async fn declared_claim_refusals_reach_the_wire() {
     let out = handle_claim(&state, &a, task(uris::TASK_VTA_COLLECTION_CLAIM_0_1, p)).await;
     assert_eq!(code(&out), "vta/collection/claim:claimNotRenewable");
 }
+
+fn body(out: &TrustTaskOutcome) -> Value {
+    serde_json::from_slice::<Value>(&out.body).unwrap()["payload"].clone()
+}
+
+/// `vta/collection/settings/{show,set}/0.1` through the handlers: the answers
+/// are the specification's shapes (each is checked against its generated type
+/// before it leaves), standing reads and only administrative authority writes
+/// (VTI-NTF-095, VTI-NTF-096).
+#[tokio::test]
+async fn vti_ntf_095_settings_show_and_set_reach_the_wire() {
+    let (state, _dir, _me) = setup().await;
+    let admin = admin_claims_for_context(CTX);
+    let mut member = admin_claims_for_context(CTX);
+    member.did = "did:key:z6MkMember".into();
+    member.role = crate::acl::Role::Application;
+    let show = json!({ "contextId": CTX });
+
+    let out = handle_settings_show(
+        &state,
+        &member,
+        task(uris::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1, show.clone()),
+    )
+    .await;
+    assert!(out.status.is_success());
+    assert_eq!(
+        body(&out),
+        json!({ "setting": {
+            "contextId": CTX, "collectByDefault": true, "suspendedByOperator": false
+        } })
+    );
+
+    let off = json!({ "contextId": CTX, "collectByDefault": false });
+    let out = handle_settings_set(
+        &state,
+        &member,
+        task(uris::TASK_VTA_COLLECTION_SETTINGS_SET_0_1, off.clone()),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied", "standing is not authority");
+    let out = handle_settings_set(
+        &state,
+        &admin,
+        task(uris::TASK_VTA_COLLECTION_SETTINGS_SET_0_1, off.clone()),
+    )
+    .await;
+    assert!(out.status.is_success());
+    let b = body(&out);
+    assert_eq!(b["changed"], true);
+    assert_eq!(b["setting"]["collectByDefault"], false);
+    assert_eq!(b["setting"]["changedBy"], admin.did);
+    assert!(b["setting"]["changedAt"].is_string());
+    let out = handle_settings_set(
+        &state,
+        &admin,
+        task(uris::TASK_VTA_COLLECTION_SETTINGS_SET_0_1, off),
+    )
+    .await;
+    assert_eq!(body(&out)["changed"], false);
+
+    let out = handle_settings_show(
+        &state,
+        &member,
+        task(uris::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1, show.clone()),
+    )
+    .await;
+    assert_eq!(body(&out)["setting"]["changedBy"], admin.did);
+    // Nothing about a context the caller has no standing in.
+    let outsider = admin_claims_for_context("elsewhere");
+    let out = handle_settings_show(
+        &state,
+        &outsider,
+        task(uris::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1, show),
+    )
+    .await;
+    assert_eq!(code(&out), "permissionDenied");
+    // A malformed payload is refused before anything is read.
+    let out = handle_settings_set(
+        &state,
+        &admin,
+        task(
+            uris::TASK_VTA_COLLECTION_SETTINGS_SET_0_1,
+            json!({ "contextId": CTX }),
+        ),
+    )
+    .await;
+    assert_eq!(code(&out), "malformedRequest");
+}

@@ -67,8 +67,8 @@ const COVERED_BY_SEAM_TEST: &[&str] = &[
     // to epoch seconds, so it cannot simply re-export the agent's `AclEntry`. An adapter carrying real logic can be wrong in ways a
     // mirror cannot, which is why it is checked rather than reasoned about.
     "AclListResponse",
-    // One `acl/list/0.3` page and the nullable `{ entry }` of `acl/show/0.2` /
-    // `acl/revoke/0.2`: the agent answers both as JSON built from the shared
+    // One `acl/list/0.4` page and the nullable `{ entry }` of `acl/show/0.3` /
+    // `acl/revoke/0.3`: the agent answers both as JSON built from the shared
     // AclEntry 0.2 component, so the seam is the entry, driven by
     // trust_task_decode.rs::acl_list_page_and_nullable_entry_decode.
     "AclListPage",

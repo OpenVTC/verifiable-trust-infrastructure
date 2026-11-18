@@ -1,6 +1,9 @@
 # The VTA as the key authority for cloud and third-party accounts
 
-Status: **proposal.** Nothing here is built. First consumer: room file storage
+Status: **partly implemented.** The `s3-static-presign` model is built — the
+`vta-external` crate, the `external/*` Trust Tasks, `pnm external …` and the
+operator guide [`../02-vta/external-accounts.md`](../02-vta/external-accounts.md);
+the other providers below (AWS Roles Anywhere, GCP, Sui) are not. First consumer: room file storage
 ([`data-rooms-files.md`](data-rooms-files.md) §7). The design is general on
 purpose.
 

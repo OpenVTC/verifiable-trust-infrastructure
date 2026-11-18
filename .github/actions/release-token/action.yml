@@ -1,0 +1,95 @@
+name: Release token
+description: >
+  The token the release workflows push, tag and open pull requests with: a
+  GitHub App installation token when the App is configured, otherwise the
+  RELEASE_PLZ_TOKEN PAT. Either way it is checked against the API before any
+  step uses it, and a bad one fails the job with an error that says so.
+
+# #2646. On 2026-11-10 RELEASE_PLZ_TOKEN stopped authenticating for about
+# eleven hours. Release-plz failed five times with `gh: Bad credentials (HTTP
+# 401)` deep inside its third publishing attempt, Backport failed six times at
+# checkout with `could not read Username`, and nothing said "the token is bad":
+# each run read as its own failure, and main stayed green because these are
+# separate workflows. The `secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN`
+# fallback did not help, because it engages only when the secret is UNSET, not
+# when it is invalid.
+#
+# So the token is validated first, with one cheap call that every token kind
+# can make (`GET /repos/{repo}`: a PAT, an App installation token and the
+# Actions token all answer it when they can see the repository).
+#
+# The App. One long-lived PAT is a single point of failure for publishing, the
+# Release PR, nightly and backports. An App installation token is minted per
+# run, cannot expire unnoticed, and — unlike GITHUB_TOKEN — the events it
+# causes still trigger workflows. It is used as soon as an org admin has
+# created the App and set the repository variable RELEASE_APP_ID and the secret
+# RELEASE_APP_PRIVATE_KEY; until then the PAT is used exactly as before.
+# An installation token lives one hour, so a job that runs longer mints one per
+# phase (publish.yml mints one per publishing pass).
+#
+# The repository must be checked out first: this action lives in it.
+inputs:
+  app-id:
+    description: The App's ID (vars.RELEASE_APP_ID); empty when no App is configured.
+    default: ""
+  app-private-key:
+    description: The App's private key (secrets.RELEASE_APP_PRIVATE_KEY).
+    default: ""
+  pat:
+    description: The PAT fallback (secrets.RELEASE_PLZ_TOKEN).
+    default: ""
+  github-token:
+    description: >
+      The job's own GITHUB_TOKEN, used only when neither of the above is
+      configured. Leave empty where a token that cannot trigger workflows would
+      be wrong rather than merely degraded (Backport), so the job fails instead.
+    default: ""
+outputs:
+  token:
+    description: The validated token.
+    value: ${{ steps.pick.outputs.token }}
+  source:
+    description: "`app`, `pat` or `github-token`."
+    value: ${{ steps.pick.outputs.source }}
+runs:
+  using: composite
+  steps:
+    - name: Mint a GitHub App installation token
+      id: app
+      if: inputs.app-id != '' && inputs.app-private-key != ''
+      # `app-id` is the input the repository variable names; the action also
+      # takes the App's client ID as `client-id`, its preferred spelling.
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+
+    - name: Choose and validate the token
+      id: pick
+      shell: bash
+      env:
+        APP_TOKEN: ${{ steps.app.outputs.token }}
+        PAT: ${{ inputs.pat }}
+        FALLBACK: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        if [ -n "$APP_TOKEN" ]; then
+          token=$APP_TOKEN; source=app; name="the GitHub App installation token (vars.RELEASE_APP_ID)"
+        elif [ -n "$PAT" ]; then
+          token=$PAT; source=pat; name="RELEASE_PLZ_TOKEN"
+        elif [ -n "$FALLBACK" ]; then
+          token=$FALLBACK; source=github-token; name="GITHUB_TOKEN"
+          echo "::warning::neither the release GitHub App nor RELEASE_PLZ_TOKEN is configured; using GITHUB_TOKEN, whose pushes and pull requests trigger no workflows"
+        else
+          echo "::error::no release token: set RELEASE_PLZ_TOKEN, or vars.RELEASE_APP_ID and secrets.RELEASE_APP_PRIVATE_KEY"
+          exit 1
+        fi
+        # Exit status, not output: on a 401 `gh api` prints the error body.
+        if ! err=$(GH_TOKEN=$token gh api "repos/$REPO" --jq .full_name 2>&1 >/dev/null); then
+          echo "::error::$name is invalid or cannot see $REPO (expired, revoked or rotated?): $err"
+          exit 1
+        fi
+        echo "$name authenticates and can see $REPO"
+        echo "token=$token" >> "$GITHUB_OUTPUT"
+        echo "source=$source" >> "$GITHUB_OUTPUT"

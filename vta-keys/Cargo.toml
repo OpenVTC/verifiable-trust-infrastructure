@@ -2,7 +2,7 @@
 name = "vta-keys"
 description = "VTA key management — master-seed storage, BIP-32 key derivation, key wrapping, and the seed-store backend selection"
 readme = "README.md"
-version = "0.35.0"
+version = "0.44.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -36,18 +36,19 @@ tee = ["vti-secrets/tee"]
 tpm = ["vti-secrets/tpm"]
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.31" }
-vta-config = { path = "../vta-config", version = "0.34" }
-vti-common = { path = "../vti-common", version = "0.57" }
-vti-secrets = { path = "../vti-secrets", version = "0.30" }
-vta-sdk = { path = "../vta-sdk", version = "0.81", features = ["sealed-transfer"] }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.40" }
+vta-config = { path = "../vta-config", version = "0.43" }
+vta-signing = { path = "../vta-signing", version = "0.1" }
+vti-common = { path = "../vti-common", version = "0.66" }
+vti-secrets = { path = "../vti-secrets", version = "0.39" }
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = ["sealed-transfer"] }
 affinidi-tdk = { workspace = true }
 affinidi-crypto = { workspace = true }
 ed25519-dalek = { workspace = true }
-bip39 = "3"
+bip39 = { workspace = true }
 multibase = { workspace = true }
 aes-gcm = { workspace = true }
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 hkdf = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
@@ -61,7 +62,10 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 x25519-dalek = { workspace = true }
-p256 = "0.14"
+p256 = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

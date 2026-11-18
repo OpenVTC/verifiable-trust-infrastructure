@@ -120,6 +120,29 @@ pub fn allowed_keys_from_flags(
 /// `--capabilities` cannot mean both "narrowed to nothing" and "not narrowed" —
 /// and of those two readings, the one an operator would get by accident is the
 /// one that hands the entry back everything.
+/// `--purposes a,b` / `--purposes-any` as the purpose scope to write
+/// (VTI-ACL-100): `None` when neither was given. Each name is checked here, so a
+/// mistyped purpose is refused before anything is sent.
+pub fn purposes_from_flags(
+    purposes: Option<Vec<String>>,
+    any: bool,
+) -> Result<Option<vta_sdk::acl::PurposeScope>, Box<dyn std::error::Error>> {
+    match (purposes, any) {
+        (_, true) => Ok(Some(vta_sdk::acl::PurposeScope::Any)),
+        (Some(names), false) => Ok(Some(vta_sdk::acl::PurposeScope::listed(names)?)),
+        (None, false) => Ok(None),
+    }
+}
+
+/// An entry's purposes for display.
+pub fn format_purposes(purposes: Option<&vta_sdk::acl::PurposeScope>) -> String {
+    match purposes {
+        Some(vta_sdk::acl::PurposeScope::Any) => "any (never modelTraining)".to_string(),
+        Some(p) => p.to_string().replace(',', ", "),
+        None => "(not stated by this VTA)".to_string(),
+    }
+}
+
 pub fn capabilities_from_flags(
     capabilities: Option<Vec<String>>,
     capabilities_all: bool,
@@ -322,6 +345,11 @@ pub async fn cmd_acl_list(
 
 pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn std::error::Error>> {
     let entry = client.get_acl(did).await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&entry)?;
+        return Ok(());
+    }
 
     let mut book = NameBook::new();
     book.insert_opt(&entry.did, entry.label.as_deref(), NameSource::AclLabel);
@@ -358,6 +386,7 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
         "Capabilities:     {}",
         format_capabilities(&entry.role, &entry.capabilities())
     );
+    println!("Purposes:         {}", format_purposes(entry.purposes()));
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -386,9 +415,13 @@ pub async fn cmd_acl_create(
     allowed_keys: Option<Vec<String>>,
     capabilities: Option<Vec<String>>,
     handoff: bool,
+    purposes: Option<vta_sdk::acl::PurposeScope>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
+    if let Some(p) = purposes {
+        req = req.purposes(p);
+    }
     if handoff {
         req = req.handoff();
     }
@@ -440,6 +473,7 @@ pub async fn cmd_acl_create(
         "  Capabilities: {}",
         format_capabilities(&entry.role, &entry.capabilities())
     );
+    println!("  Purposes:   {}", format_purposes(entry.purposes()));
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -526,6 +560,8 @@ pub async fn cmd_acl_update(
     approve_scope: Option<ApproveScope>,
     allowed_keys: Option<Option<Vec<String>>>,
     capabilities: Option<Vec<String>>,
+    purposes: Option<vta_sdk::acl::PurposeScope>,
+    reason: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Role transitions moved to `acl change-role`, which carries the
     // compare-and-swap that makes a concurrent edit an error instead of a
@@ -557,8 +593,9 @@ pub async fn cmd_acl_update(
         approve_scope,
         allowed_keys,
         capabilities: capabilities.clone(),
+        purposes: purposes.clone(),
     };
-    let entry = client.update_acl(did, req).await?;
+    let entry = client.update_acl_with_reason(did, req, reason).await?;
     println!("ACL entry updated:");
     println!("  DID:      {}", entry.did);
     println!(
@@ -619,15 +656,48 @@ pub async fn cmd_acl_update(
         };
         println!("  Capabilities: {rendered}");
     }
+    if purposes.is_some() {
+        println!("  Purposes: {}", format_purposes(entry.purposes()));
+    }
     Ok(())
 }
 
+/// `acl delete <did>`: show the entry, confirm, delete with the operator's
+/// `reason` (#2583). Deleting the entry this session authenticates as locks
+/// the operator out, so that case is said in so many words before asking.
 pub async fn cmd_acl_delete(
     client: &VtaClient,
     did: &str,
+    reason: Option<&str>,
+    yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    client.delete_acl(did).await?;
-    println!("ACL entry deleted: {did}");
+    // What is about to go, so the confirmation is about a thing, not a string.
+    let entry = client.get_acl(did).await?;
+    eprintln!(
+        "ACL entry {did}: role {}, contexts [{}]{}",
+        entry.role,
+        entry.allowed_contexts.join(", "),
+        entry
+            .label
+            .as_deref()
+            .map(|l| format!(", label \"{l}\""))
+            .unwrap_or_default()
+    );
+    if crate::render::session_did() == Some(did) {
+        eprintln!(
+            "warning: {did} is the identity this session is signed in as. Deleting it ends \
+             your own access to this VTA."
+        );
+    }
+    if !crate::confirm::confirm_or_cancel(&format!("delete the ACL entry for {did}"), yes)? {
+        return Ok(());
+    }
+    client.delete_acl_with_reason(did, reason).await?;
+    if crate::render::is_json_output() {
+        crate::render::print_json(&serde_json::json!({ "ok": true, "deleted": did }))?;
+    } else {
+        println!("ACL entry deleted: {did}");
+    }
     Ok(())
 }
 

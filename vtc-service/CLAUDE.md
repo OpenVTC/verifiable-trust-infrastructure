@@ -10,7 +10,7 @@ Rust workspace for **Verifiable Trust Communities (VTC)**. A VTC manages a commu
 
 `vtc-service` sits inside the wider workspace at the repo root. Key sibling crates:
 
-- **vti-common** (`../vti-common/`) — Shared library: auth (JWT, passkey), ACL, store (local fjall + vsock), audit writer + HMAC key store, error types, config, pagination cursors.
+- **vti-common** (`../vti-common/`) — Shared library: auth (JWT, passkey), ACL, store (local fjall + vsock), audit envelope/chain/writer + HMAC key store (the VTC event vocabulary is `vtc-audit`), error types, config, pagination cursors.
 - **vta-sdk** (`../vta-sdk/`) — Shared SDK: types, VTA HTTP client, DIDComm protocol surfaces, `sealed_transfer`, provision-integration.
 - **vta-service** (`../vta-service/`) — VTA library + local/dev binary (key management, did:webvh, mediator).
 - **vtc-service** (this crate) — VTC binary service. Community management, policy, audit, public website, admin SPA.
@@ -29,29 +29,55 @@ Rust workspace for **Verifiable Trust Communities (VTC)**. A VTC manages a commu
 
 ```
 src/
-├── acl/                ACL storage + role types (VtcRole)
-├── audit/              (re-exports from vti-common::audit)
-├── auth/               session, AuthClaims/AdminAuth/SuperAdminAuth extractors
+├── acl/                ACL storage, role types, capabilities, consent;
+│                       `ops` (the `acl/*` operations)
+├── admin_actions/      The administrator action list (parked consent, cooling off)
+├── admin_events/       The console's live channel (`vtc/admin/events/*`)
+├── audit_*.rs          audit index/checkpoints, `audit_ops` (`audit/{list,verify}`);
+│                       the vocabulary is `vtc-audit`
+├── auth/               session, extractors; `admin_passkeys` (`auth/passkey/*`)
+├── backup/             Encrypted export / import; `ops`
+├── badges/, boards/, elections/, notifications/
+│                       Member badges, community boards, elections (feature
+│                       `voting`), notifications
 ├── ceremony/           Decision pipeline (facts → verify → decide → effect/audit);
 │                       `assemble` (one Facts builder for every purpose) +
-│                       `orchestrate` (role-change + leave spines, out of routes)
-├── community/          CommunityProfile storage
+│                       `orchestrate` (role-change + leave spines) + `listing`
+├── community/          CommunityProfile storage; `ops` (profile, branding, theme,
+│                       logo, requested attributes, join discovery, runtime config,
+│                       the community's own DID log)
 ├── credentials/        LocalSigner + VMC/VAC/status-list builders; `exchange/`
 │                       (OID4VCI issuer + OID4VP/SD-JWT/DI/bbs verifier, split into
 │                       issue/verify/pending/jwt) + `vm_resolver` (the single shared
 │                       DID-VM → key resolver + `check_issuer_binding`)
-├── endorsement_types/  Operator-registered endorsement-type registry
-├── endorsements/       Community statement (VSC), vetter-grant and IDVC rows + status-list flip
-├── install/            Install-token state machine + claim secret
+├── directory/, groups/ The member directory and community groups
+├── endorsement_types/  Operator-registered endorsement-type registry; `ops`
+├── endorsements/       Community statement (VSC), vetter-grant and IDVC rows +
+│                       status-list flip; `ops`
+├── git_ns/             Git namespaces (`git-ns/*`)
+├── install/            Install-token state machine + claim secret; `ops` (claim,
+│                       admin bootstrap, admin invites)
 ├── join/               Join-request lifecycle + `orchestrate` (submit spine:
-│                       holder-binding → decide → auto-admit → admit audit)
-├── members/            Member storage + lifecycle helpers
-├── policy/             regorus engine, default policy bundle, evaluators
-├── recognition/        Foreign role-VAC verification (Phase 3 cross-community)
-├── registry/           Trust-registry client + syncer + audit-log tail
-├── relationships/      VRC publish/revoke
-├── routes/             Every HTTP route handler, sub-mounted by feature
+│                       holder-binding → decide → auto-admit → admit audit);
+│                       `ops` (decide, manifest, present, read, status),
+│                       `invitations` (VIC issue/list/revoke/deliver)
+├── members/            Member storage + lifecycle helpers; `ops` (read, update,
+│                       remove, renew, rotate, personhood, credentials, …)
+├── member_portal/      The member portal's sign-in and sessions
+├── policy/             regorus engine, default policy bundle, evaluators; `ops`
+├── recognition/        Foreign role-VAC verification (Phase 3 cross-community);
+│                       `recognise` (TRQP), `admin` (the recognition check)
+├── registry/           Trust-registry client + syncer + audit-log tail; `admin`
+├── relationships/      VRC publish/revoke; `ops`
+├── rooms/              Data rooms (host) and community-owned rooms
+├── routes/             The HTTP surface, and only it: the Trust Task door
+│                       (`POST /v1/trust-tasks`), the declared REST exceptions
+│                       (`REST_EXCEPTIONS`: auth refresh/sign-out, credential
+│                       exchange, OID4VP), the WebAuthn ceremonies, health, the
+│                       public reads (profile, DID QR, status lists, DID logs),
+│                       the member portal and the console's static assets
 ├── routing/            Security headers, CSRF, body cap, governor middleware
+├── schemas/            The community schema store; `ops`
 ├── setup/              `vtc setup` wizard: `wizard.rs` (interactive) +
 │                       `from_toml.rs` (`setup --from <toml>`, phase 2) +
 │                       `phase1.rs` (`setup --setup-key-out`, mint the
@@ -60,8 +86,26 @@ src/
 │                       the `apply` effect driver.
 ├── status_list/        Bitstring status list allocator + storage + serve route
 ├── store/              Re-export of vti-common's keyspace abstractions
-└── website/            Public website handler, bundle + deploy, default site
+├── trust_tasks/        The dispatch spine: `routing` (one `AsyncDispatcher` every
+│                       family registers on, keyed on its generated payload
+│                       type) and a `*_tasks.rs` handler file per family
+├── vetting/            Vetting, vetters, hidden vetting (`vetting-pcs`); `ops`
+├── website/            Public website handler, bundle + deploy, default site; `ops`
+└── wire.rs             Generated payload members read as this crate's types
 ```
+
+**Where code goes.** A Trust Task's handler (authority, payload parse, refusal
+codes) is a `register`ed handler in `trust_tasks/<family>_tasks.rs`; the
+operation it runs lives in its domain module (`members::ops`, `policy::ops`, …)
+and takes the **generated** `vti_specs` payload — never a struct of its own
+parsed beside it (`trust_tasks::payload_type_census`). A member the generated
+type folds (absent vs empty) is read from the received JSON with
+`wire::sent`. `routes/` gets a new route only as a declared REST exception.
+
+Before splitting a module out of this crate, read
+[`docs/05-design-notes/vtc-service-decomposition.md`](../docs/05-design-notes/vtc-service-decomposition.md):
+the step order (keyspace leaf, per-subsystem store structs, then the few
+extractable subsystems) and where the program deliberately stops.
 
 The admin SPA lives at `admin-ui/` (React + TS + Vite, baked into the binary at compile time by `build.rs` + `include_dir!`). The fallback public landing page lives at `website-default/` (plain HTML / CSS / JS, no build step).
 
@@ -179,6 +223,31 @@ When adding a flow, add it here and a line to the root index.
      self-grant), same as mediator / did-hosting.
   3. `vtc setup --from <toml>` — load the now-authorised key
      (`setup_key_file`) and provision end-to-end (no TTY).
+- **A did:webs VTC** (VTI-KEY-001, level 1): `identity_method = "webs"` (TOML)
+  or the interactive method prompt. Provisions `vtc-host-classical` (`vtc-host`
+  less the `pq-signing` slot CONVENTIONS §9.2 refuses) with `DID_METHOD=webs`
+  at `[webvh] server_id` (required — no serverless did:webs); writes no
+  `did.jsonl` and checks the bundle carries the `keri.cesr` stream and a
+  did:webs DID. The bundle keeps the document's own key ids; a bundle without
+  key roles whose ids are not `#key-0`/`#key-1` answers `key_role_ids` with
+  them, so `LocalSigner`, DIDComm and `vtc status` sign as the document says.
+  Service changes are the VTA's (`pnm webs update` / `vta/webs/dids/update`).
+  `apply` = `run_provision_quietly` + `persist_provisioned` (testable with a
+  VTA's reply); `provision_ask` builds what is sent.
+- **Taking over a rotated did:webs key** (`vtc keys request` / `refresh`,
+  `keys_cli.rs`, `setup/refresh.rs`): `pnm webs rotate` replaces the key and
+  its id, so the stored bundle goes stale; boot then refuses
+  (`stale_signing_key`, VTI-KEY-042) unless the host is unreachable (warns).
+  The VTC keeps no VTA credential, so the keys come by the sealed hand-off
+  `vtc oid4vp` uses: `request` writes a `BootstrapRequest` (seed + nonce at
+  `<data_dir>/keys/refresh.request-key`, 0600), `pnm keys bundle <context>
+  --recipient` seals `vta/contexts/secrets` output to it, `refresh --bundle
+  --digest` opens it (digest pinned), resolves the DID afresh, and
+  `successor_bundle` keeps each key only if the document publishes it under
+  that id for its role. **What breaks it:** dropping the derivation root
+  (`carry_derivation_root_to` — the first signing key stays the root, or the
+  store becomes unreadable), or trusting the bundle's ids over the resolved
+  document's. Level-1 only; a key-role bundle is refused.
 - **Secrets**: `[secrets] backend = "vault"|"k8s"|"aws"|"gcp"|"azure"|`
   `"keyring"|"config"|"plaintext"` selects the store explicitly (validated,
   fail-closed); omit for legacy implicit resolution. All backends except
@@ -192,7 +261,9 @@ When adding a flow, add it here and a line to the root index.
   `--did` mint passkey invitations (token names no DID; the authority is
   recorded on the row, `install::InvitedAuthority`, and `finish` writes the
   entry when the community already has an administrator); `--did` mints a
-  wallet one. The console and `vtc/admin/invites/create/0.2` mint either kind
+  wallet one, whose entry (written at mint, create 0.2 item 3) expires with the
+  invitation until claim/finish 0.3 makes it permanent, and goes with a revoke
+  (`install::InviteGrant`, #2660). The console and `vtc/admin/invites/create/0.2` mint either kind
   (`did` absent = passkey); a passkey invitation always takes the gesture and
   consent an unrestricted grant takes, since nobody authorises it at the
   claim. `co_admin_did` adds a second;
@@ -234,10 +305,11 @@ When adding a flow, add it here and a line to the root index.
 - **Renewal** (`rooms::community_renewal`, create item 6's SHOULD): a sweeper
   reissues the community's own VMC + `admin` VAC within `[rooms.community]
   authority_renew_within_days` (default 30, ≤ half the life) and stores each
-  **under the vault handle it replaces** — the VTA refuses to choose between
-  two VACs for one persona, so never add one beside the other. Handles are
-  recorded at create (`authority-renewal:<room>`), else found by
-  `vault/credentials/query` + `get` (needs `vault-read`). Remote first: the
+  **under the vault handle it replaces** — never add one beside the other. Handles
+  are recorded at create (`authority-renewal:<room>`), else found by
+  `vault/credentials/query` + `get` (needs `vault-read`), choosing among several
+  by the VTA's own rule (`room_oracle::current`: latest `validFrom` in force; a
+  tie is refused with the vault ids, to archive one). Remote first: the
   owner's record's `ownerAuthorityValidUntil` is written last; the sweeper is
   the only retry owner (capped backoff + jitter); failures are `warn`ed,
   audited at the start of a run, and shown in `get`/`list`'s
@@ -458,7 +530,8 @@ When adding a flow, add it here and a line to the root index.
   manager's appointment is a resource grant written under the git-ns write lock
   (so `acl/*` writes keep it); a granter who departs or no longer covers it
   sends it to an `acl.grants.review` item (`groupGrants`), withdrawn on decline
-  or at the deadline (`groups::managers::sweep`).
+  or at the deadline (`groups::managers::sweep`). The grant/review/withdraw machinery is
+  `acl::appointment`, shared with board facilitators; keep both kinds on it.
 - **Code**: `vtc-service/src/groups/` (`mod`, `identity`, `policy`),
   `vtc-service/src/trust_tasks/group_tasks.rs`,
   `vtc-service/policies/default/groups.rego`, `vta-sdk/templates/vtc-group.json`.
@@ -523,7 +596,7 @@ When adding a flow, add it here and a line to the root index.
   `member_sessions` / `member_passkeys`, never `sessions` / `passkey`: that is
   what stops a member-who-is-also-an-admin from redeeming a portal refresh
   token, or a portal passkey, at the console. Portal cookies are
-  `Path=/v1/member` (`vtc_member_csrf` is `Path=/`), and the CSRF gate pairs
+  `Path=/v1/member` (`__Host-vtc_member_csrf` is `Path=/`), and the CSRF gate pairs
   them by path. Adding or removing a portal passkey requires a wallet-proven
   session (`amr` contains `did`). The bundle imports no console shell, plugins
   or API client. The console's login page uses the same `auth/oob/*` flow
@@ -547,7 +620,17 @@ When adding a flow, add it here and a line to the root index.
   the ballot box; never render a ballot here, add a `/v1/member/*` route or a
   `signingScope` family that carries a choice, a ticket or a cast, or show the
   page whether a vote was cast — the community is never trusted to learn how
-  anyone voted (VTI-VOT-001).
+  anyone voted (VTI-VOT-001). Notified elections (`list`'s `notified`, VTI-NTF-063) show only
+  identifier, audience, period and status; `memberOf` is passed only from a notification still
+  standing — never the page's own choice, never to a wallet that reports no notifications (it
+  refuses the field) — and the page never presents anything: the wallet asks first
+  (VTI-VOT-016). `electionListOf` accepts every list shape a wallet may answer. The home
+  page's attention items take notified elections from the same `member-elections` query
+  (`actionableNotified`: standing, voting not closed, not in the community's list) and link
+  with `electionHref`, so `memberOf` is still read on the election page. `refusalKind` /
+  `declinedInWallet` read the wallet error's `code` first (`REFUSAL_BY_CODE` for Trust Task
+  codes, `WALLET_OUTCOME_BY_CODE` for the wallet's own), its words only for an older wallet
+  or an unknown code.
 - **Join page** (`/members/?join`, the landing page's *Join this community*):
   the sign-in page's wallet code, worded for a newcomer, with no
   membership-only option. It changes words only — the wallet decides from
@@ -622,7 +705,7 @@ When adding a flow, add it here and a line to the root index.
   crossed); the join paths carry none, so a VWC meets no criterion there. Never compare witness DIDs other than verbatim,
   never let a community list its own DID.
 - **Code**: `vtc-service/src/credentials/{trusted_witnesses,witness}.rs`,
-  `vtc-service/src/config_store.rs`, `vtc-service/src/routes/members/personhood.rs`,
+  `vtc-service/src/config_store.rs`, `vtc-service/src/members/ops/personhood.rs`,
   `vtc-service/src/join/criteria.rs`.
 - **Docs**: `docs/03-vtc/trusted-witnesses.md`.
 
@@ -640,9 +723,23 @@ When adding a flow, add it here and a line to the root index.
   themselves; a revoked approver DID is never bound again. Once a subject holds
   a dedicated factor, their session passkeys stop counting. A
   console-key-signed answer is `subjectMismatch`.
+- **The hand-off** (`auth/step-up/requests/show/0.1`, VTI-LNK-125 – 131): a
+  refusal for a subject holding an approver carries `details.stepUpHandoff`
+  beside the inline request — a 16-byte handle naming the pending step-up, the
+  inline request and the operation **as received** (`handoff:<handle>` in
+  `step_up_marks`, its expiry the pending mark's). The party refused (a
+  delegated key, `vtc-mcp`) shows the subject a `step-up` link; their wallet
+  reads it with a fresh `did:key` and gets the request as a document this
+  community signs to the subject, plus the operation. Keep: the read takes the
+  row atomically, is answered at most once, and every unanswerable handle
+  (never minted, read, expired, step-up already answered) is the one
+  `notFound`; reading is no part of an approval — the step-up is recorded
+  only from an approve-response as before; no hand-off on an enrolment
+  step-up (it reaches only its requester) or a passkey-only subject.
 - **Code**: `vtc-service/src/acl/{bound_step_up,approver}.rs`,
   `vtc-service/src/step_up_approver.rs`,
-  `vtc-service/src/trust_tasks/step_up_approver_tasks.rs`.
+  `vtc-service/src/trust_tasks/{step_up_approver_tasks,step_up_handoff_tasks}.rs`,
+  `vtc-client/src/step_up.rs` (the link a refused party builds).
 - **Docs**: `docs/03-vtc/admin-access.md` §3.1,
   `docs/05-design-notes/vtc-approver-step-up.md`.
 
@@ -749,7 +846,7 @@ When adding a flow, add it here and a line to the root index.
   store::{get,put}_rights` and `Snapshot::load` read and write the entries
   (through a `git-holder:` index in the `acl` keyspace), and the fixed rules run
   over that. Grants sit beside the administrative role, never in its ceiling;
-  `acl/*` writes keep them (`routes::acl::commit_grant` re-reads them under the
+  `acl/*` writes keep them (`acl::ops::commit_grant` re-reads them under the
   git-ns lock) and must never drop them. A grant is also bounded by the
   granter's entry (`resource_grant::granter_covers`, VTI-ACL-071). A non-member
   holding a grant (the bridge, an external signer) gets an entry of community
@@ -759,8 +856,8 @@ When adding a flow, add it here and a line to the root index.
   a departed granter's grants go to `acl.grants.review` (`gitGrants`) and are
   withdrawn at the deadline. The old `rights:*` rows are migrated at boot and
   on backup import (`git_ns::migrate`); unmappable ones are kept inert under
-  `rights-unmapped:*` with an acknowledge item. The admin REST routes (`/v1/git-ns/*`) are read-only
-  console projections; the administrator's view, namespace and repository
+  `rights-unmapped:*` with an acknowledge item. The former admin REST routes (`/v1/git-ns/*`) are gone;
+  the administrator's view, namespace and repository
   listings and break-glass list are signed reads (`git-ns/view/0.6`,
   `git-ns/namespace/list`, `git-ns/repo/list` in `git_ns::admin_reads`),
   answered to a namespace's administrators only, never to a bearer session.
@@ -805,7 +902,7 @@ When adding a flow, add it here and a line to the root index.
   The bridge's `event` (0.6) and `result` (0.2) are served at their current
   version only.
 - **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
-  `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
+  `bridge`, `lifecycle`, `admin_reads`),
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.
 - **Docs**: `docs/03-vtc/git-namespaces.md`.
 
@@ -910,9 +1007,103 @@ When adding a flow, add it here and a line to the root index.
   closed/archived board with no election running; audited before anything goes; each election
   leaves only a `Tombstone` (id, manifest digest, kept heads — never title, roll or tickets) for
   `[boards] tombstone_retention` (days, `0` = none, `"forever"`), removed by the sweeper.
+  **Facilitators by appointment** (`vtc/boards/facilitators/*`, VTI-BRD-090 – 093,
+  `boards::facilitators` over `acl::appointment`, shared with group managers): a resource grant
+  `vtc.boards.manage` at `board:<id>` on the appointee's entry, delegated by a signer who
+  facilitates the board, written under the git-ns write lock. Peers never remove one another
+  (only the appointee or an unqualified holder). A granter who departs or stops facilitating
+  sends it to `acl.grants.review` (`boardGrants`), withdrawn on decline or at the deadline
+  (`boards::facilitators::sweep`, run by the directory sweep, audited `facilitatorWithdrawn`);
+  deleting the board withdraws them all. Never record facilitators on the board itself.
 - **Code**: `vtc-service/src/boards/{mod,ops}.rs`, `vtc-service/src/trust_tasks/board_tasks.rs`,
   `vtc-service/tests/it/board_tasks.rs`.
 - **Docs**: `docs/03-vtc/boards.md`, `docs/05-design-notes/vtc-boards.md`.
+
+### VTC member badges (`vtc/badges/*`, VTI-BDG-001 – 095)
+- **What**: Badges members earn, hold and show on their directory card: community badges
+  defined by `vtc.badges.admin` and given by their owners, kudos badges any member makes and
+  gives. Records in the `badges` keyspace (backed up), pictures in `badge_images`.
+- **Invariants to preserve**: **a community badge is a badge group** (`Group.badge_id`): its
+  owners are the group's managers (`vtc.groups.manage` qualified `group:<id>`, by appointment),
+  its holders the group's members, requests are `vtc/groups/join` + `requests/decide`, owners
+  `managers/{add,remove}`, retiring deletes the group (one revocation bit, VTI-DIR-083). A
+  badge group never carries authority (`bindings/add` refuses it), is left out of
+  `vtc/groups/list` and of `audience_groups`. **An award is an offer until accepted**
+  (`badges::Award`, VTI-BDG-020): `awards/offer` and `kudos/give` record `offered` and admit,
+  issue and show nothing; `mine/accept` issues the badge credential **as the community**
+  (`badges::credential`, an Open Badges 3.0 `OpenBadgeCredential`, VTI-BDG-060: `issuer` and
+  the Achievement's `creator` the community's named `Profile`, `credentialSchema` the OB3
+  schema, one `evidence` per award) through `keys/sign-document` **before** recording the
+  membership; `groups::credential::issue` branches to it for any group with `badge_id`, so
+  admission by request, rule and renewal issue the same profile. Never sign it as the badge
+  group: an outside verifier knows the community, not a group's DID (VTI-BDG-064); the group
+  holds owners, holders, requests and rules and issues nothing. **Two regimes** by `shareableOutside`, fixed at create/promote: inside-only
+  (short-lived, renewed, no status) and outside (VTI-BDG-062: `settings.credentialValidDays`,
+  default 730, a slot in the **community's** revocation list, `bslot:<badge>:<entry>`, one per
+  badge and holder, reused by every re-issue; never a set of the badge's or the group's own —
+  the W3C list algorithm compares no issuers). `credential::{revoke_holder,
+  revoke_all_holders, revoke_departed}` flip it on take-back of the last award, retire and
+  departure (VTI-BDG-063); keep every path that ends a holding on one of them. A shareable
+  badge's **public artefacts** (`badges::public`, VTI-BDG-051): `GET /badges/<id>` (the
+  Achievement document) and `/badges/<id>/image` (the re-encoded picture), parent-root routes
+  beside the identity logs, let through the host-surface gate (`is_badge_artefact_path`),
+  unauthenticated, naming no holder or count (VTI-BDG-071); an inside-only or unknown badge is
+  the same `404` — never serve an inside badge's picture there (VTI-BDG-050). **Sharing**
+  (`badges::share`, `awards/share|unshare`, VTI-BDG-070): the holder's own choice, award by
+  award; a 256-bit token derived from nothing (`bshare:<token>` → award, `Award.shared`);
+  `/badges/shared/<token>` serves the credential **exactly as issued** — the one
+  `credential::issue` keeps at `bcred:<badge>:<entry>` in the outside regime, so a re-issue
+  is served at the same location — or an HTML verification page, and `…/image.png` the
+  picture with it baked in (`iTXt` `openbadgecredential`). `share::resolve` re-checks the
+  award, the token and the badge on every request, and every path that ends a holding
+  (`unshare`, take-back, retire, `badges::on_departure`) clears the share: a stopped share
+  answers the same `404` as a token never issued. `show` answers the holder's own awards
+  as `myAwards`; never another member's. **The registry** (`badges::registry`,
+  VTI-BDG-080): each active community badge is one TRQP record `{community DID,
+  issue, the Achievement id}` under the community's authority, `context.kind =
+  "vtcBadgeIssuer"` and the badge id only — never its name. The `Projector` (spawned with
+  a registry and the community DID) is the one retry owner: `reconcile` against a `breg:`
+  mirror of what the registry accepted, `verify` against the registry's own marked records
+  every 15 minutes; create, promote and retire `kick` it. Never touch an `issue` record
+  without the marker. **The group's own paths** (VTI-BDG-013, 020, 024): admission through
+  them goes through `groups::credential::issue_admitting`, which for a badge group records
+  an accepted award (giver = the approving owner, none for a rule) as the credential's
+  evidence — never `issue`, which is renewal; `members/add` on a badge group is refused
+  (`awards/offer`); and every membership end outside a badge task (`leave`, opt-out,
+  `members/remove`, the rule) calls `badges::on_group_exit`, closing the awards (declined
+  or taken back), stopping shares and revoking the slot. **Rule counts** (VTI-BDG-015,
+  `groups::dynamic::Counts`, `badges::rule_counts`): `kudosReceived`, `ideasSelected`,
+  `electionTickets` with `atLeast` + `count` — `groups::check_badge_rule` admits them,
+  `check_rule` (every other group) refuses them; counted from the community's own records at
+  each recompute (tickets by the member's current DID, never a cast); accepting kudos,
+  selecting an idea and issuing a ticket `dynamic::kick()`. **Claim codes**
+  (`badges::claims`, VTI-BDG-025 – 027): a 256-bit code kept only as its digest
+  (`bcdig:`), a claim **reserved** (counted and marked) under the lock before the credential
+  is issued and released if it fails, so a limit is never exceeded; redemption goes through
+  `credential::issue_with_new_award` (always a new award, giver = the issuer); retire
+  withdraws the codes; `claims/list` never answers a code. **Hidden is
+  portal-only** (`badges::Prefs`, VTI-BDG-030): walls, `holders/list` and counts leave a hidden
+  holder out; `awards/list` shows owners `hidden: true`; memberships and credentials stand.
+  Holder's tasks accept the portal's delegated key (`vtc/badges` in `PORTAL_SIGNING_SCOPE`);
+  `settings/update`, `update`, `retire`, `promote`, `awards/*` go through `member_signer`
+  only (VTI-BDG-095). `settings/update` and a community badge's `retire` take a bound
+  step-up, never the action list (they confer nothing). Pictures reuse
+  `directory::images::{reencode,store,get,may_reference}` over `badge_images`; an upload is
+  the uploader's until a badge holds it. Kudos limits count every giving whatever its later
+  state. Departure withdraws offers and preferences and keeps givings by reference
+  (`badges::on_departure`, beside `groups::on_departure`). Audit `BadgeChanged` by reference.
+  **The pages**: the console plugin (`admin-ui/src/plugins/badges.tsx` over `lib/badges.ts`)
+  signs with the console key only, and reuses the groups' tasks for a badge's requests and
+  owners; the portal (`admin-ui/src/members/Badges.tsx` over `members/badges-api.ts`, the
+  `WallSection` on a member's card, the home tile) signs with `K_b` through `send` and never
+  offers an owner's act. The badge Type URIs are spelled out in full in both API modules (the
+  list-limit census matches the literal), and the console's wire types come from the
+  `Badges*01` wrappers in `vta_sdk::openapi` listed in `routes::openapi_spec` — a new badge
+  task needs both, then `UPDATE_OPENAPI=1` and `npm run wire:generate`.
+- **Code**: `vtc-service/src/badges/{mod,credential,public}.rs`,
+  `vtc-service/src/trust_tasks/badge_tasks.rs`, `vtc-service/tests/it/badges.rs`,
+  `admin-ui/src/plugins/badges.tsx`, `admin-ui/src/members/Badges.tsx`.
+- **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.
 
 ### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)
 - **What**: The community as **originator** of the `election` kind — an election under a

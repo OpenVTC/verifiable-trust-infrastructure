@@ -46,6 +46,9 @@ pub struct ExportDeps<'a> {
     pub acl_ks: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh_ks: &'a KeyspaceHandle,
+    /// The `did:webs` records, whose key event logs give such a DID's current
+    /// document: what a bundle for one is checked against.
+    pub webs_ks: &'a KeyspaceHandle,
     pub seed_store: &'a Arc<dyn SeedStore>,
 }
 
@@ -205,8 +208,52 @@ pub async fn build_did_secrets_bundle(
         }
     }
 
-    debug!(channel, %context_id, %did, secret_count = secrets.len(), "built did-secrets bundle from local store");
-    Ok(DidSecretsBundle { did, secrets })
+    let mut bundle = DidSecretsBundle { did, secrets };
+    restrict_to_webs_document(deps, &mut bundle).await;
+    debug!(channel, %context_id, did = %bundle.did, secret_count = bundle.secrets.len(), "built did-secrets bundle from local store");
+    Ok(bundle)
+}
+
+/// A `did:webs` bundle holds exactly the keys its current document lists,
+/// led by the one it lists for authentication.
+///
+/// A `did:webs` names each key by the key (`<did>#<CESR key>`), and its key
+/// records are named so; but its context also holds the key event log's
+/// pre-rotated successor (`<did>#pre-rotation-<sn>`), an Ed25519 key under the
+/// DID that is in no relationship of the document. Kept, it would hand the
+/// service the key that controls the identifier's next rotation, and a reader
+/// taking the first Ed25519 key could sign with a key no verifier accepts. The
+/// document the VTA derives from its own log is the authority, as for every
+/// node key (VTI-KEY-150); a `did:webs` the VTA does not hold is left as it
+/// was.
+async fn restrict_to_webs_document(deps: &ExportDeps<'_>, bundle: &mut DidSecretsBundle) {
+    if !bundle.did.starts_with("did:webs:") {
+        return;
+    }
+    let Some(document) =
+        crate::self_keys::own_document(&bundle.did, None, Some(deps.webs_ks)).await
+    else {
+        return;
+    };
+    let listed: std::collections::BTreeSet<String> = document
+        .get("verificationMethod")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|vm| vm.get("id").and_then(serde_json::Value::as_str))
+        .map(|id| match id.strip_prefix('#') {
+            Some(fragment) => format!("{}#{fragment}", bundle.did),
+            None => id.to_string(),
+        })
+        .collect();
+    bundle.secrets.retain(|entry| {
+        let kept = listed.contains(&entry.key_id);
+        if !kept {
+            debug!(did = %bundle.did, key_id = %entry.key_id, "excluding a key the did:webs document does not list (a pre-rotated successor)");
+        }
+        kept
+    });
+    bundle.lead_with_trust_task_signing_key(&document);
 }
 
 /// Derive an admin [`CredentialBundle`] from an existing key in the
@@ -362,6 +409,7 @@ mod tests {
         acl_ks: KeyspaceHandle,
         #[cfg(feature = "webvh")]
         webvh_ks: KeyspaceHandle,
+        webs_ks: KeyspaceHandle,
         seed_store: Arc<dyn SeedStore>,
         data_dir: PathBuf,
     }
@@ -383,6 +431,7 @@ mod tests {
             acl_ks: store.keyspace(crate::keyspaces::ACL).unwrap(),
             #[cfg(feature = "webvh")]
             webvh_ks: store.keyspace(crate::keyspaces::WEBVH).unwrap(),
+            webs_ks: store.keyspace(crate::keyspaces::WEBS).unwrap(),
             seed_store: Arc::new(PlaintextSeedStore::new(&data_dir)),
             _dir: dir,
             _store: store,
@@ -399,6 +448,7 @@ mod tests {
             acl_ks: &env.acl_ks,
             #[cfg(feature = "webvh")]
             webvh_ks: &env.webvh_ks,
+            webs_ks: &env.webs_ks,
             seed_store: &env.seed_store,
         }
     }

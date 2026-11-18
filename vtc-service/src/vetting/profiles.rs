@@ -70,7 +70,7 @@ use vta_sdk::protocols::vetting::{
     CheckShape, DEFAULT_VETTER_LIST_LIMIT, VetterProfileSummary, has_event_filter,
 };
 use vta_sdk::protocols::vetting::{VETTER_ROLE, role_matches};
-use vti_common::audit::{AuditEvent, VetterProfileDeletedData, VetterProfileUpdatedData};
+use vtc_audit::{AuditEvent, VetterProfileDeletedData, VetterProfileUpdatedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -605,7 +605,7 @@ fn filter_tag(body: &list_wire::Payload) -> String {
     filters.limit = None;
     filters.cursor = None;
     filters.ext = None;
-    let bytes = serde_json::to_vec(&filters).unwrap_or_default();
+    let bytes = serde_json_canonicalizer::to_vec(&filters).unwrap_or_default();
     hex::encode(&Sha256::digest(&bytes)[..8])
 }
 

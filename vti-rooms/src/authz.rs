@@ -43,6 +43,7 @@
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use crate::purpose::{ChainPurposes, PurposeDecision};
 use crate::revocation::{self, Presented, RevocationList, gate};
 use crate::wire::AuthorityPresentation;
 use crate::{Room, Visibility};
@@ -120,6 +121,18 @@ pub struct VerifiedChain {
     /// A verifier that reports nothing here cannot be held to a list: [`authorize`] then
     /// refuses a disclosing tier's presentation whenever the room's list withdraws anything.
     pub presented: Presented,
+    /// The earliest instant at which any credential the presentation carried stops being
+    /// valid, where the verifier read one — what bounds a state a host keeps on the strength
+    /// of this presentation (`rooms/watch/0.1` Host item 5: a watch lapses no later). `None`
+    /// is "none of them expires", or a verifier that does not say.
+    pub valid_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// The purposes the chain grants (VTI-ACL-102): those its leaf states, read by the
+    /// chain rule of `rooms/owner/issue-authority/0.3`, *Purposes along a chain* — a link
+    /// stating none takes its parent's. [`ChainPurposes::Any`] where no link states any.
+    ///
+    /// A verifier MUST refuse a chain in which a link states purposes its parent does not
+    /// grant (VTI-ACL-107), as it refuses one that widens actions.
+    pub purposes: ChainPurposes,
 }
 
 /// Cryptographic verification of a presentation.
@@ -265,6 +278,21 @@ impl AuthorizedAction {
     /// is later held to ([`revocation::Presented`]).
     pub fn presented(&self) -> &Presented {
         &self.verified.presented
+    }
+    /// When the first credential of the presentation stops being valid
+    /// ([`VerifiedChain::valid_until`]).
+    pub fn valid_until(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.verified.valid_until
+    }
+    /// The purposes the chain grants ([`VerifiedChain::purposes`]).
+    pub fn purposes(&self) -> &ChainPurposes {
+        &self.verified.purposes
+    }
+    /// Decide a read naming `requested`, or none, against the purposes the chain grants
+    /// (`rooms/records/get/0.4`, *Purpose of use*). Every read is purpose-bound: a version
+    /// that cannot name a purpose is decided as one naming none.
+    pub fn admit_purpose(&self, requested: Option<&str>) -> PurposeDecision {
+        self.verified.purposes.admit(requested)
     }
     /// Refuse unless `credential` — presented beside the chain, such as a succession
     /// nomination — is withdrawn by none of the list this was authorized against. The same
@@ -652,6 +680,7 @@ mod tests {
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         }
@@ -741,6 +770,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
             ..room(Visibility::Open)
@@ -789,6 +819,7 @@ mod tests {
             mirror_of: Some("https://primary.example.org".into()),
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
             epoch_expires_at: Some(NOW - 1),
@@ -923,6 +954,8 @@ mod tests {
                 actions: self.0.clone(),
                 member: Some(presenter.to_string()),
                 presented: Default::default(),
+                valid_until: None,
+                purposes: Default::default(),
             })
         }
     }
@@ -944,6 +977,8 @@ mod tests {
                 actions: vec!["read".into()],
                 member: Some("did:key:zSomeoneElse".into()),
                 presented: Default::default(),
+                valid_until: None,
+                purposes: Default::default(),
             })
         }
     }

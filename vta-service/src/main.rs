@@ -1,3 +1,36 @@
+// jemalloc as the global allocator (the `jemalloc` feature, on by default).
+// glibc malloc keeps freed pages in its arenas rather than returning them, so
+// RSS ratchets to the high-water mark and never falls back — indistinguishable
+// from a leak on a memory graph. jemalloc purges freed pages back to the OS.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// jemalloc tuning, read by jemalloc itself at startup via this well-known symbol.
+///
+/// `background_thread:true` runs the purger on its own thread, so freed pages
+/// are returned even while the process is idle (without it, purging only
+/// happens as a side effect of later allocator calls). `dirty_decay_ms` /
+/// `muzzy_decay_ms` are how long freed pages linger before being returned;
+/// 5s (default 10s) keeps RSS close to the live heap at negligible cost for an
+/// I/O-bound service.
+///
+/// The name is `_rjem_malloc_conf`, not `malloc_conf`: `tikv-jemalloc-sys`
+/// builds jemalloc with the `_rjem_` symbol prefix, so an unprefixed
+/// `malloc_conf` would be silently ignored.
+///
+/// SAFETY: exporting a symbol is unsafe because it could clash with another
+/// definition of the same name. This is the name jemalloc documents for
+/// exactly this, it is defined once (in the binary, never the library), and
+/// the value is the NUL-terminated static string jemalloc expects. The type is a
+/// reference to a fixed-size array, a thin pointer matching jemalloc's
+/// `const char *malloc_conf`; a `&[u8]` slice reference would be two words.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[allow(unsafe_code)]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static MALLOC_CONF: &[u8; 63] =
+    b"background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000\0";
+
 // CLI-only modules (not part of the library)
 mod acl_cli;
 mod approvals_cli;
@@ -570,16 +603,15 @@ enum BootstrapCommands {
     /// return an armored sealed bundle which `vta bootstrap open`
     /// decrypts using the persisted seed.
     ///
-    /// Used by integration operators (mediator, did-hosting-control, did-hosting-daemon,
-    /// did-hosting-server, etc.) to request enrollment from a VTA that may not
+    /// Used by integration operators (mediator, DID-hosting control plane and
+    /// daemon, witness, etc.) to request enrollment from a VTA that may not
     /// yet be network-reachable. See
     /// `docs/02-vta/provision-integration.md` for the end-to-end
     /// flow.
     ProvisionRequest {
-        /// DID template name the VTA should render (e.g.
-        /// `didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`,
-        /// `did-hosting-server`, or an operator-uploaded custom template).
-        #[arg(long)]
+        /// DID template name the VTA should render: a built-in or an
+        /// operator-uploaded custom template.
+        #[arg(long, long_help = template_name_help())]
         template: String,
         /// Template variable, repeat for each binding. Format `KEY=VALUE`.
         /// Values are parsed as JSON when the value starts with `{`, `[`,
@@ -806,7 +838,7 @@ enum ContextCommands {
     /// import.
     ///
     /// Reads the local keystore directly — no running VTA or network
-    /// required. Mirrors `pnm context reprovision` but works in
+    /// required. Mirrors `pnm contexts reprovision` but works in
     /// cold-start / air-gapped environments where PNM cannot reach the
     /// VTA.
     ///
@@ -916,9 +948,9 @@ enum WebvhCommands {
         /// Print the generated mnemonic to stderr. **Off by default** —
         /// printing puts the master seed in shell history, terminal
         /// scrollback, CI log collectors, and tmux/screen buffers. The
-        /// mnemonic is also persisted via the configured seed-store; if
-        /// you need it for paper backup, run `vta export-mnemonic`
-        /// instead so it goes through the time-bounded export guard.
+        /// mnemonic is also persisted via the configured seed-store. No
+        /// command prints it again later, so if you need a paper backup pass
+        /// this flag deliberately, in a terminal nothing records.
         #[arg(long)]
         print_mnemonic: bool,
     },
@@ -960,7 +992,7 @@ enum WebvhCommands {
         out: Option<PathBuf>,
     },
     /// Edit an existing WebVH DID document. Offline equivalent of
-    /// `pnm webvh edit-did`. Operates directly on the local fjall
+    /// `pnm did-mgmt dids edit`. Operates directly on the local fjall
     /// keystore — VTA daemon must be stopped (fjall lock).
     ///
     /// Interactive mode opens the latest DID document in `$EDITOR`,
@@ -995,7 +1027,7 @@ enum WebvhCommands {
     /// hosting server. Pushes the local `did.jsonl` to the host and
     /// flips the DID's `server_id` so future updates auto-publish.
     ///
-    /// Offline equivalent of `pnm webvh register-did`. Operates
+    /// Offline equivalent of `pnm did-mgmt dids register`. Operates
     /// directly on the local fjall keystore — VTA daemon must be
     /// stopped (fjall holds an exclusive lock when the daemon is
     /// running).
@@ -1003,7 +1035,7 @@ enum WebvhCommands {
         /// The serverless WebVH DID to promote.
         #[arg(long)]
         did: String,
-        /// Registered server id (from `vta webvh add-server`).
+        /// Registered server id (from `vta did-mgmt servers add`).
         #[arg(long)]
         server: String,
         /// Take over a slot owned by a different DID. Honoured only
@@ -1119,9 +1151,9 @@ enum DidMgmtDidCommands {
         /// Print the generated mnemonic to stderr. **Off by default** —
         /// printing puts the master seed in shell history, terminal
         /// scrollback, CI log collectors, and tmux/screen buffers. The
-        /// mnemonic is also persisted via the configured seed-store;
-        /// if you need it for paper backup, run `vta export-mnemonic`
-        /// instead so it goes through the time-bounded export guard.
+        /// mnemonic is also persisted via the configured seed-store. No
+        /// command prints it again later, so if you need a paper backup pass
+        /// this flag deliberately, in a terminal nothing records.
         #[arg(long)]
         print_mnemonic: bool,
     },
@@ -1441,6 +1473,16 @@ enum AclCommands {
         /// Grant approve-authority scoped to these contexts (comma-separated).
         #[arg(long, value_delimiter = ',')]
         approve_contexts: Vec<String>,
+        /// Capabilities to grant, by their wire name (comma-separated), e.g.
+        /// `context-create`. Omit to leave the entry at whatever its role
+        /// implies.
+        ///
+        /// A role-derived capability only ever narrows; an additive one (see
+        /// `ADDITIVE_CAPABILITIES`) is how an entry holds something its role
+        /// does not, which is the only way to grant a non-admin the ability to
+        /// provision sub-contexts.
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Vec<String>,
     },
     /// List all ACL entries
     List {
@@ -1496,6 +1538,11 @@ enum AclCommands {
         /// unchanged".
         #[arg(long)]
         approve_none: bool,
+        /// Replace the entry's capabilities (comma-separated wire names), e.g.
+        /// `context-create`. Omitted leaves them unchanged; `--capabilities ''`
+        /// clears them back to whatever the role implies.
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Option<Vec<String>>,
     },
     /// Delete an ACL entry
     Delete {
@@ -2180,6 +2227,7 @@ async fn main() {
                     step_up_require,
                     approve_all,
                     approve_contexts,
+                    capabilities,
                 } => {
                     acl_cli::run_acl_create(
                         cli.config,
@@ -2192,6 +2240,7 @@ async fn main() {
                         step_up_require,
                         approve_all,
                         approve_contexts,
+                        capabilities,
                     )
                     .await
                 }
@@ -2205,6 +2254,7 @@ async fn main() {
                     approve_all,
                     approve_contexts,
                     approve_none,
+                    capabilities,
                 } => {
                     acl_cli::run_acl_update(
                         cli.config,
@@ -2217,6 +2267,7 @@ async fn main() {
                         approve_all,
                         approve_contexts,
                         approve_none,
+                        capabilities,
                     )
                     .await
                 }
@@ -2537,7 +2588,7 @@ async fn main() {
                     );
                     // SAFETY: single-threaded at this point in main() — no other thread
                     // is reading environment variables concurrently.
-                    #[allow(unused_unsafe)]
+                    #[allow(unused_unsafe, unsafe_code)]
                     unsafe {
                         std::env::remove_var("VTA_AUTH_JWT_SIGNING_KEY")
                     };
@@ -3216,6 +3267,17 @@ async fn reconstruct_credential(
     Ok(BASE64.encode(bundle_json.as_bytes()))
 }
 
+/// Long help for `--template`: the built-ins this build ships, read from
+/// `vta_sdk::did_templates::BUILTIN_NAMES` so the help cannot name a retired
+/// template (#2635).
+fn template_name_help() -> String {
+    format!(
+        "DID template name the VTA should render: a built-in ({}) or an \
+         operator-uploaded custom template.",
+        vta_sdk::did_templates::BUILTIN_NAMES.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod removal_verb_tests {
     use super::*;
@@ -3267,6 +3329,37 @@ mod removal_verb_tests {
                 command: ApprovalsCommands::Disable
             })
         ));
+    }
+
+    /// Every `vta` command an operator-facing error string tells the operator
+    /// to run must parse (#2631): `register_server.rs`, `provision_integration`.
+    #[cfg(feature = "webvh")]
+    #[test]
+    fn remediation_commands_in_error_strings_parse() {
+        let commands: &[&[&str]] = &[
+            &[
+                "vta",
+                "did-mgmt",
+                "servers",
+                "add",
+                "--id",
+                "host-1",
+                "--did",
+                "did:web:h.example",
+            ],
+            &[
+                "vta",
+                "did-mgmt",
+                "dids",
+                "get-log",
+                "did:webvh:x:h.example",
+            ],
+        ];
+        for argv in commands {
+            if let Err(e) = Cli::try_parse_from(*argv) {
+                panic!("`{}` does not parse: {e}", argv.join(" "));
+            }
+        }
     }
 
     #[cfg(feature = "webvh")]

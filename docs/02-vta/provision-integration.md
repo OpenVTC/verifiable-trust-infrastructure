@@ -84,8 +84,8 @@ true at the VTA:
    integration lands *inside* an existing context.
 2. **The template named in the request is registered.** The error
    suggests the fix: `template '{name}' is not registered on this
-   VTA. Register it via 'pnm did-templates upload {name} --file
-   <path>' then retry.`
+   VTA. Register it via 'pnm did-templates create --file <path>
+   --context <ctx>' (the file's `name` must be '{name}') then retry`.
 3. **The calling operator has admin role in the target context.** ACL
    check is `require_admin` with `allowed_contexts` containing the
    target. Super-admin passes through.
@@ -260,11 +260,11 @@ vta bootstrap provision-request \
     --out            mediator-request.vp.json
 ```
 
-**did-hosting-daemon example** (hosts DID logs over HTTP, no DIDComm):
+**`did-host-http` example** (a hosting daemon: DID logs over HTTP, no DIDComm):
 
 ```bash
 vta bootstrap provision-request \
-    --template       did-hosting-daemon \
+    --template       did-host-http \
     --var            URL=https://webvh.example.com \
     --context-hint   webvh-host-prod \
     --admin-template vta-admin \
@@ -272,12 +272,12 @@ vta bootstrap provision-request \
     --out            webvh-host-request.vp.json
 ```
 
-**did-hosting-control example** (hosts DID logs **and** accepts DIDComm —
+**`did-host-http-didcomm` example** (a control plane: DID logs **and** DIDComm —
 admin RPC, witness coordination, etc.):
 
 ```bash
 vta bootstrap provision-request \
-    --template       did-hosting-control \
+    --template       did-host-http-didcomm \
     --var            URL=https://webvh.example.com \
     --var            MEDIATOR_DID=did:webvh:mediator.example.com \
     --context-hint   did-hosting-control-prod \
@@ -286,11 +286,11 @@ vta bootstrap provision-request \
     --out            did-hosting-control-request.vp.json
 ```
 
-**did-hosting-server example** (witness/watcher — DIDComm only, no public HTTP):
+**`did-host-didcomm` example** (witness/watcher — DIDComm only, no public HTTP):
 
 ```bash
 vta bootstrap provision-request \
-    --template       did-hosting-server \
+    --template       did-host-didcomm \
     --var            MEDIATOR_DID=did:webvh:mediator.example.com \
     --var            URL=https://logs.example.com \
     --context-hint   did-hosting-witness \
@@ -301,8 +301,10 @@ vta bootstrap provision-request \
 
 `URL` is required for any webvh-method template at provision time so
 the VTA knows where the DID's `did.jsonl` log will be published —
-even on `did-hosting-server`, where `URL` does not appear in the rendered
-document. Pass `--var WEBVH_SERVER=<id>` instead to route through a
+even on `did-host-didcomm`, where `URL` does not appear in the rendered
+document. The TSP shapes are `did-host-http-tsp` (HTTP + `TSPTransport`,
+`URL` and `MEDIATOR_DID`) and `did-host-tsp` (`TSPTransport` only,
+`MEDIATOR_DID`). Pass `--var WEBVH_SERVER=<id>` instead to route through a
 hosting server already registered with `vta did-mgmt servers add`.
 
 What this does:
@@ -326,7 +328,7 @@ shape, different binary, different default seed directory
 
 | Flag | Required | Notes |
 |---|---|---|
-| `--template` | yes | Built-in (`didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`) or operator-uploaded template name. |
+| `--template` | yes | Built-in (`didcomm-mediator`, `did-host-http`, `did-host-http-didcomm`, `did-host-didcomm`, `did-host-http-tsp`, `did-host-tsp`, …; `pnm did-templates list-builtins` lists them all) or operator-uploaded template name. |
 | `--var KEY=VALUE` | varies | Template-specific. Values are parsed as JSON when possible (`true`, numbers, arrays, objects, quoted strings); unquoted values are treated as strings. |
 | `--context-hint` | recommended | The VTA context the integration will live in. The VTA operator confirms; mismatch is rejected, not silently normalized. |
 | `--admin-template` | recommended | Typically `vta-admin`. The VTA mints a long-term admin DID under its own key custody and binds authorization to it — the ephemeral key stays throwaway. Omit only if you intentionally want the ephemeral `client_did` to remain the admin. |
@@ -475,22 +477,19 @@ DIDComm session. The integration calls
 which packs an authcrypt'd DIDComm message carrying the same VP and
 parses the same sealed-bundle response.
 
-Protocol URI (canonical Trust Task registry), two versions accepted:
-`https://trusttasks.org/spec/provision/integration/0.1` and
-`https://trusttasks.org/spec/provision/integration/0.2`. The VTA
-dual-accepts both and replies under the matching `#response` URI. The
-0.2 wire form differs only in camelCase enum casing (notably the signed
-VP's `ask.type`, e.g. `templateBootstrap`); the handler verifies the VP
-over the bytes as received so the holder's casing survives. The legacy
-`firstperson.network/protocols/provision-integration/1.0/*` URI was
-retired now that the browser plugin and Rust CLIs target the canonical
-registry.
+Protocol URI (canonical Trust Task registry):
+`https://trusttasks.org/spec/provision/integration/0.3`, the only version
+served. The handler verifies the VP over the bytes as received so the
+holder's casing survives. The legacy
+`firstperson.network/protocols/provision-integration/1.0/*` URI and the
+earlier 0.1 / 0.2 versions are retired.
 
-The VTA's DIDComm handler enforces a **dual check**:
-`auth_from_message` verifies the authcrypt sender + ACL entry, AND
-the library fn verifies the VP's `DataIntegrityProof`. The DIDComm
-sender DID and the VP holder DID must agree; mismatch is rejected as
-`Forbidden` (privilege-laundering guard).
+The VTA checks two layers. The Trust Task spine authenticates the
+*relayer* — the transport-proven sender, bound to the document's issuer
+(`auth_for_trust_task_envelope` over DIDComm) — and its ACL entry; the
+operation then verifies the VP's `DataIntegrityProof`, which authenticates
+the *holder*. Relayer and holder may differ (the air-gap flow relies on it):
+the bundle is sealed to the holder, so a relayer cannot open it.
 
 Precondition: `client_did` must already hold admin role in the
 target context. This is the expected shape for an admin DID minted
@@ -570,7 +569,7 @@ the `provision-*` flow uses), hands the JSON to the VTA-host
 operator, and decrypts the returned armored bundle with `vta
 bootstrap open`.
 
-Same flags work with `pnm context reprovision` / `pnm keys bundle`
+Same flags work with `pnm contexts reprovision` / `pnm keys bundle`
 on an admin workstation that can reach the VTA over REST — the wire
 shapes and sealing logic are shared via `vta-cli-common`.
 
@@ -943,15 +942,17 @@ let reply = run_provision(
 
 ### `ProvisionAsk` — curated vs `for_template`
 
-Five curated builders mirror the built-in templates shipped by
-`vta-service`:
+Seven curated builders (`vta_sdk::provision_client::ask::ProvisionAsk`) mirror
+built-in templates shipped with the SDK:
 
 | Builder | Template | Required vars |
 |---|---|---|
 | `ProvisionAsk::didcomm_mediator(ctx, url)` | `didcomm-mediator` | `URL` |
-| `ProvisionAsk::did_hosting_control(ctx, url, mediator_did)` | `did-hosting-control` | `URL`, `MEDIATOR_DID` |
-| `ProvisionAsk::did_hosting_daemon(ctx, url)` | `did-hosting-daemon` | `URL` |
-| `ProvisionAsk::did_hosting_server(ctx, mediator_did)` | `did-hosting-server` | `MEDIATOR_DID` |
+| `ProvisionAsk::did_host_http_didcomm(ctx, url, mediator_did)` | `did-host-http-didcomm` | `URL`, `MEDIATOR_DID` |
+| `ProvisionAsk::did_host_http(ctx, url)` | `did-host-http` | `URL` |
+| `ProvisionAsk::did_host_didcomm(ctx, mediator_did)` | `did-host-didcomm` | `MEDIATOR_DID` |
+| `ProvisionAsk::did_host_http_tsp(ctx, url, mediator_did)` | `did-host-http-tsp` | `URL`, `MEDIATOR_DID` |
+| `ProvisionAsk::did_host_tsp(ctx, mediator_did)` | `did-host-tsp` | `MEDIATOR_DID` |
 | `ProvisionAsk::vta_admin(ctx)` | `vta-admin` | (none) |
 
 For an operator-supplied template, use
@@ -1054,7 +1055,7 @@ The integration operator generates the request side with:
 
 ```
 vta bootstrap provision-request \
-    --template       <name>               # didcomm-mediator | did-hosting-control | did-hosting-daemon | did-hosting-server | …
+    --template       <name>               # didcomm-mediator | did-host-http | did-host-http-didcomm | did-host-didcomm | …
     --var KEY=VALUE                       # repeat for each template variable
     --context-hint   <id>                 # recommended
     --admin-template vta-admin            # recommended (long-term admin rollover)
@@ -1100,8 +1101,8 @@ normalize).
 ### `did.jsonl` retrieval
 
 ```
-vta did log --did <did> [--out <file>]
-pnm did log --did <did> --vta <slug> [--out <file>]
+vta did-mgmt dids get-log <did> [--out <file>]
+pnm did-mgmt dids get-log <did> --vta <slug> [--out <file>]
 
 GET /did/{did}/log      # public, unauthenticated, rate-limited
 ```

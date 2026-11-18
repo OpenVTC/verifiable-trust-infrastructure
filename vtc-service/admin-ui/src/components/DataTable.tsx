@@ -53,7 +53,12 @@ export function DataTable<K extends string = string>({
   children: ReactNode;
   "aria-label"?: string;
 }) {
+  // The wrapper scrolls a table sideways on a narrow screen, inside its card,
+  // rather than squeezing DIDs and buttons or scrolling the whole page area
+  // (#2616). Wide screens keep the page area as the scroller, so the header
+  // still sticks under the top bar (`components.css`, `.data-table-wrap`).
   return (
+    <div className="data-table-wrap">
     <table
       className={`data-table${className ? ` ${className}` : ""}`}
       aria-label={ariaLabel}
@@ -91,6 +96,7 @@ export function DataTable<K extends string = string>({
       </thead>
       <tbody>{children}</tbody>
     </table>
+    </div>
   );
 }
 

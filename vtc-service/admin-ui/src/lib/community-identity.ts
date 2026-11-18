@@ -3,7 +3,8 @@
 //
 // - Name and logo come from the unauthenticated public profile
 //   (`GET /v1/community/public-profile`), the same read the home page and the
-//   member portal make.
+//   member portal make. The logo is the one the community stored (`logo`)
+//   when it holds one, else `logoUrl` (`chosenLogo`).
 // - The accent comes from the community's branding (the Vetting screen's
 //   Branding card, `vtc/community/branding/show/0.1`), a signed read, so it is
 //   asked for only once this browser can sign. It shares the card's query key,
@@ -18,11 +19,28 @@ import { useQuery } from "@tanstack/react-query";
 
 import { fetchBranding, vettingKeys } from "@/plugins/vetting/api";
 
-import { displayableLogo } from "./display-logo";
+import { chosenLogo, displayableLogo } from "./display-logo";
+
+/** The logo the community stored, as the public profile names it. */
+export interface StoredLogo {
+  readonly url: string;
+  readonly sha256: string;
+  readonly width: number;
+  readonly height: number;
+}
 
 export interface PublicProfileView {
   readonly name: string | null;
   readonly logoUrl: string | null;
+  /** The stored logo (`vtc/community/logo/update/0.1`), for the Logo card. */
+  readonly storedLogo: StoredLogo | null;
+}
+
+function storedLogoOf(logo: unknown): StoredLogo | null {
+  const l = logo as Partial<Record<keyof StoredLogo, unknown>> | null | undefined;
+  return l && typeof l.url === "string" && typeof l.sha256 === "string"
+    ? { url: l.url, sha256: l.sha256, width: Number(l.width) || 0, height: Number(l.height) || 0 }
+    : null;
 }
 
 /** The name shown when the profile cannot be read. */
@@ -30,15 +48,17 @@ export const FALLBACK_COMMUNITY_NAME = "Verifiable Trust Community";
 
 export const PUBLIC_PROFILE_KEY = ["community-public-profile"] as const;
 
-async function fetchPublicProfile(): Promise<PublicProfileView> {
+export async function fetchPublicProfile(): Promise<PublicProfileView> {
   const res = await fetch("/v1/community/public-profile", {
     headers: { Accept: "application/json" },
   });
   if (!res.ok) throw new Error(`public profile: HTTP ${res.status}`);
-  const body = (await res.json()) as { name?: unknown; logoUrl?: unknown };
+  const body = (await res.json()) as { name?: unknown; logoUrl?: unknown; logo?: { url?: unknown } | null };
   return {
     name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : null,
-    logoUrl: typeof body.logoUrl === "string" && body.logoUrl ? body.logoUrl : null,
+    // The stored logo first: it is served from this origin, so it is drawn.
+    logoUrl: chosenLogo(body),
+    storedLogo: storedLogoOf(body.logo),
   };
 }
 

@@ -167,6 +167,6 @@ terminal to pick the boundary up from the next coloured span.
 1. Pick the mode (list, detail, action).
 2. Copy the shape from the closest existing command in the same mode.
 3. Route errors through `print_cli_error`.
-4. Match the help-text conventions in `docs/cli-help.md` (to come) — in
+4. Match the help-text conventions of the neighbouring commands — in
    particular `--context` semantics (filter / reference / lookup) must
    be spelled out on each command where the flag appears.

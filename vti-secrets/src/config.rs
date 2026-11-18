@@ -311,35 +311,47 @@ fn default_cache_ttl_secs() -> u64 {
     60
 }
 
-fn default_keyring_service() -> String {
+// The serde defaults of [`SecretsConfig`], public so a service's own secrets
+// configuration (the VTA setup wizard's input, the VTC's `[secrets]`) takes
+// the same values rather than a copy that drifts (#2572).
+
+/// Default OS-keyring service name.
+pub fn default_keyring_service() -> String {
     "vta".to_string()
 }
 
-fn default_vault_kv_mount() -> String {
+/// Default Vault KV mount.
+pub fn default_vault_kv_mount() -> String {
     "secret".to_string()
 }
 
-fn default_vault_secret_key() -> String {
+/// Default key inside the Vault secret.
+pub fn default_vault_secret_key() -> String {
     "seed".to_string()
 }
 
-fn default_vault_auth_method() -> String {
+/// Default Vault auth method.
+pub fn default_vault_auth_method() -> String {
     "kubernetes".to_string()
 }
 
-fn default_vault_k8s_mount() -> String {
+/// Default Vault Kubernetes auth mount.
+pub fn default_vault_k8s_mount() -> String {
     "kubernetes".to_string()
 }
 
-fn default_vault_k8s_jwt_path() -> String {
+/// Default service-account token path for Vault Kubernetes auth.
+pub fn default_vault_k8s_jwt_path() -> String {
     "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
 }
 
-fn default_k8s_secret_key() -> String {
+/// Default data key inside the Kubernetes `Secret`.
+pub fn default_k8s_secret_key() -> String {
     "seed".to_string()
 }
 
-fn default_vault_approle_mount() -> String {
+/// Default Vault AppRole auth mount.
+pub fn default_vault_approle_mount() -> String {
     "approle".to_string()
 }
 

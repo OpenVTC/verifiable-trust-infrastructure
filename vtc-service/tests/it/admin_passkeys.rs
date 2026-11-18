@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use serde_json::{Value, json};
 use uuid::Uuid;
+use vtc_audit::{AuditEnvelope, AuditEvent};
 use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, store_acl_entry};
-use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::passkey::{
     build_webauthn,
     store::{PasskeyUser, store_credential_mapping, store_passkey_user},
@@ -769,7 +769,11 @@ async fn a_passkey_login_binds_the_browser_key_to_its_session() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(cookies.iter().any(|c| c.starts_with("vtc_admin_session=")));
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.starts_with("__Host-vtc_admin_session="))
+    );
     let session_id = body["session"]["id"].as_str().unwrap().to_string();
 
     let (status, who) = call(

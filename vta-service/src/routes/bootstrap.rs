@@ -895,26 +895,28 @@ mod tests {
         let mut with_expiry = successor(&long_term);
         with_expiry.expires_at = Some(chrono::Utc::now() + chrono::Duration::hours(1));
         assert!(matches!(
-            crate::operations::acl_v0_2::rollover(
+            crate::operations::acl_v0_3::rollover(
                 &state.acl_ks,
                 &state.audit_sink,
                 &state.contexts_ks,
                 &auth,
                 with_expiry,
+                Default::default(),
                 "test",
             )
             .await,
-            Err(crate::operations::acl_v0_2::V02Error::App(
+            Err(crate::operations::acl_v0_3::V03Error::App(
                 AppError::Validation(_)
             ))
         ));
 
-        crate::operations::acl_v0_2::rollover(
+        crate::operations::acl_v0_3::rollover(
             &state.acl_ks,
             &state.audit_sink,
             &state.contexts_ks,
             &auth,
             successor(&long_term),
+            Default::default(),
             "test",
         )
         .await

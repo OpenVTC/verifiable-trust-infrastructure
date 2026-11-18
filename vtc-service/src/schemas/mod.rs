@@ -18,6 +18,8 @@
 
 pub mod accepts;
 pub mod defaults;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 pub mod storage;
 pub mod validate;
 

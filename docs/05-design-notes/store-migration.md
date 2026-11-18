@@ -1,5 +1,7 @@
 # Store Abstraction: Migration Path to Traits
 
+Status: **not started** — `Store` (`vti-common/src/store/mod.rs`) is still the enum this note proposes replacing with traits.
+
 ## Current design: Enum dispatch
 
 `Store` and `KeyspaceHandle` in `vti-common/src/store/mod.rs` are enums:

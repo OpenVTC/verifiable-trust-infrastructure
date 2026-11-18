@@ -23,7 +23,7 @@
 //! |------------------------|-------------------|---------------------|
 //! | the per-IP layer on the unauthenticated chain ([`crate::routes`]) | [`UNAUTH_LIMITER`] | source IP |
 //! | per-member publish window ([`crate::relationships::rate_limit`]) | [`RELATIONSHIPS_LIMITER`] | HMAC of the signer DID |
-//! | known-signer documents on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNED_ADDRESS_LIMITER`] | source IP |
+//! | known-signer documents on `POST /v1/trust-tasks`, before verification ([`crate::routing::trust_task_admission`]) | [`UNAUTH_LIMITER`] (its own bucket is [`SIGNED_ADDRESS_LIMITER`]; see below) | source IP |
 //! | a verified known signer on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNER_LIMITER`] | the signer's principal (a console key's admin) |
 //! | `rooms/*` documents on `POST /v1/trust-tasks`, before verification ([`crate::routing::trust_task_admission`]) | [`ROOM_ADDRESS_LIMITER`] | source IP |
 //! | room operations the room has authorized ([`crate::routing::trust_task_admission`]) | [`ROOM_PRESENTER_LIMITER`] | (room, presenter) |
@@ -63,6 +63,11 @@ pub const RELATIONSHIPS_LIMITER: &str = "relationships";
 
 /// The per-address ceiling on `POST /v1/trust-tasks` documents that claim a
 /// signer the community knows, charged before the proof is verified.
+///
+/// A refusal from it reports [`UNAUTH_LIMITER`], not this name, with the
+/// anonymous refusal's message: before verification a caller must not learn
+/// whether the DID it named is one the community knows. This name is for
+/// logs.
 pub const SIGNED_ADDRESS_LIMITER: &str = "signed-address";
 
 /// A verified known signer's own bucket on `POST /v1/trust-tasks`, keyed by

@@ -44,6 +44,14 @@ the goal. The goals it stands in for:
 If a proposed extraction moves lines without advancing one of those three, it is
 not worth doing.
 
+`vta-signing` is the case that passes the third test for a consumer outside the
+VTA: a service that signs with keys of its own (the agent gateway) needs the
+signing core, not the server, and without the extraction its only way to reuse
+the VTA's signing code was to link `vta-service` and with it about 300 further
+crates, an MPL-2.0 licence exception and the VTA's HTTP, database and AWS stacks.
+It moves the code that builds and makes a signature, and leaves the gates, key
+custody, quota and audit around it where they are.
+
 ## The layering that emerged
 
 Dependencies flow strictly downward, as everywhere else in the workspace.
@@ -73,6 +81,7 @@ Layer 4  vta-service                                      (the spine)
 | `vta-backup` | 3,891 | Encrypted export/import (Argon2id + AES-256-GCM), compatibility check, two-phase descriptor flow, sealed bundle store. |
 | `vta-tee` | 3,970 | TEE bootstrap: attestation providers, KMS attest/decrypt, storage-key derivation, anti-rollback anchor, Mode-B carve-out. |
 | `vta-sweepers` | 449 | Background TTL sweepers for the core keyspaces. |
+| `vta-signing` | ~2,400 | The signing core: keys, the opaque-signing framing, and the bytes and artefacts of JWS, `eddsa-jcs-2022` and SSHSIG, with verification. A Layer 0 leaf with no workspace dependency. |
 
 ## Technique
 
@@ -147,9 +156,18 @@ build-time or testability win first:
 - **The offline CLI surface (~3k)** — `bootstrap_cli`, `services_cli`,
   `webvh_cli`, `vault_cli`, `acl_cli` form a distinct entry point (direct fjall
   access, no auth ceremony, not for TEE deployments). A `vta-offline-cli` crate
-  would make that boundary explicit rather than conventional.
+  would make that boundary explicit rather than conventional. Its dependency
+  win is already had without the crate: `vta-cli-common` (and with it
+  `vtc-client`, `ratatui`, `qrcode`, `dialoguer`) is optional behind
+  `cli-synthesis`, the feature the `vta` binary requires, so the library and
+  `vta-enclave` no longer compile it (#2566).
 - **`test_support.rs` (1,427)** — a dev-only crate would keep test fixtures out
-  of the release build graph.
+  of the release build graph. *Done in part (#2570), by which time it was 4.5k
+  lines:* `MockVta`, the stub DID hosting service and the transport harness
+  (~2.2k lines with their tests) moved to `vta-test-support`, which depends on
+  `vta-service`. The rest stays: `vta-service`'s own unit tests build on it,
+  and a unit test cannot take a fixture from a crate that depends on the crate
+  under test without a second, incompatible copy of every type.
 
 ### What is probably worth more than another extraction
 

@@ -16,6 +16,7 @@
 //! | `list` | the subject (or a console key acting for them), or an administrator over the subject | the subject's own standing, or the administrator's ACL row |
 //! | `revoke` | as `list` | as `list`, **and** the caller's own step-up bound to this document |
 
+use super::routing::{Routes, on};
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, StandardCode, TrustTask, TrustTaskCode};
 use vti_specs::auth::step_up::approver::enroll::v0_1 as enroll;
@@ -37,42 +38,20 @@ use crate::step_up_approver::ApproverTaskError;
 pub(crate) const INVITE_TYPE: &str = <invite::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 pub(crate) const REDEEM_START_TYPE: &str =
     <redeem_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REDEEM_FINISH_TYPE: &str =
-    <redeem_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const ENROLL_TYPE: &str = <enroll::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const LIST_TYPE: &str = <list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-pub(crate) const REVOKE_TYPE: &str = <revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    INVITE_TYPE,
-    REDEEM_START_TYPE,
-    REDEEM_FINISH_TYPE,
-    ENROLL_TYPE,
-    LIST_TYPE,
-    REVOKE_TYPE,
-];
 
 /// Tasks whose response carries a bearer secret — the invite's token and claim
 /// code, a redemption's `enrollmentId` and challenge. The duplicate-execution
 /// record keeps no copy of these responses.
 pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITE_TYPE, REDEEM_START_TYPE];
 
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        INVITE_TYPE => handle_invite(state, ctx, doc).await,
-        REDEEM_START_TYPE => handle_redeem_start(state, ctx, doc).await,
-        REDEEM_FINISH_TYPE => handle_redeem_finish(state, ctx, doc).await,
-        ENROLL_TYPE => handle_enroll(state, ctx, doc).await,
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        REVOKE_TYPE => handle_revoke(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, invite::Payload => |state, ctx, doc| handle_invite(state, ctx, doc));
+    let routes = on!(routes, redeem_start::Payload => |state, ctx, doc| handle_redeem_start(state, ctx, doc));
+    let routes = on!(routes, redeem_finish::Payload => |state, ctx, doc| handle_redeem_finish(state, ctx, doc));
+    let routes = on!(routes, enroll::Payload => |state, ctx, doc| handle_enroll(state, ctx, doc));
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    on!(routes, revoke::Payload => |state, ctx, doc| handle_revoke(state, ctx, doc))
 }
 
 /// An [`ApproverTaskError`] as the trust-task-error document it is.

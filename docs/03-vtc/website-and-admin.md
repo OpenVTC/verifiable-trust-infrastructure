@@ -207,6 +207,45 @@ the service status. The operator console is linked, deliberately
 quietly. An operator site replacing the default should keep a link to
 `/members/`.
 
+### Your own landing page, from a directory
+
+To give the community its own landing page without rebuilding the
+daemon or standing up a second host, point `website.landing_dir` at a
+directory:
+
+```sh
+vtc website export /var/lib/community/landing   # the built-in page, to start from
+```
+
+```toml
+[website]
+landing_dir = "/var/lib/community/landing"
+```
+
+Restart once. From then on the daemon serves that directory at the
+website mount (`/` by default) and re-reads it on every request, so an
+edit shows on the next page load: no rebuild, no restart. Responses are
+`Cache-Control: no-cache`. A directory request or an unknown path
+serves `index.html`. Every path goes through the same safety chain as a
+filesystem website (no hidden files, no escaping the directory through
+`..` or a symlink, no executables). The default CSP still applies, so
+keep scripts and styles in files rather than inline, as the built-in
+page does.
+
+A landing directory may share an origin with the console and API, which
+a `root_dir` website may not. That's because nothing over the network
+writes it: the `/v1/website/*` deploy and file tasks act only on
+`root_dir`. It is as trusted as the host operator who placed it, the
+same footing as a console served with `admin_ui.mode = "directory"`. For
+the same reason the daemon refuses to start if the directory has no
+readable `index.html`, or if it or its `index.html` is world-writable.
+Setting both `landing_dir` and `root_dir` is refused.
+
+Choose `root_dir` when administrators should publish the site from the
+console or a bundle upload; it then needs its own host (see the routing
+section below). Choose `landing_dir` when the page is yours to edit on
+the server.
+
 ### Colour theme
 
 The default landing page, the member portal and the operator console
@@ -288,6 +327,39 @@ break-glass banners, the attention strip, the step-up page, the whole
 Actions, Join requests, Members and Repos pages, and in the portal the
 wallet sign-in number and identity choice. While a theme is drawn, the
 console's top bar says **Custom theme**, out of the theme's reach too.
+
+### Community logo
+
+The same page has a **Logo** card. **Choose image** takes a PNG, JPEG,
+WebP or SVG; the console draws it as a PNG at most 512 pixels on the
+longer side and shows it, and **Save logo** sends it
+(`vtc/community/logo/update/0.1`, `vtc.surface.admin`). An SVG is turned
+into a PNG in the browser first; the community never stores or serves
+one.
+
+The community re-encodes what arrives (dropping every metadata block
+and anything after the image data), stores it in the `community`
+keyspace and serves it itself at `GET /v1/community/logo`: public, with
+`Content-Type` from a fixed list, `X-Content-Type-Options: nosniff`,
+`Content-Security-Policy: default-src 'none'; sandbox`, an `ETag` from
+its digest and `Cache-Control: public, no-cache` — the URL stays the
+same across updates, so a cache revalidates each use. Any client can
+read it with `vtc/community/logo/show/0.1`, which names its absolute
+`https` URL (under `public_url`) and, on `includeData`, carries the
+bytes. Each change is audited as `CommunityLogoUpdated` with the stored
+digest, never the image, and one administrator may make 20 changes an
+hour.
+
+The public profile and the portal's `/v1/member/me` name it as `logo`
+(`url`, `sha256`, `mediaType`, `width`, `height`), and every page — the
+console, the portal, both sign-in pages and the default landing page —
+draws it in place of the **Logo URL** field. That field stays as it is:
+an address in the public profile for readers elsewhere. The pages are
+served with `img-src 'self' data:`, so they draw a Logo URL only when it
+is on the VTC's own origin, and the form says so under the field when it
+is not. **Remove logo** goes back to the Logo URL, or to the standard
+mark. Why it works this way:
+[A community logo the VTC stores and serves](../05-design-notes/vtc-community-logo.md).
 
 ### Community DID as a QR code
 
@@ -638,7 +710,7 @@ terminal.
 
 Operators wanting a different UX serve their own console from a
 directory (below). The console cannot be hosted on another origin: it
-reads the `csrf` cookie, calls the API by relative URL, and passkeys
+reads the `__Host-csrf` cookie, calls the API by relative URL, and passkeys
 are bound to the VTC's own origin. The former `admin_ui.mode =
 "external"` and `external_origin`, which never served anything, are
 refused at config load.
@@ -730,14 +802,14 @@ running build against the audit record.
 graph LR
     cli[cnm-cli] -->|Authorization: Bearer| api["/v1/*"]
     dc[DIDComm bridge] -->|authcrypt| api
-    spa[Admin SPA<br/>browser] -->|Cookie: vtc_admin_session<br/>+ X-CSRF-Token| api
+    spa[Admin SPA<br/>browser] -->|Cookie: __Host-vtc_admin_session<br/>+ X-CSRF-Token| api
 ```
 
 Three concurrent auth paths:
 
 - **Bearer JWT** — `Authorization: Bearer <jwt>`. Used by
   `cnm-cli`, DIDComm bridges, programmatic clients.
-- **Cookie session** — `Cookie: vtc_admin_session=<jwt>`. Used by
+- **Cookie session** — `Cookie: __Host-vtc_admin_session=<jwt>`. Used by
   the admin SPA. Scoped `Path=/` (the API lives at `/v1`, not under
   `/admin`, so the SPA→API call needs the cookie there — an earlier
   `Path=/admin` design was reverted). HttpOnly keeps JS from reading
@@ -747,13 +819,36 @@ Three concurrent auth paths:
   {credentials})` and ride it. The posture that *does* isolate is a
   dedicated website host (see [Routing modes](#routing-modes)); a
   filesystem website now requires one.
-- **CSRF double-submit** — `csrf=<random>` cookie (JS-readable) +
+- **CSRF double-submit** — `__Host-csrf=<random>` cookie (JS-readable) +
   `X-CSRF-Token` header. Required on every mutating call from the
-  cookie session. Bearer-only callers don't carry CSRF.
+  cookie session. Bearer-only callers don't carry CSRF — a bearer the
+  extractor reads, that is: a malformed `Authorization` header leaves the
+  request authenticating by its cookie, and is gated like one. The cookie
+  refresh and sign-out routes (`/v1/auth/refresh`, `/v1/auth/sign-out` and
+  the portal's `/v1/member/auth/refresh`, `/v1/member/sign-out`) read their
+  cookie whatever else the request carries, so a bearer never exempts them.
 
 Both flow through the same `AuthClaims` extractor in `vti-common`,
 which tries bearer first then falls back to cookie. Bearer wins
 when both are present.
+
+The console's cookies, and the portal's CSRF cookie, carry the
+[`__Host-` prefix](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis#section-4.1.3.2):
+a browser accepts them only `Secure`, `Path=/` and without a `Domain`, so a
+sibling subdomain can neither plant nor overwrite them. The names before the
+prefix (`vtc_admin_session`, `vtc_admin_refresh`, `csrf`, `vtc_member_csrf`)
+are still read for one release, so an upgrade signs nobody out; a refresh or
+sign-out expires them. The portal's session and refresh cookies keep their
+names: they are scoped to `Path=/v1/member`, which `__Host-` does not allow.
+
+### HTTPS and HSTS
+
+When `public_url` is `https`, every response carries
+`Strict-Transport-Security: max-age=63072000; includeSubDomains`. The daemon
+decides from `public_url`, not from the request: behind a TLS-terminating
+proxy the request it receives is plain HTTP and names no scheme. With an
+`http` (or no) `public_url` it sends none, so a local deployment leaves no
+upgrade state in a browser.
 
 ### Admin login
 
@@ -1218,7 +1313,14 @@ never through the community. After a vote the page is told only that the
 wallet's window closed (and whether a ticket had to be taken first), never
 whether a vote was cast; the wallet shows the outcome. Voting with no
 ticket held takes one and stops, so the two are apart in time. The wallet
-must be allowed to reach the ballot box's address from its popup. See
+must be allowed to reach the ballot box's address from its popup. Elections
+the member was notified of are listed beside the community's own, showing only
+what the notification says (VTI-NTF-063), and are opened as a member of the
+party the notification names (`memberOf`), the wallet asking before it shows
+that membership. The home page's *Needs your attention* lists those of them
+whose notice still stands and whose voting has not closed, by identifier,
+linked as the Elections page links them, so `memberOf` always comes from the
+standing notice and never from the link. See
 [Community elections](elections.md#voting-from-the-member-portal).
 
 **Routing.** The mount is fixed at `/members` and takes precedence
@@ -1326,24 +1428,25 @@ should) share a host. The in-tree default landing page (no
 Migrating the admin UX to a different base domain forces every
 passkey to re-register. Operator runbook.
 
-## CLI quick reference
+## Quick reference
+
+`cnm` has no website commands. The website is managed from the console, or
+over the admin-gated `/v1/website/*` endpoints in the table under
+[Which of these are Trust Tasks](#which-of-these-are-trust-tasks) above (an admin bearer token or
+session cookie on each):
 
 ```sh
-# Website management
-cnm website files list
-cnm website files show <path>
-cnm website files write <path> --content @file.html
-cnm website files delete <path>
-cnm website deploy --bundle ./site.tar.gz
-
-# Managed mode
-cnm website generations list
-cnm website rollback --to-gen 2
+# Files, deploy and (managed mode) generations: the /v1/website/* endpoints
+curl -H "Authorization: Bearer $TOKEN" -H 'Trust-Task: spec/vtc/website/files/list/0.3' \
+  https://community.example.com/v1/website/files
+curl -H "Authorization: Bearer $TOKEN" --data-binary @site.tar.gz \
+  https://community.example.com/v1/website/deploy
 
 # Admin UX
-cnm admin build-info     # → /admin/build-info.json output
+curl https://community.example.com/admin/build-info.json
 vtc admin-ui export <dir>             # write the built-in console out to customise
 vtc admin-ui export --members <dir>   # the same for the member portal
+vtc website export <dir>              # the built-in landing page, for website.landing_dir
 ```
 
 ## Configuration
@@ -1351,6 +1454,8 @@ vtc admin-ui export --members <dir>   # the same for the member portal
 ```toml
 [website]
 root_dir = "/var/lib/community/site"      # unset → default landing page
+# landing_dir = "/var/lib/community/landing"  # instead of root_dir: your own landing
+#                                             # page, read from disk, same origin
 deploy_mode = "live"                       # or "managed"
 live_cache_ttl_seconds = 5
 managed_generations_keep = 5
@@ -1401,9 +1506,10 @@ transfer_interval_ms = 20
 ```
 
 In pure **path mode** (omit every `host`), all three surfaces share
-one origin. That's fine for the trusted built-in landing page, but
-`website.root_dir` is then refused at startup — point the website at
-its own host as above, or drop `root_dir` to serve the default page.
+one origin. That's fine for the trusted built-in landing page and for
+a `website.landing_dir`, but `website.root_dir` is then refused at
+startup — point the website at its own host as above, or drop
+`root_dir` to serve the default page (or your own, from `landing_dir`).
 
 ## See also
 

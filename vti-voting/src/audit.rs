@@ -295,6 +295,11 @@ pub fn audit(e: Evidence<'_>) -> Result<Verified, AuditFailure> {
 
 /// CONVENTIONS §3.9: the board is the election's lifecycle in order. Returns the index of its one
 /// `result` entry.
+// Clippy 1.95 (the pinned toolchain, rust-toolchain.toml) asks for the `cast` and
+// `partials` arms' checks to become match guards; later clippy no longer does. A
+// guard that fails falls through to the arms below it, so each arm keeps its own
+// `if`: what an entry kind is allowed to do stays in that kind's arm.
+#[allow(clippy::collapsible_match)]
 fn check_order(manifest: &Manifest, entries: &[Value]) -> Result<usize, AuditFailure> {
     let at = |e: &Value| {
         e["occurredAt"]

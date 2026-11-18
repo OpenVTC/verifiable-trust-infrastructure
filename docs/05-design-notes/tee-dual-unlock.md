@@ -1,6 +1,7 @@
 # Design note: dual-unlock for the TEE master seed
 
-Status: **Draft — for review** (no code yet)
+Status: **Draft — for review** (no code yet; checked 2026-11-13: nothing in
+`vta-tee` or `vta-config` implements it)
 Owner: Glenn Gore
 Last updated: 2026-07-22
 Tracking: proposed follow-on to Phase-0 TEE hardening. Adjacent to **P0.2e**

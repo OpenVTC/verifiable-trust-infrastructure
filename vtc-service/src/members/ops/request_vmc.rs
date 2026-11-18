@@ -1,0 +1,91 @@
+//! `POST /v1/members/{did}/request-vmc` — ask an active member to issue and
+//! send their reciprocal VMC (member → community half of the membership pair).
+//!
+//! Admin-triggered. The VTC sends a `members/request-vmc/1.0` DIDComm message
+//! to the member's agent naming the community DID the VMC must subject; the
+//! member answers asynchronously with `members/vmc/1.0` (handled by
+//! [`crate::members::inbound_vmc`]). This endpoint only dispatches the request —
+//! it does not block on the member's reply.
+
+use serde::Serialize;
+use uuid::Uuid;
+
+use vta_sdk::protocols::members::{MEMBER_REQUEST_VMC_TYPE, RequestMemberVmcBody};
+use vti_common::error::AppError;
+
+use crate::error::TaskError;
+use crate::members::get_member;
+use crate::server::AppState;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct RequestVmcResponse {
+    pub member_did: String,
+    /// Always `true` — the request was dispatched to the member's agent. The
+    /// member replies asynchronously over `members/vmc/1.0`.
+    pub requested: bool,
+    /// DIDComm thread id of the dispatched request, for correlation.
+    pub thread_id: String,
+}
+
+/// `vtc/members/solicit-vmc:notFound` — no active member with that DID.
+pub const SOLICIT_VMC_ERR_NOT_FOUND: &str =
+    vti_specs::vtc::members::solicit_vmc::v0_1::error_codes::NOT_FOUND.code;
+
+/// POST /members/{did}/request-vmc — dispatch a reciprocal-VMC request.
+/// `vtc/members/solicit-vmc/0.1`. A signed document served by the spine
+/// (`trust_tasks::community_tasks`).
+pub(crate) async fn request_vmc(
+    state: &AppState,
+    member_did: String,
+    // An optional operator note ("renewal", "audit", …) relayed to the member.
+    reason: Option<String>,
+) -> Result<RequestVmcResponse, TaskError> {
+    vti_common::identifier::validate_did("did", &member_did)?;
+
+    // Only an active member has a membership edge to reciprocate.
+    get_member(&state.members_ks, &member_did)
+        .await?
+        .filter(|m| !m.is_removed())
+        .ok_or_else(|| {
+            TaskError::declared(
+                SOLICIT_VMC_ERR_NOT_FOUND,
+                AppError::NotFound(format!("no active member: {member_did}")),
+            )
+        })?;
+
+    let community_did = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| {
+            AppError::Internal("VTC DID not configured — cannot request a member VMC".into())
+        })?;
+
+    let thread_id = Uuid::new_v4().to_string();
+    let request = RequestMemberVmcBody {
+        community_did,
+        reason,
+    };
+    let request_body = serde_json::to_value(&request)
+        .map_err(|e| AppError::Internal(format!("serialise request-vmc body: {e}")))?;
+
+    crate::credentials::delivery::push_document(
+        state,
+        &member_did,
+        MEMBER_REQUEST_VMC_TYPE,
+        request_body,
+        crate::credentials::delivery::Thread::Root(&thread_id),
+    )
+    .await?;
+
+    Ok(RequestVmcResponse {
+        member_did,
+        requested: true,
+        thread_id,
+    })
+}

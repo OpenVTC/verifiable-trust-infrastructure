@@ -368,6 +368,13 @@ pub struct RoomsConfig {
     /// `noKeyHolder` naming this section. Writing it is what turns them on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub community: Option<CommunityRoomsConfig>,
+    /// Whether this host refuses, on an `open` room, a new version of a `message` or a
+    /// `reaction` by a member other than its original author (`rooms/records/put/0.5` Host
+    /// item 15, a MAY). **Absent means on** ([`RoomsConfig::refuses_rewrites_by_others`]);
+    /// `false` accepts such a rewrite. Sealed rooms are unaffected: their host never sees a
+    /// record's kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refuse_rewrites_by_others: Option<bool>,
 }
 
 /// Where the community's own rooms get their identities (`[rooms.community]`).
@@ -549,6 +556,14 @@ impl RoomsConfig {
     /// switched off inside it.
     pub fn files_enabled(&self) -> bool {
         self.files.as_ref().is_some_and(|f| f.enabled)
+    }
+
+    /// `[rooms] refuse_rewrites_by_others`, on unless set `false`. The specification makes
+    /// the refusal a MAY; it is on by default because it costs nothing on the one tier where
+    /// the host reads `kind` anyway, and keeps a member from rewriting another's words for
+    /// every reader that predates the readers' own rule.
+    pub fn refuses_rewrites_by_others(&self) -> bool {
+        self.refuse_rewrites_by_others.unwrap_or(true)
     }
 }
 
@@ -1221,6 +1236,20 @@ pub struct WebsiteConfig {
     /// — operators opt in by setting this to a real path.
     #[serde(default)]
     pub root_dir: Option<PathBuf>,
+    /// Directory holding the community's own **landing page**, served at
+    /// the website mount in place of the one built into the binary. Read
+    /// from disk on every request, so an edit shows on the next load —
+    /// no rebuild, no restart. Must hold an `index.html`; `vtc website
+    /// export <dir>` writes the built-in page there as a starting point.
+    ///
+    /// Unlike [`Self::root_dir`] it may share an origin with the console
+    /// and API: nothing over the network writes it (the `/v1/website/*`
+    /// deploy and file tasks act only on `root_dir`), so it is as trusted
+    /// as the host operator who placed it — the same footing as
+    /// `admin_ui.dir`. The boot check refuses a world-writable one. Set
+    /// at most one of `root_dir` and `landing_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landing_dir: Option<PathBuf>,
     /// Deploy mode: `"live"` (default) or `"managed"`. See
     /// [`crate::website::WebsiteRoot`].
     #[serde(default = "default_deploy_mode")]
@@ -1263,6 +1292,7 @@ impl Default for WebsiteConfig {
     fn default() -> Self {
         Self {
             root_dir: None,
+            landing_dir: None,
             deploy_mode: default_deploy_mode(),
             live_cache_ttl_seconds: default_live_cache_ttl_seconds(),
             managed_generations_keep: default_managed_generations_keep(),
@@ -1272,6 +1302,24 @@ impl Default for WebsiteConfig {
             max_file_size_mb: default_max_file_size_mb(),
             csp_override_file: default_csp_override_file(),
         }
+    }
+}
+
+impl WebsiteConfig {
+    /// `root_dir` (a deployable website, on its own host) and `landing_dir`
+    /// (the operator's landing page, co-resident) are two answers to one
+    /// question — what `GET /` serves — so naming both is refused rather
+    /// than one silently winning.
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self.root_dir.is_some() && self.landing_dir.is_some() {
+            return Err(AppError::Config(
+                "website.root_dir and website.landing_dir are both set; a landing page \
+                 in landing_dir replaces the built-in one, a website in root_dir \
+                 replaces both — keep one"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1726,29 +1774,13 @@ fn default_k8s_secret_key() -> String {
     "secret".to_string()
 }
 
-fn default_vault_kv_mount() -> String {
-    "secret".to_string()
-}
-
-fn default_vault_secret_key() -> String {
-    "seed".to_string()
-}
-
-fn default_vault_auth_method() -> String {
-    "kubernetes".to_string()
-}
-
-fn default_vault_k8s_mount() -> String {
-    "kubernetes".to_string()
-}
-
-fn default_vault_k8s_jwt_path() -> String {
-    "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
-}
-
-fn default_vault_approle_mount() -> String {
-    "approle".to_string()
-}
+// The rest are `vti_secrets`'s own defaults (#2572); only the two above
+// differ from the VTA's, and on purpose: a VTC's keyring entry and its
+// Kubernetes data key are not a VTA seed's.
+use vti_secrets::config::{
+    default_vault_approle_mount, default_vault_auth_method, default_vault_k8s_jwt_path,
+    default_vault_k8s_mount, default_vault_kv_mount, default_vault_secret_key,
+};
 
 // Manual Debug — `secret` is the hex-encoded VTC key material; leaking
 // it via a stray `{:?}` (e.g. a future `debug!(?config)`) would
@@ -2248,6 +2280,7 @@ impl AppConfig {
     pub fn validate_routing_and_cors(&self) -> Result<(), AppError> {
         validate_routing(&self.routing)?;
         validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
+        self.website.validate()?;
         validate_cors(&self.cors)?;
         self.admin_ui.validate()?;
         self.witnesses.validate(self.vtc_did.as_deref())?;
@@ -2383,6 +2416,26 @@ mod tests {
         ] {
             assert!(parse(bad).validate().is_err(), "{bad:?} must be refused");
         }
+    }
+
+    /// A landing page from disk needs no host of its own (it is not
+    /// deployable over the network), but naming it beside a filesystem
+    /// website is refused rather than one silently winning.
+    #[test]
+    fn landing_dir_is_co_resident_and_exclusive_with_root_dir() {
+        let landing: WebsiteConfig = toml::from_str("landing_dir = \"/srv/landing\"").unwrap();
+        assert_eq!(
+            landing.landing_dir.as_deref(),
+            Some(std::path::Path::new("/srv/landing"))
+        );
+        landing.validate().unwrap();
+        // Path mode, no dedicated website host: still accepted.
+        validate_website_isolation(&RoutingConfig::default(), landing.root_dir.is_some()).unwrap();
+
+        let both: WebsiteConfig =
+            toml::from_str("root_dir = \"/srv/site\"\nlanding_dir = \"/srv/landing\"").unwrap();
+        let err = both.validate().unwrap_err().to_string();
+        assert!(err.contains("keep one"), "{err}");
     }
 
     #[test]

@@ -340,7 +340,7 @@ pub fn build_options_from_flags(flags: &EditFlags) -> Result<UpdateDidWebvhBody,
         watchers,
         ttl: flags.ttl,
         label: flags.label.clone(),
-        // Non-interactive flag-driven path (e.g. `pnm webvh edit-did
+        // Non-interactive flag-driven path (e.g. `pnm did-mgmt dids edit
         // --document <file>` from a script). The interactive flow sets
         // this to the fetched versionId so a stale `get → edit → save`
         // cycle gets a 409; scripted callers opt in by passing

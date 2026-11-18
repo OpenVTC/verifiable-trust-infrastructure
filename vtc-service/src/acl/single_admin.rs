@@ -44,7 +44,7 @@
 //! `docs/05-design-notes/vtc-action-list.md` §8.5.
 
 use tracing::warn;
-use vti_common::audit::{AuditEvent, SingleAdminModeData};
+use vtc_audit::{AuditEvent, SingleAdminModeData};
 use vti_common::error::AppError;
 
 use crate::server::AppState;
@@ -121,7 +121,7 @@ pub enum SelfEditGate {
 ///
 /// Whether the exception applies at all — the mode on, the requester the only
 /// unrestricted entry, the result still unrestricted — is decided by
-/// [`crate::routes::acl::plan_write`] before this is reached.
+/// [`crate::acl::ops::plan_write`] before this is reached.
 pub async fn authorize_self_edit(
     state: &AppState,
     requester: &str,

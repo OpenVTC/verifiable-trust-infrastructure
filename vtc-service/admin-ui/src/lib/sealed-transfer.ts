@@ -21,10 +21,12 @@
 //   and the digest is SHA-256 over the sealed chunks in order, as a multibase
 //   sha2-256 multihash.
 //
-// The recipient is the X25519 form of the community DID's Ed25519 key — `#key-0`,
-// as `cnm storage credentials set` picks it — read from the DID document this
-// community serves (`/.well-known/did.jsonl`). This page trusts that origin for
-// the key no more than it already trusts it for the code doing the sealing.
+// The recipient is the X25519 form of the community DID's Ed25519 signing key. A
+// browser cannot resolve and verify every DID method — a `did:webs` means a KERI
+// key event stream, a hosted `did:webvh` a log from another origin — so the key is
+// asked of the community itself (`vtc/storage/credentials/recipient/0.1`), on the
+// same origin the credential then goes to. This page trusts that origin for the key
+// no more than it already trusts it for the code doing the sealing.
 //
 // `sealed-transfer.vectors.json` is a block this module sealed to a fixed
 // community key; `vtc-service`'s `storage_credentials` tests open it with the
@@ -97,79 +99,47 @@ export function x25519FromEd25519Multibase(multibase: string): Uint8Array {
   return ed25519.utils.toMontgomery(key);
 }
 
-interface VerificationMethodLike {
-  id?: unknown;
-  publicKeyMultibase?: unknown;
+/** `vtc/storage/credentials/recipient/0.1`'s answer. */
+export interface RecipientAnswer {
+  readonly communityDid: string;
+  readonly verificationMethod: string;
+  readonly recipientKey: string;
 }
 
-/** The Ed25519 key a DID document lists to seal to: `#key-0`, else the first. */
-function sealingMultibase(doc: unknown): string | null {
-  const methods = (doc as { verificationMethod?: unknown } | null)?.verificationMethod;
-  if (!Array.isArray(methods)) return null;
-  const usable = (m: VerificationMethodLike) =>
-    typeof m.publicKeyMultibase === "string" ? m.publicKeyMultibase : null;
-  const keyZero = (methods as VerificationMethodLike[]).find(
-    (m) => typeof m.id === "string" && m.id.endsWith("#key-0") && usable(m) !== null,
-  );
-  if (keyZero) return usable(keyZero);
-  for (const m of methods as VerificationMethodLike[]) {
-    const mb = usable(m);
-    if (mb === null) continue;
-    try {
-      x25519FromEd25519Multibase(mb);
-      return mb;
-    } catch {
-      // Not an Ed25519 key; try the next.
-    }
-  }
-  return null;
-}
-
-/** The DID document in the last entry of a `did:webvh` log. */
-export function lastLogState(log: string): unknown {
-  const lines = log.split("\n").filter((l) => l.trim() !== "");
-  const last = lines.at(-1);
-  if (!last) return null;
-  try {
-    return (JSON.parse(last) as { state?: unknown }).state ?? null;
-  } catch {
-    return null;
-  }
-}
+/** The refusal a community gives when its key is not the one its document publishes. */
+const NOT_PUBLISHED = "vtc/storage/credentials/recipient:notPublished";
 
 /**
  * The X25519 key to seal to for `communityDid`: from the DID itself for a
- * `did:key`, else from the `did.jsonl` this community serves, whose document must
- * be that DID's.
+ * `did:key`, else the community's own answer to `credentials/recipient`, held to
+ * name that DID (item 4) and sealed to as given (item 5).
  */
 export async function communitySealingKey(
   communityDid: string,
-  fetchLog: () => Promise<Response> = () =>
-    fetch("/.well-known/did.jsonl", { headers: { Accept: "text/jsonl" } }),
+  ask: () => Promise<RecipientAnswer>,
 ): Promise<Uint8Array> {
   if (communityDid.startsWith("did:key:")) {
     return x25519FromEd25519Multibase(communityDid.slice("did:key:".length).split("#")[0] ?? "");
   }
-  let res: Response;
+  let answer: RecipientAnswer;
   try {
-    res = await fetchLog();
-  } catch {
-    throw new SealingUnavailableError("this community's DID document could not be read");
+    answer = await ask();
+  } catch (e) {
+    if ((e as { code?: unknown } | null)?.code === NOT_PUBLISHED) {
+      throw new SealingUnavailableError(
+        "this community's key is not the one its DID document publishes yet — a rotation " +
+          "still to be published at its VTA; try again once it is",
+      );
+    }
+    throw e;
   }
-  if (!res.ok) {
-    throw new SealingUnavailableError(
-      `this community does not serve its own DID document here (HTTP ${res.status})`,
-    );
+  if (answer.communityDid !== communityDid || !answer.verificationMethod.startsWith(`${communityDid}#`)) {
+    throw new SealingUnavailableError("the community answered with a key that is not its own");
   }
-  const doc = lastLogState(await res.text());
-  if ((doc as { id?: unknown } | null)?.id !== communityDid) {
-    throw new SealingUnavailableError("the DID document served here is not this community's");
+  if (!answer.recipientKey.startsWith("did:key:")) {
+    throw new SealingUnavailableError("the community's key is not a did:key");
   }
-  const mb = sealingMultibase(doc);
-  if (!mb) {
-    throw new SealingUnavailableError("this community's DID document lists no Ed25519 key to seal to");
-  }
-  return x25519FromEd25519Multibase(mb);
+  return x25519FromEd25519Multibase(answer.recipientKey.slice("did:key:".length));
 }
 
 // ── Sealing ─────────────────────────────────────────────────────────────

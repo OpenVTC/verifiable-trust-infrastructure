@@ -1,4 +1,4 @@
-//! Collection client methods (`vta/collection/*/0.1`, VTI-NTF-080 – 093).
+//! Collection client methods (`vta/collection/*/0.1`, VTI-NTF-080 – 098).
 //!
 //! A VTA holds the keys of the DIDs it mints for its principal — personas — and those DIDs
 //! advertise a mediator. The mediator permits **one connection per DID**: a second evicts the
@@ -15,8 +15,18 @@
 //! - [`VtaClient::collection_list`] shows who collects for each persona of a context: the VTA, a
 //!   claimant until when, or nobody and why (`limit`, `conflict`, `disabled`).
 //!
-//! Claims are served whether or not the VTA's operator has enabled collection by default
-//! (VTI-NTF-093), so a client claims before it connects in every case. Holding a claim is not
+//! - [`VtaClient::collection_settings_show`] reads a context's **collection-by-default
+//!   setting**: whether the VTA collects for that context's unclaimed personas, who last changed
+//!   it and when, and whether the VTA's operator has suspended collection everywhere
+//!   (VTI-NTF-096). Any party with standing in the context may read it.
+//! - [`VtaClient::collection_settings_set`] enables or disables it for one context — not its
+//!   ancestors or descendants. It needs administrative authority over the context (a context
+//!   administrator of it or an ancestor, or a super-administrator), takes effect before the VTA
+//!   answers, and answers `changed: false` for the value already held (VTI-NTF-095). Disable it
+//!   while a client of yours that collects without claiming is in use there (VTI-NTF-097).
+//!
+//! Collection by default is on for every context unless disabled there (VTI-NTF-094). Claims
+//! are served whatever the setting, so a client claims before it connects in every case. Holding a claim is not
 //! holding the persona's keys, and confers no authority. Hand every `notifications/notify` and
 //! `notifications/relay` you collect to the VTA with
 //! [`VtaClient::notifications_deposit_json`] (VTI-NTF-092).
@@ -116,6 +126,55 @@ impl VtaClient {
     ) -> Result<serde_json::Value, VtaError> {
         self.dispatch_trust_task(
             trust_tasks::TASK_VTA_COLLECTION_LIST_0_1,
+            req,
+            COLLECTION_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/collection/settings/show/0.1` — `contextId`'s collection-by-default setting, who
+    /// last changed it and when (absent while it never has been), and whether the operator's
+    /// suspension is in force.
+    pub async fn collection_settings_show(
+        &self,
+        req: &collection::settings::show::v0_1::Payload,
+    ) -> Result<collection::settings::show::v0_1::Response, VtaError> {
+        self.collection_call(trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1, req)
+            .await
+    }
+
+    /// [`Self::collection_settings_show`], with the payload and the answer as JSON.
+    pub async fn collection_settings_show_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SHOW_0_1,
+            req,
+            COLLECTION_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/collection/settings/set/0.1` — enable or disable collection by default for
+    /// `contextId`. Disabling closes the VTA's connections for the context's unclaimed personas
+    /// before it answers; enabling starts collecting for them, including any it had stopped for
+    /// a conflict. `changed` is false when the context already held the value.
+    pub async fn collection_settings_set(
+        &self,
+        req: &collection::settings::set::v0_1::Payload,
+    ) -> Result<collection::settings::set::v0_1::Response, VtaError> {
+        self.collection_call(trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SET_0_1, req)
+            .await
+    }
+
+    /// [`Self::collection_settings_set`], with the payload and the answer as JSON.
+    pub async fn collection_settings_set_json(
+        &self,
+        req: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_COLLECTION_SETTINGS_SET_0_1,
             req,
             COLLECTION_TT_TIMEOUT,
         )

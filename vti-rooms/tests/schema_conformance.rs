@@ -30,6 +30,10 @@
 //! wants plain strings and `u64`, and a storage layer should not be forced through a
 //! builder. Agreeing on the wire is the requirement; agreeing on the Rust shape is not.
 
+// put/0.4, get/0.2 and list/0.5 are what hosts serve until they move to put/0.5, get/0.3
+// and list/0.6 (trust-tasks-tf #1027); their conformance holds until then.
+#![allow(deprecated)]
+
 use serde_json::{Value, json};
 use trust_tasks_rs::validate::ValidatedPayload;
 use vti_rooms::wire::*;
@@ -303,6 +307,9 @@ fn responses_conform() {
             })),
             author: Some("did:key:z6MkAlice".into()),
             updated_at: 1_756_000_000,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         },
         // A tombstone: no body, no author, and it still has to conform.
         Record {
@@ -317,6 +324,9 @@ fn responses_conform() {
             cleartext: None,
             author: None,
             updated_at: 1_756_000_100,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         },
     ]
     .iter()
@@ -398,6 +408,9 @@ fn get_record_response_conforms() {
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let mut records = vec![
         sealed.clone(),
@@ -463,6 +476,9 @@ fn get_record_response_conforms() {
         cleartext: Some(json!({ "body": "Agreed not to reprice before the renewal closes." })),
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_100,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let value = serde_json::to_value(GetRecordResponse::of(&open, None, None)).expect("serialise");
     assert!(
@@ -489,6 +505,9 @@ fn get_record_response_conforms() {
         cleartext: None,
         author: None,
         updated_at: 1_756_000_200,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let value =
         serde_json::to_value(GetRecordResponse::of(&tombstone, None, None)).expect("serialise");
@@ -518,6 +537,9 @@ fn a_reader_verifies_a_trace_from_the_response_alone() {
             cleartext: None,
             author: None,
             updated_at: 1_756_000_000,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         })
         .collect();
 
@@ -574,6 +596,9 @@ fn a_record_round_trips_through_its_committed_form() {
         cleartext: None,
         author: Some("did:key:z6MkAlice".into()),
         updated_at: 1_756_000_000,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     let back = Record::from_wire(&sealed.committed()).expect("reads back");
     assert_eq!(
@@ -753,6 +778,9 @@ fn a_half_sealed_record_loses_its_body() {
         cleartext: None,
         author: None,
         updated_at: 1_756_000_000,
+        created_at: None,
+        created_by: None,
+        body_stored_at: None,
     };
     assert!(
         half.committed().sealed.is_none(),
@@ -912,6 +940,34 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            ROOMS_RECORDS_PUT_V5_TYPE,
+            <rooms::records::put::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_LIST_V6_TYPE,
+            <rooms::records::list::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE,
+            <rooms::records::list::v0_7::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE,
+            <rooms::records::list::v0_8::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_GET_V3_TYPE,
+            <rooms::records::get::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_WATCH_TYPE,
+            <rooms::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_WATCH_V2_TYPE,
+            <rooms::watch::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_RECORDS_CURATE_TYPE,
             <rooms::records::curate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
@@ -948,6 +1004,22 @@ fn every_dispatched_uri_is_the_published_one() {
             <rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
+            vti_rooms::wire::ROOMS_CREATE_V3_TYPE,
+            <rooms::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_INFO_V4_TYPE,
+            <rooms::info::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_INFO_V5_TYPE,
+            <rooms::info::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            vti_rooms::wire::ROOMS_SIGNAL_DELAY_SET_TYPE,
+            <rooms::signal_delay::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
             ROOMS_RECORDS_PRUNE_V2_TYPE,
             <rooms::records::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
@@ -958,6 +1030,10 @@ fn every_dispatched_uri_is_the_published_one() {
         (
             ROOMS_RECORDS_GET_V2_TYPE,
             <rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        ),
+        (
+            ROOMS_RECORDS_GET_V4_TYPE,
+            <rooms::records::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ),
         (
             ROOMS_BLOBS_CHUNK_TYPE,

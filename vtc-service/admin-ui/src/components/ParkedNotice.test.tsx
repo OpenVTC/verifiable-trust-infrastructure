@@ -14,6 +14,7 @@ import {
   coolingOffSentence,
   parkedActionFromDocument,
 } from "@/lib/parked-action";
+import { formatDateTime } from "@/lib/format";
 
 const UNTIL = "2026-10-05T10:00:00Z";
 const COOLING_MESSAGE =
@@ -61,7 +62,7 @@ describe("a parked cooling-off", () => {
     expect(screen.getByText("Sent — lands after a cooling-off")).toBeTruthy();
     expect(screen.queryByText("Sent for approval")).toBeNull();
     expect(screen.getByText(/Lands by itself at/).textContent).toContain(
-      new Date(UNTIL).toLocaleString(),
+      formatDateTime(UNTIL),
     );
     expect(screen.queryByText(/must approve/)).toBeNull();
     expect(screen.getByRole("link", { name: "View the action" }).getAttribute("href")).toBe(

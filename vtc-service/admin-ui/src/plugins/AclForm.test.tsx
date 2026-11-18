@@ -8,6 +8,7 @@ import {
   sentPayloads,
   taskRoute,
 } from "@/test/render";
+import { formatDateTime } from "@/lib/format";
 
 // The grant is a signed document; the stand-in sends it unsigned so the table
 // below answers it without a console key.
@@ -324,7 +325,7 @@ describe("Access control — suspension and remove now", () => {
     render(false, true);
     const chip = await screen.findByTestId("suspended");
     expect(chip.textContent).toContain("suspended — removal lands");
-    expect(chip.textContent).toContain(new Date(LANDS_AT).toLocaleString());
+    expect(chip.textContent).toContain(formatDateTime(LANDS_AT));
     expect(chip.getAttribute("title")).toMatch(/act-9/);
   });
 

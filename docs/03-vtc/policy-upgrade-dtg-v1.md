@@ -79,11 +79,6 @@ For each purpose with an active uploaded policy, search its Rego for the retired
 grep -nE 'foreign_vec|WitnessCredential|EndorsementCredential|endorsement\.type|endorsement\.role|CommunityRole|identity-vetting/0\.1|"IdentityVerification"' my-policy.rego
 ```
 
-Any hit needs the change described above. Then upload and activate the new version as before:
-
-```sh
-cnm policies upload --purpose <purpose> --rego ./my-policy.rego
-cnm policies activate --id <returned-policy-id>
-```
+Any hit needs the change described above. Then upload and activate the new version on the console's **Policies** page, or by signing `policy/upsert/0.3` and then `policy/activate/0.1` (there is no `cnm` command for either; an authority purpose's change parks in the action list for another administrator's consent).
 
 For more on the new credential shapes, see [Credentials](credentials.md), [Personhood + relationships](personhood-and-graph.md) and [Peer identity vetting](vetting.md).

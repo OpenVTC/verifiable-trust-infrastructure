@@ -15,7 +15,7 @@
 //!   `elevated_requires_admin` stand-in ([`super::ops::consent_gate`]) does not;
 //! - **immediate, no expiry**: it must work when nobody else is there, so the
 //!   right lasts until another administrator ratifies or revokes it;
-//! - **visible**: a [`AuditSeverity::Critical`](vti_common::audit::AuditSeverity)
+//! - **visible**: a [`AuditSeverity::Critical`](vtc_audit::AuditSeverity)
 //!   audit row with the justification and the step-up evidence, an activity
 //!   entry, a signed notice to every other administrator of the namespace, and
 //!   the `breakGlass` flag on every surface that shows the record;
@@ -29,7 +29,7 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
-use vti_common::audit::{AuditEvent, GitNsBreakGlassData};
+use vtc_audit::{AuditEvent, GitNsBreakGlassData};
 use vti_common::capability_client::build_document;
 use vti_common::error::AppError;
 use vti_specs::git_ns::right::{

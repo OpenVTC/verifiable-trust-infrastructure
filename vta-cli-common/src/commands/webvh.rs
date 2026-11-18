@@ -7,8 +7,7 @@ use vta_sdk::client::{AddWebvhServerRequest, CreateDidWebvhRequest, UpdateWebvhS
 use vta_sdk::prelude::*;
 
 use crate::display::{
-    NAME_HEADER, NameBook, book_from_vta, book_from_webvh_servers, did_cell, full_display_pairs,
-    name_cell, resolve_agent_names_into,
+    NAME_HEADER, NameBook, book_from_webvh_servers, did_cell, full_display_pairs, name_cell,
 };
 
 use crate::render::{
@@ -35,6 +34,11 @@ pub async fn cmd_webvh_server_add(
 
 pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.list_webvh_servers().await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
 
     if resp.servers.is_empty() {
         println!("No WebVH servers configured.");
@@ -147,11 +151,17 @@ pub async fn cmd_webvh_server_remove(
     client: &VtaClient,
     id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Every method's DIDs on the server, not only did:webvh: a did:webs slot
+    // on it is left behind just the same.
     let dependents: Option<Vec<String>> = client
-        .list_dids_webvh(None, Some(id))
+        .list_dids(&vta_sdk::client::DidListFilter {
+            server_id: Some(id.to_string()),
+            include_deactivated: true,
+            ..Default::default()
+        })
         .await
         .ok()
-        .map(|r| r.dids.into_iter().map(|d| d.did).collect());
+        .map(|r| r.into_iter().map(|d| d.did.to_string()).collect());
     // Captured before the row goes, so the notice can print the exact
     // command that puts it back.
     let server_did = match dependents.as_deref() {
@@ -195,7 +205,7 @@ pub async fn cmd_webvh_server_remove(
     Ok(())
 }
 
-/// `pnm webvh register-did --did <did> --server <id> [--force]` —
+/// `pnm did-mgmt dids register --did <did> --server <id> [--force]` —
 /// promote a serverless WebVH DID to a server-managed one.
 ///
 /// Pushes the local `did.jsonl` to the host atomically (single
@@ -230,7 +240,7 @@ pub async fn cmd_webvh_did_register_server(
     Ok(())
 }
 
-/// `pnm webvh edit-did --did <did>` — interactive or
+/// `pnm did-mgmt dids edit --did <did>` — interactive or
 /// non-interactive update of an existing WebVH DID document.
 ///
 /// **Interactive (no flags):** fetches the latest published DID
@@ -664,151 +674,6 @@ pub async fn cmd_webvh_did_create_with_files(
     cmd_webvh_did_create_presented(client, req, presentation).await
 }
 
-/// Header cells **and** column widths for `dids list`, returned together.
-///
-/// One function because the Name column is conditional and the two lists have
-/// to agree: a widths list shorter than the row is not padded, it *truncates* —
-/// ratatui lays out exactly as many columns as it has constraints. When the
-/// widths were built separately and nobody added the conditional Name entry,
-/// every width landed one column to the left (Name inherited the DID's flexing
-/// `Min`, the DID inherited Context's fixed 16) and `Created` fell off the
-/// right-hand end. The rendered table was a full-width name beside a DID cut to
-/// `did:webvh:Qm0M8Cr`, which is the one thing the column exists to show.
-///
-/// `Min(46)` for the DID because `shorten_did` abbreviates only the SCID and
-/// keeps the host and path in full; below that a `did:webvh` stops being
-/// copyable.
-fn did_list_columns(show_names: bool) -> (Vec<&'static str>, Vec<Constraint>) {
-    let mut headers = vec!["DID", "Context", "Server", "Portable", "Created"];
-    let mut constraints = vec![
-        Constraint::Min(46),    // DID
-        Constraint::Length(16), // Context
-        Constraint::Length(16), // Server
-        Constraint::Length(8),  // Portable
-        Constraint::Length(16), // Created
-    ];
-    if show_names {
-        headers.insert(0, NAME_HEADER);
-        constraints.insert(0, Constraint::Min(16));
-    }
-    (headers, constraints)
-}
-
-pub async fn cmd_webvh_did_list(
-    client: &VtaClient,
-    context_id: Option<&str>,
-    server_id: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client.list_dids_webvh(context_id, server_id).await?;
-
-    if resp.dids.is_empty() {
-        println!("No WebVH DIDs found.");
-        return Ok(());
-    }
-
-    let mut book = book_from_vta(client).await;
-    // Hosted DIDs are the only ones that *can* carry an agent name, so this
-    // is where `--resolve-agent-names` earns its round trips.
-    resolve_agent_names_into(&mut book, resp.dids.iter().map(|d| d.did.as_str())).await;
-
-    if is_full_display() {
-        print_full_list_title("WebVH DIDs", resp.dids.len());
-        for d in &resp.dids {
-            let created = d
-                .created_at
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M:%S %:z")
-                .to_string();
-            let portable = if d.portable { "yes" } else { "no" };
-            // A `WebvhDidRecord` carries no name of its own, so anything we
-            // show comes from the ACL / context listings fetched above.
-            let mut fields = full_display_pairs(&book, &d.did);
-            fields.push(("Context", d.context_id.clone()));
-            fields.push(("Server", d.server_id.clone()));
-            fields.push(("SCID", d.scid.clone()));
-            fields.push(("Portable", portable.to_string()));
-            fields.push(("Created", created));
-            print_full_entry_owned(&fields);
-        }
-        return Ok(());
-    }
-
-    let header_style = Style::default()
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    let show_names = book.names_any(resp.dids.iter().map(|d| d.did.as_str()));
-    let (header_cells, constraints) = did_list_columns(show_names);
-    let header = Row::new(header_cells).style(header_style).bottom_margin(1);
-
-    let rows: Vec<Row> = resp
-        .dids
-        .iter()
-        .map(|d| {
-            let portable = if d.portable { "yes" } else { "no" };
-            let created = d
-                .created_at
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string();
-
-            let mut cells = vec![
-                did_cell(&d.did),
-                Cell::from(d.context_id.clone()),
-                Cell::from(d.server_id.clone()),
-                Cell::from(portable.to_string()),
-                Cell::from(created).style(Style::default().fg(Color::DarkGray)),
-            ];
-            if show_names {
-                cells.insert(0, name_cell(&book, &d.did));
-            }
-            Row::new(cells)
-        })
-        .collect();
-
-    let title = format!(" WebVH DIDs ({}) ", resp.dids.len());
-
-    let table = Table::new(rows, constraints)
-        .header(header)
-        .column_spacing(2)
-        .block(
-            Block::bordered()
-                .title(title)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        );
-
-    let height = resp.dids.len() as u16 + 4;
-    print_widget(table, height);
-    // The DID column is the one people copy out of, and it is the one that gets
-    // shortened. Say so here rather than leaving it to be discovered.
-    crate::render::print_truncation_hint();
-
-    Ok(())
-}
-
-pub async fn cmd_webvh_did_get(
-    client: &VtaClient,
-    did: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let record = client.get_did_webvh(did).await?;
-    println!("WebVH DID:");
-    println!("  DID:             {}", record.did);
-    println!("  Context:         {}", record.context_id);
-    println!("  Server:          {}", record.server_id);
-    println!("  Mnemonic:        {}", record.mnemonic);
-    println!("  SCID:            {}", record.scid);
-    println!("  Portable:        {}", record.portable);
-    println!("  Log entries:     {}", record.log_entry_count);
-    println!(
-        "  Created:         {}",
-        crate::duration::format_local_datetime(record.created_at)
-    );
-    println!(
-        "  Updated:         {}",
-        crate::duration::format_local_datetime(record.updated_at)
-    );
-    Ok(())
-}
-
 pub async fn cmd_webvh_did_delete(
     client: &VtaClient,
     did: &str,
@@ -937,43 +802,5 @@ mod tests {
         assert!(text.contains("No action is needed"), "{text}");
         assert!(!text.contains("will NOT resolve"), "{text}");
         assert!(!text.to_lowercase().contains("self-host"), "{text}");
-    }
-
-    /// The header and the widths must describe the same columns. They are
-    /// separate lists in ratatui, and a short widths list silently drops the
-    /// trailing columns while shifting every width onto the wrong one — which
-    /// is how `dids list` came to render a full-width name beside a truncated
-    /// DID, with `Created` missing altogether.
-    #[test]
-    fn did_list_headers_and_widths_describe_the_same_columns() {
-        for show_names in [false, true] {
-            let (headers, constraints) = did_list_columns(show_names);
-            assert_eq!(
-                headers.len(),
-                constraints.len(),
-                "header/width mismatch with show_names={show_names}"
-            );
-        }
-    }
-
-    /// The DID column is the flexing one, and it flexes from a width that can
-    /// still hold an abbreviated `did:webvh:…:<host>:<path>`. Pinned because
-    /// the failure mode is not a panic or a wrong value — it is a table that
-    /// renders, looks fine, and cannot be read.
-    #[test]
-    fn did_column_gets_the_width_a_webvh_did_needs() {
-        let (headers, constraints) = did_list_columns(true);
-        let did_at = headers
-            .iter()
-            .position(|h| *h == "DID")
-            .expect("DID column present");
-        assert_eq!(constraints[did_at], Constraint::Min(46));
-
-        // …and the name column must not be the one absorbing the spare width.
-        let name_at = headers
-            .iter()
-            .position(|h| *h == NAME_HEADER)
-            .expect("Name column present");
-        assert_eq!(constraints[name_at], Constraint::Min(16));
     }
 }

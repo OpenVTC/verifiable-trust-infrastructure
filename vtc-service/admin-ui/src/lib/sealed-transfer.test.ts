@@ -217,59 +217,47 @@ describe("sealing a storage credential to the community", () => {
 });
 
 describe("the community's key to seal to", () => {
-  const DID = "did:webvh:QmScid:community.example";
-  const entry = (state: unknown) => JSON.stringify({ versionId: "1-Qm", state });
-  const log = (...states: unknown[]) => async () =>
-    new Response(states.map(entry).join("\n") + "\n", { status: 200 });
-  const other = `z${base58btcEncode(new Uint8Array([0xed, 0x01, ...ed25519.getPublicKey(new Uint8Array(32).fill(9))]))}`;
+  const DID = "did:webs:community.example:EAid";
+  const answer = (over: Partial<{ communityDid: string; verificationMethod: string; recipientKey: string }> = {}) =>
+    async () => ({
+      communityDid: DID,
+      verificationMethod: `${DID}#DKey`,
+      recipientKey: `did:key:${COMMUNITY_MULTIBASE}`,
+      ...over,
+    });
 
-  it("reads #key-0 from the latest entry of the log this community serves", async () => {
-    const key = await communitySealingKey(
-      DID,
-      log(
-        { id: DID, verificationMethod: [{ id: `${DID}#key-0`, publicKeyMultibase: other }] },
-        {
-          id: DID,
-          verificationMethod: [
-            { id: `${DID}#key-1`, publicKeyMultibase: other },
-            { id: `${DID}#key-0`, publicKeyMultibase: COMMUNITY_MULTIBASE },
-          ],
-        },
-      ),
-    );
+  it("seals to the key the community names for its own DID, whatever its method", async () => {
+    const key = await communitySealingKey(DID, answer());
     expect(toHex(key)).toBe(vectors.communityX25519Hex);
   });
 
-  it("falls back to the first Ed25519 key when there is no #key-0", async () => {
-    const key = await communitySealingKey(
-      DID,
-      log({
-        id: DID,
-        verificationMethod: [
-          { id: "#mldsa", publicKeyMultibase: "zNotAnEd25519Key" },
-          { id: "#signing", publicKeyMultibase: COMMUNITY_MULTIBASE },
-        ],
-      }),
-    );
-    expect(toHex(key)).toBe(vectors.communityX25519Hex);
-  });
-
-  it("takes a did:key's key from the DID itself", async () => {
+  it("takes a did:key's key from the DID itself, asking nothing", async () => {
     const key = await communitySealingKey(`did:key:${COMMUNITY_MULTIBASE}`, async () => {
-      throw new Error("never fetched");
+      throw new Error("never asked");
     });
     expect(toHex(key)).toBe(vectors.communityX25519Hex);
   });
 
-  it("refuses another DID's document, a missing log, and a document with no key", async () => {
-    await expect(
-      communitySealingKey(DID, log({ id: "did:webvh:QmOther:elsewhere.example", verificationMethod: [] })),
-    ).rejects.toThrow(/not this community's/);
-    await expect(
-      communitySealingKey(DID, async () => new Response("did log not found", { status: 404 })),
-    ).rejects.toThrow(SealingUnavailableError);
-    await expect(communitySealingKey(DID, log({ id: DID, verificationMethod: [] }))).rejects.toThrow(
-      /no Ed25519 key/,
+  it("refuses an answer that names another DID or another DID's key (item 4)", async () => {
+    await expect(communitySealingKey(DID, answer({ communityDid: "did:webs:elsewhere.example:EOther" }))).rejects.toThrow(
+      /not its own/,
     );
+    await expect(
+      communitySealingKey(DID, answer({ verificationMethod: "did:webs:elsewhere.example:EOther#DKey" })),
+    ).rejects.toThrow(SealingUnavailableError);
+    await expect(communitySealingKey(DID, answer({ recipientKey: COMMUNITY_MULTIBASE }))).rejects.toThrow(/not a did:key/);
+  });
+
+  it("says a key not yet published is the reason, and passes other refusals through", async () => {
+    await expect(
+      communitySealingKey(DID, async () => {
+        throw { status: 409, message: "x", code: "vtc/storage/credentials/recipient:notPublished" };
+      }),
+    ).rejects.toThrow(SealingUnavailableError);
+    await expect(
+      communitySealingKey(DID, async () => {
+        throw { status: 403, message: "denied", code: "permissionDenied" };
+      }),
+    ).rejects.toMatchObject({ code: "permissionDenied" });
   });
 });

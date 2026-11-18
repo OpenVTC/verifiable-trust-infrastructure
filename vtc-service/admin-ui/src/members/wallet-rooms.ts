@@ -15,6 +15,7 @@
 // how to get it instead.
 
 import { isThemePreview } from "@/lib/theme-preview";
+import { formatDate } from "@/lib/format";
 
 /** A room the member shared with this portal. */
 export interface PageRoom {
@@ -145,7 +146,7 @@ export type RoomOwnerState = "active" | "archived" | "removalScheduled" | "purgi
 export function roomStateWords(
   v: { roomState?: RoomOwnerState; roomAccess?: "readOnly" | "noAccess"; purgeAt?: string; state?: string },
 ): { label: string; hint: string } | null {
-  const date = (iso?: string) => (iso ? new Date(iso).toLocaleDateString() : "");
+  const date = (iso?: string) => (iso ? formatDate(iso) : "");
   switch (v.roomState) {
     case "archived":
       return v.roomAccess === "noAccess" || v.state === "suspended"

@@ -18,6 +18,9 @@ const MEMORY_TT_TIMEOUT: u64 = 30;
 impl VtaClient {
     /// `vta/memory/put/0.1` — upsert `value` under `(context_id, key)`. Requires
     /// access to `context_id`.
+    #[deprecated(
+        note = "sends the superseded vta/memory 0.1, which the registry withdraws; use `memory_put_versioned` (0.2, #2115)"
+    )]
     pub async fn memory_put(
         &self,
         context_id: &str,
@@ -39,6 +42,9 @@ impl VtaClient {
 
     /// `vta/memory/list/0.1` — list every entry in `context_id`. Requires access
     /// to `context_id`.
+    #[deprecated(
+        note = "sends the superseded vta/memory 0.1, which the registry withdraws; use `memory_list_page` (0.2, #2115)"
+    )]
     pub async fn memory_list(&self, context_id: &str) -> Result<Value, VtaError> {
         let payload = json!({ "contextId": context_id });
         self.dispatch_trust_task(
@@ -51,6 +57,9 @@ impl VtaClient {
 
     /// `vta/memory/delete/0.1` — remove the entry at `key` in `context_id`
     /// (`not_found` if absent). Requires access to `context_id`.
+    #[deprecated(
+        note = "sends the superseded vta/memory 0.1, which the registry withdraws; use `memory_delete_versioned` (0.2, #2115)"
+    )]
     pub async fn memory_delete(&self, context_id: &str, key: &str) -> Result<Value, VtaError> {
         let payload = json!({
             "contextId": context_id,
@@ -62,5 +71,186 @@ impl VtaClient {
             MEMORY_TT_TIMEOUT,
         )
         .await
+    }
+
+    /// `vta/memory/put/0.2` — store `value` at `(context_id, key)` and return
+    /// the version it took.
+    ///
+    /// `expected_version` is the precondition: `Some(n)` requires the item to
+    /// be at exactly version `n`, `Some(0)` that no live item exists, `None` an
+    /// unconditional upsert. A failed precondition is
+    /// `vta/memory/put:versionConflict`, whose details carry the current
+    /// version and (to a caller that may read the context) the current value,
+    /// so the caller can merge and re-issue without a re-read.
+    pub async fn memory_put_versioned(
+        &self,
+        context_id: &str,
+        key: &str,
+        value: &str,
+        expected_version: Option<u64>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "key": key, "value": value });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = json!(v);
+        }
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_PUT_0_2,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/delete/0.2` — forget `(context_id, key)`, leaving a
+    /// tombstone the change feed carries. Deleting nothing succeeds with
+    /// `existed: false`; a positive `expected_version` makes the delete
+    /// conditional.
+    pub async fn memory_delete_versioned(
+        &self,
+        context_id: &str,
+        key: &str,
+        expected_version: Option<u64>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "key": key });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = json!(v);
+        }
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_DELETE_0_2,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/list/0.2` — one page of `context_id`'s memory. `query` is
+    /// the rest of the payload as the specification names it (`prefix`,
+    /// `sinceVersion`, `includeValues`, `includeDeleted`, `cursor`, `limit`);
+    /// `contextId` is set from `context_id`. Store the response's
+    /// `highWatermark` as the next `sinceVersion` only after the last page
+    /// (no `nextCursor`).
+    pub async fn memory_list_page(
+        &self,
+        context_id: &str,
+        query: serde_json::Map<String, Value>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = Value::Object(query);
+        payload["contextId"] = json!(context_id);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_LIST_0_2,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/get/0.1` — recall up to 256 named items; each key comes back
+    /// in exactly one of `items`, `missing` or `deferred`.
+    pub async fn memory_get(&self, context_id: &str, keys: &[&str]) -> Result<Value, VtaError> {
+        let payload = json!({ "contextId": context_id, "keys": keys });
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_GET_0_1,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    // ─── Purpose of use (VTI-ACL-100 – 110) ─────────────────────────────
+    //
+    // The same operations at the versions that carry `purpose`: what the
+    // caller will use what it reads for. Every read of memory is held to the
+    // purposes the caller's ACL entry grants, and audited with its purpose. The
+    // methods above name none, which is served under an entry stating `any`
+    // (recorded as unstated) or listing exactly one, and refused under one
+    // listing more — so an agent with a narrowed entry should use these.
+
+    /// `vta/memory/get/0.2` — [`Self::memory_get`] for `purpose`.
+    pub async fn memory_get_for(
+        &self,
+        context_id: &str,
+        keys: &[&str],
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "keys": keys });
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_GET_0_2,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/list/0.3` — [`Self::memory_list_page`] for `purpose`. A
+    /// listing without values (`includeValues: false`) is not held to it.
+    pub async fn memory_list_page_for(
+        &self,
+        context_id: &str,
+        query: serde_json::Map<String, Value>,
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = Value::Object(query);
+        payload["contextId"] = json!(context_id);
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_LIST_0_3,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/put/0.3` — [`Self::memory_put_versioned`], disclosing a
+    /// conflict's current value only for `purpose`. A purpose the caller's
+    /// entry does not grant is refused before anything is written.
+    pub async fn memory_put_versioned_for(
+        &self,
+        context_id: &str,
+        key: &str,
+        value: &str,
+        expected_version: Option<u64>,
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "key": key, "value": value });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = json!(v);
+        }
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_PUT_0_3,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vta/memory/delete/0.3` — [`Self::memory_delete_versioned`], as
+    /// [`Self::memory_put_versioned_for`].
+    pub async fn memory_delete_versioned_for(
+        &self,
+        context_id: &str,
+        key: &str,
+        expected_version: Option<u64>,
+        purpose: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "contextId": context_id, "key": key });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = json!(v);
+        }
+        with_purpose(&mut payload, purpose);
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VTA_MEMORY_DELETE_0_3,
+            payload,
+            MEMORY_TT_TIMEOUT,
+        )
+        .await
+    }
+}
+
+/// Name `purpose` on a memory payload, when there is one.
+fn with_purpose(payload: &mut Value, purpose: Option<&str>) {
+    if let Some(p) = purpose {
+        payload["purpose"] = json!(p);
     }
 }

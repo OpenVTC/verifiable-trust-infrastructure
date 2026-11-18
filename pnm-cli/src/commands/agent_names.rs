@@ -15,7 +15,13 @@ pub async fn run(
         C::Set { did, name } => {
             vta_cli_common::commands::agent_names::cmd_agent_name_set(client, &did, &name).await
         }
-        C::Remove { did, name } => {
+        C::Remove { did, name, yes } => {
+            if !vta_cli_common::confirm::confirm_or_cancel(
+                &format!("release the name `{name}` so any DID may claim it"),
+                yes,
+            )? {
+                return Ok(());
+            }
             vta_cli_common::commands::agent_names::cmd_agent_name_remove(client, &did, &name).await
         }
         C::Disable { did, name } => {

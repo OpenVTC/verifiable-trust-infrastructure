@@ -63,11 +63,17 @@ pub struct Keyspaces<'a> {
     pub external_accounts: &'a KeyspaceHandle,
     /// The wrapped secrets of external accounts ([`EXTERNAL_SECRETS`]).
     pub external_secrets: &'a KeyspaceHandle,
-    /// Collection claims and conflicts ([`COLLECTION`]). Here so a context
-    /// deletion ends every claim for its identifiers (VTI-NTF-090).
+    /// Collection claims, conflicts and settings ([`COLLECTION`]). Here so a
+    /// context deletion ends every claim for its identifiers (VTI-NTF-090) and
+    /// drops its setting, so a context created again under the id starts
+    /// enabled (VTI-NTF-094).
     pub collection: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh: &'a KeyspaceHandle,
+    /// `did:webs` DID records ([`WEBS`]), each naming its context. Not
+    /// feature-gated: a gated field changes this struct for every crate that
+    /// builds one as soon as any crate in the build turns the feature on.
+    pub webs: &'a KeyspaceHandle,
 }
 
 /// Master seed + key records (`key:`, `seed:`, `path_counter:`,
@@ -116,6 +122,9 @@ pub const SEALED_NONCES: &str = "sealed_nonces";
 pub const BACKUP_BUNDLES: &str = "backup_bundles";
 /// WebVH DID records + `did.jsonl` state.
 pub const WEBVH: &str = "webvh";
+/// `did:webs` DID records: the published `keri.cesr`, the controller state and
+/// the key ids that continue the key event log.
+pub const WEBS: &str = "webs";
 /// In-flight passkey-as-verificationMethod enrolment state.
 pub const PASSKEY_VMS: &str = "passkey_vms";
 /// Persisted protocol-management drain set.
@@ -392,19 +401,35 @@ pub const WITNESS_SESSIONS: &str = "witness_sessions";
 pub const NOTIFICATIONS: &str = "notifications";
 
 /// **Collection** of the principal's identifiers (`vta/collection/*`,
-/// VTI-NTF-080 – 093): the collection claims — `claim:<contextId>\0<did>`, a
+/// VTI-NTF-080 – 098): the collection claims — `claim:<contextId>\0<did>`, a
 /// client's lease on being a persona DID's one collector at its mediator — the
 /// identifiers the VTA stopped collecting for after another connection kept
 /// closing its own (`conflict:<contextId>\0<did>`), the identities provisioned
 /// for another party, which their holders collect for (`provisioned:<did>`),
-/// and the last applied value of the operator's "collection by default" setting
-/// (`setting`), so a change is audited once (VTI-NTF-093).
+/// each context's collection-by-default setting once changed
+/// (`context-setting:<contextId>`, VTI-NTF-094), the operator's suspension as
+/// last applied at boot (`suspension`, VTI-NTF-098), and the record that the
+/// upgrade backfill of `provisioned:` has run (`backfill:provisioned`).
 ///
 /// In [`BACKED_UP`]: a claim names a client that is connected for the
 /// identifier until the claim ends. A restore without it would make the
 /// restored VTA the second connection to every claimed persona, which is the
 /// eviction fight the claim exists to prevent (VTI-NTF-081).
 pub const COLLECTION: &str = "collection";
+
+/// The watches this VTA holds for its principal's clients (`rooms/keys/watch/0.1`): one
+/// record per armed watch, keyed by a digest of (caller, member, host, room), holding
+/// exactly what Recipient item 6 lets it keep — the caller, the member, the room, the
+/// host, the address it armed with and that address's key material, and when the watch
+/// lapses. Never a watermark, a signalled version or the time a signal arrived. A record
+/// is deleted when its watch fires, is cancelled or lapses (30 days at most), when the
+/// caller's standing to act as the member is withdrawn, or when the member's credentials
+/// for the room are gone.
+///
+/// In [`EXCLUDED_FROM_BACKUP`]: a backup is a durable copy, and the specification asks the
+/// VTA not to keep an address, or a history of watches, once it has forgotten the watch.
+/// A restored VTA holds no watches; a client re-arms after its next read, or polls.
+pub const ROOM_KEY_WATCHES: &str = "room_key_watches";
 
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
@@ -425,6 +450,7 @@ pub const ALL: &[&str] = &[
     SEALED_NONCES,
     BACKUP_BUNDLES,
     WEBVH,
+    WEBS,
     PASSKEY_VMS,
     DRAINS,
     SNAPSHOT,
@@ -450,6 +476,7 @@ pub const ALL: &[&str] = &[
     WITNESS_SESSIONS,
     NOTIFICATIONS,
     COLLECTION,
+    ROOM_KEY_WATCHES,
 ];
 
 /// Keyspaces a backup carries, **every row of each**, as a raw dump.
@@ -481,6 +508,9 @@ pub const BACKED_UP: &[&str] = &[
     // The holder's secrets and credentials. The reason a person keeps a VTA.
     VAULT,
     WEBVH,
+    // A did:webs's key event log and controller state: without them a
+    // restored agent can neither rotate nor update the identifier.
+    WEBS,
     // Which transports this VTA serves. The DID log restored beside it
     // advertises them, and a document naming a transport the node does not
     // serve fails at the peer as a parse error, not as "not served".
@@ -575,6 +605,10 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // has expired its own side. A completed session's VWC and evidence are in
     // the credential vault, which is carried.
     WITNESS_SESSIONS,
+    // Watches armed for the principal's clients (`rooms/keys/watch/0.1`): each lapses
+    // within 30 days, holds a per-watch address's key material, and the specification
+    // asks that no copy of an address outlive its watch (Recipient item 6).
+    ROOM_KEY_WATCHES,
 ];
 
 /// Rows inside a [`BACKED_UP`] keyspace that belong to the **deployment**, not
@@ -762,6 +796,12 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // Material of the DID's imported / internal keys. The cascade removes
         // the key *records* only. (A context deletion takes both.)
         b"internal_keys" | b"imported_secrets" => Orphaned,
+        // A did:webs's own record. Deleting a did:webs (`vta/webs/dids/delete`)
+        // deactivates it and keeps the record on purpose, with the final
+        // stream: the specification requires it, as the only account of the
+        // identifier's last state. Not a gap, but no label here says
+        // "retained by design", and the did:webvh deletion never names one.
+        b"webs" => Orphaned,
         // Delivery and protocol state keyed by DID: stale the moment it goes.
         // TSP relationships name this VTA's DID as one half of each
         // `(our_vid, their_vid)` pair; with that VID gone the relationship can
@@ -796,8 +836,15 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // A collection claim, conflict or provisioned marker names the DID. Not
         // reached by the cascade; the collector's sweep drops claims and
         // conflicts on an identifier that is no longer collectable within one
-        // pass, and such a claim is not in force meanwhile (VTI-NTF-090).
+        // pass, and such a claim is not in force meanwhile (VTI-NTF-090). A
+        // context's setting, the suspension and the backfill record name no
+        // DID as their subject.
         b"collection" => Orphaned,
+        // A watch names its member and its caller. Not reached by the cascade; the
+        // watch sweep forgets a watch whose caller may no longer act as the member
+        // (`rooms/keys/watch/0.1` Recipient item 7) within one pass, and every watch
+        // lapses within 30 days.
+        b"room_key_watches" => Orphaned,
         // Persona is two scopes in one keyspace and only one half is DID-keyed:
         // a binding is keyed by the persona DID, and a contact records the
         // persona that knows it. Those should cascade (a context deletion takes
@@ -934,7 +981,7 @@ pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect
         // the material of its imported / internal keys; its DIDs (through the
         // full DID deletion); its ACL scope; its DID templates.
         b"contexts" | b"keys" | b"imported_secrets" | b"internal_keys" => Purged,
-        b"webvh" | b"acl" | b"did_templates" => Purged,
+        b"webvh" | b"webs" | b"acl" | b"did_templates" => Purged,
         // Data held for the principal in the context.
         b"app_state" | b"memory" | b"persona" | b"vault" => Purged,
         b"consent" | b"consent_approvers" | b"notifications" => Purged,
@@ -947,7 +994,8 @@ pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect
         // see `Retained` below for why that is not a resurrection.
         b"external_accounts" | b"external_secrets" => Purged,
         // Collection claims and conflicts on the context's identifiers end with
-        // it (VTI-NTF-090).
+        // it (VTI-NTF-090), and so does its setting, so a context created again
+        // under the id starts enabled (VTI-NTF-094).
         b"collection" => Purged,
 
         // ---- Kept on purpose --------------------------------------------
@@ -972,6 +1020,10 @@ pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect
         // witness records likewise.
         b"sessions" | b"task_consent" | b"passkey_vms" => Lapses,
         b"idempotency" | b"accepted_ids" | b"witness_sessions" => Lapses,
+        // A watch whose caller loses standing in the context is forgotten by the
+        // watch sweep's next pass, and every watch lapses within 30 days. Its member
+        // is a persona DID, which a recreated context never holds again.
+        b"room_key_watches" => Lapses,
 
         // ---- Not scoped to a context ------------------------------------
         b"service_state" | b"service_prev_config" | b"sealed_nonces" => Unrelated,

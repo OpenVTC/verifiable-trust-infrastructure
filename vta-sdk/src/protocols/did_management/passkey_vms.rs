@@ -21,10 +21,8 @@
 //! - `DELETE /did/verification-methods/passkey/{fragment}?did=<did>`
 //!   → 204 No Content
 //!
-//! Auth model: bearer JWT with admin role on the DID's context.
-//! First-time enrolment uses a short-lived enrolment token minted
-//! by `pnm passkey-enroll-token`; subsequent calls use a
-//! passkey-derived session JWT.
+//! Auth model: bearer JWT with admin role on the DID's context, on
+//! every route — there is no separate enrolment token.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

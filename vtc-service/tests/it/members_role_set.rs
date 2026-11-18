@@ -12,7 +12,7 @@ use affinidi_status_list::StatusPurpose;
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde_json::{Value, json};
-use vti_common::audit::AuditEvent;
+use vtc_audit::AuditEvent;
 use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::acl::{
@@ -315,7 +315,7 @@ async fn role_set_moves_the_role_its_authority_and_credential_and_audits_it() {
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .map(|env| env.event)
         .collect();
     let set = rows

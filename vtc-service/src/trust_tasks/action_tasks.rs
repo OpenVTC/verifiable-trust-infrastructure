@@ -15,10 +15,10 @@
 //! `callerRole: subject`, from 0.2) and names each approval's instant
 //! `decidedAt` (0.3).
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::trust_task_next_step::v0_1 as next_step;
 use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
-use vti_common::auth::extractor::AuthClaims;
 use vti_specs::task_consent::decision::v0_2 as decision;
 use vti_specs::vtc::admin::actions::{
     acknowledge::v0_3 as acknowledge, cancel::v0_3 as cancel, list::v0_3 as list,
@@ -35,27 +35,16 @@ use crate::server::AppState;
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
 pub(crate) const CANCEL_TYPE: &str = <cancel::Payload as Payload>::TYPE_URI;
-pub(crate) const ACKNOWLEDGE_TYPE: &str = <acknowledge::Payload as Payload>::TYPE_URI;
 /// `trust-task-next-step/0.1` — the answer to a parked operation.
 pub(crate) const NEXT_STEP_TYPE: &str = <next_step::Payload as Payload>::TYPE_URI;
 
-/// Every URI this module routes (the decision versions are routed by the
-/// dispatcher itself, beside them).
-pub(crate) const URIS: &[&str] = &[LIST_TYPE, SHOW_TYPE, CANCEL_TYPE, ACKNOWLEDGE_TYPE];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        CANCEL_TYPE => handle_cancel(state, ctx, doc).await,
-        ACKNOWLEDGE_TYPE => handle_acknowledge(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, vti_specs::task_consent::decision::v0_2::Payload => handle_decision);
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes = on!(routes, cancel::Payload => |state, ctx, doc| handle_cancel(state, ctx, doc));
+    on!(routes, acknowledge::Payload => |state, ctx, doc| handle_acknowledge(state, ctx, doc))
 }
 
 fn refuse(doc: &TrustTask<Value>, code: &str, message: impl Into<String>) -> TrustTaskOutcome {
@@ -70,7 +59,7 @@ async fn administrator(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
     not_administrator: &str,
-) -> Result<(AuthClaims, bool), TrustTaskOutcome> {
+) -> Result<(crate::acl::AdminActor, bool), TrustTaskOutcome> {
     // A member of the community is told what they are not, under the task's
     // own code, rather than the generic refusal a stranger gets.
     if let Some(signer) = ctx.verified_signer.as_deref()

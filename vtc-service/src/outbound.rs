@@ -192,16 +192,16 @@ impl PeerTasks {
             .map_err(|e| PeerError::NoMatchingProtocol(e.to_string()))
     }
 
-    /// Sign one document of `type_uri` to `peer_did`, send it, and await the
-    /// peer's signed reply for up to `timeout`.
-    pub(crate) async fn exchange(
+    /// Sign one **one-way** document of `type_uri` to `peer_did` and hand it to the
+    /// delivery layer over the transport [`Self::select`] chooses. No reply is awaited and
+    /// none is expected; `Ok` means accepted locally (R1.1), and a caller that needs more
+    /// owns that. Used for signals that have no `#response` (`rooms/changed/0.1`).
+    pub(crate) async fn send_one_way(
         &self,
         peer_did: &str,
         type_uri: &str,
         payload: &Value,
-        timeout: std::time::Duration,
-    ) -> Result<TrustTask<Value>, PeerError> {
-        use vta_sdk::protocol::matching::Protocol;
+    ) -> Result<(), PeerError> {
         let messaging = self
             .didcomm
             .get()
@@ -211,7 +211,22 @@ impl PeerTasks {
             .as_ref()
             .ok_or_else(|| PeerError::Transient("this VTC has no signing key yet".into()))?;
         let matched = self.select(peer_did).await?;
+        let doc = self
+            .signed_document(messaging, signer, peer_did, type_uri, payload)
+            .await?;
+        Self::put_on_wire(messaging, &matched, peer_did, &doc).await
+    }
 
+    /// A document of `type_uri` from this VTC to `peer_did`, signed under the operational
+    /// key for `authentication`.
+    async fn signed_document(
+        &self,
+        messaging: &VtcMessaging,
+        signer: &crate::credentials::LocalSigner,
+        peer_did: &str,
+        type_uri: &str,
+        payload: &Value,
+    ) -> Result<TrustTask<Value>, PeerError> {
         let doc = vti_common::capability_client::build_document(
             &messaging.vtc_did,
             peer_did,
@@ -224,16 +239,23 @@ impl PeerTasks {
             .sign_operational_doc(&mut value)
             .await
             .map_err(|e| PeerError::Transient(format!("sign document: {e}")))?;
-        let doc: TrustTask<Value> = serde_json::from_value(value)
-            .map_err(|e| PeerError::Transient(format!("reparse signed document: {e}")))?;
+        serde_json::from_value(value)
+            .map_err(|e| PeerError::Transient(format!("reparse signed document: {e}")))
+    }
 
-        // Registered before sending: a reply can land while the send returns.
-        let receiver = self.replies.register(&doc.id, peer_did);
-        let sent = match matched.protocol {
+    /// Hand `doc` to the delivery layer over `matched`.
+    async fn put_on_wire(
+        messaging: &VtcMessaging,
+        matched: &vta_sdk::protocol::matching::ProtocolMatch,
+        peer_did: &str,
+        doc: &TrustTask<Value>,
+    ) -> Result<(), PeerError> {
+        use vta_sdk::protocol::matching::Protocol;
+        match matched.protocol {
             #[cfg(feature = "tsp")]
             Protocol::Tsp => {
                 let body =
-                    seal_trust_task_tsp(&doc).map_err(|e| PeerError::Transient(e.to_string()))?;
+                    seal_trust_task_tsp(doc).map_err(|e| PeerError::Transient(e.to_string()))?;
                 // `peer_endpoint` is the peer's TSP mediator; a peer on another
                 // mediator is reached through it (VTI-56).
                 vti_common::tsp_route::send_reestablishing(
@@ -248,13 +270,43 @@ impl PeerTasks {
                 .map(|_| ())
                 .map_err(|e| PeerError::Transient(format!("TSP send failed: {e}")))
             }
-            Protocol::Didcomm => send_trust_task_didcomm(messaging, peer_did, &doc)
+            Protocol::Didcomm => send_trust_task_didcomm(messaging, peer_did, doc)
                 .await
                 .map_err(|e| PeerError::Transient(e.to_string())),
             _ => Err(PeerError::NoMatchingProtocol(format!(
                 "{peer_did} can be reached by no transport this VTC speaks"
             ))),
-        };
+        }
+    }
+
+    /// Sign one document of `type_uri` to `peer_did`, send it, and await the
+    /// peer's signed reply for up to `timeout`.
+    pub(crate) async fn exchange(
+        &self,
+        peer_did: &str,
+        type_uri: &str,
+        payload: &Value,
+        timeout: std::time::Duration,
+    ) -> Result<TrustTask<Value>, PeerError> {
+        #[cfg(feature = "tsp")]
+        use vta_sdk::protocol::matching::Protocol;
+        let messaging = self
+            .didcomm
+            .get()
+            .ok_or_else(|| PeerError::Transient("VTC messaging is not running yet".into()))?;
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| PeerError::Transient("this VTC has no signing key yet".into()))?;
+        let matched = self.select(peer_did).await?;
+
+        let doc = self
+            .signed_document(messaging, signer, peer_did, type_uri, payload)
+            .await?;
+
+        // Registered before sending: a reply can land while the send returns.
+        let receiver = self.replies.register(&doc.id, peer_did);
+        let sent = Self::put_on_wire(messaging, &matched, peer_did, &doc).await;
         if let Err(e) = sent {
             self.replies.abandon(&doc.id);
             return Err(e);
@@ -325,6 +377,118 @@ pub(crate) fn seal_trust_task_tsp(doc: &TrustTask<Value>) -> Result<Vec<u8>, Out
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A transport that is never asked to carry anything: [`PeerTasks::select`]
+    /// reads only that messaging is up.
+    struct Idle(tokio::sync::watch::Sender<affinidi_messaging_core::transport::ConnState>);
+
+    #[async_trait::async_trait]
+    impl affinidi_messaging_core::transport::MessageTransport for Idle {
+        fn kind(&self) -> affinidi_messaging_core::transport::TransportKind {
+            affinidi_messaging_core::transport::TransportKind::Didcomm
+        }
+        async fn send(
+            &self,
+            _dest: &str,
+            _packed: Vec<u8>,
+        ) -> Result<
+            affinidi_messaging_core::transport::SendReceipt,
+            affinidi_messaging_core::MessagingError,
+        > {
+            unreachable!("select sends nothing")
+        }
+        fn connection_state(
+            &self,
+        ) -> tokio::sync::watch::Receiver<affinidi_messaging_core::transport::ConnState> {
+            self.0.subscribe()
+        }
+        fn inbound(
+            &self,
+        ) -> futures_util::stream::BoxStream<'static, affinidi_messaging_core::transport::Inbound>
+        {
+            Box::pin(futures_util::stream::empty())
+        }
+        async fn ack(
+            &self,
+            _ack: affinidi_messaging_core::transport::InboundAck,
+        ) -> Result<(), affinidi_messaging_core::MessagingError> {
+            Ok(())
+        }
+    }
+
+    /// VTI-KEY-003 / VTI-KEY-001, and VTI-KEY-008 withdrawn: every node
+    /// resolves did:webs, so a did:webs VTC selects a transport toward a peer
+    /// whose document declares nothing (no `resolvedMethods`), exactly as a
+    /// did:webvh VTC does.
+    #[tokio::test]
+    async fn vti_key_003_a_did_webs_vtc_selects_toward_a_peer_that_declares_nothing() {
+        use affinidi_tdk::dids::{
+            DID, OneOrMany, PeerKeyRole, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
+        };
+        use vta_sdk::protocol::matching::Protocol;
+
+        let (peer, _) = DID::generate_did_peer_with_services(
+            vec![(
+                PeerKeyRole::Verification,
+                affinidi_tdk::dids::KeyType::Ed25519,
+            )],
+            Some(vec![PeerService {
+                type_: "dm".into(),
+                endpoint: PeerServiceEndpoint::Long(OneOrMany::One(PeerServiceEndpointLong {
+                    uri: "did:web:mediator.example".into(),
+                    accept: vec![],
+                    routing_keys: vec![],
+                })),
+                id: None,
+            }]),
+        )
+        .expect("mint the peer");
+        let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+        )
+        .await
+        .expect("resolver");
+        let peer_doc = serde_json::to_value(resolver.resolve(&peer).await.unwrap().doc).unwrap();
+        assert!(peer_doc.get("resolvedMethods").is_none(), "{peer_doc}");
+
+        const WEBS_VTC: &str = "did:webs:vtc.example:nodes:EAbc";
+        let atm = crate::test_support::build_offline_atm().await;
+        let profile = affinidi_tdk::messaging::profiles::ATMProfile::new(
+            &atm,
+            None,
+            WEBS_VTC.to_string(),
+            None,
+        )
+        .await
+        .expect("profile");
+        let (state, _) =
+            tokio::sync::watch::channel(affinidi_messaging_core::transport::ConnState::Connected);
+        let messaging = std::sync::Arc::new(VtcMessaging {
+            service: std::sync::Arc::new(affinidi_messaging_delivery::MessagingService::new(
+                std::sync::Arc::new(Idle(state)),
+                std::sync::Arc::new(affinidi_messaging_delivery::InMemoryOutboxStore::default()),
+            )),
+            atm: std::sync::Arc::new(atm),
+            vtc_did: WEBS_VTC.into(),
+            profile: std::sync::Arc::new(profile),
+            mediator_did: "did:web:mediator.example".into(),
+            inbox: vti_common::inbox::InboxWatch::new(),
+            uncollected: std::sync::Arc::new(vti_common::inbox::UncollectedPeers::new()),
+        });
+        let cell = std::sync::Arc::new(tokio::sync::OnceCell::new());
+        assert!(cell.set(messaging).is_ok());
+        let peers = PeerTasks {
+            didcomm: cell,
+            signer: None,
+            replies: crate::hooks::PendingReplies::new(),
+            resolver: Some(resolver),
+        };
+        let matched = peers
+            .select(&peer)
+            .await
+            .expect("a did:webs VTC reaches a peer that declares nothing");
+        assert_eq!(matched.protocol, Protocol::Didcomm);
+    }
 
     /// The seal is the published binding, read from the crate that defines it.
     ///

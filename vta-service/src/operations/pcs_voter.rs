@@ -1003,6 +1003,15 @@ pub async fn receipt(
         return Err(evidence("the checkpoint is for another election"));
     }
     let tree_size = head["treeSize"].as_u64().unwrap_or_default();
+    // Consumer item 7.2 before 7.3: a head too small to hold the cast omits it, whatever path
+    // came with it — the ballot box answers no inclusion read for a leaf past the head.
+    if leaf_index >= tree_size {
+        return Ok(json!({
+            "electionId": election_id,
+            "status": "notIncluded",
+            "leafIndex": leaf_index,
+        }));
+    }
     if inclusion["leafIndex"].as_u64() != Some(leaf_index)
         || inclusion["treeSize"].as_u64() != Some(tree_size)
     {
@@ -1021,12 +1030,31 @@ pub async fn receipt(
         })
         .unwrap_or(Some(Vec::new()))
         .ok_or_else(|| evidence("the audit path cannot be read"))?;
-    let included = leaf_index < tree_size
-        && board::verify_inclusion(leaf_index as usize, tree_size as usize, &leaf, &path, &root);
+    let included =
+        board::verify_inclusion(leaf_index as usize, tree_size as usize, &leaf, &path, &root);
     Ok(json!({
         "electionId": election_id,
         "status": if included { "included" } else { "notIncluded" },
         "leafIndex": leaf_index,
+    }))
+}
+
+/// `vta/pcs/voter/receipts/list`: the ballot box recorded at registration and every receipt kept
+/// for the election, whole and in the order kept, so the client can check each against the head
+/// the community kept at close (VTI-VOT-053).
+pub async fn receipts(
+    state: &AppState,
+    context_id: &str,
+    community: &str,
+    election_id: &str,
+) -> Result<Value> {
+    let key = voter_key(context_id, community, election_id);
+    let rec = record(state, &key).await?.ok_or(PcsError::NotFound)?;
+    let casts = load_casts(state, &key, rec.seed_id).await?;
+    Ok(json!({
+        "electionId": election_id,
+        "ballotBox": rec.ballot_box,
+        "receipts": casts.receipts,
     }))
 }
 

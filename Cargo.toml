@@ -16,6 +16,7 @@ members = [
   "vta-mcp",
   "vta-mobile-core",
   "vta-sdk",
+  "vta-signing",
   "vta-support",
   "vta-tee",
   "vta-sweepers",
@@ -24,10 +25,16 @@ members = [
   "vta-webvh",
   "vta-persona",
   "vta-service",
+  "vta-test-support",
   "vta-enclave",
+  "vtc-audit",
   "vtc-client",
+  # The community's MCP bridge: `publish = false`, like `vta-mcp`.
+  "vtc-mcp",
   "vtc-service",
   "vti-common",
+  # What the MCP bridges share (guard, recorder): `publish = false`.
+  "vti-mcp-common",
   # The generated Trust Task types (trust-tasks-build), one crate per spec
   # family group, and the facade that merges their Type URI indexes. See the
   # Trust Task wire types section of CLAUDE.md.
@@ -39,6 +46,7 @@ members = [
   "vti-specs-vtn",
   "vti-rooms",
   "vti-rooms-dtg",
+  "vti-rooms-host",
   "vti-rooms-wasm",
   "vti-vtn",
   "vti-trust-task-server",
@@ -49,11 +57,11 @@ members = [
   # `publish = false`, not a default member — a bare `cargo build` of the
   # VTA/VTC need not compile it, and CI's `--workspace` runs still do.
   "vti-witness",
-  # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: `publish = false`,
-  # reached only from `vtc-service`'s off-by-default `vetting-pcs` feature.
+  # Hidden-vetter admission (ZKP): published, because `vta-service` (the VTA's
+  # PCS engine) and `vtc-service` (feature `vetting-pcs`) depend on it.
   "vti-vetting-pcs",
-  # Community voting on PCS (design: community voting, draft VTI-VOT-*):
-  # `publish = false` until its first published consumer, not a default member.
+  # Community voting on PCS (VTI-VOT-*): published, because `vta-service` and
+  # `vtc-service` depend on it; not a default member.
   "vti-voting",
   # The voting service binary (a ballot box host service): `publish = false`,
   # not a default member.
@@ -77,18 +85,23 @@ default-members = [
   "vta-policy",
   "vta-mcp",
   "vta-sdk",
+  "vta-signing",
   "vta-support",
   "vta-tee",
   "vta-sweepers",
   "vta-service",
+  "vta-test-support",
   "vta-vault",
   "vta-external",
   "vta-webvh",
   "vta-persona",
   "vta-enclave",
+  "vtc-audit",
   "vtc-client",
+  "vtc-mcp",
   "vtc-service",
   "vti-common",
+  "vti-mcp-common",
   "vti-secrets",
   "vti-specs",
   "vti-specs-core",
@@ -100,6 +113,7 @@ default-members = [
   "vti-vtn",
   "vti-trust-task-server",
   "vti-oob-server",
+  "vti-rooms-host",
 ]
 exclude = [
   "deploy/nitro/enclave-proxy",
@@ -156,15 +170,20 @@ uniffi = "0.32"
 # mediator 0.48 (affinidi-tdk-rs #978, affinidi-messaging-mediator #46).
 # 0.37 goes with `trust-tasks-rs` 0.37, `affinidi-messaging-sdk` 0.45 and
 # mediator 0.50 (affinidi-tdk-rs #983, affinidi-messaging-mediator #55).
-affinidi-tdk = "0.37"
+# 0.45 goes with `trust-tasks-rs` 0.39, `affinidi-messaging-sdk` 0.47 and
+# mediator 0.52. It moves `affinidi-crypto` to 0.3 (the `KeyType` that
+# affinidi-data-integrity 0.8.7 and did-common 0.4.7 carry in their public
+# API), `affinidi-vc` to 0.3, `affinidi-sd-jwt` to 0.2 and `affinidi-mdoc` to
+# 0.6; every one of those moves with it.
+affinidi-tdk = "0.45"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
-affinidi-crypto = "0.2"
+affinidi-crypto = "0.3"
 # W3C VC Data Model 2.0 + Data Integrity proofs. Used by the
 # provision-integration flow (VP-framed bootstrap request, VC-issued
 # admin authorization). See CLAUDE.md "Authorization claims" principle.
-affinidi-vc = "0.2"
+affinidi-vc = "0.3"
 # `ml-dsa` compiles the ML-DSA-44 cryptosuites (mldsa44-jcs-2024 /
 # -rdfc-2024). Without it `CryptoSuite::default_for_key_type` has no arm for
 # an ML-DSA key, returns `None`, and the signer falls back to Ed25519 — so a
@@ -173,7 +192,8 @@ affinidi-vc = "0.2"
 # carries the feature below) and missed here.
 # 0.8 carries `affinidi-bbs` 0.4 in its public API, so the two move together
 # (the `=0.7.13` pin that held 0.7.14's patch-level bbs bump off is gone).
-affinidi-data-integrity = { version = "0.8", features = ["ml-dsa"] }
+# 0.8.7: its public `KeyType` is affinidi-crypto 0.3's.
+affinidi-data-integrity = { version = "0.8.7", features = ["ml-dsa"] }
 affinidi-status-list = "0.1.7"
 
 # Credential formats for the credential-centric VTI architecture
@@ -198,14 +218,14 @@ affinidi-status-list = "0.1.7"
 # BBS proof path is wired. If you path-override these to the local TDK for an
 # unreleased change (e.g. DCQL), override the whole interdependent set together
 # to avoid a duplicate-version split.
-affinidi-sd-jwt-vc = "0.2"
-affinidi-sd-jwt = "0.1.7"
+affinidi-sd-jwt-vc = "0.3"
+affinidi-sd-jwt = "0.2"
 affinidi-bbs = "0.4"
-affinidi-openid4vp = "0.1.4"
+affinidi-openid4vp = "0.1.5"
 # The JOSE core under openid4vp: ECDH-ES response decryption (`jwe`) for the
 # VTC's OpenID4VP verifier (#1988).
-affinidi-oid4vc-core = { version = "0.1.10", default-features = false }
-affinidi-mdoc = { version = "0.4", default-features = false, features = ["es256"] }
+affinidi-oid4vc-core = { version = "0.1.11", default-features = false }
+affinidi-mdoc = { version = "0.6", default-features = false, features = ["es256"] }
 # Both already enter the graph through `affinidi-mdoc`; declared here because
 # the mdoc receive path names their types directly (`coset` for the COSE_Sign1
 # `alg` header, `time` for the `validityInfo` window) and depending on a
@@ -227,7 +247,7 @@ time = "0.3"
 # production tree.
 x509-parser = { version = "0.18", features = ["verify-aws"] }
 affinidi-openid4vci = "0.2"
-affinidi-secrets-resolver = { version = "0.5.15", features = ["ml-dsa"] }
+affinidi-secrets-resolver = { version = "0.5.18", features = ["ml-dsa"] }
 # Reliable messaging delivery layer (durable outbox + drain + §5a confirmation)
 # over the MessageTransport contract — the D1 delivery layer the VTI cut-over
 # (D2) wires in. `VtiOutboxStore` (vti-common) backs its OutboxStore with fjall.
@@ -236,11 +256,16 @@ affinidi-secrets-resolver = { version = "0.5.15", features = ["ml-dsa"] }
 # parked for the retry pass when it runs long, where before one slow delete
 # stopped all inbound dispatch behind it — the node stopped collecting while
 # its socket stayed up. No API change.
-affinidi-messaging-delivery = "0.1.20"
+#
+# 0.2 is breaking: an outbox entry records its status scope (`Local` /
+# `Relayed`), a relayed entry with no receipt settles `NoEvidencePath`, and the
+# receipt packer (`AtmReceiptPacker`) emits receipts on request (#2553,
+# VTI-TRN-060 - 064).
+affinidi-messaging-delivery = "0.2.0"
 # Transport-agnostic messaging contract (`MessageTransport`, `Inbound`,
 # `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
 # directly by services that demux `MessagingService::subscribe()` inbound.
-affinidi-messaging-core = "0.1"
+affinidi-messaging-core = "0.1.12"
 # The messaging SDK, taken directly (not only through `affinidi-tdk`) so a
 # member's `tsp` feature can turn on the SDK's own `tsp` ops (`atm.tsp()`),
 # which `affinidi-tdk/tsp` does not forward. One requirement here rather than a
@@ -312,14 +337,17 @@ affinidi-messaging-core = "0.1"
 # Mediator 0.47 serves 0.2 (affinidi-messaging-mediator #40).
 # 0.44 is on `trust-tasks-rs` 0.36 (affinidi-tdk-rs #978).
 # 0.45 is on `trust-tasks-rs` 0.37 (affinidi-tdk-rs #983).
-affinidi-messaging-sdk = { version = "0.45", default-features = false }
+# 0.47 is on `trust-tasks-rs` 0.39 and delivery 0.2: application receipts,
+# the per-entry status scope and the `messaging/wake/*` client (#2553, #2663).
+# 0.47.2 is the release mediator 0.52 is built on.
+affinidi-messaging-sdk = { version = "0.47.2", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
 futures-util = "0.3"
 
 # Decentralized Trust Graph Credentials
-dtg-credentials = "0.13"
+dtg-credentials = "0.14"
 
 # JSON Schema validation (issue-time credentialSchema checks).
 #
@@ -410,7 +438,19 @@ didwebvh-rs = "0.8.1"
 url = "2"
 
 # Cryptography
-ed25519-dalek = "3"
+#
+# The five crates CLAUDE.md names as crypto deps — `ed25519-dalek`, `hpke`,
+# `jsonwebtoken`, `aes-gcm` and `aws-lc-rs` — carry a full `major.minor.patch`
+# floor, so a resolve can never land below a release we have built and tested
+# against (a CVE fix landing in a patch must not silently regress). Each floor is
+# the patch Cargo.lock held when it was set; raise it when the lock moves past a
+# security fix. They are declared here and nowhere else:
+# `scripts/check-workspace-version-reqs.py` fails on a bare `major` /
+# `major.minor` floor, and on a member declaring one outside the workspace.
+ed25519-dalek = "3.0.0"
+# HPKE for `sealed_transfer` (vta-sdk). The suite is hardcoded (CLAUDE.md,
+# "Sealed-transfer is the only secret-bearing wire format").
+hpke = "0.15.1"
 serde_json_canonicalizer = "0.4"
 sha2 = "0.11"
 # Constant-time byte equality. Used wherever we compare a
@@ -433,7 +473,7 @@ multibase = "0.9"
 # `CryptoProvider` for every algorithm and is already in our dep tree
 # via `aws-sdk-kms`, so we don't add a new transitive. The backend is
 # the AWS-vetted libcrypto fork; same primitives, no `rsa` crate.
-jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 
 # AWS-LC backend used directly by `vti-webauthn` for ECDSA P-256 WebAuthn
 # assertion verification. Already in our dep tree via `jsonwebtoken`'s
@@ -441,7 +481,7 @@ jsonwebtoken = { version = "11", default-features = false, features = ["use_pem"
 # crypto-pin discipline (CLAUDE.md "Versioning & publishing") applies
 # uniformly. Pin minimum patch — CVE landings should not silently
 # regress.
-aws-lc-rs = "1.16"
+aws-lc-rs = "1.19.0"
 
 # Upper bound on `aws-smithy-types`, which we do not use directly.
 #
@@ -770,17 +810,19 @@ aws-smithy-types = ">=1.6.1, <1.10"
 # and still answered.
 # Only `validate` here, and no crate adds a spec family (see "SPEC VERSIONS ARE
 # PINNED IN THE `vti-specs-*` CRATES" above).
-trust-tasks-rs = { version = "0.37.2", default-features = false, features = [
+# 0.39: one copy with `affinidi-messaging-sdk` 0.47 across the boundary, and
+# `validate::SchemaValidator`, a compiled schema the caller keeps (#2622).
+trust-tasks-rs = { version = "0.39.0", default-features = false, features = [
   "validate",
 ] }
-trust-tasks-capability-client = "0.37"
+trust-tasks-capability-client = "0.39"
 # The build-time generator behind the `vti-specs-*` crates: each one's build.rs
 # turns the versions its `trust-tasks.lock` pins into Rust types and a Type URI
 # index (`.index(true)`). 0.1.3 is the floor: the first with the index.
 # trust-tasks-rs 0.36.2 above is the runtime that index's entries need
 # (`trust_tasks_rs::type_index`).
 trust-tasks-build = "0.1.3"
-trust-tasks-https = { version = "0.37", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-https = { version = "0.39", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -791,7 +833,7 @@ trust-tasks-https = { version = "0.37", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.37", default-features = false }
+trust-tasks-didcomm = { version = "0.39", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -810,9 +852,9 @@ trust-tasks-didcomm = { version = "0.37", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.37", default-features = false }
+trust-tasks-tsp = { version = "0.39", default-features = false }
 # 0.33.2: a did:scid key named with its `?src=` locator verifies (trust-tasks-tf #863).
-trust-tasks-proof = { version = "0.37.0", default-features = false, features = ["affinidi"] }
+trust-tasks-proof = { version = "0.39.0", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
@@ -831,6 +873,10 @@ dialoguer = "0.12"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
+# Global allocator for the service binaries (their `jemalloc` feature).
+tikv-jemallocator = "0.7"
+# Shell completions for pnm / cnm (`completions <shell>`). Same 4.6 line as clap.
+clap_complete = "4.6"
 
 # Terminal UI
 ratatui = "0.30"
@@ -871,7 +917,7 @@ dirs = "7"
 hex = "0.4"
 
 # Symmetric crypto helpers used by sealed-transfer + storage encryption.
-aes-gcm = "0.11"
+aes-gcm = "0.11.1"
 hkdf = "0.13"
 
 # HMAC-SHA256 for vti-common's audit-log actor/target identifier
@@ -903,13 +949,14 @@ azure_identity = "1.0"
 # `k8s-openapi` major, and two copies in the tree make *neither* resolve a
 # version feature — k8s-openapi's build script then panics with "None of the
 # v1_* features are enabled", naming the copy that has none rather than the
-# mismatch that produced it. kube 3.1 is on k8s-openapi 0.27; kube 4.2 is on
-# 0.28. Bumping one without the other is what makes that error appear.
-kube = { version = "4.2", default-features = false, features = [
+# mismatch that produced it. kube 3.1 is on k8s-openapi 0.27, kube 4.2 on 0.28
+# and kube 5.0 on 0.29. Bumping one without the other is what makes that error
+# appear.
+kube = { version = "5.0", default-features = false, features = [
   "client",
   "rustls-tls",
 ] }
-k8s-openapi = { version = "0.28", features = ["latest"] }
+k8s-openapi = { version = "0.29", features = ["latest"] }
 
 # Hoist DID-resolver-cache feature drift: every crate uses 0.8 but a few
 # omit the `network` feature. The default here turns it on; dependents
@@ -926,11 +973,29 @@ k8s-openapi = { version = "0.28", features = ["latest"] }
 # 0.8.39 is the floor: earlier releases resolve a deactivated did:webvh to its last document (SEC-4045 / VGI-04).
 # 0.8.42 resolves a did:scid to its own document, remembers its source per SCID
 # and refuses an older copy of its log (`scid_sources`, VTI-KEY-161/162).
-affinidi-did-resolver-cache-sdk = { version = "0.8.43", features = ["network"] }
+# 0.8.46 adds did:webs (`did-webs`): a peer's or contact's did:webs verifies
+# when its KERI key event log does (VTI-LNK-052), under the same host policy
+# as the other web methods. Earlier did:webs releases fetched any host the DID
+# named, so the floor is that release, not just the feature. did:webs is one
+# of the methods every node resolves (VTI-KEY-003).
+# 0.8.50 (did-webs 0.12): a recovery rotation supersedes the interaction events
+# after the last establishment event, and what only they anchored (a
+# designation, a revocation, a delegation) stops counting as the identifier's.
+# 0.8.52 resolves with did-webs 0.13; did-webs 0.13.3 resolves a deactivated
+# identifier without keys and bounds verification work per stream.
+affinidi-did-resolver-cache-sdk = { version = "0.8.53", features = ["network", "did-webs"] }
 # The local-only resolvers, for methods that carry their keys in the identifier. Not a
 # second resolver: the cache SDK already depends on this and uses the same types, but does
 # not re-export them, and a verifier promising "no I/O" needs to reach them directly.
 affinidi-did-resolver-traits = { version = "0.1" }
+# Creating and continuing a did:webs (docs/05-design-notes/did-webs-in-the-vta.md):
+# the controller side of affinidi-did-webs, the same release the resolver above
+# reads with. `create` pulls `affinidi-keri` without its LMDB store (did-webs
+# 0.13.1, affinidi-keri 0.8.1): the controller keeps the log in `keri.cesr`.
+affinidi-did-webs = { version = "0.13.4", features = ["create"] }
+affinidi-keri = { version = "0.8.1", default-features = false }
+affinidi-keri-core = "0.8"
+affinidi-keri-crypto = "0.8"
 
 # Agent names — human-memorable `example.com/@alice` shortcuts that resolve to
 # DIDs. Consumed by `vta_sdk::display_name` (feature `agent-names`) for the
@@ -945,7 +1010,7 @@ agent-names = "0.1.3"
 # needed where we hand a resolved document to `extract_agent_names`.
 # 0.4.4: the `scid` module, and lookups that match a did:scid key reference
 # by DID and fragment (VTI-KEY-163).
-affinidi-did-common = "0.4.4"
+affinidi-did-common = "0.4.7"
 
 # WebAuthn / passkey infrastructure. Used by vti-common's `passkey` feature
 # for shared enrolment + login ceremonies — both VTA (admin auth, later) and
@@ -961,7 +1026,7 @@ webauthn-rs = { version = "0.5", features = [
 # `arc` so `regorus::Engine` is `Send + Sync` and `full-opa` for the
 # stdlib builtins (regex, time, etc.) that real policies (`join.rego`,
 # `removal.rego`) lean on. Trim later if compile times bite.
-regorus = "0.13"
+regorus = "0.14"
 
 # OS keyring API (replaces legacy `keyring` v3 crate). keyring-core 1.0 split
 # the API from the backend stores; each binary picks a platform-native store
@@ -970,6 +1035,62 @@ keyring-core = "1"
 apple-native-keyring-store = { version = "1", default-features = false, features = ["keychain"] }
 windows-native-keyring-store = "1"
 dbus-secret-service-keyring-store = { version = "1", default-features = false, features = ["crypto-rust"] }
+
+# ---------------------------------------------------------------------------
+# Shared by several members (#2657). One declaration per crate, so a
+# coordinated bump is one edit. A member inherits with `{ workspace = true }`
+# and adds only its own `features` / `optional`; where an entry turns default
+# features off, a member that wants them asks for `features = ["default"]`.
+# ---------------------------------------------------------------------------
+anyhow = "1"
+async-trait = "0.1"
+tempfile = "3"
+# `derive` and the rest are per member.
+zeroize = "1"
+getrandom = "0.4"
+tower = "0.5"
+http-body-util = "0.1"
+wiremock = "0.6"
+metrics = "0.24"
+schemars = "1"
+flate2 = "1"
+unicode-normalization = "0.1"
+ciborium = "0.2"
+# Argon2id: backup-password KDF (vta-backup), admin-invite claim secrets
+# (vtc-service), the passphrase KEK (vti-secrets).
+argon2 = "0.6"
+bip39 = "3"
+p256 = "0.14"
+k256 = "0.14"
+chacha20poly1305 = "0.11"
+# Off by default here: `vti-voting` builds it without the default set, and a
+# member cannot turn defaults off once the workspace entry has them on.
+curve25519-dalek = { version = "5", default-features = false }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+# Off by default here for the reason `curve25519-dalek` gives: `vtc-service`
+# builds it with `pem` only.
+rcgen = { version = "0.14", default-features = false }
+object_store = { version = "0.14", default-features = false }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+webauthn-rs-proto = "0.5"
+affinidi-rate-limit = "0.1.4"
+# Pinned to the patch every DIDComm decrypt path in the workspace was built
+# against (ECDH-ES+A256KW + A256CBC-HS512 JWEs from `vta-sdk`'s light client).
+affinidi-messaging-didcomm = "0.15.14"
+# The in-process mediator for end-to-end tests; always with its TSP arm.
+affinidi-messaging-test-mediator = { version = "0.52", features = ["tsp"] }
+openmls_rust_crypto = "0.6"
+# Hidden vetting and community voting (`vti-vetting-pcs`, `vti-voting`, and
+# their hosts).
+predicate-credential-system = "0.1"
+ark-serialize = { version = "0.6.0", default-features = false, features = ["std"] }
+# Stays on the rand 0.8 line with `rand` 0.8 in those crates (dependabot.yml
+# says why).
+rand_chacha = "0.3"
+# MCP SDK for the `*-mcp` bridges; each member names its transports.
+rmcp = "3"
+# Source parsing for the census tests that read a crate's own code.
+syn = "3"
 
 [profile.dev]
 # macOS defaults this profile to `split-debuginfo = "unpacked"`, which leaves one
@@ -1015,11 +1136,19 @@ opt-level = "z"
 lto = "fat"
 panic = "abort"
 
-# Workspace-wide lint policy. Each crate inherits via `lints.workspace = true`
-# in its own Cargo.toml. Per-crate `#[allow(...)]` overrides are still possible
-# but visible in review.
+# Workspace-wide lint policy. Every member inherits it with `[lints]
+# workspace = true`, and `scripts/check-workspace-lints.py` fails CI on one that
+# does not. Per-item `#[allow(...)]` overrides are still possible but visible in
+# review.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
+# No `unsafe` unless a crate says why it needs it (#2658). `forbid` cannot be
+# lowered by an inner `#[allow]`, so the few crates that do need it (an FFI
+# call, an ioctl, an `env::set_var` in a test) carry their own `[lints]` table
+# — this one, with `unsafe_code = "deny"` — and put `#[allow(unsafe_code)]` on
+# the one item that needs it. `scripts/check-workspace-lints.py` holds those
+# tables to this one in every other respect and keeps their list short.
+unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 # Style/escape-hatch fences. Crates that want the broader clippy::all

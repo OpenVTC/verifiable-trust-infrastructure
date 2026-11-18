@@ -1,15 +1,16 @@
-//! A community's side of Verifiable Trust Network membership — `vtc/networks/*/0.1`
+//! A community's side of Verifiable Trust Network membership — `vtc/networks/*/0.2`, and
+//! `vtc/networks/deliver/0.1`
 //! ([`crate::networks`]).
 //!
 //! | task | signed by | authority (read now) |
 //! |---|---|---|
-//! | `list`, `show` | an administrator | `vtc.config.admin` |
+//! | `list`, `show`, `preview` | an administrator | `vtc.config.admin` |
 //! | `join`, `repudiate`, `leave`, `groups/register` | an administrator | `vtc.config.admin`, plus the requester's step-up bound to the document |
 //! | `evidence` | anyone verified | answers only for groups the signer is an active member of |
+//! | `deliver` | a network | the signer is a network this community acknowledged, delivering for a role it registered a group for |
 //!
 //! `vtc/networks/notice/0.1` is sent, never served: the community pushes it to a group's
-//! members when a network's broadcast arrives at the relay endpoint
-//! ([`crate::routes::networks`]).
+//! members when a network's `deliver` arrives ([`crate::networks::deliver`]).
 //!
 //! # Why the writes take a bound step-up
 //!
@@ -20,12 +21,14 @@
 //! ([`crate::acl::bound_step_up`], VTI-APV-015), as for enabling a capability module, so a
 //! stolen or delegated signing key alone cannot do any of it.
 
+use super::routing::{Routes, on};
 use serde_json::{Value, json};
-use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
+use trust_tasks_rs::{StandardCode, TrustTask, TrustTaskCode};
 use vti_common::error::AppError;
 use vti_specs::vtc::networks::{
-    evidence::v0_1 as evidence, groups::register::v0_1 as register, join::v0_1 as join,
-    leave::v0_1 as leave, list::v0_1 as list, repudiate::v0_1 as repudiate, show::v0_1 as show,
+    deliver::v0_1 as deliver, evidence::v0_2 as evidence, groups::register::v0_2 as register,
+    join::v0_2 as join, leave::v0_2 as leave, list::v0_2 as list, preview::v0_1 as preview,
+    repudiate::v0_2 as repudiate, show::v0_2 as show,
 };
 
 use super::helpers::{
@@ -36,26 +39,6 @@ use crate::acl::Capability;
 use crate::error::TaskError;
 use crate::networks::{self, NetError};
 use crate::server::AppState;
-
-pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
-pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_TYPE: &str = <join::Payload as Payload>::TYPE_URI;
-pub(crate) const REPUDIATE_TYPE: &str = <repudiate::Payload as Payload>::TYPE_URI;
-pub(crate) const LEAVE_TYPE: &str = <leave::Payload as Payload>::TYPE_URI;
-pub(crate) const REGISTER_TYPE: &str = <register::Payload as Payload>::TYPE_URI;
-pub(crate) const EVIDENCE_TYPE: &str = <evidence::Payload as Payload>::TYPE_URI;
-
-/// Every URI [`dispatch`] routes. `super::DISPATCHED_URIS` names each of these and
-/// `dispatcher_routes_every_dispatched_uri` holds the two in step.
-pub(crate) const URIS: &[&str] = &[
-    LIST_TYPE,
-    SHOW_TYPE,
-    JOIN_TYPE,
-    REPUDIATE_TYPE,
-    LEAVE_TYPE,
-    REGISTER_TYPE,
-    EVIDENCE_TYPE,
-];
 
 /// The extended codes these tasks declare, each the value the generated
 /// `error_codes::*` constant carries (the error-code census checks they agree).
@@ -73,6 +56,11 @@ pub(crate) const LEAVE_ERR_NETWORK_REFUSED: &str = "vtc/networks/leave:networkRe
 pub(crate) const REGISTER_ERR_NOT_MEMBER: &str = "vtc/networks/groups/register:notMember";
 pub(crate) const REGISTER_ERR_UNKNOWN_GROUP: &str = "vtc/networks/groups/register:unknownGroup";
 pub(crate) const REGISTER_ERR_NETWORK_REFUSED: &str = "vtc/networks/groups/register:networkRefused";
+pub(crate) const DELIVER_ERR_NOT_MEMBER: &str = "vtc/networks/deliver:notMember";
+pub(crate) const DELIVER_ERR_ROLE_UNREGISTERED: &str = "vtc/networks/deliver:roleUnregistered";
+pub(crate) const DELIVER_ERR_ENVELOPE_INVALID: &str = "vtc/networks/deliver:envelopeInvalid";
+pub(crate) const PREVIEW_ERR_NETWORK_UNREACHABLE: &str = "vtc/networks/preview:networkUnreachable";
+pub(crate) const PREVIEW_ERR_NETWORK_MISMATCH: &str = "vtc/networks/preview:networkMismatch";
 
 const DECLARED: &[&str] = &[
     JOIN_ERR_NOT_LISTED,
@@ -89,28 +77,30 @@ const DECLARED: &[&str] = &[
     REGISTER_ERR_NOT_MEMBER,
     REGISTER_ERR_UNKNOWN_GROUP,
     REGISTER_ERR_NETWORK_REFUSED,
+    DELIVER_ERR_NOT_MEMBER,
+    DELIVER_ERR_ROLE_UNREGISTERED,
+    DELIVER_ERR_ENVELOPE_INVALID,
+    PREVIEW_ERR_NETWORK_UNREACHABLE,
+    PREVIEW_ERR_NETWORK_MISMATCH,
 ];
 
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 100;
 
-/// Route one of [`URIS`]; `None` for any other URI.
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        JOIN_TYPE => handle_join(state, ctx, doc).await,
-        REPUDIATE_TYPE => handle_repudiate(state, ctx, doc).await,
-        LEAVE_TYPE => handle_leave(state, ctx, doc).await,
-        REGISTER_TYPE => handle_register(state, ctx, doc).await,
-        EVIDENCE_TYPE => handle_evidence(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc));
+    let routes = on!(routes, show::Payload => |state, ctx, doc| handle_show(state, ctx, doc));
+    let routes = on!(routes, preview::Payload => |state, ctx, doc| handle_preview(state, ctx, doc));
+    let routes = on!(routes, join::Payload => |state, ctx, doc| handle_join(state, ctx, doc));
+    let routes =
+        on!(routes, repudiate::Payload => |state, ctx, doc| handle_repudiate(state, ctx, doc));
+    let routes = on!(routes, leave::Payload => |state, ctx, doc| handle_leave(state, ctx, doc));
+    let routes =
+        on!(routes, register::Payload => |state, ctx, doc| handle_register(state, ctx, doc));
+    let routes =
+        on!(routes, evidence::Payload => |state, ctx, doc| handle_evidence(state, ctx, doc));
+    on!(routes, deliver::Payload => |state, ctx, doc| handle_deliver(state, ctx, doc))
 }
 
 // Answer with `body` held to the generated `#response` type and its schema
@@ -141,6 +131,10 @@ fn refuse(doc: &TrustTask<Value>, slug: &str, e: NetError) -> TrustTaskOutcome {
         }
         NetError::NotMember => extended("notMember", None),
         NetError::IsMember => extended("isMember", None),
+        NetError::RoleUnregistered(_) => extended("roleUnregistered", None),
+        NetError::Rejected(message) => {
+            extended("envelopeInvalid", Some(json!({ "message": message })))
+        }
         _ => None,
     };
     if let Some(answer) = declared_answer {
@@ -264,6 +258,85 @@ async fn handle_show(
     }
 }
 
+/// `vtc/networks/preview`: the network at `url`, and where the community stands with it,
+/// for the console to show before a join. A read: no step-up, and nothing is signed to the
+/// network but the community's own read of its entry.
+async fn handle_preview(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(reject) = capable_signer(state, ctx, &doc, Capability::ConfigAdmin, None).await {
+        return reject;
+    }
+    let checked: preview::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let expected = checked.network.as_ref().map(|n| n.to_string());
+    match networks::preview(state, checked.url.as_str(), expected.as_deref()).await {
+        Ok(found) => respond::<preview::Response>(&doc, preview_json(&found)),
+        Err(NetError::Mismatch(m)) => {
+            reject_with_code(&doc, extended_code(PREVIEW_ERR_NETWORK_MISMATCH), m, None)
+        }
+        Err(NetError::Unavailable(m) | NetError::Refused(m)) => reject_with_code(
+            &doc,
+            extended_code(PREVIEW_ERR_NETWORK_UNREACHABLE),
+            m.clone(),
+            Some(json!({ "message": m })),
+        ),
+        Err(e) => refuse(&doc, "vtc/networks/preview", e),
+    }
+}
+
+/// The `vtc/networks/preview` answer: the network's own profile, then where the community
+/// stands. An entry state outside the published ones is not reported.
+fn preview_json(found: &networks::Preview) -> Value {
+    let profile = &found.profile["profile"];
+    let mut out = json!({
+        "network": found.network,
+        "url": found.url,
+        "name": profile["name"].as_str().unwrap_or_default(),
+        "roles": found.profile["roles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let name = r["name"].as_str()?;
+                let mut role = json!({ "name": name, "required": r["required"] == true });
+                if let Some(d) = r["description"].as_str() {
+                    role["description"] = json!(d);
+                }
+                Some(role)
+            })
+            .collect::<Vec<_>>(),
+        "listed": found.listing.is_ok(),
+    });
+    for key in ["description", "owner"] {
+        if let Some(v) = profile[key].as_str() {
+            out[key] = json!(v);
+        }
+    }
+    let fw = &profile["framework"];
+    if let (Some(iri), Some(version)) = (fw["iri"].as_str(), fw["version"].as_str()) {
+        out["framework"] = json!({ "iri": iri, "version": version });
+    }
+    match &found.listing {
+        Ok(entry_state)
+            if ["listed", "acknowledged", "repudiated", "suspended"]
+                .contains(&entry_state.as_str()) =>
+        {
+            out["entryState"] = json!(entry_state);
+        }
+        Ok(_) => {}
+        Err(why) => out["notListedReason"] = json!(why.chars().take(1024).collect::<String>()),
+    }
+    if let Some(m) = found.membership {
+        out["membershipState"] = serde_json::to_value(m).unwrap_or(Value::Null);
+    }
+    out
+}
+
 // ─── writes ───────────────────────────────────────────────────────────────
 
 async fn handle_join(
@@ -288,6 +361,12 @@ async fn handle_join(
         .iter()
         .map(|g| (g.role.to_string(), g.group_id.to_string()))
         .collect();
+    // Everything that would refuse the join, before the gesture (`networks::join_preflight`).
+    if let Err(e) =
+        networks::join_preflight(state, &checked.url, &checked.network, &assignments).await
+    {
+        return refuse(&doc, SLUG, e);
+    }
     if let Err(reject) = bound_step_up(
         state,
         &actor.did,
@@ -329,6 +408,9 @@ async fn handle_repudiate(
     if let Err(reject) = require_audit(state, &doc) {
         return reject;
     }
+    if let Err(e) = networks::repudiate_preflight(state, &checked.url, &checked.network).await {
+        return refuse(&doc, SLUG, e);
+    }
     if let Err(reject) = bound_step_up(
         state,
         &actor.did,
@@ -365,6 +447,9 @@ async fn handle_leave(
     };
     if let Err(reject) = require_audit(state, &doc) {
         return reject;
+    }
+    if let Err(e) = networks::leave_preflight(state, &checked.network).await {
+        return refuse(&doc, SLUG, e);
     }
     if let Err(reject) = bound_step_up(
         state,
@@ -453,5 +538,42 @@ async fn handle_evidence(
     match networks::evidence(state, &caller, group.as_deref(), network.as_deref()).await {
         Ok(links) => respond::<evidence::Response>(&doc, json!({ "links": links })),
         Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+// ─── a network: deliver ───────────────────────────────────────────────────
+
+async fn handle_deliver(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    const SLUG: &str = "vtc/networks/deliver";
+    let Some(deliverer) = ctx.verified_signer.clone() else {
+        return reject_with_code(
+            &doc,
+            TrustTaskCode::Standard(StandardCode::ProofRequired),
+            "a delivery is signed by the network that delivers it",
+            None,
+        );
+    };
+    let checked: deliver::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let envelope: vti_vtn::relay::Envelope =
+        match serde_json::to_value(&checked.envelope).and_then(serde_json::from_value) {
+            Ok(e) => e,
+            Err(e) => {
+                return refuse(
+                    &doc,
+                    SLUG,
+                    NetError::Rejected(format!("unreadable envelope: {e}")),
+                );
+            }
+        };
+    match networks::deliver(state, &deliverer, checked.role.as_ref(), envelope).await {
+        Ok(status) => respond::<deliver::Response>(&doc, status),
+        Err(e) => refuse(&doc, SLUG, e),
     }
 }

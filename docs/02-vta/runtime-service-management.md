@@ -220,11 +220,13 @@ is exactly the transport you are on. Over DIDComm the server enforces a
 Notes:
 
 - Forcing REST needs a REST endpoint to force. `pnm` uses `--url` if
-  given, else the `#vta-rest` service on the VTA's DID document. If the
+  given, else the `VTARest` service on the VTA's DID document (matched on
+  `type`; the VTA emits it as `#vta-rest`). If the
   VTA advertises neither, the command errors and asks for `--url` — it
   will not guess a URL from the DID's domain, which for a hosted
   `did:webvh` is the DID host, not the VTA.
-- If your config pins a `mediator_did` (`pnm vta add --mediator-did …`),
+- If your config pins a `mediator_did` (written by `pnm setup`, or by hand in
+  pnm's config file),
   that pin is priority 1 of transport selection and never re-reads the
   DID document. A successful `services didcomm enable|update|disable`
   reconciles the pin for you — disable clears it, enable/update repoint

@@ -14,11 +14,12 @@
 //!   that don't honour XFO.
 //! - `Referrer-Policy: no-referrer` — passkey-login URLs and the
 //!   install-claim ceremony shouldn't leak via outbound `Referer`.
-//! - `Strict-Transport-Security` — only on responses that are
-//!   already served over HTTPS (the request scheme tells us). HSTS
-//!   on plain-HTTP localhost / staging deployments would just
-//!   confuse browsers; the daemon emits it when the wire is
-//!   actually TLS.
+//! - `Strict-Transport-Security` — not here: [`strict_transport_security`]
+//!   attaches it to every response when the community's `public_url` is
+//!   `https` (#2661). The request cannot say: the daemon serves plain HTTP
+//!   behind a TLS-terminating proxy, and an origin-form HTTP/1.1 request
+//!   carries no scheme, so a check of `request.uri().scheme_str()` was
+//!   never true and HSTS was never sent.
 //! - `Content-Security-Policy` — default policy below. Spec §12.1
 //!   lets operators relax this per-site for SPA needs once the
 //!   website handler (M5.4) reads a `.vtc-website.toml` override.
@@ -58,16 +59,61 @@ pub const DEFAULT_CSP: &str = "default-src 'self'; \
      base-uri 'self'; \
      frame-ancestors 'none'";
 
-/// HSTS — two-year max-age, includeSubDomains. Emitted only on
-/// HTTPS requests; an operator running plain-HTTP locally
-/// shouldn't get sticky upgrade-to-HTTPS state.
+/// HSTS — two-year max-age, includeSubDomains.
 const HSTS_VALUE: &str = "max-age=63072000; includeSubDomains";
+
+/// Whether this community is served over HTTPS, read once from its
+/// `public_url` — the origin its operator declared and browsers reach.
+/// Browsers ignore `Strict-Transport-Security` received over plain HTTP
+/// (RFC 6797 §8.1), so sending it on every response of an `https` community is
+/// safe even where a request reached the daemon unencrypted from its proxy; an
+/// `http` (or absent) `public_url` — a local or staging deployment — gets none,
+/// so no browser is left with sticky upgrade state for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HstsPolicy {
+    enabled: bool,
+}
+
+impl HstsPolicy {
+    /// The policy for a community whose public origin is `public_url`.
+    pub fn from_public_url(public_url: Option<&str>) -> Self {
+        // The scheme is case-insensitive (RFC 3986 §3.1).
+        let enabled = public_url
+            .and_then(|u| u.trim().get(..8))
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"));
+        Self { enabled }
+    }
+
+    /// Whether `Strict-Transport-Security` is sent.
+    pub fn enabled(self) -> bool {
+        self.enabled
+    }
+}
+
+/// Tower middleware attaching `Strict-Transport-Security` to every response
+/// when [`HstsPolicy::enabled`] (#2661). Wire via
+/// `axum::middleware::from_fn_with_state(policy, strict_transport_security)`
+/// outside the router, so console, portal, website and API responses alike
+/// carry it. A response that already set the header keeps its own.
+pub async fn strict_transport_security(
+    axum::extract::State(policy): axum::extract::State<HstsPolicy>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    if policy.enabled && !response.headers().contains_key(STRICT_TRANSPORT_SECURITY) {
+        response.headers_mut().insert(
+            STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(HSTS_VALUE),
+        );
+    }
+    response
+}
 
 /// Tower middleware function. Wire via
 /// `axum::middleware::from_fn(security_headers)` on the admin UX
 /// and website sub-routers.
 pub async fn security_headers(request: Request, next: Next) -> Response {
-    let scheme_is_https = request.uri().scheme_str() == Some("https");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -94,12 +140,6 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
             ),
         );
     }
-    if scheme_is_https && !headers.contains_key(STRICT_TRANSPORT_SECURITY) {
-        headers.insert(
-            STRICT_TRANSPORT_SECURITY,
-            HeaderValue::from_static(HSTS_VALUE),
-        );
-    }
     if !headers.contains_key(CONTENT_SECURITY_POLICY) {
         // `from_static` is safe — `DEFAULT_CSP` is ASCII.
         headers.insert(
@@ -109,4 +149,46 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
     }
 
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    async fn hsts_of(public_url: Option<&str>) -> Option<String> {
+        let policy = HstsPolicy::from_public_url(public_url);
+        let app = Router::new().route("/", get(|| async { "ok" })).layer(
+            axum::middleware::from_fn_with_state(policy, strict_transport_security),
+        );
+        // An origin-form request, as a TLS-terminating proxy forwards it: no
+        // scheme in the request line.
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        resp.headers()
+            .get(STRICT_TRANSPORT_SECURITY)
+            .map(|v| v.to_str().unwrap().to_string())
+    }
+
+    /// #2661: an `https` community sends HSTS though the request reaching the
+    /// daemon names no scheme.
+    #[tokio::test]
+    async fn issue_2661_an_https_public_url_sends_hsts_on_an_origin_form_request() {
+        assert_eq!(
+            hsts_of(Some("https://vtc.example.com")).await.as_deref(),
+            Some(HSTS_VALUE)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_http_or_absent_public_url_sends_no_hsts() {
+        assert_eq!(hsts_of(Some("http://localhost:8200")).await, None);
+        assert_eq!(hsts_of(None).await, None);
+        assert_eq!(hsts_of(Some("not a url")).await, None);
+    }
 }

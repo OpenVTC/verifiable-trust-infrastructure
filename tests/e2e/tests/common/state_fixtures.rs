@@ -247,6 +247,8 @@ impl OpInfra {
             imported_ks: &fx.store.imported_ks,
             contexts_ks: &fx.store.contexts_ks,
             webvh_ks: &fx.store.webvh_ks,
+            webs_ks: &fx.store.webs_ks,
+            webs_host: None,
             audit: &fx.store.audit,
             snapshot_ks: &fx.store.snapshot_ks,
             service_state_ks: &fx.store.service_state_ks,

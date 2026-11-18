@@ -28,6 +28,7 @@ import {
   adoptConsoleKey,
   ed25519Available,
   forgetConsoleKey,
+  isoSeconds,
   keyStorageDurability,
   loadConsoleKey,
   mintConsoleKey,
@@ -301,6 +302,72 @@ export async function enrolThisBrowser(
     }).catch(() => undefined);
   }
   return { key: asConsoleKey(body.signingKey), durability };
+}
+
+/** How long an authorization for another key stays usable unsigned-for: the
+ *  time the holder of that key has to send it (`cnm access authorize-key`'s
+ *  `--valid-for` default). */
+export const AUTHORIZATION_VALID_MS = 60 * 60 * 1000;
+
+/** The longest delegation the VTC grants (`console_key::MAX_LIFETIME_DAYS`). */
+export const MAX_DELEGATION_DAYS = 30;
+
+export interface AuthorizeKeyRequest {
+  /** The other key, by its own `did:key` — an assistant's (`vtc-mcp`), say. */
+  signingKeyDid: string;
+  label?: string;
+  /** How long the delegation lasts once enrolled, in days (1 – 30). */
+  days: number;
+}
+
+/** A signed authorization, for the holder of the named key to send. */
+export interface KeyAuthorization {
+  document: Record<string, unknown>;
+  /** When it lapses unless sent. */
+  usableUntil: Date;
+}
+
+/**
+ * Sign, as your identity and through the wallet, an
+ * `auth/signing-key/authorize/0.1` for a key this browser does not hold — the
+ * same document `cnm access authorize-key` writes. Its holder sends it inside
+ * its own `auth/signing-key/enroll/0.2` (`vtc_enrol_signing_key` for
+ * `vtc-mcp`); nothing is sent to the VTC from here.
+ *
+ * The VTC checks the rest when it is used: single-use, usable only by the key
+ * it names, not signed by a delegated key, and its terms exactly the
+ * enrolment's (0.2 item 13).
+ */
+export async function authorizeAnotherKey(req: AuthorizeKeyRequest): Promise<KeyAuthorization> {
+  const signingKeyDid = req.signingKeyDid.trim();
+  if (!/^did:key:z[1-9A-HJ-NP-Za-km-z]+$/.test(signingKeyDid)) {
+    throw new Error("Name the key by its did:key (did:key:z…).");
+  }
+  if (!Number.isInteger(req.days) || req.days < 1 || req.days > MAX_DELEGATION_DAYS) {
+    throw new Error(`A delegation lasts between 1 and ${MAX_DELEGATION_DAYS} days.`);
+  }
+  const identity = (await fetchWhoami()).session.subject;
+  if (signingKeyDid === identity) throw new Error("A key cannot be authorized to act as itself.");
+  const held = await loadConsoleKey().catch(() => null);
+  if (held?.consoleDid === signingKeyDid) {
+    throw new Error("That is this browser's own key. Renew it under “This browser signs”.");
+  }
+  const now = Date.now();
+  const terms: Record<string, unknown> = {
+    signingKeyDid,
+    identityDid: identity,
+    scope: "console",
+    expiresAt: isoSeconds(new Date(now + req.days * 24 * 60 * 60 * 1000)),
+  };
+  const label = req.label?.trim();
+  if (label) terms.deviceLabel = label;
+  const usableUntil = new Date(now + AUTHORIZATION_VALID_MS);
+  const envelope = {
+    ...(await addressedDocument(TASK_SIGNING_KEY_AUTHORIZE, terms, identity)),
+    expiresAt: isoSeconds(usableUntil),
+  };
+  const document = await signWithWallet(envelope, identity);
+  return { document, usableUntil };
 }
 
 /**

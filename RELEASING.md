@@ -85,10 +85,20 @@ that branch. See [RELEASES.md](RELEASES.md#what-goes-on-a-release-branch).
 
 ## What gets published
 
-**28 of 37 crates.** The nine that stay internal set `publish = false` in their
-own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
-`vta-mobile-core`, `didcomm-test`, `vti-fuzz`, `vti-e2e-tests`, `room-host`,
-`vti-rooms-wasm`, `vti-witness`.
+**40 of 51 crates publish.** This is the authoritative count: the eleven
+workspace members that stay internal set `publish = false` in their own
+`Cargo.toml`, each with a comment saying why, and are listed here —
+`scripts/check-docs.py` fails CI when this list, or any "N of M" count in
+CLAUDE.md or the engineering notes, disagrees with the manifests:
+
+<!-- internal-crates:begin -->
+`didcomm-test`, `room-host`, `vta-enclave`, `vta-mcp`, `vta-mobile-core`,
+`vtc-mcp`, `vti-e2e-tests`, `vti-mcp-common`, `vti-rooms-wasm`,
+`vti-voting-service`, `vti-witness`.
+<!-- internal-crates:end -->
+
+The fuzz crate (`vti-fuzz`, under `fuzz/`) is not a workspace member and is
+`publish = false` too.
 
 | Published | Consumed by |
 |---|---|
@@ -99,12 +109,13 @@ own `Cargo.toml`, each with a comment saying why: `vta-enclave`, `vta-mcp`,
 | `vtc-client` | enm |
 | `pnm-cli`, `cnm-cli` | operator binaries, `cargo install` |
 | `vtc-service` | the VTC binary (`vtc`), `cargo install vtc-service` — see below |
-| `vta-service` | **openvtc-core**, as a dev-dependency — `test_support::MockVta` |
+| `vta-test-support` | **openvtc-core**, as a dev-dependency — `MockVta` (until #2570, `vta_service::test_support::MockVta`) |
+| `vta-service` | `vta-test-support`'s closure, and `openvtc-core` through it |
 | `vti-vtn` | `vtc-service`, and the VTN service and `nnm` in OpenVTC/verifiable-trust-network |
 | `vti-trust-task-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
 | `vti-oob-server` | `vtc-service`, and the VTN service in OpenVTC/verifiable-trust-network |
-| the subsystem crates (`vta-*`, `vti-webauthn`, `vti-rooms*`, `vti-vetting-pcs`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
-| `vti-specs`, `vti-specs-{rooms,vta,vtc,core}` | `vta-sdk`'s closure: the generated Trust Task types it re-exports as `vta_sdk::specs`. Each package carries its `trust-tasks.lock` and vendored bundles, which its `build.rs` generates from |
+| the subsystem crates (`vta-*` incl. `vta-persona`, `vti-webauthn`, `vti-rooms`, `vti-rooms-dtg`, `vti-vetting-pcs`, `vti-voting`) | nothing directly; they are `vta-service`'s and `vtc-service`'s closure |
+| `vti-specs`, `vti-specs-{rooms,vta,vtc,vtn,core}` | `vta-sdk`'s closure: the generated Trust Task types it re-exports as `vta_sdk::specs`. Each package carries its `trust-tasks.lock` and vendored bundles, which its `build.rs` generates from |
 
 ### npm: `@openvtc/vti-rooms-wasm`
 
@@ -157,7 +168,8 @@ limit; most of it is the two bundles.
 #938 unpublished it, and its eleven-plus-one closure, on the finding that
 nothing external depended on them. The audit read normal dependencies;
 `openvtc-core` depends on `vta-service` as a **dev-dependency**, for
-`test_support::MockVta` — an in-process VTA its end-to-end tests run against.
+`test_support::MockVta` — an in-process VTA its end-to-end tests run against
+(since #2570, `vta_test_support::MockVta`, which depends on `vta-service`).
 That harness boots the real service, so no client crate can substitute for it.
 
 Unpublishing did not just freeze the crate, it broke it. `vti-common`
@@ -326,10 +338,13 @@ Two things must be true, and one of them is not yet:
 - **`RELEASE_PLZ_TOKEN`** — a PAT (contents + pull-requests write) or GitHub App
   token. **Not currently set.** GitHub suppresses workflow runs for events
   authored by the default `GITHUB_TOKEN`, so without it the Release PR opens
-  with no CI on it. Only DCO is a required check, so it would still be
-  mergeable — meaning the one commit that publishes to crates.io would be the
-  one commit CI never built. Until the token exists, close-and-reopen the
-  Release PR to trigger CI before merging.
+  with no CI on it. With only DCO required it used to stay mergeable — the
+  one commit that publishes to crates.io would be the one commit CI never
+  built; with the cheap gates required (#2647) it instead waits on checks that
+  never start. Either way, close-and-reopen the Release PR to trigger CI
+  before merging. The workflows check the token before using it, and use a
+  GitHub App token instead when `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`
+  are set (`.github/actions/release-token`, #2646).
 - **Trusted Publishing** — already configured. crates.io mints a short-lived
   token per run from the workflow's OIDC identity; no registry token is stored
   in this repo. See `docs/05-design-notes/trusted-publishing.md`.

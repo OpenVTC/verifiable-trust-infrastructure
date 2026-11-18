@@ -108,4 +108,25 @@ describe("Roles page", () => {
       approveScope: [],
     });
   });
+
+  it("keeps the form and what was entered when a definition is refused (#2609)", async () => {
+    mockFetch([
+      taskRoute(LIST, { roles: ROLES }),
+      taskRoute(DEFINE, { code: "conflict", message: "A role named pages exists." }, 409),
+    ]);
+    renderWithProviders(<Roles />, {
+      route: "/roles",
+      path: "/roles",
+      whoami: viewer(["vtc.roles.assign", "vtc.approvals.admin"]),
+    });
+    await screen.findByText("events-team");
+    fireEvent.click(screen.getByRole("button", { name: /define role/i }));
+    fireEvent.change(screen.getByLabelText("Role name"), { target: { value: "pages" } });
+    fireEvent.click(screen.getByLabelText("May hold: vtc.surface.admin"));
+    fireEvent.click(screen.getByRole("button", { name: /send for approval/i }));
+
+    expect(await screen.findByText(/Define failed: A role named pages exists/)).toBeTruthy();
+    expect((screen.getByLabelText("Role name") as HTMLInputElement).value).toBe("pages");
+    expect((screen.getByLabelText("May hold: vtc.surface.admin") as HTMLInputElement).checked).toBe(true);
+  });
 });

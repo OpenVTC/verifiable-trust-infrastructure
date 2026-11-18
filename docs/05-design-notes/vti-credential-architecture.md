@@ -1,6 +1,13 @@
 # VTI Credential Architecture — invite, hold, present, join
 
-**Status:** SPECIFY (spec-driven). Awaiting review before PLAN → TASKS →
+**Status:** **largely implemented; read as design history.** Much of what this
+specifies has shipped — the holder credential vault, consent records, DCQL
+matching, the `credential-exchange/*` tasks, invitation credentials and
+credential-based joins (join criteria) — but the companion
+[task checklist](vti-credential-architecture-tasks.md) was not kept up past
+Phase 1, so check the code before relying on any detail. Companion slides:
+[credential-architecture-presentation.html](credential-architecture-presentation.html).
+Originally the SPECIFY artifact, awaiting review before PLAN → TASKS →
 IMPLEMENT. Greenfield: breaking changes are in scope where they make the
 architecture better. Security and privacy are the gating constraints.
 

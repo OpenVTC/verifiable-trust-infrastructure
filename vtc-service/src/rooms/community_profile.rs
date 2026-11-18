@@ -12,9 +12,12 @@
 //! sealed tier, they are one more opaque record. They never go into the room's host record,
 //! a credential, `rooms/owner/register` or any other `rooms/*` task.
 //!
-//! A write replaces the whole profile, so the members it does not manage — `tags`, `emoji`,
-//! `ext`, which a member holding `curate` may have set in the room — are first read back
-//! (`rooms/keys/profile/read`) and carried over (update item 10).
+//! A write replaces the whole profile, so every member it does not manage — every member but
+//! `name` and `description`: `tags`, `emoji`, `recordMembers`, `ext`, which a member holding
+//! `curate` may have set in the room — is first read back (`rooms/keys/profile/read`) and
+//! carried over (update item 10). A read that fails writes nothing: the profile stays pending
+//! and is retried, because one written without its `recordMembers` would withdraw the
+//! replies and reactions the room's writers may use.
 //!
 //! # Never the request's to fail
 //!
@@ -283,28 +286,7 @@ async fn attempt(
 async fn write_at_vta(holder: &KeyHolder, vtc_did: &str, room: &OwnedRoom) -> Result<(), String> {
     let as_community = json!({ MEMBER_EXT: { "member": vtc_did } });
 
-    // Update item 10 SHOULD: tags, emoji and ext a curator set in the room are kept. A read
-    // that fails is no reason not to write: the label is what the community owes its members.
-    let mut profile = serde_json::Map::new();
-    let read = holder
-        .ask(
-            PROFILE_READ,
-            json!({ "roomId": room.room_id, "host": vtc_did, "ext": as_community }),
-            PROFILE_TIMEOUT,
-        )
-        .await;
-    match read {
-        Ok(current) if current["status"] == "found" => {
-            for carried in ["tags", "emoji", "ext"] {
-                if let Some(v) = current["profile"].get(carried) {
-                    profile.insert(carried.into(), v.clone());
-                }
-            }
-        }
-        Ok(_) => {}
-        Err(e) => tracing::debug!(room = %room.room_id, error = %holder_error(&e),
-            "could not read a community room's profile before re-writing it"),
-    }
+    let mut profile = carried_members(holder, vtc_did, room, &as_community).await?;
     profile.insert("name".into(), json!(room.label));
     if let Some(d) = &room.description {
         profile.insert("description".into(), json!(d));
@@ -334,6 +316,62 @@ async fn write_at_vta(holder: &KeyHolder, vtc_did: &str, room: &OwnedRoom) -> Re
             "the community's VTA answered rooms/keys/profile/write with outcome `{other}`"
         )),
     }
+}
+
+/// The members of the room's current profile the community does not manage — every member
+/// but `name` and `description` (update item 10) — or none when the room has no profile.
+///
+/// A list of what to keep would drop each member a later profile adds, as one of `tags`,
+/// `emoji` and `ext` dropped `recordMembers`. A read that fails is an error, not an empty
+/// profile: written blind, the profile would lose the `recordMembers` that let the room's
+/// writers reply and react, so the write stays pending and is retried.
+async fn carried_members(
+    holder: &KeyHolder,
+    vtc_did: &str,
+    room: &OwnedRoom,
+    as_community: &Value,
+) -> Result<serde_json::Map<String, Value>, String> {
+    let answer = holder
+        .ask(
+            PROFILE_READ,
+            json!({ "roomId": room.room_id, "host": vtc_did, "ext": as_community }),
+            PROFILE_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "could not read the room's current profile: {}",
+                holder_error(&e)
+            )
+        })?;
+    let answer: profile_read::Response = serde_json::from_value(answer).map_err(|e| {
+        format!("the community's VTA answered rooms/keys/profile/read in a shape its specification does not define: {e}")
+    })?;
+    let current = match (answer.status, answer.profile) {
+        (profile_read::ResponseStatus::Found, Some(profile)) => profile,
+        (profile_read::ResponseStatus::Found, None) => {
+            return Err(
+                "the community's VTA answered rooms/keys/profile/read `found` without a profile"
+                    .into(),
+            );
+        }
+        // Never written, or removed on purpose by a curator: nothing to carry.
+        (profile_read::ResponseStatus::Absent | profile_read::ResponseStatus::Cleared, _) => {
+            return Ok(serde_json::Map::new());
+        }
+        (other, _) => {
+            return Err(format!(
+                "the community's VTA answered rooms/keys/profile/read with status `{other}`"
+            ));
+        }
+    };
+    let Value::Object(mut members) = serde_json::to_value(current).map_err(|e| e.to_string())?
+    else {
+        return Err("the room's current profile is not an object".into());
+    };
+    members.remove("name");
+    members.remove("description");
+    Ok(members)
 }
 
 fn holder_error(e: &HolderError) -> String {

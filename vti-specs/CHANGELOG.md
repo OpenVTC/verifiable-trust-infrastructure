@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.15.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.14.0...vti-specs-v0.15.0) — 2026-11-15
+
+
+## [0.14.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.13.0...vti-specs-v0.14.0) — 2026-11-14
+
+
+## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.12.0...vti-specs-v0.13.0) — 2026-11-12
+
+
+## [0.12.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.11.0...vti-specs-v0.12.0) — 2026-11-10
+
+
+## [0.11.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.10.0...vti-specs-v0.11.0) — 2026-11-09
+
+
+## [0.10.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.9.0...vti-specs-v0.10.0) — 2026-11-05
+
+
+## [0.9.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.8.0...vti-specs-v0.9.0) — 2026-11-05
+
+
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.7.0...vti-specs-v0.8.0) — 2026-11-05
+
+
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.6.0...vti-specs-v0.7.0) — 2026-11-04
+
+
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-v0.5.0...vti-specs-v0.6.0) — 2026-11-04
 
 

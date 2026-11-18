@@ -25,11 +25,13 @@ use vti_vtn::verify::{
 
 use crate::common::second_party::GatedAdmin;
 
-const JOIN: &str = "https://trusttasks.org/spec/vtc/networks/join/0.1";
-const REPUDIATE: &str = "https://trusttasks.org/spec/vtc/networks/repudiate/0.1";
-const LEAVE: &str = "https://trusttasks.org/spec/vtc/networks/leave/0.1";
-const REGISTER: &str = "https://trusttasks.org/spec/vtc/networks/groups/register/0.1";
-const SHOW: &str = "https://trusttasks.org/spec/vtc/networks/show/0.1";
+const JOIN: &str = "https://trusttasks.org/spec/vtc/networks/join/0.2";
+const REPUDIATE: &str = "https://trusttasks.org/spec/vtc/networks/repudiate/0.2";
+const LEAVE: &str = "https://trusttasks.org/spec/vtc/networks/leave/0.2";
+const REGISTER: &str = "https://trusttasks.org/spec/vtc/networks/groups/register/0.2";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/networks/show/0.2";
+const DELIVER: &str = "https://trusttasks.org/spec/vtc/networks/deliver/0.1";
+const PREVIEW: &str = "https://trusttasks.org/spec/vtc/networks/preview/0.1";
 
 const JOIN_ERR_NOT_LISTED: &str = "vtc/networks/join:notListed";
 const JOIN_ERR_NETWORK_MISMATCH: &str = "vtc/networks/join:networkMismatch";
@@ -45,6 +47,11 @@ const LEAVE_ERR_NETWORK_REFUSED: &str = "vtc/networks/leave:networkRefused";
 const REGISTER_ERR_NOT_MEMBER: &str = "vtc/networks/groups/register:notMember";
 const REGISTER_ERR_UNKNOWN_GROUP: &str = "vtc/networks/groups/register:unknownGroup";
 const REGISTER_ERR_NETWORK_REFUSED: &str = "vtc/networks/groups/register:networkRefused";
+const DELIVER_ERR_NOT_MEMBER: &str = "vtc/networks/deliver:notMember";
+const DELIVER_ERR_ROLE_UNREGISTERED: &str = "vtc/networks/deliver:roleUnregistered";
+const DELIVER_ERR_ENVELOPE_INVALID: &str = "vtc/networks/deliver:envelopeInvalid";
+const PREVIEW_ERR_NETWORK_UNREACHABLE: &str = "vtc/networks/preview:networkUnreachable";
+const PREVIEW_ERR_NETWORK_MISMATCH: &str = "vtc/networks/preview:networkMismatch";
 
 fn tt_error_code(body: &Value) -> &str {
     body["payload"]["code"].as_str().unwrap_or_default()
@@ -378,6 +385,49 @@ async fn join_refusals_say_why() {
     assert_eq!(r["payload"]["membership"]["groups"][0]["role"], "admins");
 }
 
+/// A join that would be refused is refused before the administrator's step-up is asked
+/// for (VTI-APV-015's gesture is for the act on screen, not for a refusal): the console
+/// shows what is wrong and costs no gesture. One that would succeed asks for it.
+#[tokio::test]
+async fn a_join_that_would_fail_asks_for_no_step_up() {
+    let f = fixture().await;
+    let (url, network, net) = fake_network(&f.did, true).await;
+    let send = |payload: Value| {
+        let (vtc, requester, did) = (&f.vtc, &f.admin.requester, f.did.clone());
+        async move {
+            let doc = crate::common::signed::signed_to(requester, &did, JOIN, payload).await;
+            crate::common::signed::post(vtc, &doc).await.1
+        }
+    };
+
+    let r = send(json!({ "url": url, "network": network })).await;
+    assert_eq!(tt_error_code(&r), JOIN_ERR_ROLE_UNASSIGNED, "{r}");
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_none(),
+        "{r}"
+    );
+    let r = send(json!({ "url": url, "network": "did:key:z6MkOther", "groups": admins() })).await;
+    assert_eq!(tt_error_code(&r), JOIN_ERR_NETWORK_MISMATCH, "{r}");
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_none(),
+        "{r}"
+    );
+    net.lock().await.refuse.session = true;
+    let r = send(json!({ "url": url, "network": network, "groups": admins() })).await;
+    assert_eq!(tt_error_code(&r), JOIN_ERR_NOT_LISTED, "{r}");
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_none(),
+        "{r}"
+    );
+
+    net.lock().await.refuse = Refuse::default();
+    let r = send(json!({ "url": url, "network": network, "groups": admins() })).await;
+    assert!(
+        crate::common::second_party::step_up_request(&r).is_some(),
+        "{r}"
+    );
+}
+
 #[tokio::test]
 async fn repudiate_refusals_say_why() {
     let f = fixture().await;
@@ -471,4 +521,189 @@ async fn leave_and_register_refusals_say_why() {
         .await;
     assert_eq!(status, StatusCode::OK, "{r}");
     assert_eq!(r["payload"]["membership"]["state"], "departed");
+}
+
+/// A broadcast from `origin` for the network's `role`, its one hop by `hop` to `group`.
+async fn envelope(origin: &Identity, hop: &Identity, group: &str) -> Value {
+    use vti_vtn::relay::{self, Outgoing};
+    let message = relay::new_message(
+        origin,
+        &Outgoing {
+            role: "admins".into(),
+            class: "notice".into(),
+            subject: "Exercise".into(),
+            body: "09:00 UTC".into(),
+            reply_to: None,
+        },
+        Duration::hours(1),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    let id = message["id"].as_str().unwrap().to_string();
+    let hop = relay::new_hop(hop, &id, group, "admins", 0).await.unwrap();
+    json!({ "message": message, "hops": [hop] })
+}
+
+/// `vtc/networks/deliver` from `network` to the community `to`, signed by the network.
+async fn delivery(network: &Identity, to: &str, role: &str, envelope: &Value) -> Value {
+    let doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": DELIVER,
+        "issuer": network.did(),
+        "recipient": to,
+        "issuedAt": Utc::now().to_rfc3339(),
+        "payload": { "role": role, "envelope": envelope },
+    });
+    network
+        .sign_document_for(doc, AUTHENTICATION)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn deliveries_are_taken_only_from_a_joined_network_for_a_registered_role() {
+    let f = fixture().await;
+    let (url, network, net) = fake_network(&f.did, false).await;
+    let identity = net.lock().await.identity.clone();
+    let group = vtc_service::groups::get(f.vtc.state.directory.ks(), "admins")
+        .await
+        .unwrap()
+        .unwrap()
+        .group_did;
+    let send = |doc: Value| {
+        let vtc = &f.vtc;
+        async move { crate::common::signed::post(vtc, &doc).await }
+    };
+
+    // Not yet a network this community joined.
+    let env = envelope(&identity, &identity, &group).await;
+    let (_, r) = send(delivery(&identity, &f.did, "admins", &env).await).await;
+    assert_eq!(tt_error_code(&r), DELIVER_ERR_NOT_MEMBER, "{r}");
+
+    let (status, r) = f
+        .call(
+            JOIN,
+            json!({ "url": url, "network": network, "groups": admins() }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    // The registration names the community's Trust Task endpoint.
+    assert_eq!(
+        r["payload"]["membership"]["groups"][0]["endpoint"],
+        "https://vtc.example.com/v1/trust-tasks"
+    );
+
+    // A role the community registered no group for.
+    let (_, r) = send(delivery(&identity, &f.did, "clinical", &env).await).await;
+    assert_eq!(tt_error_code(&r), DELIVER_ERR_ROLE_UNREGISTERED, "{r}");
+
+    // An envelope whose last hop is another network's.
+    let rogue = Identity::generate();
+    let forged = envelope(&rogue, &rogue, &group).await;
+    let (_, r) = send(delivery(&identity, &f.did, "admins", &forged).await).await;
+    assert_eq!(tt_error_code(&r), DELIVER_ERR_ENVELOPE_INVALID, "{r}");
+
+    // Delivered once, and a repeat is a duplicate.
+    let (status, r) = send(delivery(&identity, &f.did, "admins", &env).await).await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    assert_eq!(r["payload"]["status"], "delivered", "{r}");
+    let (_, r) = send(delivery(&identity, &f.did, "admins", &env).await).await;
+    assert_eq!(r["payload"]["status"], "duplicate", "{r}");
+}
+
+/// `vtc/networks/preview`: what the console shows before a join. An administrator reads the
+/// network's profile and roles and whether it lists the community, with no step-up; a
+/// mismatched DID and an unreachable URL are refused with the declared codes; anyone else is
+/// refused before the network is contacted.
+#[tokio::test]
+async fn a_preview_reads_the_network_and_where_the_community_stands() {
+    use crate::common::signed;
+    let f = fixture().await;
+    let (url, network, net) = fake_network(&f.did, true).await;
+
+    // A read: the requester signs it alone, with no gesture.
+    let admin = &f.admin.requester;
+    let (status, r) = signed::call(
+        &f.vtc,
+        admin,
+        PREVIEW,
+        json!({ "url": url, "network": network }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    let p = &r["payload"];
+    assert_eq!(p["network"], network);
+    assert_eq!(p["name"], "WHN");
+    assert_eq!(p["roles"], json!([{ "name": "admins", "required": true }]));
+    assert_eq!(p["listed"], true);
+    assert_eq!(p["entryState"], "listed");
+    assert!(p.get("membershipState").is_none(), "{r}");
+
+    // No expected DID: still read, and the DID found is named.
+    let (status, r) = signed::call(&f.vtc, admin, PREVIEW, json!({ "url": url })).await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    assert_eq!(r["payload"]["network"], network);
+
+    let (_, r) = signed::call(
+        &f.vtc,
+        admin,
+        PREVIEW,
+        json!({ "url": url, "network": "did:key:z6MkOther" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), PREVIEW_ERR_NETWORK_MISMATCH, "{r}");
+    let (_, r) = signed::call(
+        &f.vtc,
+        admin,
+        PREVIEW,
+        json!({ "url": "http://127.0.0.1:1" }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), PREVIEW_ERR_NETWORK_UNREACHABLE, "{r}");
+
+    // Not listed is an answer, not a refusal.
+    net.lock().await.refuse.session = true;
+    let (status, r) = signed::call(
+        &f.vtc,
+        admin,
+        PREVIEW,
+        json!({ "url": url, "network": network }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    assert_eq!(r["payload"]["listed"], false);
+    assert!(r["payload"]["notListedReason"].as_str().is_some(), "{r}");
+    assert!(r["payload"].get("entryState").is_none(), "{r}");
+    net.lock().await.refuse.session = false;
+
+    // Once joined, both sides say so.
+    let (status, r) = f
+        .call(
+            JOIN,
+            json!({ "url": url, "network": network, "groups": admins() }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    let (_, r) = signed::call(
+        &f.vtc,
+        admin,
+        PREVIEW,
+        json!({ "url": url, "network": network }),
+    )
+    .await;
+    assert_eq!(r["payload"]["entryState"], "acknowledged", "{r}");
+    assert_eq!(r["payload"]["membershipState"], "acknowledged", "{r}");
+
+    // Only an administrator may ask.
+    let moderator =
+        signed::party_with_role(&f.vtc, vtc_service::acl::VtcRole::Moderator, &[]).await;
+    let (_, r) = signed::call(
+        &f.vtc,
+        &moderator,
+        PREVIEW,
+        json!({ "url": url, "network": network }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), "permissionDenied", "{r}");
 }

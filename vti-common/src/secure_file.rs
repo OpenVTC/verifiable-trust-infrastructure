@@ -228,9 +228,13 @@ mod tests {
 
         // SAFETY: `umask` has no memory-safety preconditions; it only swaps the
         // process file-creation mask, which is restored straight after.
+        #[allow(unsafe_code)]
         let previous = unsafe { libc::umask(0o022) };
         let result = write_secret_file(&f, b"sensitive");
-        unsafe { libc::umask(previous) };
+        #[allow(unsafe_code)]
+        unsafe {
+            libc::umask(previous)
+        };
         result.expect("write_secret_file succeeds");
 
         let mode = std::fs::metadata(&f).unwrap().permissions().mode();

@@ -33,7 +33,7 @@
 use ed25519_dalek::SigningKey;
 use vta_sdk::client::{CreateAclRequest, SurfaceTransport, VtaClient};
 use vta_sdk::did_key::ed25519_multibase_pubkey;
-use vta_service::test_support::MockVta;
+use vta_test_support::MockVta;
 
 mod common;
 

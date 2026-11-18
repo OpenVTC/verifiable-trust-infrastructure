@@ -666,6 +666,16 @@ mod tests {
         }
     }
 
+    /// VTI-KEY-008 is withdrawn (every node resolves did:webs, VTI-KEY-003),
+    /// so a document the VTA mints declares nothing: no `resolvedMethods`
+    /// and no JSON-LD term for it.
+    #[test]
+    fn vti_key_008_withdrawn_a_minted_document_declares_no_resolved_methods() {
+        let config = crate::test_support::test_app_config(std::path::PathBuf::from("/tmp/x"));
+        let doc = build_did_document_inner(&fake_keys(), None, &config, true, false, &None);
+        assert!(!doc.to_string().contains("resolvedMethods"), "{doc}");
+    }
+
     const MEDIATOR: &str = "did:webvh:mediator.example.com:mediator";
 
     /// A VTA config with a mediator and `services.tsp` set as asked.

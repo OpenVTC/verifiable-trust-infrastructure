@@ -46,7 +46,7 @@
 
 use chrono::{DateTime, Utc};
 use tracing::{debug, warn};
-use vti_common::audit::{AuditEnvelope, AuditEvent, MemberRemovedData, MemberUpdatedData};
+use vtc_audit::{AuditEnvelope, AuditEvent, MemberRemovedData, MemberUpdatedData};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use crate::registry::model::SyncJobState;
     use crate::registry::storage::list_sync_jobs;
-    use vti_common::audit::{
+    use vtc_audit::{
         AuditKeyStore, AuditWriter, JoinRequestData, MemberAddedData, MemberRemovedData,
         RoleChangedData,
     };
@@ -516,15 +516,13 @@ mod tests {
                 .write(
                     "did:key:zCarol",
                     Some("did:key:zCarol"),
-                    AuditEvent::DirectoryCardPublication(
-                        vti_common::audit::DirectoryCardPublicationData {
-                            entry_id: "dir_Q2xhcmFRMmxoY21GUk1t".into(),
-                            change: change.into(),
-                            reason: None,
-                            card_digest: Some("zQmExample".into()),
-                            document_id: None,
-                        },
-                    ),
+                    AuditEvent::DirectoryCardPublication(vtc_audit::DirectoryCardPublicationData {
+                        entry_id: "dir_Q2xhcmFRMmxoY21GUk1t".into(),
+                        change: change.into(),
+                        reason: None,
+                        card_digest: Some("zQmExample".into()),
+                        document_id: None,
+                    }),
                 )
                 .await
                 .unwrap();

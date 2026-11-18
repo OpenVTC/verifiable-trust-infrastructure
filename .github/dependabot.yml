@@ -75,6 +75,17 @@ updates:
       # when arkworks moves off rand 0.8.
       - dependency-name: "rand_chacha"
         update-types: ["version-update:semver-major"]
+      # webauthn-rs 0.6 replaced OpenSSL with RustCrypto in webauthn-rs-core
+      # and stubbed out Ed25519: every OKP key is refused with
+      # `COSEKeyEDUnsupported`, at registration and at authentication. The
+      # VTC's install flow requires an Ed25519 passkey (it is the admin's
+      # did:key), and every Ed25519 passkey already enrolled would stop
+      # verifying, so #2532 / #2535 failed 360 vtc-service tests. The port is
+      # kept on `wip/webauthn-0.6-port`, with a test showing 0.5-stored passkeys
+      # load under 0.6. All three crates, since they move together; 0.5 patches
+      # still come through. Lift this when a 0.6 release verifies Ed25519 again.
+      - dependency-name: "webauthn-rs*"
+        versions: [">= 0.6"]
 
   # ── GitHub Actions ────────────────────────────────────────────────────
   # Every `uses:` in this repo is a full 40-hex commit SHA with the version in
@@ -115,6 +126,12 @@ updates:
   # Two Dockerfiles at the repo root: the service image and the Nitro enclave
   # image. A stale base is how a patched CVE fails to reach the artifact even
   # when the Rust tree is clean.
+  #
+  # Every `FROM` is `image:tag@sha256:…` (#2653), and Dependabot moves tag and
+  # digest together, including a digest-only republish of the same tag. The
+  # Rust image used to be `rust:${RUST_VERSION}-bookworm`, which this entry
+  # cannot resolve; it is inline now. The Nitro image's apk pins are not
+  # Dependabot's to move: see Dockerfile.nitro, Stage 3.
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -162,3 +179,95 @@ updates:
         update-types:
           - minor
           - patch
+
+  # ── Rust: the fuzz harness ────────────────────────────────────────────
+  # `fuzz/` is its own workspace (cargo-fuzz wants it outside the root graph),
+  # so the `/` entry never reads its manifest (#2658). It keeps no lockfile —
+  # fuzz.yml resolves it from the root Cargo.lock — so what this proposes is a
+  # move of the harness's own requirements (libfuzzer-sys and the rest).
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Path dependencies on this workspace; they move with it, not here.
+      - dependency-name: "vta-*"
+      - dependency-name: "vti-*"
+      # The harness builds against the root Cargo.lock, so its webauthn-rs
+      # line must match the workspace's: 0.6 is held back there (see the root
+      # cargo entry above — it refuses Ed25519 passkeys). A /fuzz-only bump
+      # leaves the root lock unable to satisfy the fuzz manifest.
+      - dependency-name: "webauthn-rs*"
+        versions: [">= 0.6"]
+      # The same rand_chacha 0.3 hold as the root entry (arkworks needs the
+      # rand 0.8 trait set; a 0.10 stream would re-key every PCS deployment).
+      # This entry resolves the workspace manifest, so without it a /fuzz run
+      # proposes the root bump the root entry refuses (#2737).
+      - dependency-name: "rand_chacha"
+        update-types: ["version-update:semver-major"]
+
+  # ── npm: the VTC admin console ────────────────────────────────────────
+  # `vtc-service/admin-ui` is built into the bundle the published
+  # `vtc-service` crate ships, so its lockfile is shipped code. Only security
+  # alerts reached it before (#2658); nothing proposed an ordinary bump.
+  - package-ecosystem: npm
+    directory: /vtc-service/admin-ui
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore"
+      include: scope
+    groups:
+      # lucide-react (the icons) and lucide-static (the words each icon is filed
+      # under, for the badge picture builder's search) must be the same release:
+      # a tag file from another release names a different set of icons, and the
+      # builder's test that every icon has its words fails. Ungrouped, a major
+      # arrives as two PRs that each fail alone (#2734, #2736). Listed before
+      # `minor-and-patch` so it takes lucide's bumps of every kind.
+      lucide:
+        patterns:
+          - "lucide-*"
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # TypeScript 7 is the native (Go) compiler and a new major; the build's
+      # openapi-typescript 7.x declares a TypeScript 5 peer, so `npm ci` fails
+      # ERESOLVE (#2719). Move it on purpose, with openapi-typescript.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+
+  # ── The Rust toolchain ────────────────────────────────────────────────
+  # `rust-toolchain.toml` pins the compiler CI builds with (#2658). This
+  # proposes the next stable as a pull request, where `-D warnings` under the
+  # new clippy is a CI result on that PR instead of main turning red by
+  # itself. Move the Dockerfiles' `FROM rust:` in the same PR
+  # (scripts/check-toolchain-pins.sh warns until they agree); `rust-version`
+  # (the MSRV) moves separately, and only on purpose.
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build"
+      include: scope

@@ -2,7 +2,91 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.10.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.9.0...vti-voting-v0.10.0) — 2026-11-04
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.18.0...vti-voting-v0.19.0) — 2026-11-15
+
+
+## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.17.0...vti-voting-v0.18.0) — 2026-11-14
+
+
+### Build & CI
+
+- Harden CI and the build: pinned toolchain, image digests, release-token checks, advisories, fuzzing, tooling lint ([#2709](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2709))
+
+* build: pin the Rust toolchain to 1.95.0 and pass clippy 1.95 ([#2658](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2658))
+
+  rust-toolchain.toml pins 1.95.0, the workspace rust-version and the Dockerfiles' Rust image. CI jobs install it with scripts/install-rust-toolchain.sh instead of a floating stable, so a new Rust release's lints can no longer turn main red with no code change; Dependabot proposes the next one as a PR. scripts/check-toolchain-pins.sh keeps the pin at or above the MSRV and the Dockerfiles in line.
+
+  Clippy 1.95 is stricter than the stable CI ran in nonminimal_bool and collapsible_match: De Morgan rewrites at eleven call sites (behaviour unchanged), Option::take().map in vta-persona, and one allow on vti_voting::audit::check_order, where a match guard would fall through to later arms.
+
+- **deps**: Enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe ([#2708](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2708))
+
+* build(deps): enforce cargo-deny bans/sources, drop unused deps, hoist shared deps, forbid unsafe
+
+  pgp, openssl only via webauthn-rs 0.5, no wildcards, and
+  multiple-versions = "deny" with a skip list of today's duplicates grouped by
+  cause. The two advisory ignores cargo-deny reports as not detected
+  (RUSTSEC-2026-0381, RUSTSEC-2024-0436) are removed, the stale [graph]
+  comment rewritten, and the yanked crypto-bigint 0.7.6 moved to 0.7.11.
+
+  ring leaves the VTA and VTC graphs; it stays only under attest-verify.
+
+  removed from 19 crates; deliberate ones are listed under
+  [package.metadata.cargo-machete] ignored. A tier-0 "manifest hygiene" CI job
+  runs cargo-machete and the lint check.
+
+  once in [workspace.dependencies]; vta-tee inherits aws-lc-rs. The five
+  crypto crates carry real minimum-patch floors, enforced by
+  check-workspace-version-reqs.py.
+
+  (check-workspace-lints.py); unsafe_code = "forbid" workspace-wide, with
+  the four crates that need unsafe restating the table at "deny" and
+  rewritten safely. The two missing publish = false comments are added.
+
+
+
+### Performance
+
+- **rooms**: Indexed record reads, per-room locks, commits outside the host lock, per-election ballot boxes ([#2712](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2712))
+
+* perf(vti-common): per-bundle chunk lock and a progress bitmap apart from the plan
+
+  A chunked transfer's lock is striped by bundle id, so one bundle's finalize
+  (a whole-file hash) no longer stalls every other transfer ([#2596](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2596)). Progress
+  is a bitmap row beside the immutable plan, read from a per-process cache, so
+  a chunk no longer re-reads and rewrites a plan of up to 4,096 digests ([#2597](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2597)).
+  A bundle opened before the bitmap row existed keeps the progress its plan
+  recorded; get_plan still returns the plan with its progress.
+
+
+
+## [0.17.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.16.0...vti-voting-v0.17.0) — 2026-11-12
+
+
+### Fixed
+
+- **voting-service**: Resolve a signer on the HTTPS door only where the box knows it ([#2676](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2676))
+
+The HTTPS binding proves no sender, and verifying a request's proof resolves
+  the DID its verification method names. Only casts were held to a did:key, so
+  a signed read or trustee step could name any DID and have the box fetch it,
+  per request.
+
+  - The proof's verification method must be the issuer's before anything is
+    resolved (it was compared after verifying).
+  - A did:key or did:peer signer resolves with no I/O, on any binding.
+  - Any other signer is resolved on the HTTPS door only when `[communities]
+    allowed` names it, or the election the request names, held here, lists it
+    as its community, an auditor or a trustee. Otherwise `permissionDenied`,
+    before any fetch. TSP and DIDComm are unchanged: the transport proved the
+    sender, which must be the issuer.
+  - A community's or a trustee's request (register, close, cancel, trustee
+    steps, authorize) is refused `expired` once older than the VTI acceptance
+    window (VTI-OPS-024: ten minutes plus a minute's skew). Casts keep their
+    current rule.
+
+
+
+## [0.16.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.9.0...vti-voting-v0.16.0) — 2026-11-04
 
 
 ## [0.9.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-voting-v0.8.0...vti-voting-v0.9.0) — 2026-11-04

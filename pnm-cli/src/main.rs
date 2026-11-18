@@ -21,9 +21,8 @@ mod cli;
 mod commands;
 mod config;
 mod exit;
+mod rooms_profile;
 mod setup;
-
-use std::io::IsTerminal;
 
 use vta_sdk::client::VtaClient;
 
@@ -33,27 +32,10 @@ use crate::cli::{
     Cli, Commands, DidcommCommands, ServicesCommands, VtaCommands, install_force_exit_handler,
     is_online_template_cmd, print_banner, requires_auth, retired_mediator_redirect,
 };
-use clap::Parser;
 
-/// Exit code for a command that returned an error.
-///
-/// Every dispatch arm funnels here, so this is the single place that
-/// decides. The SDK's error is already typed, so the variant picks the
-/// code — a call site does not have to know one.
-///
-/// `Forbidden` stays `FAILURE` on purpose: the caller is who they say
-/// they are and the operation ran, it was refused. That is not the same
-/// signal as "your credential is no good", and a script retrying on
-/// `AUTH` must not retry on it.
-fn exit_code_for(err: &(dyn std::error::Error + 'static)) -> i32 {
-    use vta_sdk::error::VtaError;
-    match err.downcast_ref::<VtaError>() {
-        Some(VtaError::NotFound(_)) => exit::NOT_FOUND,
-        Some(VtaError::Validation(_)) => exit::CONFIG,
-        Some(VtaError::Auth(_)) => exit::AUTH,
-        _ => exit::FAILURE,
-    }
-}
+/// Exit code for a command that returned an error — shared with `cnm`
+/// ([`vta_cli_common::exit::exit_code_for`]).
+use vta_cli_common::exit::exit_code_for;
 
 /// This process's log output; see the `tracing_subscriber` setup in `main`.
 pub(crate) static LOGS: std::sync::LazyLock<affinidi_messaging_mediator_tui::LogCapture> =
@@ -95,7 +77,15 @@ async fn main() {
         std::process::exit(exit::CONFIG);
     }
 
-    let cli = Cli::parse();
+    // `rooms` commands take their room, host and signing key from the ones
+    // `pnm rooms use` / `owner register` / `offers accept` remembered (#2590).
+    let cli = rooms_profile::parse_cli();
+
+    // Completions need nothing else: no profile, no keyring, no banner.
+    if let Commands::Completions { shell } = &cli.command {
+        vta_cli_common::startup::print_completions::<Cli>(*shell, "pnm");
+        return;
+    }
 
     // DID-advertised VTA endpoints are public-only unless the operator opts in.
     vta_sdk::http::set_allow_private_endpoints(cli.allow_private_endpoints);
@@ -107,26 +97,10 @@ async fn main() {
     vta_cli_common::render::set_full_display(cli.full_display);
     vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
 
-    // Format follows the destination. A terminal gets the table; anything
-    // else — a pipe, a file, a CI log — gets JSON, because the only reason
-    // to redirect this output is to have something read it. `--json`
-    // forces JSON even on a terminal.
-    let stdout_is_tty = std::io::stdout().is_terminal();
-    if cli.json || !stdout_is_tty {
-        vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
-    }
-
-    // Colour is for a terminal only, and NO_COLOR (<https://no-color.org>)
-    // turns it off even on one. Gated on stdout because that is where the
-    // rendered tables go.
-    vta_cli_common::render::set_color(stdout_is_tty && std::env::var_os("NO_COLOR").is_none());
-
-    vta_cli_common::render::set_bin_name("pnm");
-
-    // The banner is for a person at a terminal. It goes to stderr, so it
-    // is gated on stderr — redirecting stdout alone (`pnm … > out.json`)
-    // still shows it, which is what an operator running that expects.
-    if std::io::stderr().is_terminal() {
+    // Format, colour, the binary name in hints and the banner gate — the
+    // same rules as `cnm` (`vta_cli_common::startup`, #2587).
+    vta_cli_common::startup::init_output("pnm", cli.json);
+    if vta_cli_common::startup::banner_wanted() {
         print_banner();
     }
 
@@ -154,11 +128,15 @@ async fn main() {
     vta_sdk::keyring_init::install_default_store_or_exit("pnm");
 
     // Load PNM config
+    //
+    // A profile that exists but does not parse stops here (#2582). Carrying on
+    // with an empty one would report every VTA as "not configured" and point
+    // at `pnm setup`, which would then overwrite the file.
     let mut pnm_config = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: could not load config: {e}");
-            config::PnmConfig::default()
+            eprintln!("Error: {e}");
+            std::process::exit(exit::CONFIG);
         }
     };
 
@@ -179,6 +157,7 @@ async fn main() {
     {
         // SAFETY: set on the main thread, before any worker / async
         // task that reads PNM_RESOLVER_URL has been spawned.
+        #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("PNM_RESOLVER_URL", url);
         }
@@ -199,6 +178,29 @@ async fn main() {
     // `command` back to the post-auth dispatch below for the
     // authenticated path.
     let needs_auth = requires_auth(&command);
+    // `pnm rooms use` edits a local file: no VTA, no session.
+    if let Commands::Rooms {
+        command:
+            cli::RoomCommands::Use {
+                room,
+                host,
+                host_did,
+                signing_key,
+                forget,
+            },
+    } = command
+    {
+        let entry = rooms_profile::RoomEntry {
+            host,
+            host_did,
+            signing_key_id: signing_key,
+        };
+        if let Err(e) = rooms_profile::cmd_use(room, entry, forget) {
+            vta_cli_common::render::print_cli_error(e.as_ref());
+            std::process::exit(exit_code_for(e.as_ref()));
+        }
+        return;
+    }
     match command {
         Commands::Setup {
             command: setup_cmd,
@@ -303,7 +305,13 @@ async fn main() {
         )
         .await
         {
-            Ok(c) => c,
+            Ok(c) => {
+                // A Forbidden hint names this DID's ACL entry (#2586).
+                if let Some(s) = auth::loaded_session(&keyring_key) {
+                    vta_cli_common::render::set_session_did(&s.client_did);
+                }
+                c
+            }
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());
                 std::process::exit(exit_code_for(e.as_ref()));
@@ -332,6 +340,7 @@ async fn main() {
     // ── Post-auth dispatch ────────────────────────────────────────
     let result = match command {
         Commands::Setup { .. } => unreachable!("Setup handled in pre-auth dispatch"),
+        Commands::Completions { .. } => unreachable!("Completions handled before start-up"),
         Commands::Bootstrap { command } => commands::bootstrap::run_authed(&client, command).await,
         Commands::DidTemplates { command } => {
             commands::did_templates::run_online(&client, command).await
@@ -373,6 +382,7 @@ async fn main() {
             command: cli::DidMgmtCommands::AgentNames { command },
         } => commands::agent_names::run(&client, command).await,
         Commands::DidMgmt { command } => commands::webvh::run(&client, command.into()).await,
+        Commands::Webs { command } => commands::webs::run(&client, command).await,
         Commands::Audit { command } => commands::audit::run(&client, command).await,
         Commands::Backup { command } => commands::backup::run(&client, command).await,
         Commands::Keys { command } => commands::keys::run(&client, command).await,
@@ -466,6 +476,7 @@ mod tests {
     use crate::cli::{
         AclCommands, AuthCommands, ConfigCommands, ContextCommands, KeyCommands, SetupCommands,
     };
+    use clap::Parser;
 
     // ── requires_auth ──────────────────────────────────────────────
 
@@ -500,6 +511,130 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("should parse")
+    }
+
+    /// Every `pnm` command an operator-facing error or help string tells the
+    /// operator to run must parse: a remediation that is itself a parse error
+    /// is worse than none (root CLAUDE.md, "Operator errors should suggest the
+    /// fix"; #2631). Placeholders are filled with sample values. The strings
+    /// live in other crates, so each is copied here with its source.
+    #[test]
+    fn remediation_commands_in_error_and_help_strings_parse() {
+        let commands: &[&[&str]] = &[
+            // vta-cli-common/src/render.rs (Auth, Forbidden, Network hints; #2586)
+            &["pnm", "setup"],
+            &["pnm", "acl", "get", "did:key:z6Mk"],
+            &["pnm", "vta", "info"],
+            // vta-cli-common/src/config_file.rs is a shell `mv`, not pnm.
+            // vta-cli-common/src/confirm.rs: "run the same command again with
+            // --yes" — every destructive command takes it (#2583).
+            &["pnm", "acl", "delete", "did:key:z6Mk", "--yes"],
+            &["pnm", "keys", "revoke", "k1", "--yes"],
+            &["pnm", "keys", "rotate-seed", "--yes"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "delete",
+                "did:webvh:x:h",
+                "--yes",
+            ],
+            &["pnm", "did-mgmt", "servers", "delete", "host-1", "--yes"],
+            &["pnm", "did-templates", "delete", "t", "--yes"],
+            &["pnm", "webs", "delete", "did:webs:h:x", "--yes"],
+            &["pnm", "vault", "purge", "e1", "--yes"],
+            &["pnm", "cred-vault", "purge", "c1", "--yes"],
+            &["pnm", "device", "wipe", "d1", "--reason", "lost", "--yes"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "agent-names",
+                "remove",
+                "--did",
+                "did:webvh:x:h",
+                "--name",
+                "n",
+                "--yes",
+            ],
+            &["pnm", "external", "delete", "a1", "--context", "c", "--yes"],
+            // vta-cli-common/src/secret_input.rs (#2584, #2585)
+            &["pnm", "keys", "rotate-seed", "--mnemonic-file", "-"],
+            &["pnm", "backup", "export", "--password-file", "-"],
+            &[
+                "pnm",
+                "backup",
+                "import",
+                "f",
+                "--password-file",
+                "p",
+                "--yes",
+            ],
+            // vta-sdk/src/client/webs.rs (`serverNotFound`, `domainNotServed`)
+            &["pnm", "did-mgmt", "servers", "list"],
+            &[
+                "pnm",
+                "did-mgmt",
+                "servers",
+                "add",
+                "--id",
+                "host-1",
+                "--did",
+                "did:web:h.example",
+            ],
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "list-domains",
+                "--server",
+                "host-1",
+            ],
+            // pnm-cli/src/cli.rs `--domain` help; vta-sdk/src/client/webvh.rs
+            &["pnm", "did-mgmt", "dids", "list-domains", "--server", "id"],
+            // pnm-cli/src/commands/rooms.rs (not authenticated)
+            &["pnm", "setup"],
+            // vti-voting-service/src/setup.rs (remove the setup DID's grant)
+            &[
+                "pnm",
+                "acl",
+                "delete",
+                "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            ],
+            // vta-service/src/operations/did_webvh/register_server.rs
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "register",
+                "--did",
+                "did:webvh:x:h.example",
+                "--server",
+                "host-1",
+            ],
+            // vta-sdk/src/protocol/{mod,services}.rs
+            &[
+                "pnm",
+                "did-mgmt",
+                "dids",
+                "get-log",
+                "did:webvh:x:h.example",
+            ],
+        ];
+        for argv in commands {
+            if let Err(e) = Cli::try_parse_from(*argv) {
+                panic!("`{}` does not parse: {e}", argv.join(" "));
+            }
+        }
+    }
+
+    /// `--template` help lists the SDK's built-ins and never a retired name (#2635).
+    #[test]
+    fn template_help_lists_the_builtins() {
+        let help = crate::cli::template_name_help();
+        for name in vta_sdk::did_templates::BUILTIN_NAMES {
+            assert!(help.contains(name), "{name} missing from: {help}");
+        }
+        assert!(!help.contains("did-hosting-"), "{help}");
     }
 
     #[test]
@@ -789,6 +924,249 @@ mod tests {
         }
     }
 
+    /// `rooms put --kind/--reply-to`, and `--react VALUE --to KEY` in place of a body
+    /// (trust-tasks-tf #1027).
+    #[test]
+    fn rooms_put_takes_a_kind_a_reply_and_a_reaction() {
+        use crate::cli::RoomCommands;
+        let base = [
+            "put",
+            "msg-2",
+            "--room",
+            "did:webvh:r",
+            "--host",
+            "https://h",
+        ];
+        let mut args = base.to_vec();
+        args.extend([
+            "Thursday works.",
+            "--kind",
+            "message",
+            "--reply-to",
+            "msg-1@4",
+        ]);
+        match rooms(&args) {
+            RoomCommands::Put {
+                body,
+                kind,
+                reply_to,
+                react,
+                to,
+                ..
+            } => {
+                assert_eq!(body.as_deref(), Some("Thursday works."));
+                assert_eq!(kind.as_deref(), Some("message"));
+                assert_eq!(reply_to.as_deref(), Some("msg-1@4"));
+                assert!(react.is_none() && to.is_none());
+            }
+            _ => panic!("expected Put"),
+        }
+
+        let mut args = base.to_vec();
+        args.extend(["--react", "👍", "--to", "msg-1"]);
+        match rooms(&args) {
+            RoomCommands::Put {
+                body, react, to, ..
+            } => {
+                assert!(body.is_none());
+                assert_eq!(react.as_deref(), Some("👍"));
+                assert_eq!(to.as_deref(), Some("msg-1"));
+            }
+            _ => panic!("expected Put"),
+        }
+
+        let full = |extra: &[&str]| {
+            let mut v = vec!["pnm", "rooms"];
+            v.extend_from_slice(&base);
+            v.extend_from_slice(extra);
+            Cli::try_parse_from(v)
+        };
+        assert!(full(&[]).is_err(), "a body, or a reaction");
+        assert!(
+            full(&["--react", "👍"]).is_err(),
+            "a reaction names what it reacts to"
+        );
+        assert!(
+            full(&["text", "--to", "msg-1"]).is_err(),
+            "--to is --react's"
+        );
+        assert!(
+            full(&["text", "--react", "👍", "--to", "msg-1"]).is_err(),
+            "a reaction's body is the reaction"
+        );
+        assert!(
+            full(&["--react", "👍", "--to", "msg-1", "--kind", "message"]).is_err(),
+            "a reaction's kind is `reaction`"
+        );
+    }
+
+    /// `rooms read` takes several keys and the host's DID, which the VTA reads from.
+    #[test]
+    fn rooms_read_takes_several_keys_and_the_host_did() {
+        use crate::cli::RoomCommands;
+        match rooms(&[
+            "read",
+            "msg-1",
+            "msg-2",
+            "react-1",
+            "--room",
+            "did:webvh:r",
+            "--host-did",
+            "did:web:h",
+        ]) {
+            RoomCommands::Read {
+                keys,
+                host_did,
+                host,
+                ..
+            } => {
+                assert_eq!(keys, vec!["msg-1", "msg-2", "react-1"]);
+                assert_eq!(host_did, "did:web:h");
+                assert!(host.is_none());
+            }
+            _ => panic!("expected Read"),
+        }
+        assert!(
+            Cli::try_parse_from(["pnm", "rooms", "read", "k", "--room", "did:webvh:r"]).is_err(),
+            "the VTA finds the host by its DID"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "rooms",
+                "read",
+                "--room",
+                "did:webvh:r",
+                "--host-did",
+                "did:web:h"
+            ])
+            .is_err(),
+            "at least one key"
+        );
+    }
+
+    /// `rooms list --newest` opens a conversation at its head (`rooms/keys/browse/0.5`):
+    /// `--pages` and `--cursor` only mean something with it.
+    #[test]
+    fn rooms_list_newest_takes_pages_and_a_cursor() {
+        use crate::cli::RoomCommands;
+        let base = ["list", "--room", "did:webvh:r", "--host", "https://h"];
+        let with = |extra: &[&str]| {
+            let mut v = vec!["pnm", "rooms"];
+            v.extend_from_slice(&base);
+            v.extend_from_slice(extra);
+            Cli::try_parse_from(v)
+        };
+        match with(&[
+            "--host-did",
+            "did:web:h",
+            "--newest",
+            "--pages",
+            "2",
+            "--limit",
+            "20",
+        ])
+        .expect("parses")
+        .command
+        {
+            Commands::Rooms {
+                command:
+                    RoomCommands::List {
+                        newest,
+                        pages,
+                        limit,
+                        cursor,
+                        ..
+                    },
+            } => {
+                assert!(newest);
+                assert_eq!(pages, Some(2));
+                assert_eq!(limit, Some(20));
+                assert!(cursor.is_none());
+            }
+            _ => panic!("expected List"),
+        }
+        match with(&["--newest", "--cursor", "n412"])
+            .expect("parses")
+            .command
+        {
+            Commands::Rooms {
+                command: RoomCommands::List { cursor, .. },
+            } => assert_eq!(cursor.as_deref(), Some("n412")),
+            _ => panic!("expected List"),
+        }
+        // `rooms/keys/browse/0.6`: load older from a version, beside or instead of a cursor.
+        match with(&["--newest", "--before-version", "412"])
+            .expect("parses")
+            .command
+        {
+            Commands::Rooms {
+                command: RoomCommands::List { before_version, .. },
+            } => assert_eq!(before_version, Some(412)),
+            _ => panic!("expected List"),
+        }
+        assert!(
+            with(&["--before-version", "412"]).is_err(),
+            "--before-version needs --newest"
+        );
+        assert!(with(&["--pages", "2"]).is_err(), "--pages needs --newest");
+        assert!(
+            with(&["--cursor", "n4"]).is_err(),
+            "--cursor needs --newest"
+        );
+        match with(&[]).expect("parses").command {
+            Commands::Rooms {
+                command: RoomCommands::List { newest, .. },
+            } => assert!(!newest, "oldest first, to the end, by default"),
+            _ => panic!("expected List"),
+        }
+    }
+
+    /// `rooms read --newest` reads the head of the conversation instead of named keys.
+    #[test]
+    fn rooms_read_newest_needs_no_keys_and_takes_none() {
+        use crate::cli::RoomCommands;
+        let base = [
+            "pnm",
+            "rooms",
+            "read",
+            "--room",
+            "did:webvh:r",
+            "--host-did",
+            "did:web:h",
+        ];
+        let mut v = base.to_vec();
+        v.extend(["--newest", "--limit", "30"]);
+        match Cli::try_parse_from(v).expect("parses").command {
+            Commands::Rooms {
+                command:
+                    RoomCommands::Read {
+                        newest,
+                        limit,
+                        keys,
+                        ..
+                    },
+            } => {
+                assert!(newest);
+                assert_eq!(limit, Some(30));
+                assert!(keys.is_empty());
+            }
+            _ => panic!("expected Read"),
+        }
+        let mut v = base.to_vec();
+        v.extend(["k1", "--newest"]);
+        assert!(
+            Cli::try_parse_from(v).is_err(),
+            "keys or --newest, not both"
+        );
+        // `k1 --limit 3` parses — clap does not enforce `requires` on an argument whose
+        // requirement conflicts with one present — and is refused before anything is sent,
+        // naming the command to run (`commands::rooms::read_newest_flags`).
+        assert!(crate::commands::rooms::read_newest_flags(false, Some(3), None, None).is_err());
+        assert!(crate::commands::rooms::read_newest_flags(true, Some(3), Some(2), None).is_ok());
+        assert!(crate::commands::rooms::read_newest_flags(false, None, None, None).is_ok());
+    }
+
     #[test]
     fn rooms_owner_register_requires_an_explicit_owner_and_tier() {
         use crate::cli::{RoomCommands, RoomOwnerCommands};
@@ -974,6 +1352,71 @@ mod tests {
             }
             _ => panic!("expected keys label"),
         }
+    }
+
+    #[test]
+    fn rooms_keys_mark_read_needs_a_member_and_a_version_unless_unread() {
+        use crate::cli::{RoomCommands, RoomKeysCommands};
+        let base = ["pnm", "rooms", "keys", "mark-read", "did:webvh:r"];
+        let parse = |extra: &[&str]| {
+            Cli::try_parse_from(base.iter().chain(extra.iter())).map(|c| match c.command {
+                Commands::Rooms {
+                    command:
+                        RoomCommands::Keys {
+                            command:
+                                RoomKeysCommands::MarkRead {
+                                    member,
+                                    version,
+                                    created_at,
+                                    unread,
+                                    ..
+                                },
+                        },
+                    ..
+                } => (member, version, created_at, unread),
+                _ => panic!("expected keys mark-read"),
+            })
+        };
+        assert!(
+            parse(&["--version", "4"]).is_err(),
+            "the member is never inferred"
+        );
+        assert!(
+            parse(&["--member", "did:key:z"]).is_err(),
+            "marking read names how far"
+        );
+        assert!(
+            parse(&[
+                "--member",
+                "did:key:z",
+                "--created-at",
+                "2027-02-01T10:14:02Z"
+            ])
+            .is_err(),
+            "a createdAt without its version"
+        );
+        assert_eq!(
+            parse(&["--member", "did:key:z", "--unread"]).unwrap(),
+            ("did:key:z".to_string(), None, None, true),
+            "the whole room unread"
+        );
+        assert_eq!(
+            parse(&[
+                "--member",
+                "did:key:z",
+                "--version",
+                "415",
+                "--created-at",
+                "2027-02-01T10:14:02Z"
+            ])
+            .unwrap(),
+            (
+                "did:key:z".to_string(),
+                Some(415),
+                Some("2027-02-01T10:14:02Z".to_string()),
+                false
+            )
+        );
     }
 
     #[test]

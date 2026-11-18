@@ -43,7 +43,7 @@ impl VtaClient {
 
     /// Fetch the registered hosting server's `did-management/me/domains`
     /// view (caller-scoped subset of hosting domains, with the system
-    /// default flagged). Used by `pnm did-mgmt list-domains` and the
+    /// default flagged). Used by `pnm did-mgmt dids list-domains` and the
     /// interactive `--domain` prompt in `create-did` /
     /// `register-did`. The VTA asks the server with a Trust Task signed
     /// by its own operational key.
@@ -208,22 +208,6 @@ impl VtaClient {
             .await
     }
 
-    pub async fn list_dids_webvh(
-        &self,
-        context_id: Option<&str>,
-        server_id: Option<&str>,
-    ) -> Result<crate::protocols::did_management::list::ListDidsWebvhResultBody, VtaError> {
-        self.rpc_tt(
-            crate::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-            serde_json::to_value(crate::protocols::did_management::list::ListDidsWebvhBody {
-                context_id: context_id.map(str::to_string),
-                server_id: server_id.map(str::to_string),
-            })?,
-            30,
-        )
-        .await
-    }
-
     pub async fn get_did_webvh(&self, did: &str) -> Result<crate::webvh::WebvhDidRecord, VtaError> {
         // `spec/vta/webvh/dids/get/1.0` carries the record under `record`, so
         // decode the envelope and hand back the record itself — this method's
@@ -312,7 +296,7 @@ impl VtaClient {
     ///
     /// The canonical task keys on the DID, not `(context_id, scid)` — which is
     /// what kept this call on the legacy message after #861. Callers already
-    /// hold the DID; `pnm did-mgmt dids update` was fetching the record purely
+    /// hold the DID; `pnm did-mgmt dids edit` was fetching the record purely
     /// to translate it into the pair this method no longer needs.
     pub async fn update_did_webvh_by_did(
         &self,

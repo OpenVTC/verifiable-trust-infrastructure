@@ -61,6 +61,7 @@ import {
   SignTaskDialog,
   ToneChip,
 } from "./ui";
+import { formatDate } from "@/lib/format";
 
 type Dialog =
   | { kind: "grant"; resource: string; right: "git.ns.admin" | "git.repo.create" | "git.repo.own"; title?: string }
@@ -114,7 +115,7 @@ function ForgeStatusLine({ ns }: { ns: GitNsNamespaceRow }) {
   return (
     <p className="muted gitns-small">
       {parts.join(" · ")}
-      {fs.reportedAt && <> · reported {new Date(fs.reportedAt).toLocaleDateString()}</>}
+      {fs.reportedAt && <> · reported {formatDate(fs.reportedAt)}</>}
     </p>
   );
 }
@@ -211,7 +212,7 @@ function NamespaceCard({
           {policyVersion ? `git namespace policy v${policyVersion}` : "git namespace policy"}
         </Link>
         {policyVersion === null && " (none active: every change is refused)"}
-        {ns.boundAt && <> · bound {new Date(ns.boundAt).toLocaleDateString()}</>}
+        {ns.boundAt && <> · bound {formatDate(ns.boundAt)}</>}
         {" · by "}
         <NamedDid did={ns.boundBy} book={book} nameOnly={!!book.nameOf(ns.boundBy)} />
       </p>
@@ -228,7 +229,7 @@ function NamespaceCard({
           committer <b>{ns.roleMap.commit === "none" ? "no role" : ns.roleMap.commit}</b> ·
           namespace admin <b>no role</b>
           {" — "}
-          {`as the bridge reported it${ns.roleMapReportedAt ? ` on ${new Date(ns.roleMapReportedAt).toLocaleDateString()}` : ""}; a repository may have its own.`}
+          {`as the bridge reported it${ns.roleMapReportedAt ? ` on ${formatDate(ns.roleMapReportedAt)}` : ""}; a repository may have its own.`}
         </p>
       )}
       {bridgeBound && !ns.roleMap && (
@@ -549,7 +550,7 @@ function NamespaceRights({
           <NamedDid did={r.subject} book={book} />
           <CopyButton value={r.subject} label="Copy DID" successMessage="DID copied" />
           {r.expiresAt && (
-            <span className="muted gitns-small"> until {new Date(r.expiresAt).toLocaleDateString()}</span>
+            <span className="muted gitns-small"> until {formatDate(r.expiresAt)}</span>
           )}
         </span>
       ))

@@ -85,6 +85,22 @@ pub struct JwtKeys {
 }
 
 impl JwtKeys {
+    /// Create JWT keys from the configured `jwt_signing_key`: a base64
+    /// (unpadded) 32-byte Ed25519 seed. A bad encoding or length is
+    /// `AppError::Config`. Shared by the VTA and VTC boot paths (#2572).
+    pub fn from_base64_seed(b64: &str, audience: &str) -> Result<Self, AppError> {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(b64)
+            .map_err(|e| AppError::Config(format!("invalid jwt_signing_key base64: {e}")))?;
+        let key_bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| AppError::Config("jwt_signing_key must be exactly 32 bytes".into()))?;
+        let keys = Self::from_ed25519_bytes(&key_bytes, audience)?;
+        debug!("JWT signing key decoded successfully");
+        Ok(keys)
+    }
+
     /// Create JWT keys from raw 32-byte Ed25519 private key bytes.
     ///
     /// `audience` is the expected JWT audience claim (e.g., "VTA" or "VTC").

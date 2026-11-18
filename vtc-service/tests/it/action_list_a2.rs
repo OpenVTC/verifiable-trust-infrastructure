@@ -224,7 +224,7 @@ async fn put_record(fix: &Fixture, rec: &ActionRecord) {
         .unwrap();
 }
 
-async fn audit_events(fix: &Fixture) -> Vec<vti_common::audit::AuditEnvelope> {
+async fn audit_events(fix: &Fixture) -> Vec<vtc_audit::AuditEnvelope> {
     fix.vtc
         .state
         .audit_ks
@@ -232,7 +232,7 @@ async fn audit_events(fix: &Fixture) -> Vec<vti_common::audit::AuditEnvelope> {
         .await
         .unwrap()
         .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
         .collect()
 }
 
@@ -466,7 +466,7 @@ async fn vti_vtc_023_every_offline_writer_raises_an_acknowledge_item() {
         .await
         .into_iter()
         .filter(|e| match &e.event {
-            vti_common::audit::AuditEvent::TaskConsentRecorded(d) => d.stage == "acknowledged",
+            vtc_audit::AuditEvent::TaskConsentRecorded(d) => d.stage == "acknowledged",
             _ => false,
         })
         .count();
@@ -829,7 +829,7 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
         .filter(|e| e.event.variant_name() == "AuthorityReducedUnopposed")
         .map(|e| e.event.severity())
         .collect();
-    assert_eq!(severities, vec![vti_common::audit::AuditSeverity::Critical]);
+    assert_eq!(severities, vec![vtc_audit::AuditSeverity::Critical]);
     let sent = notices(&b.did);
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert_eq!(sent[0]["agreement"], "unopposed");
@@ -1276,7 +1276,7 @@ async fn an_executed_action_records_its_effect_with_its_execution() {
         .await
         .into_iter()
         .filter_map(|e| match e.event {
-            vti_common::audit::AuditEvent::AdminActionEffect(d) => Some(d),
+            vtc_audit::AuditEvent::AdminActionEffect(d) => Some(d),
             _ => None,
         })
         .collect();
@@ -1363,7 +1363,7 @@ async fn a_new_administrator_is_issued_an_approver_invite() {
         "shown once"
     );
     let invited = audit_events(&fix).await.into_iter().any(|e| match e.event {
-        vti_common::audit::AuditEvent::StepUpApproverChanged(d) => {
+        vtc_audit::AuditEvent::StepUpApproverChanged(d) => {
             d.stage == "invited" && d.subject == subject.did
         }
         _ => false,

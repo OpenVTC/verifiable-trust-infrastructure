@@ -2,7 +2,7 @@
 name = "vta-audit"
 description = "Structured audit logging for the VTA — the `audit!` tracing macro plus the audit-keyspace persistence helpers"
 readme = "README.md"
-version = "0.29.0"
+version = "0.38.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -20,9 +20,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.57" }
-vta-sdk = { path = "../vta-sdk", version = "0.81" }
-async-trait = "0.1"
+vti-common = { path = "../vti-common", version = "0.66" }
+vta-sdk = { path = "../vta-sdk", version = "0.90" }
+async-trait = { workspace = true }
 chrono = { workspace = true }
 hex = { workspace = true }
 # A facade, not an exporter: `record_best_effort` counts failed audit writes so
@@ -30,7 +30,7 @@ hex = { workspace = true }
 # recorder installed (the offline CLIs, tests) incrementing is a no-op, so this
 # costs nothing where nothing is scraping. The Prometheus exporter stays in
 # `vta-service`, which is where the HTTP surface is.
-metrics = "0.24"
+metrics = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
@@ -38,9 +38,12 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 # So the "a failed sink is reported" test can assert on what was logged. The
 # point of `record_best_effort` is the log line, and a test that only checked
 # the function returned would pass with the line deleted.
 tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

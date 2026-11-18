@@ -50,6 +50,7 @@ import {
   shortName,
 } from "./model";
 import { formatDay, readErrorMessage, repoPath, SignTaskDialog, ToneChip } from "./ui";
+import { formatDateTime } from "@/lib/format";
 
 type Dialog =
   | { kind: "ratify"; item: GitNsBreakGlassItem }
@@ -163,10 +164,10 @@ export function BreakGlassList() {
         </td>
         <td className="gitns-justification">“{item.breakGlass.justification}”</td>
         <td>
-          {new Date(item.breakGlass.recordedAt).toLocaleString()}
+          {formatDateTime(item.breakGlass.recordedAt)}
           {item.breakGlass.effectiveAt && state === "pending" && (
             <div className="muted gitns-small">
-              takes effect {new Date(item.breakGlass.effectiveAt).toLocaleString()}
+              takes effect {formatDateTime(item.breakGlass.effectiveAt)}
             </div>
           )}
         </td>

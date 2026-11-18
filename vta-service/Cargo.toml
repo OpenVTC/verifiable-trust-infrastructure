@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.74.0"
+version = "0.83.0"
 edition.workspace = true
 # Published for one reason: `openvtc-core` dev-depends on it for
 # `test_support::MockVta`, the in-process VTA its end-to-end tests run against.
@@ -42,7 +42,16 @@ repository.workspace = true
 autotests = false
 
 [features]
-default = ["setup", "keyring", "rest", "didcomm", "tsp", "cli-synthesis"]
+default = ["setup", "keyring", "rest", "didcomm", "tsp", "cli-synthesis", "webs", "jemalloc"]
+## Use jemalloc as the binary's global allocator (set in src/main.rs; a library
+## must never impose an allocator on its consumers). On by default: with the
+## system allocator (glibc malloc) freed pages are kept in the process's arenas,
+## so RSS ratchets up to its high-water mark and stays there — which reads as a
+## leak in monitoring even when the live heap is flat. jemalloc's decay-based
+## purging returns them, so RSS tracks live memory. Disable
+## (`--no-default-features`) to profile against the system allocator.
+jemalloc = ["dep:tikv-jemallocator"]
+
 rest = []
 didcomm = []
 # Trust Spanning Protocol transport — the preferred transport, ON by default
@@ -65,6 +74,12 @@ tsp = [
 ]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest", "dep:vta-webvh", "vta-vault/webvh", "vta-keyspaces/webvh", "vta-backup/webvh"]
 setup = ["webvh", "dep:tempfile"]
+# Creating, hosting and acting as did:webs persona, relationship and
+# integration DIDs (docs/05-design-notes/did-webs-in-the-vta.md). Alpha, and
+# off at runtime unless `[dids] webs_enabled`. Hosting goes through the
+# did-hosting client, so it needs `webvh`. The enclave opts in with its own
+# `webs` feature (a TEE VTA's own did:webs, `[tee.kms] vta_did_webs`).
+webs = ["webvh", "dep:affinidi-did-webs", "dep:affinidi-keri", "dep:affinidi-keri-core", "dep:affinidi-keri-crypto"]
 # BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381
 # curve (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by
 # default; the holder/verifier paths (receive, present, verify) build behind
@@ -75,7 +90,13 @@ bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023", "vta-vault/bbs"]
 # local `vta` binary enables this; the enclave binary does not (its
 # dependency is `default-features = false`), so the footgun is physically
 # absent from enclave builds.
-cli-synthesis = ["vti-common/cli-synthesis"]
+#
+# Also the gate on `vta-cli-common`: only the `vta` binary's offline CLI
+# modules (`acl_cli`, `bootstrap_cli`, …) use it, and the binary already
+# requires this feature. Nothing reachable from `lib.rs` does, so a library
+# consumer (`vta-enclave`) does not compile a TUI, a QR encoder and a VTC
+# client (#2566).
+cli-synthesis = ["vti-common/cli-synthesis", "dep:vta-cli-common", "dep:dialoguer"]
 # OS keyring backend for the VTA seed. Enables vta-sdk's keyring feature
 # so the binary can register a platform store once via
 # `vta_sdk::keyring_init::install_default_store()` at startup.
@@ -102,8 +123,6 @@ tpm = ["vti-secrets/tpm", "vta-keys/tpm"]
 tee = [
   "webvh",
   "dep:vta-tee",
-  "dep:libc",
-  "dep:aws-lc-rs",
   "dep:didwebvh-rs",
   "vti-secrets/tee",
   "vta-config/tee",
@@ -161,79 +180,86 @@ name = "it"
 path = "tests/it/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.57", features = ["encryption", "passkey", "openapi", "rate-limit"] }
+vti-common = { path = "../vti-common", version = "0.66", features = ["encryption", "passkey", "openapi", "rate-limit"] }
 # Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
-vti-secrets = { path = "../vti-secrets", version = "0.30" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.31" }
+vti-secrets = { path = "../vti-secrets", version = "0.39" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.40" }
 # The durable accepted-document-id record (`StoreAcceptedIds`, VTI-OPS-025 …
 # 027), shared with the VTC.
-vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.3" }
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.12" }
 # Structured audit logging (the `audit!` macro + audit-keyspace helpers),
 # extracted and re-exported as `crate::audit`.
-vta-audit = { path = "../vta-audit", version = "0.29" }
+vta-audit = { path = "../vta-audit", version = "0.38" }
 # VTA configuration types (AppConfig + sub-configs), extracted and re-exported
 # as `crate::config`. `vta-config/tee` is always on: it only adds the
 # `AppConfig.tee` field and its types, and a sibling crate (vta-tee) turns it
 # on anyway, so gating our struct literals on this crate's own `tee` feature
 # broke any build that unified the two. Behaviour stays behind `tee`.
-vta-config = { path = "../vta-config", version = "0.34", features = ["tee"] }
+vta-config = { path = "../vta-config", version = "0.43", features = ["tee"] }
 # Shared mid-layer services (contexts, seal, sealed_nonce_store), re-exported
 # as crate::{contexts,seal,sealed_nonce_store}.
-vta-support = { path = "../vta-support", version = "0.32" }
+vta-support = { path = "../vta-support", version = "0.41" }
 # Key management (seed store, BIP-32 derivation, wrapping), extracted and
 # re-exported as `crate::keys`. Backend features chain to `vta-keys/*`.
-vta-keys = { path = "../vta-keys", version = "0.35" }
+vta-keys = { path = "../vta-keys", version = "0.44" }
+# The bytes a JWS or an eddsa-jcs-2022 proof signs, and the signature itself.
+vta-signing = { path = "../vta-signing", version = "0.1" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
-vta-persona = { path = "../vta-persona", version = "0.35" }
-vta-vault = { path = "../vta-vault", version = "0.33" }
+vta-persona = { path = "../vta-persona", version = "0.44" }
+vta-vault = { path = "../vta-vault", version = "0.42" }
 # External accounts — the VTA as the key authority for cloud and third-party
 # accounts (`external/*`), re-exported as `crate::external`.
-vta-external = { path = "../vta-external", version = "0.18" }
+vta-external = { path = "../vta-external", version = "0.27" }
 # The hidden-vetting PCS engine (`vta/pcs/*`): the member-side vetter and
 # applicant engines this VTA runs for its principal. Always compiled — a hosted
 # VTA is what serves a wallet that cannot run PCS itself.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.14" }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.23" }
 # The voter role of the PCS engine (`vta/pcs/voter/*`, `vta/pcs/vote`): tickets,
 # casts and the receipt checks, over the same PCS instance.
-vti-voting = { path = "../vti-voting", version = "0.10" }
+vti-voting = { path = "../vti-voting", version = "0.19" }
 # The PCS crate itself, for the multibase codec of the blinding state an
 # enrolment in flight is stored as. Pinned with `vti-vetting-pcs`.
-predicate-credential-system = { version = "0.1", features = ["serde"] }
+predicate-credential-system = { workspace = true, features = ["serde"] }
 
 # The room presentation oracle attenuates a member VAC and signs it.
 dtg-credentials = { workspace = true }
 
 # The room MLS layer (custody, sealing) and the credential verifier whose
 # `VerificationKeys` an invitation check resolves through.
-# The member half only. A VTA holds room keys, seals and opens records; it is
-# never a room's host, so it has no use for `storage`, `authz` or `audit` and
-# does not compile them. `default-features = false` is what says so.
-vti-rooms = { path = "../vti-rooms", version = "0.28", default-features = false, features = [
+# The member half is all the VTA uses: it holds room keys, seals and opens
+# records, and is never a room's host, so it has no use for `storage`, `authz`
+# or `audit`. `default-features = false` records that intent but does not keep
+# them out of the build: `vti-rooms-dtg` below verifies chains through
+# `vti_rooms::authz`, so it takes `vti-rooms` with its `host` default, and
+# feature unification turns `host` on here too. That adds nothing new to the
+# graph — `host` adds only `vti-common`, `tokio`, `uuid` and `tracing`, all
+# direct dependencies of this crate already (#2566).
+vti-rooms = { path = "../vti-rooms", version = "0.37", default-features = false, features = [
   "mls",
 ] }
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.30" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.39" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
-vta-sweepers = { path = "../vta-sweepers", version = "0.30" }
+vta-sweepers = { path = "../vta-sweepers", version = "0.39" }
 # Backup/restore subsystem (export/import ops + backup-bundle store/sweeper),
 # extracted and re-exported as crate::operations::backup +
 # crate::{backup_bundle_store,backup_bundle_sweeper}. Feature edges: this
 # crate's `webvh` / `tee` features enable `vta-backup/webvh` / `vta-backup/tee`.
-vta-backup = { path = "../vta-backup", version = "0.34" }
+vta-backup = { path = "../vta-backup", version = "0.43" }
 # TEE bootstrap subsystem (attestation, KMS, anchor MAC, DID autogen),
 # extracted and re-exported as crate::tee behind this crate's `tee` feature.
-vta-tee = { path = "../vta-tee", version = "0.34", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.43", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
-vta-policy = { path = "../vta-policy", version = "0.30" }
+vta-policy = { path = "../vta-policy", version = "0.39" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
-vta-webvh = { path = "../vta-webvh", version = "0.31", optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.81", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup", "x509-issuers"] }
+vta-webvh = { path = "../vta-webvh", version = "0.40", optional = true }
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup", "x509-issuers"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -249,16 +275,14 @@ vti-webauthn = { path = "../vti-webauthn", version = "0.3" }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.6" }
-trust-tasks-https = { workspace = true }
+vti-specs = { path = "../vti-specs", version = "0.15" }
 trust-tasks-didcomm = { workspace = true }
 trust-tasks-tsp = { workspace = true }
-trust-tasks-proof = { workspace = true }
 # Shared CLI helpers for the consumer side of sealed-transfer (request
 # generation, bundle opening). Used by `vta bootstrap request` /
 # `vta bootstrap open` so cold-start clients can run the offline flow
-# without depending on `pnm`.
-vta-cli-common = { path = "../vta-cli-common", version = "0.54" }
+# without depending on `pnm`. Binary-only, so behind `cli-synthesis` (#2566).
+vta-cli-common = { path = "../vta-cli-common", version = "0.63", optional = true }
 affinidi-crypto = { workspace = true }
 # Low-level `Secret` type for loading the VTA's signing key at
 # provision time. Already transitively present via affinidi-tdk; made
@@ -287,12 +311,9 @@ affinidi-mdoc = { workspace = true }
 # OID4VCI offer/request types + wallet builders — the holder `offer → request`
 # leg (task 3.2). Same crate vta-sdk's OfferBody / RequestBody use.
 affinidi-openid4vci = { workspace = true }
-# Holder-side status refresh for held credentials (task 1.6): decode the
-# issuer's BitstringStatusList and read the bit at the credential's index.
-affinidi-status-list = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
-affinidi-messaging-didcomm = "0.15.9"
+affinidi-messaging-didcomm = { workspace = true }
 # D2 P2a cut-over: the reliable-messaging delivery layer replaces the old
 # `affinidi-messaging-didcomm-service` type-routed framework. `MessagingService`
 # (subscribe/send/request over a `DidCommTransport`) drives inbound + outbound;
@@ -302,14 +323,14 @@ affinidi-messaging-didcomm = "0.15.9"
 affinidi-messaging-delivery = { workspace = true }
 affinidi-messaging-core = { workspace = true }
 # `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
-futures-util = "0.3"
+futures-util = { workspace = true }
 # Direct (optional) dependency only so the `tsp` feature can turn on the
 # messaging-SDK's own `tsp` ops (`atm.tsp()`), which are gated behind that
 # crate's `tsp` feature and are NOT reachable via `affinidi-tdk/tsp`. The crate
 # is already present transitively via `affinidi-tdk`, at the version the workspace
 # table pins; this entry adds no new code when `tsp` is off (optional + default-features off).
 affinidi-messaging-sdk = { workspace = true, optional = true }
-async-trait = "0.1"
+async-trait = { workspace = true }
 # 0.7 is the data-integrity 0.8 cascade (affinidi-tdk-rs #918). 0.6.11 moved in lockstep with `affinidi-did-resolver-cache-sdk` 0.8.37: it is
 # the release built against that resolver, so a floor below it can resolve a
 # second, pre-host-policy resolver-cache copy into the graph through
@@ -326,18 +347,14 @@ axum = { workspace = true }
 # Enclave builds (`vsock-store`) serve REST on vsock directly.
 tokio-vsock = { workspace = true, optional = true }
 vsock = { workspace = true, optional = true }
-axum-extra = { workspace = true }
 # OpenAPI: `OpenApiRouter` makes the router the source of truth for the served
 # `/openapi.json`; `utoipa` provides the `#[utoipa::path]` + `ToSchema` derives.
 utoipa = { workspace = true }
 utoipa-axum = { workspace = true }
-jsonwebtoken = { workspace = true }
-fjall = { workspace = true }
 toml = { workspace = true }
 tower-http = { workspace = true, features = ["trace", "limit", "cors", "timeout"] }
 tokio = { workspace = true }
 serde = { workspace = true }
-serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 # Used by the password-POST proxy-login driver to form-encode credentials
@@ -345,7 +362,7 @@ thiserror = { workspace = true }
 urlencoding = "2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-bip39 = "3"
+bip39 = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 keyring-core = { workspace = true, optional = true }
@@ -353,88 +370,78 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
+affinidi-did-webs = { workspace = true, optional = true }
+affinidi-keri = { workspace = true, optional = true }
+affinidi-keri-core = { workspace = true, optional = true }
+affinidi-keri-crypto = { workspace = true, optional = true }
 rand = { workspace = true }
-dialoguer = { workspace = true }
+# Prompts for the `vta` binary's setup wizard and offline CLI only, so behind
+# `cli-synthesis` with `vta-cli-common` (#2566).
+dialoguer = { workspace = true, optional = true }
 # Locate `~/.config/vta/` for the `vta bootstrap request` / `vta bootstrap
 # open` consumer-side seed cache. Default seed dir only — operators can
 # override with `--seed-dir`.
 dirs = { workspace = true }
 sha2 = { workspace = true }
-# Rego (OPA policy language) interpreter — the Policy Decision Point runs
-# in-process (no OPA sidecar), mirroring vtc-service's engine. `arc` (workspace
-# default) makes `regorus::Engine` Send + Sync so a compiled policy is shareable
-# and cloned cheaply per evaluation; `full-opa` brings the stdlib builtins real
-# policies lean on (regex, time).
-regorus = { workspace = true }
 # RFC 8785 JCS canonicalization — deterministic `Value` → bytes for the
 # task-consent payload digest (an approver signs over the exact payload).
 # Same crate vti-webauthn uses for document binding.
-serde_json_canonicalizer = "0.4"
-# Constant-time byte equality. Used by `backup_bundle_store` to
-# verify backup-bundle bearer tokens against their stored
-# `SHA-256(token)` hash without leaking byte-position via timing.
-subtle = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
 x25519-dalek = { workspace = true }
 multibase = { workspace = true }
-p256 = "0.14"
+p256 = { workspace = true }
 # DER writer for the `keys/sign-csr` certificate request the VTA builds and
 # signs itself (`operations::sign_formats`). The version rcgen 0.14 uses.
 yasna = "0.6"
 # WebAuthn — used by `operations::passkey_vms` to drive the
 # registration ceremony for passkey-as-verificationMethod enrolment.
 webauthn-rs = { workspace = true }
-webauthn-rs-proto = "0.5"
+webauthn-rs-proto = { workspace = true }
 # CBOR decoder for parsing the WebAuthn attestationObject's authData
 # so the VTA can re-derive the COSE public key and reject any
 # tampered browser-supplied multikey.
-ciborium = "0.2"
+ciborium = { workspace = true }
 url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
-tempfile = { version = "3", optional = true }
+tempfile = { workspace = true, optional = true }
 # Embedded mediator for `MockVta::start_with_transports` (`transport-harness`).
 # A real dependency rather than a dev-dependency: `test-support` exists to serve
 # *external* consumers, and a dev-dependency would not be available to them.
 # `tsp` so the mediator routes raw-TSP frames, not just DIDComm.
-affinidi-messaging-test-mediator = { version = "0.50", optional = true, features = [
-    "tsp",
-] }
-libc = { workspace = true, optional = true }
-zeroize = { version = "1", features = ["derive"] }
-tower = { version = "0.5", features = ["limit"] }
+affinidi-messaging-test-mediator = { workspace = true, optional = true }
+zeroize = { workspace = true, features = ["derive"] }
+tower = { workspace = true, features = ["limit"] }
 # Per-IP rate limiting for unauthenticated endpoints (`/bootstrap/request`,
 # `/auth/*`) so a flood of requests can't burn CPU on attestation / crypto
 # (`routes::rate_limit`).
-affinidi-rate-limit = "0.1.4"
+affinidi-rate-limit = { workspace = true }
 # The operation budgets' weighted, keyed limiter (`trust_tasks::operation_budget`).
 governor = "0.10"
 ipnetwork = { workspace = true }
-metrics = "0.24"
+metrics = { workspace = true }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 aes-gcm = { workspace = true }
-argon2 = "0.6"
-hmac = "0.13"
-# RSA-OAEP / constant-time crypto (aws-lc-rs, AWS's BoringSSL-based lib).
-# The KMS bootstrap that used it moved to `vta-tee`; this remains for the
-# one non-TEE crypto-init use in this crate.
-aws-lc-rs = { version = "1", optional = true }
+hmac = { workspace = true }
 
 [dev-dependencies]
+# `tests/it/payload_type_census.rs` reads every Trust Task handler's parse sites.
+syn = { workspace = true, features = ["full", "parsing", "visit"] }
 # Reads back the `keys/sign-csr` request and checks its signature.
 x509-parser = { workspace = true }
 # A test CA certifying a VTA-held key, for `keys/sign-jws`'s `x5c` check.
-rcgen = { version = "0.14", features = ["x509-parser"] }
+rcgen = { workspace = true, features = ["default", "x509-parser"] }
 # The signed room fixtures, for the oracle round-trip test. A dev-dependency so
 # the feature never reaches a release build — a permissive fixture is exactly
 # what should not ship, which is why the crate gates it.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.30", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.39", features = ["test-support"] }
 # An in-process community (`vtc::Vtc`) for driving the PCS engine end to end:
 # enrolment, the drip, attestation, the proof and the community's decision.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.14", features = ["harness"] }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.23", features = ["harness"] }
 # A real room host, dispatched in process, for the end-to-end check that a record a
 # member's own client writes through `rooms/keys/act` is recorded as the persona's.
 # Path-only (no version): `room-host` is `publish = false`, and a dev-dependency
 # without a version is dropped when this crate is packaged.
-room-host = { path = "../room-host" }
+room-host = { path = "../room-host", features = ["test-support"] }
 # A real witness, dispatched in process, for the end-to-end check of the
 # witnessed-party tasks (`vta/witness/*`): the test carries each document between
 # this VTA and `vti_witness::dispatch::answer`, as a client would. Path-only (no
@@ -443,13 +450,13 @@ vti-witness = { path = "../vti-witness" }
 # The S3-shaped mock store, for the act-driven direct-upload test.
 vti-common = { path = "../vti-common", features = ["blob-presigned", "test-support"] }
 reqwest = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 # The exact parser the DID-hosting server uses to read `alsoKnownAs` off a
 # published log. Dev-only: it lets the agent-name contract test assert that
 # what we *write* is what the host can *read*, rather than asserting our own
 # format against itself.
 agent-names = { workspace = true }
-http-body-util = "0.1"
+http-body-util = { workspace = true }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` get the shared `test_support::build_test_app` HTTP scaffolding
 # without each having to copy ~140 LoC of AppState-wiring boilerplate.
@@ -475,23 +482,49 @@ vta-service = { path = ".", features = ["test-support", "config-seed"] }
 # here rather than from `vta-sdk`'s own tests — the workspace patches `vta-sdk`
 # onto itself, so `-p vta-sdk --features test-loopback` leaves the built unit
 # Fresh and the feature never reaches the compiler.
-vta-sdk = { path = "../vta-sdk", version = "0.81", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = [
   "provision-client",
   "test-loopback",
 ] }
+# `MockVta`, for the integration tests that drive a VTA over the wire. It moved
+# out of `test_support` into its own crate (#2570); path-only, so publishing
+# strips it.
+vta-test-support = { path = "../vta-test-support" }
 # Mock HTTP server for the did-hosting-daemon REST auth flow tests. Each
 # test spins up a real local server bound to a random port, validates
 # the JWS-signed request bodies the daemon would see, and serves
 # canned responses — same wire protocol as production, but no daemon
 # binary required. Loopback HTTP is accepted by `WebvhClient::new`'s
 # HTTPS policy, so no insecure-test knob is needed.
-wiremock = "0.6"
+wiremock = { workspace = true }
 # Drives the focused request-timeout regression test (a standalone
 # router with a short TimeoutLayer + a sleepy handler → 408). The
 # production router uses the same layer at REQUEST_TIMEOUT; testing the
 # wiring with a short duration keeps the test deterministic.
 tower-http = { workspace = true, features = ["timeout"] }
-tower = { version = "0.5", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
 
-[lints]
-workspace = true
+# jemalloc for the binary (see the `jemalloc` feature). Not available on MSVC;
+# the cfg gate in src/main.rs falls back to the system allocator there.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+# The workspace lint table with `unsafe_code` at `deny`, not `forbid` (#2658):
+# this crate needs `unsafe` for tokio's `AsyncFd::register` (the vsock REST listener) and
+# `std::env::remove_var` at boot, and jemalloc's `_rjem_malloc_conf` export in
+# src/main.rs. Each such
+# statement carries `#[allow(unsafe_code)]` beside its SAFETY comment.
+# `scripts/check-workspace-lints.py` holds this table to `[workspace.lints]`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+# Not called from this crate: `affinidi-tdk-common` is a version floor (see its
+# entry above) that keeps a second resolver-cache copy out of the graph.
+[package.metadata.cargo-machete]
+ignored = ["affinidi-tdk-common"]

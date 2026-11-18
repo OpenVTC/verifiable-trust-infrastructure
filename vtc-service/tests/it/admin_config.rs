@@ -207,7 +207,7 @@ async fn patch_with_no_overrides_is_malformed() {
 
 #[tokio::test]
 async fn patch_emits_config_changed_audit_with_real_actor() {
-    use vti_common::audit::{AuditEnvelope, AuditEvent};
+    use vtc_audit::{AuditEnvelope, AuditEvent};
 
     let fix = build_signed(true).await;
     let admin = admin(&fix).await;
@@ -374,13 +374,13 @@ async fn restart_emits_audit_event_before_signal() {
         .prefix_iter_raw(b"2".to_vec())
         .await
         .unwrap();
-    let envelopes: Vec<vti_common::audit::AuditEnvelope> = raw
+    let envelopes: Vec<vtc_audit::AuditEnvelope> = raw
         .iter()
         .map(|(_, v)| serde_json::from_slice(v).unwrap())
         .collect();
     let restart_events: Vec<_> = envelopes
         .iter()
-        .filter(|e| matches!(e.event, vti_common::audit::AuditEvent::RestartRequested(_)))
+        .filter(|e| matches!(e.event, vtc_audit::AuditEvent::RestartRequested(_)))
         .collect();
     assert_eq!(restart_events.len(), 1);
 }
@@ -738,7 +738,7 @@ async fn import_confirm_applies_profile_and_overrides() {
         .prefix_iter_raw(b"2".to_vec())
         .await
         .unwrap();
-    let envelopes: Vec<vti_common::audit::AuditEnvelope> = raw
+    let envelopes: Vec<vtc_audit::AuditEnvelope> = raw
         .iter()
         .map(|(_, v)| serde_json::from_slice(v).unwrap())
         .collect();
@@ -746,11 +746,11 @@ async fn import_confirm_applies_profile_and_overrides() {
     let mut saw_config = false;
     for env in &envelopes {
         match &env.event {
-            vti_common::audit::AuditEvent::CommunityProfileUpdated(_) => {
+            vtc_audit::AuditEvent::CommunityProfileUpdated(_) => {
                 saw_profile = true;
                 assert_eq!(env.actor_did_plain.as_deref(), Some(admin.did.as_str()));
             }
-            vti_common::audit::AuditEvent::ConfigChanged(_) => {
+            vtc_audit::AuditEvent::ConfigChanged(_) => {
                 saw_config = true;
                 assert_eq!(env.actor_did_plain.as_deref(), Some(admin.did.as_str()));
             }

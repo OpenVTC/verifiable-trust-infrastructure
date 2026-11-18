@@ -131,6 +131,12 @@ pub enum Capability {
     /// conferring: selecting an idea grants nothing (VTI-BRD-042), and the elections a
     /// facilitator opens come only from a template an elections manager fixed.
     BoardsManage,
+    /// Defining the community's badges (`vtc/badges/*`, VTI-BDG-003): making,
+    /// changing, retiring and promoting them, changing their settings beside
+    /// [`Capability::ConfigAdmin`], and seeing every giving of a kudos badge. Not
+    /// conferring: a badge grants nothing (VTI-BDG-002). Giving a community badge out
+    /// is its badge group's management ([`Capability::GroupsManage`] qualified by it).
+    BadgesAdmin,
     /// A git namespace (qualified by namespace).
     GitNsAdmin,
     /// Repository create, adopt, archive, transfer.
@@ -141,7 +147,7 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 29] = [
+    pub const ALL: [Capability; 30] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -168,6 +174,7 @@ impl Capability {
         Capability::NotificationsRead,
         Capability::NotificationsRelay,
         Capability::BoardsManage,
+        Capability::BadgesAdmin,
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
@@ -202,6 +209,7 @@ impl Capability {
             Capability::NotificationsRead => "vtc.notifications.read",
             Capability::NotificationsRelay => "vtc.notifications.relay",
             Capability::BoardsManage => "vtc.boards.manage",
+            Capability::BadgesAdmin => "vtc.badges.admin",
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",

@@ -64,8 +64,11 @@ export async function previewMemberResponse(path: string): Promise<Response | nu
     const profile = await fetch("/v1/community/public-profile", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : {}))
       .catch(() => ({}));
-    const p = profile as { name?: string | null; logoUrl?: string | null };
-    return json({ ...SAMPLE_ME, community: { name: p.name ?? "Your community", logoUrl: p.logoUrl ?? null, did: null } });
+    const p = profile as { name?: string | null; logoUrl?: string | null; logo?: { url: string } | null };
+    return json({
+      ...SAMPLE_ME,
+      community: { name: p.name ?? "Your community", logoUrl: p.logoUrl ?? null, logo: p.logo ?? null, did: null },
+    });
   }
   if (path === "/v1/member/passkeys") return json(SAMPLE_PASSKEYS);
   if (path.startsWith("/v1/member/")) return json({ message: "not available in a theme preview" }, 404);

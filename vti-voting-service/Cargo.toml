@@ -4,8 +4,7 @@ description = "The voting service: a ballot box and board for community election
 version = "0.1.0"
 edition.workspace = true
 # A host service binary, like vti-witness and room-host: nothing consumes it as
-# a library, and it depends on vti-voting, which is unpublished until its first
-# published consumer.
+# a library, so there is nothing to publish.
 publish = false
 authors.workspace = true
 rust-version.workspace = true
@@ -16,23 +15,40 @@ repository.workspace = true
 name = "vti-voting-service"
 path = "src/main.rs"
 
+[features]
+default = ["jemalloc"]
+## Use jemalloc as the binary's global allocator (set in src/main.rs; a library
+## must never impose an allocator on its consumers). On by default: with the
+## system allocator (glibc malloc) freed pages are kept in the process's arenas,
+## so RSS ratchets up to its high-water mark and stays there — which reads as a
+## leak in monitoring even when the live heap is flat. jemalloc's decay-based
+## purging returns them, so RSS tracks live memory. Disable
+## (`--no-default-features`) to profile against the system allocator.
+jemalloc = ["dep:tikv-jemallocator"]
+
 [dependencies]
 vti-voting = { path = "../vti-voting" }
 # `host_session`: the service identity's mediator session, TSP and DIDComm on it.
-vti-common = { path = "../vti-common", version = "0.57", features = ["host-session"] }
-async-trait = "0.1"
+vti-common = { path = "../vti-common", version = "0.66", features = ["host-session"] }
+async-trait = { workspace = true }
 # As vti-witness: `provision-client` for the VTA-provisioned identity
 # (`run_phase1_init`, the `ballot-box` template), `tsp` for the binding
 # envelope, `didcomm` for `did_key::secrets_from_bundle`, and (through
 # `provision-client`) `trust_task_sign` and the proof verifier.
-vta-sdk = { path = "../vta-sdk", version = "0.81", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = [
   "didcomm",
   "provision-client",
   "tsp",
   "crypto-provider",
 ] }
-vti-secrets = { path = "../vti-secrets", version = "0.30" }
+vti-secrets = { path = "../vti-secrets", version = "0.39" }
 trust-tasks-rs = { workspace = true }
+# The receive pipeline every Trust Task service shares (#2576): size, freshness, recipient, the
+# task's own published policy, proof, sender binding, the duplicate-id record, signed answers.
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.12" }
+# The pinned `voting/*` versions: the routing table names each by its generated payload type,
+# and the pipeline reads each task's policy from the index (CLAUDE.md, "Pinning a task version").
+vti-specs = { path = "../vti-specs", version = "0.15" }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -46,10 +62,29 @@ uuid = { workspace = true }
 multibase = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
-anyhow = "1"
+anyhow = { workspace = true }
 toml = { workspace = true }
 serde_ignored = { workspace = true }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+
+# jemalloc for the binary (see the `jemalloc` feature). Not available on MSVC;
+# the cfg gate in src/main.rs falls back to the system allocator there.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
+
+# The workspace lint table with `unsafe_code` at `deny`, not `forbid` (#2658):
+# this crate exports jemalloc's `_rjem_malloc_conf` tuning symbol from
+# src/main.rs, which needs `#[unsafe(export_name)]`. That statement carries
+# `#[allow(unsafe_code)]` beside its SAFETY comment.
+# `scripts/check-workspace-lints.py` holds this table to `[workspace.lints]`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unsafe_code = "deny"
+
+[lints.clippy]
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"

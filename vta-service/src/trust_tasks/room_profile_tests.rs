@@ -28,20 +28,53 @@ struct Host {
     did: String,
     state: Arc<room_host::HostState>,
     doc: Value,
+    /// The type of every document the host received, in order.
+    seen: Arc<std::sync::Mutex<Vec<String>>>,
     _dir: tempfile::TempDir,
+}
+
+impl Host {
+    /// How many documents of `task` the host received.
+    fn received(&self, task: &str) -> usize {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| t.as_str() == task)
+            .count()
+    }
 }
 
 async fn start_host() -> Host {
     start_host_with(false).await
 }
 
+async fn start_host_with(contend: bool) -> Host {
+    start_host_opts(contend, false).await
+}
+
 /// [`start_host`]; with `contend`, every `rooms/records/put` loses its predicted version to
 /// another write that lands just before it — the version race `rooms/keys/profile/write`
-/// item 6 answers `contended` for when it never stops.
-async fn start_host_with(contend: bool) -> Host {
+/// item 6 answers `contended` for when it never stops. With `predates_v3`, the host answers
+/// `rooms/records/get/0.3` and `rooms/records/list/0.6` `unsupportedType`, as a host from
+/// before them does.
+async fn start_host_opts(contend: bool, predates_v3: bool) -> Host {
+    // A host predating get/0.3 predates get/0.4 as well.
+    const PREDATES_V3: &[&str] = &[
+        vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE,
+        vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE,
+    ];
+    start_host_refusing(contend, if predates_v3 { PREDATES_V3 } else { &[] }).await
+}
+
+/// [`start_host_opts`], the host answering `unsupportedType` to every task in `refused`.
+async fn start_host_refusing(contend: bool, refused: &'static [&'static str]) -> Host {
     let party = Party::new();
     let dir = tempfile::tempdir().unwrap();
     let state = room_host::open_state(dir.path()).expect("a host");
+    // Owners here are minted per test, and register their rooms on this host.
+    state.set_room_creation(room_host::creation::RoomCreation::any_creator());
     state.set_host_did(&party.did).expect("bind the host DID");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -49,13 +82,30 @@ async fn start_host_with(contend: bool) -> Host {
     let shared = state.clone();
     let host_did = party.did.clone();
     let secret = party.secret_multibase.clone();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
     let app = axum::Router::new().route(
         "/trust-tasks",
         axum::routing::post(move |body: axum::body::Bytes| {
             let shared = shared.clone();
             let host_did = host_did.clone();
             let secret = secret.clone();
+            let log = log.clone();
             async move {
+                let received: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let task = received["type"].as_str().unwrap_or_default().to_string();
+                log.lock().unwrap().push(task.clone());
+                if refused.contains(&task.as_str()) {
+                    let doc: TrustTask<Value> = serde_json::from_value(received).unwrap();
+                    let refused = doc.reject_with(
+                        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                        trust_tasks_rs::RejectReason::UnsupportedType { type_uri: task },
+                    );
+                    return (
+                        axum::http::StatusCode::OK,
+                        serde_json::to_string(&refused).unwrap(),
+                    );
+                }
                 if contend {
                     let doc: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
                     if doc["type"] == vti_rooms::wire::ROOMS_RECORDS_PUT_V3_TYPE
@@ -73,6 +123,9 @@ async fn start_host_with(contend: bool) -> Host {
                             cleartext: Some(json!({ "body": "another member's write" })),
                             author: None,
                             updated_at: 0,
+                            created_at: None,
+                            created_by: None,
+                            body_stored_at: None,
                         };
                         vti_rooms::storage::put_record(
                             shared.rooms(),
@@ -123,6 +176,7 @@ async fn start_host_with(contend: bool) -> Host {
         did: party.did,
         state,
         doc,
+        seen,
         _dir: dir,
     }
 }
@@ -228,6 +282,7 @@ async fn seed_room(host: &Host, room: &str, owner: &str, visibility: vti_rooms::
             mirror_of: None,
             record_retention: None,
             last_prune: None,
+            signal_delay: Default::default(),
             epoch_floor: None,
             frozen_at: None,
         },
@@ -282,7 +337,11 @@ struct Sealed {
 }
 
 async fn sealed_room() -> Sealed {
-    let host = start_host().await;
+    sealed_room_on(start_host().await).await
+}
+
+/// [`sealed_room`], on `host`.
+async fn sealed_room_on(host: Host) -> Sealed {
     let room = Party::new();
     let owner = vta(
         &room,
@@ -353,7 +412,11 @@ async fn admit_at(s: &Sealed, key_path: &str, actions: &[&str]) -> Vta {
     let welcome = {
         use base64::Engine as _;
         base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(out["payload"]["welcome"].as_str().expect("{out}"))
+            .decode(
+                out["payload"]["welcome"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{out}")),
+            )
             .unwrap()
     };
     room_groups::join(
@@ -529,6 +592,62 @@ async fn an_advance_re_writes_the_profile_under_the_new_epoch() {
     assert_eq!(got["payload"]["epoch"], 3);
     assert_eq!(got["payload"]["stale"], false);
     assert_eq!(got["payload"]["profile"], board());
+}
+
+/// **`recordMembers` survives every advance.** The owner's key holder re-writes the profile
+/// under the epoch each advance moves to, and must carry `recordMembers` through unchanged
+/// (`RoomProfile.recordMembers`, *Turning them on*, step 2): one that dropped it would
+/// silently turn the room's record members off at the next removal. An admission and a
+/// renewal here; a removal takes the same read-before and re-write-after
+/// (`room_owner_group::handle_remove_v0_4`), which this fixture cannot drive — its room's
+/// signing key is not the room DID's, so the host refuses the withdrawal a removal sends.
+#[tokio::test]
+async fn an_advance_carries_record_members_into_the_new_epoch() {
+    let s = sealed_room().await;
+    let profile = json!({
+        "name": "Deal room",
+        "recordMembers": ["kind", "inReplyTo", "writtenAt", "editedAt", "width", "height",
+                          "preview"],
+    });
+    write_profile(&s.owner, &s.room.did, &s.host, profile.clone()).await;
+    let before = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(before["payload"]["profile"], profile, "{before}");
+    assert_eq!(before["payload"]["epoch"], 1, "{before}");
+
+    // An admission advances the room to epoch 2.
+    let _member = admit(&s, &["read", "write"]).await;
+    let admitted = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(admitted["payload"]["epoch"], 2, "{admitted}");
+    assert_eq!(
+        admitted["payload"]["stale"], false,
+        "re-written under epoch 2"
+    );
+    assert_eq!(
+        admitted["payload"]["profile"], profile,
+        "carried through the admission"
+    );
+
+    // A renewal to epoch 3.
+    let renewed = body(
+        super::super::room_owner_group::handle_renew_v0_2(
+            &s.owner.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_OWNER_GROUP_RENEW_0_2,
+                json!({ "roomId": s.room.did, "host": s.host.did }),
+            ),
+        )
+        .await,
+    );
+    assert_eq!(renewed["payload"]["epoch"], 3, "{renewed}");
+    let after = read(&s.owner, &s.room.did, &s.host).await;
+    assert_eq!(after["payload"]["status"], "found", "{after}");
+    assert_eq!(after["payload"]["epoch"], 3);
+    assert_eq!(after["payload"]["stale"], false, "re-written under epoch 3");
+    assert_eq!(
+        after["payload"]["profile"], profile,
+        "recordMembers carried through unchanged"
+    );
 }
 
 /// Clearing retracts the current epoch's record (curate at the host), and the walk stops
@@ -871,6 +990,9 @@ async fn put_sealed(s: &Sealed, key: &str, epoch: u32, ciphertext: String, nonce
             cleartext: None,
             author: Some(s.owner.persona.clone()),
             updated_at: 0,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         },
         Some(0),
         Utc::now().timestamp() as u64,
@@ -1101,4 +1223,1203 @@ async fn record_read_and_backfill_name_the_host_failure() {
         got["payload"]["code"], "rooms/keys/backfill:hostUnreachable",
         "{got}"
     );
+}
+
+// ─── `rooms/keys/read/0.2` and `rooms/keys/browse/0.4` (trust-tasks-tf #1027) ───────────
+//
+// What the host records about each version — `createdAt`, `createdBy`, `bodyStoredAt`, and
+// on an `open` room the record's `kind` — passed through exactly as served, with fallback to
+// a host that predates `rooms/records/get/0.3` and `rooms/records/list/0.6`; and read/0.2's
+// batch form, each key answered on its own.
+
+const READ_0_2: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_2;
+const BROWSE_0_4: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_4;
+const GET_V3: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE;
+const GET_V2: &str = vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE;
+const LIST_V6: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V6_TYPE;
+const LIST_V5: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE;
+
+/// `rooms/keys/read/0.2` with `which` — `{"key": …}` or `{"keys": […]}` — as `v`.
+async fn read_v0_2(v: &Vta, room: &str, host: &str, which: Value) -> Value {
+    read_v0_2_within(
+        v,
+        room,
+        host,
+        which,
+        super::super::room_read::Budget::DEFAULT,
+    )
+    .await
+}
+
+async fn read_v0_2_within(
+    v: &Vta,
+    room: &str,
+    host: &str,
+    which: Value,
+    budget: super::super::room_read::Budget,
+) -> Value {
+    let mut payload = json!({ "roomId": room, "host": host });
+    for (k, val) in which.as_object().unwrap() {
+        payload[k] = val.clone();
+    }
+    body(
+        super::super::room_read::read_v0_2_within(
+            &v.state,
+            &admin(),
+            request(READ_0_2, payload),
+            budget,
+        )
+        .await,
+    )
+}
+
+async fn browse_v0_4(v: &Vta, room: &str, host: &str) -> Value {
+    body(
+        super::super::room_group::handle_browse_v0_4(
+            &v.state,
+            &admin(),
+            request(BROWSE_0_4, json!({ "roomId": room, "host": host })),
+        )
+        .await,
+    )
+}
+
+fn decoded(b64: &Value) -> String {
+    use base64::Engine as _;
+    String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(
+                b64.as_str()
+                    .unwrap_or_else(|| panic!("not base64url: {b64}")),
+            )
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// Write an `open` room's record with `rooms/records/put/0.5`, completed as `v`'s member by
+/// `rooms/keys/act/0.11` and handed to the host unaltered — what pnm does.
+async fn put_open_v0_5(v: &Vta, room: &str, host: &Host, key: &str, cleartext: Value) -> Value {
+    let unsigned = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": vti_rooms::wire::ROOMS_RECORDS_PUT_V5_TYPE,
+        "recipient": host.did,
+        "issuedAt": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": { "roomId": room, "key": key, "cleartext": cleartext },
+    });
+    let acted = body(
+        super::super::room_act::handle_act_v0_11(
+            &v.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_ACT_0_11,
+                json!({ "document": unsigned }),
+            ),
+        )
+        .await,
+    );
+    let completed = acted["payload"]["document"].clone();
+    assert!(completed.is_object(), "{acted}");
+    let answer = room_host::dispatch(&host.state, &serde_json::to_vec(&completed).unwrap()).await;
+    let doc = answer.document;
+    assert!(
+        doc["type"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("#response")),
+        "{doc}"
+    );
+    doc["payload"].clone()
+}
+
+/// An `open` room on `host`, its owner holding every action.
+async fn open_room_on(host: &Host) -> (Party, Vta) {
+    let room = Party::new();
+    let owner = vta(
+        &room,
+        host,
+        OWNER_KEY_PATH,
+        &["read", "write", "curate", "admin"],
+    )
+    .await;
+    seed_room(host, &room.did, &owner.persona, vti_rooms::Visibility::Open).await;
+    (room, owner)
+}
+
+/// A batch answers every key in order, each on its own: a record with the host's times, a
+/// key the host does not hold as that key's `hostRefused` with the host's code — and none of
+/// the single-record members at the top.
+#[tokio::test]
+async fn read_0_2_answers_each_key_on_its_own_in_order() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+    owner_writes(&s, "rec-b", "second").await;
+
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-a", "missing", "rec-b"] }),
+    )
+    .await;
+    let p = &got["payload"];
+    assert!(
+        got["type"].as_str().unwrap().ends_with("#response"),
+        "{got}"
+    );
+    for absent in ["key", "version", "verification", "plaintext"] {
+        assert!(p.get(absent).is_none(), "{absent} at the top: {got}");
+    }
+    let results = p["results"].as_array().unwrap();
+    let keys: Vec<_> = results.iter().map(|r| r["key"].clone()).collect();
+    assert_eq!(keys, vec![json!("rec-a"), json!("missing"), json!("rec-b")]);
+
+    assert_eq!(decoded(&results[0]["plaintext"]), "first", "{got}");
+    assert_eq!(decoded(&results[2]["plaintext"]), "second", "{got}");
+    for r in [&results[0], &results[2]] {
+        assert!(r["createdAt"].is_string(), "{r}");
+        assert!(r["bodyStoredAt"].is_string(), "{r}");
+        assert_eq!(r["verification"]["trace"], "verified", "{r}");
+        assert!(r.get("error").is_none(), "{r}");
+    }
+
+    let missing = &results[1];
+    assert_eq!(
+        missing["error"]["code"], "rooms/keys/read:hostRefused",
+        "{got}"
+    );
+    assert_eq!(missing["error"]["retryable"], false, "{got}");
+    assert!(missing["error"]["details"]["code"].is_string(), "{got}");
+    assert!(missing.get("version").is_none(), "never both: {got}");
+
+    assert_eq!(s.host.received(GET_V3), 3, "each key its own get/0.3");
+    assert_eq!(s.host.received(GET_V2), 0);
+}
+
+/// A request naming `key` is answered as 0.1 answers it, with the host's times — and 0.1
+/// itself, reading with get/0.2, carries none of them.
+#[tokio::test]
+async fn read_0_2_of_one_key_passes_the_hosts_times_through() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "key": "rec-a" }),
+    )
+    .await;
+    let p = &got["payload"];
+    assert_eq!(p["key"], "rec-a", "{got}");
+    assert_eq!(decoded(&p["plaintext"]), "first");
+    assert!(p["createdAt"].is_string(), "{got}");
+    assert!(p["bodyStoredAt"].is_string(), "{got}");
+    assert!(p.get("results").is_none(), "{got}");
+
+    let old = read_record(&s.owner, &s, "rec-a").await;
+    assert_eq!(plaintext_of(&old), "first");
+    for member in ["createdAt", "createdBy", "bodyStoredAt"] {
+        assert!(old["payload"].get(member).is_none(), "{member}: {old}");
+    }
+}
+
+/// A host that predates `rooms/records/get/0.3` answers it `unsupportedType`: the record is
+/// read with get/0.2 and carries none of the host's times — and the rest of the batch asks
+/// get/0.2 straight away.
+#[tokio::test]
+async fn read_0_2_falls_back_to_get_0_2_once_per_request() {
+    let s = sealed_room_on(start_host_opts(false, true).await).await;
+    owner_writes(&s, "rec-a", "first").await;
+    owner_writes(&s, "rec-b", "second").await;
+
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-a", "rec-b"] }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(decoded(&results[0]["plaintext"]), "first", "{got}");
+    assert_eq!(decoded(&results[1]["plaintext"]), "second", "{got}");
+    for r in &results {
+        for member in ["createdAt", "createdBy", "bodyStoredAt"] {
+            assert!(r.get(member).is_none(), "{member}: {r}");
+        }
+    }
+    assert_eq!(s.host.received(GET_V3), 1, "asked once, then remembered");
+    assert_eq!(s.host.received(GET_V2), 2);
+}
+
+/// A batch stops beginning keys at its size bound: what it read is answered, every key it
+/// did not come to is `notAttempted` (retryable, nothing implied), and the host never saw
+/// those.
+#[tokio::test]
+async fn read_0_2_answers_keys_past_its_bound_not_attempted() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+    owner_writes(&s, "rec-b", "second").await;
+
+    let got = read_v0_2_within(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-a", "rec-b", "missing"] }),
+        super::super::room_read::Budget {
+            bytes: 1,
+            time: std::time::Duration::from_secs(60),
+        },
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(decoded(&results[0]["plaintext"]), "first", "{got}");
+    for r in &results[1..] {
+        assert_eq!(
+            r["error"]["code"],
+            vti_specs::rooms::keys::read::v0_2::error_codes::NOT_ATTEMPTED.to_string(),
+            "{got}"
+        );
+        assert_eq!(r["error"]["code"], "rooms/keys/read:notAttempted", "{got}");
+        assert_eq!(r["error"]["retryable"], true, "{got}");
+        assert!(r["error"].get("details").is_none(), "{got}");
+    }
+    assert_eq!(s.host.received(GET_V3), 1, "only the key it read");
+    assert_eq!(
+        super::super::room_read::outcomes(&got["payload"]["results"]).len(),
+        3
+    );
+}
+
+/// What concerns the request as a whole is one refusal, before the host is asked anything:
+/// both or neither of `key` and `keys`, more than 32, the same key twice.
+#[tokio::test]
+async fn read_0_2_refuses_a_malformed_batch_whole() {
+    let s = sealed_room().await;
+    let thirty_three: Vec<String> = (0..33).map(|i| format!("rec-{i}")).collect();
+    let thirty_two: Vec<String> = (0..32).map(|i| format!("rec-{i}")).collect();
+    for which in [
+        json!({ "keys": thirty_three }),
+        json!({ "keys": ["rec-a", "rec-a"] }),
+        json!({ "keys": [] }),
+        json!({ "key": "rec-a", "keys": ["rec-b"] }),
+        json!({}),
+    ] {
+        let got = read_v0_2(&s.owner, &s.room.did, &s.host.did, which.clone()).await;
+        assert_eq!(got["payload"]["code"], "malformedRequest", "{which}: {got}");
+        assert!(got["payload"].get("results").is_none(), "{got}");
+    }
+    assert_eq!(s.host.received(GET_V3), 0);
+
+    // Thirty-two is the bound, not past it: every key is read (none is held here).
+    let got = read_v0_2(
+        &s.owner,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": thirty_two }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), super::super::room_read::MAX_KEYS, "{got}");
+    assert!(
+        results
+            .iter()
+            .all(|r| r["error"]["code"] == "rooms/keys/read:hostRefused"),
+        "{got}"
+    );
+    assert_eq!(s.host.received(GET_V3), 32);
+}
+
+/// **Repairs are per batch.** A member behind by a commit, reading a page of records sealed
+/// under the epoch it has not reached and one written before it joined, catches up once and
+/// fetches the history once — and every record opens.
+#[tokio::test]
+async fn a_batch_repairs_once_and_opens_every_record() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-early", "written at epoch 1").await;
+    let a = admit(&s, &["read"]).await;
+    let _b = admit_at(&s, SECOND_MEMBER_KEY_PATH, &["read"]).await;
+    assert_eq!(held(&a, &s).await.epoch, 2);
+    let mut keys = vec!["rec-early".to_string()];
+    for i in 0..4 {
+        owner_writes(&s, &format!("rec-{i}"), &format!("record {i}")).await;
+        keys.push(format!("rec-{i}"));
+    }
+    let commits_before = s.host.received(vti_rooms::wire::ROOMS_EPOCH_COMMITS_TYPE);
+    let chain_before = s.host.received(vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE);
+
+    let got = read_v0_2(&a, &s.room.did, &s.host.did, json!({ "keys": keys })).await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(
+        decoded(&results[0]["plaintext"]),
+        "written at epoch 1",
+        "{got}"
+    );
+    for i in 0..4 {
+        assert_eq!(
+            decoded(&results[i + 1]["plaintext"]),
+            format!("record {i}"),
+            "{got}"
+        );
+    }
+    assert_eq!(
+        s.host.received(vti_rooms::wire::ROOMS_EPOCH_COMMITS_TYPE) - commits_before,
+        1,
+        "one catch-up for the batch"
+    );
+    assert_eq!(
+        s.host.received(vti_rooms::wire::ROOMS_EPOCH_CHAIN_V2_TYPE) - chain_before,
+        1,
+        "one chain extension for the batch"
+    );
+    assert_eq!(held(&a, &s).await.epoch, 3);
+    assert_eq!(held(&a, &s).await.earliest_readable_epoch, 1);
+}
+
+/// One key that will not open is that key's `cannotOpen`, with its reason and epoch, and
+/// never fails the record beside it.
+#[tokio::test]
+async fn a_record_that_will_not_open_fails_only_its_own_key() {
+    let s = sealed_room().await;
+    let a = admit(&s, &["read"]).await;
+    owner_writes(&s, "rec-good", "readable").await;
+    vti_rooms::storage::advance_epoch(
+        s.host.state.rooms(),
+        &s.room.did,
+        3,
+        Utc::now().timestamp() as u64,
+    )
+    .await
+    .unwrap();
+    put_sealed(
+        &s,
+        "rec-unreachable",
+        3,
+        "AAAA".into(),
+        "AAAAAAAAAAAAAAAA".into(),
+    )
+    .await;
+
+    let got = read_v0_2(
+        &a,
+        &s.room.did,
+        &s.host.did,
+        json!({ "keys": ["rec-unreachable", "rec-good"] }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    let e = &results[0]["error"];
+    assert_eq!(e["code"], "rooms/keys/read:cannotOpen", "{got}");
+    assert_eq!(e["details"]["reason"], "notDelivered", "{got}");
+    assert_eq!(e["details"]["epoch"], 3, "{got}");
+    assert_eq!(e["retryable"], false, "{got}");
+    assert_eq!(decoded(&results[1]["plaintext"]), "readable", "{got}");
+
+    // The same key alone is refused with exactly that code.
+    let alone = read_v0_2(
+        &a,
+        &s.room.did,
+        &s.host.did,
+        json!({ "key": "rec-unreachable" }),
+    )
+    .await;
+    assert_eq!(alone["payload"]["code"], *e.get("code").unwrap(), "{alone}");
+}
+
+/// The declared refusals of read/0.2 and browse/0.4: no membership is `notAMember`; a host
+/// nobody answers at is `hostUnreachable` (per key in a batch); one that does not serve the
+/// room is browse's `hostRefused`.
+#[tokio::test]
+async fn read_0_2_and_browse_0_4_name_their_refusals() {
+    let mut s = sealed_room().await;
+    let stranger = Party::new().did;
+    let got = read_v0_2(&s.owner, &stranger, &s.host.did, json!({ "key": "k" })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::read::v0_2::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/read:notAMember",
+        "{got}"
+    );
+    let got = browse_v0_4(&s.owner, &stranger, &s.host.did).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_4::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+    let got = read_v0_2(&s.owner, &s.room.did, &dead, json!({ "key": "k" })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::read::v0_2::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+    let got = read_v0_2(&s.owner, &s.room.did, &dead, json!({ "keys": ["k", "l"] })).await;
+    for r in got["payload"]["results"].as_array().unwrap() {
+        assert_eq!(
+            r["error"]["code"], "rooms/keys/read:hostUnreachable",
+            "{got}"
+        );
+        assert_eq!(r["error"]["retryable"], true, "{got}");
+    }
+    let got = browse_v0_4(&s.owner, &s.room.did, &dead).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_4::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+
+    let other = start_host().await;
+    knows(&mut s.owner, &other.did, other.doc.clone()).await;
+    let got = browse_v0_4(&s.owner, &s.room.did, &other.did).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_4::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    let got = read_v0_2(&s.owner, &s.room.did, &other.did, json!({ "key": "k" })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::read::v0_2::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+}
+
+/// browse/0.4 passes list/0.6's rows through as served — `createdAt`, `createdBy`,
+/// `bodyStoredAt`, and on an open room `kind` — and a host that predates list/0.6 is listed
+/// with 0.5, its rows carrying none of them.
+#[tokio::test]
+async fn browse_0_4_passes_list_0_6_rows_through_and_falls_back_to_0_5() {
+    for predates in [false, true] {
+        let host = start_host_opts(false, predates).await;
+        let (room, owner) = open_room_on(&host).await;
+        put_open_v0_5(
+            &owner,
+            &room.did,
+            &host,
+            "msg-1",
+            json!({ "body": "hello", "kind": "message" }),
+        )
+        .await;
+
+        let got = browse_v0_4(&owner, &room.did, &host.did).await;
+        let p = &got["payload"];
+        assert!(
+            got["type"].as_str().unwrap().ends_with("#response"),
+            "{got}"
+        );
+        assert_eq!(p["complete"], true, "{got}");
+        assert_eq!(p["verification"]["count"], "agrees", "{got}");
+        let row = &p["records"][0];
+        assert_eq!(row["key"], "msg-1", "{got}");
+        if predates {
+            for member in ["createdAt", "createdBy", "bodyStoredAt", "kind"] {
+                assert!(row.get(member).is_none(), "{member}: {got}");
+            }
+            assert_eq!(host.received(LIST_V6), 1, "asked once");
+            assert_eq!(host.received(LIST_V5), 1);
+        } else {
+            assert_eq!(row["kind"], "message", "{got}");
+            assert_eq!(row["createdBy"], owner.persona, "{got}");
+            assert!(row["createdAt"].is_string(), "{got}");
+            assert!(row["bodyStoredAt"].is_string(), "{got}");
+            assert_eq!(host.received(LIST_V5), 0);
+        }
+        // browse/0.3 is unchanged: list/0.5, its rows without the new members.
+        let old = body(
+            super::super::room_group::handle_browse_v0_3(
+                &owner.state,
+                &admin(),
+                request(
+                    vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_3,
+                    json!({ "roomId": room.did, "host": host.did }),
+                ),
+            )
+            .await,
+        );
+        assert!(
+            old["payload"]["records"][0].get("createdAt").is_none(),
+            "{old}"
+        );
+    }
+}
+
+// ─── `rooms/keys/browse/0.5` (trust-tasks-tf #1088) ─────────────────────────────────────
+//
+// `order` passed through to the host's list/0.7, `maxPages` stopping the read, the host's
+// cursor answered as `nextCursor` and taken back as `cursor`, and `hostRefused` — never an
+// oldest-first listing — for `newestFirst` at a host that predates list/0.7.
+
+const BROWSE_0_5: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_5;
+const LIST_V7: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE;
+
+async fn browse_v0_5(v: &Vta, room: &str, host: &str, extra: Value) -> Value {
+    let mut payload = json!({ "roomId": room, "host": host });
+    for (k, val) in extra.as_object().unwrap() {
+        payload[k] = val.clone();
+    }
+    body(
+        super::super::room_group::handle_browse_v0_5(
+            &v.state,
+            &admin(),
+            request(BROWSE_0_5, payload),
+        )
+        .await,
+    )
+}
+
+fn row_versions(got: &Value) -> Vec<u64> {
+    got["payload"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["version"].as_u64().unwrap())
+        .collect()
+}
+
+/// An open room on `host` holding the messages `m0`…`m{n-1}`, written in that order.
+async fn open_room_with(host: &Host, n: usize) -> (Party, Vta) {
+    let (room, owner) = open_room_on(host).await;
+    for i in 0..n {
+        put_open_v0_5(
+            &owner,
+            &room.did,
+            host,
+            &format!("m{i}"),
+            json!({ "body": format!("message {i}") }),
+        )
+        .await;
+    }
+    (room, owner)
+}
+
+/// *Order and paging* items 1–6: a newest-first browse with `maxPages: 1` returns the head
+/// page in descending `version`, `complete: false` with the host's cursor as `nextCursor`
+/// and a count that is not comparable; passing that cursor back continues downward, and a
+/// browse resumed from a cursor is never compared against `recordCount`, even at the end.
+#[tokio::test]
+async fn browse_0_5_opens_a_conversation_at_its_head_and_pages_back() {
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 5).await;
+
+    let head = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "limit": 2, "maxPages": 1 }),
+    )
+    .await;
+    let p = &head["payload"];
+    assert!(
+        head["type"].as_str().unwrap().ends_with("#response"),
+        "{head}"
+    );
+    let first = row_versions(&head);
+    assert_eq!(first.len(), 2, "{head}");
+    assert!(first[0] > first[1], "descending: {head}");
+    assert_eq!(p["complete"], false, "{head}");
+    assert_eq!(p["verification"]["count"], "notComparable", "{head}");
+    let cursor = p["nextCursor"]
+        .as_str()
+        .expect("the host's cursor")
+        .to_string();
+    assert_eq!(host.received(LIST_V7), 1, "one host page");
+
+    // Back, a page at a time, to the end.
+    let mut seen = first.clone();
+    let mut cursor = Some(cursor);
+    let mut last = Value::Null;
+    while let Some(c) = cursor {
+        last = browse_v0_5(
+            &owner,
+            &room.did,
+            &host.did,
+            json!({ "order": "newestFirst", "limit": 2, "maxPages": 1, "cursor": c }),
+        )
+        .await;
+        seen.extend(row_versions(&last));
+        cursor = last["payload"]["nextCursor"].as_str().map(str::to_string);
+        assert_eq!(
+            last["payload"]["complete"],
+            cursor.is_none(),
+            "`complete` and `nextCursor` agree: {last}"
+        );
+    }
+    assert!(seen.windows(2).all(|w| w[0] > w[1]), "downward: {seen:?}");
+    assert_eq!(
+        last["payload"]["verification"]["count"], "notComparable",
+        "a resumed listing is never compared: {last}"
+    );
+
+    // The whole room newest first, in one browse, is comparable — the order is no filter.
+    let whole = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(whole["payload"]["complete"], true, "{whole}");
+    assert!(whole["payload"].get("nextCursor").is_none(), "{whole}");
+    assert_eq!(
+        whole["payload"]["verification"]["count"], "agrees",
+        "{whole}"
+    );
+    assert_eq!(
+        row_versions(&whole),
+        seen,
+        "the same records, the same order"
+    );
+}
+
+/// Item 3: the agent stops at `maxPages` however many pages remain; without it, a browse
+/// reads to the end as before (and oldest first, as 0.4 does).
+#[tokio::test]
+async fn browse_0_5_stops_at_max_pages() {
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 5).await;
+    let got = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "limit": 1, "maxPages": 2 }),
+    )
+    .await;
+    assert_eq!(row_versions(&got).len(), 2, "{got}");
+    assert_eq!(host.received(LIST_V7), 2);
+    assert_eq!(got["payload"]["complete"], false, "{got}");
+
+    let all = browse_v0_5(&owner, &room.did, &host.did, json!({ "limit": 1 })).await;
+    let up = row_versions(&all);
+    assert!(
+        up.windows(2).all(|w| w[0] < w[1]),
+        "oldest first by default: {up:?}"
+    );
+    assert_eq!(all["payload"]["complete"], true, "{all}");
+    assert!(all["payload"].get("nextCursor").is_none(), "{all}");
+}
+
+/// Item 1: at a host that predates list/0.7, a `newestFirst` browse is `hostRefused` with
+/// the host's refusal in `details` — never listed oldest first — while a browse that asks
+/// no order, or `oldestFirst`, is listed with list/0.6. And item 5: a cursor the host did
+/// not issue for this order is the host's to refuse, answered `hostRefused`.
+#[tokio::test]
+async fn browse_0_5_refuses_newest_first_at_a_host_without_list_0_7() {
+    const PREDATES_V7: &[&str] = &[vti_rooms::wire::ROOMS_RECORDS_LIST_V7_TYPE];
+    let host = start_host_refusing(false, PREDATES_V7).await;
+    let (room, owner) = open_room_with(&host, 2).await;
+
+    let got = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["details"]["code"], "unsupportedType",
+        "{got}"
+    );
+    assert_eq!(host.received(LIST_V6), 0, "never listed oldest first");
+
+    for order in [json!({}), json!({ "order": "oldestFirst" })] {
+        let got = browse_v0_5(&owner, &room.did, &host.did, order).await;
+        assert_eq!(got["payload"]["complete"], true, "{got}");
+        let up = row_versions(&got);
+        assert!(up.windows(2).all(|w| w[0] < w[1]), "{up:?}");
+    }
+    assert_eq!(host.received(LIST_V6), 2);
+
+    // At a host serving list/0.7, an oldest-first cursor offered under `newestFirst`.
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 3).await;
+    let up = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "limit": 1, "maxPages": 1 }),
+    )
+    .await;
+    let cursor = up["payload"]["nextCursor"].as_str().expect("more remain");
+    let got = browse_v0_5(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "cursor": cursor }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["details"]["code"],
+        vti_specs::rooms::records::list::v0_7::error_codes::INVALID_CURSOR.to_string(),
+        "{got}"
+    );
+}
+
+// ─── `rooms/keys/browse/0.6` (trust-tasks-tf #1289) ─────────────────────────────────────
+//
+// `beforeVersion` passed through to the host's list/0.8, and `hostRefused` — never a listing
+// without the bound — at a host that predates list/0.8.
+
+const BROWSE_0_6: &str = vta_sdk::trust_tasks::TASK_ROOMS_KEYS_BROWSE_0_6;
+const LIST_V8: &str = vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE;
+
+async fn browse_v0_6(v: &Vta, room: &str, host: &str, extra: Value) -> Value {
+    let mut payload = json!({ "roomId": room, "host": host });
+    for (k, val) in extra.as_object().unwrap() {
+        payload[k] = val.clone();
+    }
+    body(
+        super::super::room_group::handle_browse_v0_6(
+            &v.state,
+            &admin(),
+            request(BROWSE_0_6, payload),
+        )
+        .await,
+    )
+}
+
+/// "Load older" from the lowest version a surface holds, with no cursor kept: the rows
+/// below it, newest first, never comparable against `recordCount` — even read to the end.
+#[tokio::test]
+async fn browse_0_6_loads_older_from_a_version() {
+    let host = start_host().await;
+    let (room, owner) = open_room_with(&host, 5).await;
+    let head = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "limit": 2, "maxPages": 1 }),
+    )
+    .await;
+    let top = row_versions(&head);
+    assert_eq!(top.len(), 2, "{head}");
+    assert_eq!(host.received(LIST_V8), 1, "list/0.8 at the host");
+    let lowest = *top.iter().min().unwrap();
+
+    let older = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "beforeVersion": lowest }),
+    )
+    .await;
+    let below = row_versions(&older);
+    assert!(!below.is_empty(), "{older}");
+    assert!(below.iter().all(|v| *v < lowest), "{older}");
+    assert!(below.windows(2).all(|w| w[0] > w[1]), "downward: {below:?}");
+    assert_eq!(older["payload"]["complete"], true, "{older}");
+    assert_eq!(
+        older["payload"]["verification"]["count"], "notComparable",
+        "a listing bounded above is never compared: {older}"
+    );
+}
+
+/// At a host without list/0.8, a browse naming `beforeVersion` is `hostRefused` with the
+/// host's refusal — never listed without the bound; one that names none is listed with
+/// list/0.7, newest first as asked.
+#[tokio::test]
+async fn browse_0_6_refuses_before_version_at_a_host_without_list_0_8() {
+    const PREDATES_V8: &[&str] = &[vti_rooms::wire::ROOMS_RECORDS_LIST_V8_TYPE];
+    let host = start_host_refusing(false, PREDATES_V8).await;
+    let (room, owner) = open_room_with(&host, 3).await;
+
+    let got = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst", "beforeVersion": 3 }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_6::error_codes::HOST_REFUSED.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["details"]["code"], "unsupportedType",
+        "{got}"
+    );
+    assert_eq!(host.received(LIST_V7), 0, "never listed without the bound");
+
+    let got = browse_v0_6(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(got["payload"]["complete"], true, "{got}");
+    let down = row_versions(&got);
+    assert!(down.windows(2).all(|w| w[0] > w[1]), "{down:?}");
+    assert_eq!(host.received(LIST_V7), 1);
+}
+
+/// browse/0.6 names its refusals at its own version: no membership is `notAMember`; a host
+/// nobody answers at is `hostUnreachable`.
+#[tokio::test]
+async fn browse_0_6_names_its_refusals() {
+    let mut s = sealed_room().await;
+    let stranger = Party::new().did;
+    let got = browse_v0_6(&s.owner, &stranger, &s.host.did, json!({})).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_6::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+    let got = browse_v0_6(&s.owner, &s.room.did, &dead, json!({ "beforeVersion": 9 })).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_6::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+}
+
+/// browse/0.5 names its refusals as 0.4 does, at its own version: no membership is
+/// `notAMember`; a host nobody answers at is `hostUnreachable`.
+#[tokio::test]
+async fn browse_0_5_names_its_refusals() {
+    let mut s = sealed_room().await;
+    let stranger = Party::new().did;
+    let got = browse_v0_5(&s.owner, &stranger, &s.host.did, json!({})).await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::NOT_A_MEMBER.to_string(),
+        "{got}"
+    );
+    assert_eq!(
+        got["payload"]["code"], "rooms/keys/browse:notAMember",
+        "{got}"
+    );
+
+    let (dead, doc) = unreachable_host();
+    knows(&mut s.owner, &dead, doc).await;
+    let got = browse_v0_5(
+        &s.owner,
+        &s.room.did,
+        &dead,
+        json!({ "order": "newestFirst" }),
+    )
+    .await;
+    assert_eq!(
+        got["payload"]["code"],
+        vti_specs::rooms::keys::browse::v0_5::error_codes::HOST_UNREACHABLE.to_string(),
+        "{got}"
+    );
+}
+
+/// **End to end, on an open room whose profile lists the members.** The writer reads the
+/// profile and is permitted `kind`, `inReplyTo` and `writtenAt` (and not `editedAt`); writes
+/// a message, a reply to it and a reaction with `rooms/records/put/0.5` through
+/// `rooms/keys/act/0.11`; and a member reads all three back in one `rooms/keys/read/0.2`
+/// batch — each record's `kind` and `inReplyTo` as written, and the host's times.
+#[tokio::test]
+async fn messages_replies_and_reactions_round_trip_through_a_batch_read() {
+    let host = start_host().await;
+    let (room, owner) = open_room_on(&host).await;
+    let mut profile = board();
+    profile["recordMembers"] = json!(["kind", "inReplyTo", "writtenAt"]);
+    let w = write_profile(&owner, &room.did, &host, profile).await;
+    assert_eq!(w["payload"]["outcome"], "written", "{w}");
+
+    // The writer's rule, against the profile as its readers see it.
+    let read = read(&owner, &room.did, &host).await;
+    let listed: Vec<String> =
+        serde_json::from_value(read["payload"]["profile"]["recordMembers"].clone())
+            .unwrap_or_else(|e| panic!("{e}: {read}"));
+    let written_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let message = json!({ "body": "Shall we meet on Thursday?", "kind": "message",
+                          "writtenAt": written_at });
+    let reply = json!({ "body": "Thursday works.", "kind": "message",
+                        "inReplyTo": { "key": "msg-1" }, "writtenAt": written_at });
+    for body in [&message, &reply] {
+        vti_rooms::record_members::permitted(body.as_object().unwrap(), Some(&listed))
+            .unwrap_or_else(|e| panic!("{e}"));
+    }
+    let edited = json!({ "body": "x", "editedAt": written_at });
+    assert!(
+        vti_rooms::record_members::permitted(edited.as_object().unwrap(), Some(&listed)).is_err(),
+        "`editedAt` is not listed"
+    );
+
+    let first = put_open_v0_5(&owner, &room.did, &host, "msg-1", message).await;
+    let version = first["version"].as_u64().unwrap();
+    put_open_v0_5(&owner, &room.did, &host, "reply-1", reply).await;
+    let reaction = json!({ "body": "👍", "kind": "reaction",
+                           "inReplyTo": { "key": "msg-1", "version": version } });
+    vti_rooms::record_members::permitted(reaction.as_object().unwrap(), Some(&listed)).unwrap();
+    put_open_v0_5(&owner, &room.did, &host, "react-1", reaction).await;
+
+    let got = read_v0_2(
+        &owner,
+        &room.did,
+        &host.did,
+        json!({ "keys": ["msg-1", "reply-1", "react-1"] }),
+    )
+    .await;
+    let results = got["payload"]["results"].as_array().unwrap().clone();
+    assert_eq!(results.len(), 3, "{got}");
+    for r in &results {
+        assert!(r.get("error").is_none(), "{got}");
+        assert_eq!(r["createdBy"], owner.persona, "{got}");
+        assert!(r["createdAt"].is_string(), "{got}");
+        assert!(r["bodyStoredAt"].is_string(), "{got}");
+        assert!(
+            r.get("plaintext").is_none(),
+            "an open room's body is cleartext"
+        );
+    }
+    assert_eq!(results[0]["cleartext"]["kind"], "message", "{got}");
+    assert_eq!(results[0]["cleartext"]["writtenAt"], written_at, "{got}");
+    assert!(results[0]["cleartext"].get("inReplyTo").is_none(), "{got}");
+    assert_eq!(results[1]["cleartext"]["kind"], "message", "{got}");
+    assert_eq!(
+        results[1]["cleartext"]["inReplyTo"],
+        json!({ "key": "msg-1" }),
+        "{got}"
+    );
+    assert_eq!(results[2]["cleartext"]["kind"], "reaction", "{got}");
+    assert_eq!(
+        results[2]["cleartext"]["inReplyTo"],
+        json!({ "key": "msg-1", "version": version }),
+        "{got}"
+    );
+    assert_eq!(results[2]["cleartext"]["body"], "👍", "{got}");
+}
+
+/// `rooms/keys/watch`, `rooms/keys/changed` and `rooms/keys/act/0.12`, on these fixtures.
+/// The pass-on rides the push path, which a build without DIDComm has no route for.
+#[cfg(feature = "didcomm")]
+#[path = "room_key_watch_tests.rs"]
+mod watch;
+
+// ─── Purpose of use (VTI-ACL-100 – 110) ─────────────────────────────────────
+
+/// The super admin's stored entry, narrowed to `purposes`.
+async fn narrow(state: &AppState, purposes: &[&str]) {
+    let did = admin().did;
+    let mut entry = crate::acl::get_acl_entry(&state.acl_ks, &did)
+        .await
+        .unwrap()
+        .expect("the super admin's entry");
+    entry.purposes = vti_common::acl::PurposeScope::listed(purposes.iter().copied()).unwrap();
+    crate::acl::store_acl_entry(&state.acl_ks, &entry)
+        .await
+        .unwrap();
+}
+
+/// The audit rows the VTA wrote, as text.
+async fn audit_rows(state: &AppState) -> Vec<String> {
+    state
+        .audit_ks
+        .prefix_iter_raw("log:")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(_, v)| String::from_utf8_lossy(&v).into_owned())
+        .collect()
+}
+
+/// `rooms/keys/read/0.3` (VTI-ACL-102 – 106): a read is held to the caller's purposes
+/// before the host is asked for anything, refused distinctly and without content, and
+/// audited with its purpose either way. A granted purpose is passed to the host as
+/// get/0.4's, which the host serves.
+#[tokio::test]
+async fn read_0_3_is_held_to_the_callers_purposes() {
+    let s = sealed_room().await;
+    owner_writes(&s, "rec-a", "first").await;
+    narrow(&s.owner.state, &["personalisation", "taskExecution"]).await;
+    let caller = admin();
+    let read3 = |purpose: Option<&str>| {
+        let mut payload = json!({ "roomId": s.room.did, "host": s.host.did, "key": "rec-a" });
+        if let Some(p) = purpose {
+            payload["purpose"] = json!(p);
+        }
+        super::super::room_read::handle_read_v0_3(
+            &s.owner.state,
+            &caller,
+            request(vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_3, payload),
+        )
+    };
+    let (v3_before, v4) = (
+        s.host.received(GET_V3),
+        vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE,
+    );
+
+    let refused = body(read3(Some("analytics")).await);
+    assert_eq!(
+        refused["payload"]["code"], "rooms/keys/read:purposeNotGranted",
+        "{refused}"
+    );
+    assert_eq!(
+        refused["payload"]["details"],
+        json!({ "purposeNamed": true, "purpose": "analytics" })
+    );
+    assert!(
+        !refused.to_string().contains("first"),
+        "no content: {refused}"
+    );
+    let unnamed = body(read3(None).await);
+    assert_eq!(
+        unnamed["payload"]["details"],
+        json!({ "purposeNamed": false }),
+        "two purposes listed and none named: {unnamed}"
+    );
+    assert_eq!(
+        s.host.received(GET_V3),
+        v3_before,
+        "a refused read asks the host for nothing"
+    );
+
+    let served = body(read3(Some("personalisation")).await);
+    assert_eq!(
+        decoded(&served["payload"]["plaintext"]),
+        "first",
+        "{served}"
+    );
+    assert_eq!(s.host.received(v4), 1, "the purpose is offered to the host");
+    assert_eq!(
+        s.host.received(GET_V3),
+        v3_before,
+        "a host serving get/0.4 is not asked get/0.3"
+    );
+
+    let rows = audit_rows(&s.owner.state).await;
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("rooms.keys.read") && r.contains("purpose=personalisation")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("rooms.keys.read")
+            && r.contains("refused=purposeNotGranted purpose=analytics")),
+        "{rows:#?}"
+    );
+}
+
+/// `rooms/keys/read/0.3` against a host that does not serve get/0.4: the read, its
+/// purpose already decided here, is asked as get/0.3.
+#[tokio::test]
+async fn read_0_3_falls_back_to_get_0_3_on_a_host_without_get_0_4() {
+    let s = sealed_room_on(
+        start_host_refusing(false, &[vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE]).await,
+    )
+    .await;
+    owner_writes(&s, "rec-a", "first").await;
+    narrow(&s.owner.state, &["personalisation"]).await;
+    let v3_before = s.host.received(GET_V3);
+    let served = body(
+        super::super::room_read::handle_read_v0_3(
+            &s.owner.state,
+            &admin(),
+            request(
+                vta_sdk::trust_tasks::TASK_ROOMS_KEYS_READ_0_3,
+                json!({ "roomId": s.room.did, "host": s.host.did, "key": "rec-a",
+                        "purpose": "personalisation" }),
+            ),
+        )
+        .await,
+    );
+    assert_eq!(
+        decoded(&served["payload"]["plaintext"]),
+        "first",
+        "{served}"
+    );
+    assert_eq!(
+        s.host.received(vti_rooms::wire::ROOMS_RECORDS_GET_V4_TYPE),
+        1
+    );
+    assert_eq!(
+        s.host.received(GET_V3),
+        v3_before + 1,
+        "asked get/0.3 after"
+    );
+}
+
+/// `rooms/owner/issue-authority/0.3` (VTI-ACL-110): the credential states the request's
+/// `purposes` unchanged, and a grant wider than the caller's own entry — a purpose it does
+/// not hold, or none at all, which grants `any` — is refused, never issued narrower
+/// (VTI-ACL-107).
+#[tokio::test]
+async fn issue_authority_0_3_states_the_purposes_asked_within_the_callers() {
+    let s = sealed_room().await;
+    let room_signing =
+        crate::test_support::seed_holder_key(&s.owner.state, ROOM_KEY_PATH, None).await;
+    let room_key = format!(
+        "{room_signing}#{}",
+        room_signing.strip_prefix("did:key:").unwrap()
+    );
+    let grant = |uri: &'static str, purposes: Option<Value>| {
+        let mut payload = json!({
+            "roomId": s.room.did, "signingKeyId": room_key,
+            "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "actions": ["read"],
+            "validUntil": (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+        });
+        if let Some(p) = purposes {
+            payload["purposes"] = p;
+        }
+        let state = &s.owner.state;
+        async move {
+            let doc = request(uri, payload);
+            body(
+                if uri == vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3 {
+                    super::super::room_owner::handle_issue_authority_v0_3(state, &admin(), doc)
+                        .await
+                } else {
+                    super::super::room_owner::handle_issue_authority(state, &admin(), doc).await
+                },
+            )
+        }
+    };
+    const V3: &str = vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_3;
+    const V2: &str = vta_sdk::trust_tasks::TASK_ROOMS_OWNER_ISSUE_AUTHORITY_0_2;
+    let one = json!({ "scope": "listed", "purposes": ["taskExecution"] });
+
+    // A caller under `any` may grant a list, and the credential states it unchanged.
+    let issued = grant(V3, Some(one.clone())).await;
+    let vac: dtg_credentials::DTGCredential =
+        serde_json::from_str(issued["payload"]["credential"].as_str().expect("{issued}"))
+            .expect("the credential reads");
+    let vac = serde_json::to_value(&vac).unwrap();
+    assert_eq!(vac["credentialSubject"]["purposes"], one, "{vac}");
+    assert_eq!(vac["@context"][1], dtg_credentials::DTG_CONTEXT_V2, "{vac}");
+    // And under `any`, a request stating none issues a credential stating none.
+    let none = grant(V2, None).await;
+    let vac: Value =
+        serde_json::from_str(none["payload"]["credential"].as_str().expect("{none}")).unwrap();
+    assert!(vac["credentialSubject"].get("purposes").is_none(), "{vac}");
+
+    narrow(&s.owner.state, &["taskExecution", "personalisation"]).await;
+    assert!(grant(V3, Some(one)).await["payload"]["credential"].is_string());
+    for (uri, purposes, why) in [
+        (
+            V3,
+            Some(json!({ "scope": "listed", "purposes": ["analytics"] })),
+            "a purpose the caller does not hold",
+        ),
+        (V3, None, "none stated grants `any`"),
+        (V2, None, "0.2 states none"),
+    ] {
+        let refused = grant(uri, purposes).await;
+        assert!(
+            refused["payload"].get("credential").is_none(),
+            "{why}: {refused}"
+        );
+    }
 }

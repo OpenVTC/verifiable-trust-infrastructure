@@ -69,6 +69,10 @@ pub(crate) async fn run(
             )
             .await
         }
+        ElectionCommands::Verify {
+            election_id,
+            target: t,
+        } => elections::cmd_verify(client, target(&t), &election_id).await,
         ElectionCommands::Trustee(TrusteeCommands::Status {
             election_id,
             target: t,

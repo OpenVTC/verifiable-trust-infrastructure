@@ -64,7 +64,7 @@ import {
   removeCommunityRoomMember,
   validUntilIn,
 } from "@/lib/community-rooms-api";
-import { formatIso } from "@/lib/format";
+import { formatDateTime, formatIso } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
@@ -249,7 +249,7 @@ function RoomFacts({
         )}
         <dt>Created</dt>
         <dd>
-          {new Date(r.createdAt).toLocaleString()}
+          {formatDateTime(r.createdAt)}
           {room.createdBy && (
             <>
               {" "}

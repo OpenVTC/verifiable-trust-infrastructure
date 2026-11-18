@@ -1,34 +1,31 @@
 //! Wire types for the `rooms/*` Trust Tasks.
 //!
-//! # Why these are hand-written, now that the generated ones exist
+//! # Two kinds of type, and which one is on the wire
 //!
-//! They began as a mirror of schemas still in review upstream. Those schemas have since
-//! published and `vti_specs_rooms::rooms` carries generated bindings — so the earlier
-//! instruction here, to replace these with the generated types on publication, has come due
-//! and is **deliberately not being followed.**
+//! **What a host receives is the generated type.** Every request is dispatched on the
+//! generated payload type of its task (`vti_specs_rooms::rooms`, through `vti-rooms-host`),
+//! so what a host accepts is decided by the published schema, member for member, before
+//! anything here is read. None of these types implements `trust_tasks_rs::Payload`: none
+//! claims to be the payload of a task.
 //!
-//! The reason is that the generated types are shaped for a different job. They use newtypes
-//! and `NonZeroU64` where a storage layer wants plain `String` and `u64`, they are
-//! `#[non_exhaustive]`, and they are built through builders — all correct for a client
-//! constructing a request, all friction for a crate whose types are also its storage
-//! records. Converting would push that friction into every handler and every host.
+//! **What is here is hand-written on purpose**, and is one of three things:
 //!
-//! What the original instruction was actually protecting against is two descriptions of one
-//! wire format drifting apart, and that danger is real: a `snake_case` field where the
-//! schema says `camelCase` is invisible to every Rust test, because both sides of a
-//! round-trip use the same struct. So the protection is kept and the conversion is not:
-//! `tests/schema_conformance.rs` validates what these types actually serialise to against
-//! the published schemas. **Every type here must appear in that file.** Agreeing on the
-//! wire is the requirement; agreeing on the Rust shape never was.
+//! - **Storage records** — [`SealedContent`], [`EpochLink`], [`RelayedCommit`],
+//!   [`CommittedRecord`], [`AuthorityPresentation`] as a record carries it — which a host
+//!   keeps and members read back. The generated types use newtypes, `NonZeroU64`,
+//!   `#[non_exhaustive]` and builders: right for a client composing a request, friction for
+//!   a crate whose types are also its storage.
+//! - **A host's reading of a request** (`*Body`): the members a handler acts on, read from
+//!   the payload the generated type has already accepted (its `ext` set aside).
+//! - **Response bodies** a host builds and a client reads back.
 //!
-//! # The one exemption, and it is temporary
-//!
-//! [`EpochLink`] is **not** in that file, because there is no published schema to check it
-//! against: today it is a storage record, written by a member's own VTA and read back by it,
-//! and the tasks that will put it on the wire are still upstream (design note §12.2). Named
-//! here rather than left as an apparent oversight — the rule above is the kind that decays
-//! the first time someone finds an unexplained gap in it and concludes it is advisory. When
-//! `rooms/keys/chain` publishes, this paragraph goes and the type joins the census.
+//! What the generated types protect against is two descriptions of one wire format drifting
+//! apart — a `snake_case` field where the schema says `camelCase` is invisible to every Rust
+//! test, because both sides of a round trip use the same struct. So every type here is held
+//! to the published schema instead: `tests/schema_conformance.rs` validates what each
+//! serialises to, and `tests/wire_census.rs` fails on a `pub struct` in this file that it
+//! does not name. Agreeing on the wire is the requirement; agreeing on the Rust shape never
+//! was. Root `CLAUDE.md` (*Trust Task wire types*) records the exemption and this obligation.
 //!
 //! Every struct is `camelCase` and `deny_unknown_fields`: these carry authorization
 //! decisions, and an unknown member on one of those is a request that means something the
@@ -39,15 +36,20 @@ use serde::{Deserialize, Serialize};
 use crate::{Record, RecordStatus, Visibility};
 
 /// `rooms/epoch/mint/0.1`.
-pub const ROOMS_EPOCH_MINT_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/mint/0.1";
+pub const ROOMS_EPOCH_MINT_TYPE: &str =
+    <vti_specs_rooms::rooms::epoch::mint::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/owner/transfer/0.1`.
-pub const ROOMS_OWNER_TRANSFER_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/transfer/0.1";
+pub const ROOMS_OWNER_TRANSFER_TYPE: &str =
+    <vti_specs_rooms::rooms::owner::transfer::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/owner/claim/0.1`.
-pub const ROOMS_OWNER_CLAIM_TYPE: &str = "https://trusttasks.org/spec/rooms/owner/claim/0.1";
+pub const ROOMS_OWNER_CLAIM_TYPE: &str =
+    <vti_specs_rooms::rooms::owner::claim::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/curate/0.1`.
-pub const ROOMS_RECORDS_CURATE_TYPE: &str = "https://trusttasks.org/spec/rooms/records/curate/0.1";
+pub const ROOMS_RECORDS_CURATE_TYPE: &str =
+    <vti_specs_rooms::rooms::records::curate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/epoch/commits/0.1`.
-pub const ROOMS_EPOCH_COMMITS_TYPE: &str = "https://trusttasks.org/spec/rooms/epoch/commits/0.1";
+pub const ROOMS_EPOCH_COMMITS_TYPE: &str =
+    <vti_specs_rooms::rooms::epoch::commits::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `rooms/records/put/0.3`: an `open` room's cleartext may say what kind of claim the
 /// record is and when it lapses — `basis`, `confidence`, `evidence`, `validFor` and
@@ -57,8 +59,13 @@ pub const ROOMS_RECORDS_PUT_V3_TYPE: &str =
     <vti_specs_rooms::rooms::records::put::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/put/0.4`: an `open` room's record may carry a file — its manifest, and
 /// the random key its blob is sealed under, in `cleartext.file` (trust-tasks-tf #987).
+#[allow(deprecated)] // still served beside put/0.5, to writers that send it (trust-tasks-tf #1027)
 pub const ROOMS_RECORDS_PUT_V4_TYPE: &str =
     <vti_specs_rooms::rooms::records::put::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/put/0.5`: an `open` room's record may say what kind it is, what it
+/// answers, and when it was written and edited (trust-tasks-tf #1027).
+pub const ROOMS_RECORDS_PUT_V5_TYPE: &str =
+    <vti_specs_rooms::rooms::records::put::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/epoch/chain/0.2`: every response carries the room's epoch floor once it has been
 /// pruned, and no rung at or below it (trust-tasks-tf #869).
 pub const ROOMS_EPOCH_CHAIN_V2_TYPE: &str =
@@ -67,16 +74,50 @@ pub const ROOMS_EPOCH_CHAIN_V2_TYPE: &str =
 pub const ROOMS_EPOCH_PRUNE_V2_TYPE: &str =
     <vti_specs_rooms::rooms::epoch::prune::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/create/0.2`: a room states its record retention at creation (trust-tasks-tf #868).
+#[allow(deprecated)] // still served beside create/0.3, to owners that send it (trust-tasks-tf #1084)
 pub const ROOMS_CREATE_V2_TYPE: &str =
     <vti_specs_rooms::rooms::create::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/create/0.3`: a room may also state its signal delay at creation, echoed in the
+/// response whatever was asked (trust-tasks-tf #1084).
+pub const ROOMS_CREATE_V3_TYPE: &str =
+    <vti_specs_rooms::rooms::create::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/info/0.4`: 0.3, and the room's signal delay, always present (trust-tasks-tf #1084).
+#[allow(deprecated)] // still served beside info/0.5, to readers that ask for it (trust-tasks-tf #1289)
+pub const ROOMS_INFO_V4_TYPE: &str =
+    <vti_specs_rooms::rooms::info::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/info/0.5`: 0.4, and the host's own limits a client can refuse by before it sends —
+/// `maxRecordDocumentBytes` and `maxChunkSize` (trust-tasks-tf #1289).
+pub const ROOMS_INFO_V5_TYPE: &str =
+    <vti_specs_rooms::rooms::info::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/signal-delay/set/0.1`: an administrator changes whether the host waits a
+/// randomised interval before the room's watch signals (trust-tasks-tf #1084).
+pub const ROOMS_SIGNAL_DELAY_SET_TYPE: &str =
+    <vti_specs_rooms::rooms::signal_delay::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/info/0.3`: also the record retention in force and the room's latest prune, its
 /// instant named `prunedAt` (`rooms/_shared/0.2`).
+#[allow(deprecated)] // still served beside info/0.4, to readers that ask for it (trust-tasks-tf #1084)
 pub const ROOMS_INFO_V3_TYPE: &str =
     <vti_specs_rooms::rooms::info::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/list/0.5`: rows name their blobs, every page carries the room's
 /// `lastPrune`, and the continuation token is `nextCursor`.
+#[allow(deprecated)] // still served beside list/0.6, to readers that ask for it (trust-tasks-tf #1027)
 pub const ROOMS_RECORDS_LIST_V5_TYPE: &str =
     <vti_specs_rooms::rooms::records::list::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/list/0.6`: rows are `RecordMetadataV3` — an `open` record's `kind`, and
+/// the host's `createdAt`, `createdBy` and `bodyStoredAt` (trust-tasks-tf #1027).
+#[allow(deprecated)] // still served beside list/0.7, to readers that ask for it (trust-tasks-tf #1088)
+pub const ROOMS_RECORDS_LIST_V6_TYPE: &str =
+    <vti_specs_rooms::rooms::records::list::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/list/0.7`: list 0.6, oldest or newest first (`order`), a cursor bound to
+/// the order it was issued under (trust-tasks-tf #1088).
+#[allow(deprecated)] // still served beside list/0.8, to readers that ask for it (trust-tasks-tf #1289)
+pub const ROOMS_RECORDS_LIST_V7_TYPE: &str =
+    <vti_specs_rooms::rooms::records::list::v0_7::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/list/0.8`: list 0.7, and an exclusive `beforeVersion` upper bound under
+/// either order; a cursor bound to its order, `sinceVersion` and `beforeVersion`
+/// (trust-tasks-tf #1289).
+pub const ROOMS_RECORDS_LIST_V8_TYPE: &str =
+    <vti_specs_rooms::rooms::records::list::v0_8::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/prune/0.2`: an administrator removes what the record retention makes
 /// eligible.
 pub const ROOMS_RECORDS_PRUNE_V2_TYPE: &str =
@@ -85,8 +126,18 @@ pub const ROOMS_RECORDS_PRUNE_V2_TYPE: &str =
 pub const ROOMS_RECORDS_RETENTION_SET_TYPE: &str =
     <vti_specs_rooms::rooms::records::retention::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/records/get/0.2`: a read that names the record's blobs.
+#[allow(deprecated)] // still served beside get/0.3, to readers that ask for it (trust-tasks-tf #1027)
 pub const ROOMS_RECORDS_GET_V2_TYPE: &str =
     <vti_specs_rooms::rooms::records::get::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/get/0.3`: get/0.2, and the host's `createdAt`, `createdBy` and
+/// `bodyStoredAt`, none of them committed (trust-tasks-tf #1027).
+#[allow(deprecated)] // superseded by get/0.4, and still served
+pub const ROOMS_RECORDS_GET_V3_TYPE: &str =
+    <vti_specs_rooms::rooms::records::get::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/records/get/0.4`: get/0.3, and the `purpose` the reader will use the record for
+/// (VTI-ACL-110). Sent by a key holder reading for a named purpose; not yet served here.
+pub const ROOMS_RECORDS_GET_V4_TYPE: &str =
+    <vti_specs_rooms::rooms::records::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `rooms/blobs/chunk/0.1`.
 pub const ROOMS_BLOBS_CHUNK_TYPE: &str =
     <vti_specs_rooms::rooms::blobs::chunk::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -150,7 +201,35 @@ pub const ROOMS_DISPATCHED_URIS: &[&str] = &[
     // Revocation (trust-tasks-tf #804).
     ROOMS_REVOCATIONS_PUT_TYPE,
     ROOMS_REVOCATIONS_GET_TYPE,
+    // Record kinds and the host's record times (trust-tasks-tf #1027).
+    ROOMS_RECORDS_PUT_V5_TYPE,
+    ROOMS_RECORDS_LIST_V6_TYPE,
+    ROOMS_RECORDS_GET_V3_TYPE,
+    // A read's purpose of use (trust-tasks-tf #1076, VTI-ACL-110).
+    ROOMS_RECORDS_GET_V4_TYPE,
+    // A watch, and its one signal (trust-tasks-tf #1036).
+    ROOMS_WATCH_TYPE,
+    // A live watch while a conversation is open (trust-tasks-tf #1087).
+    ROOMS_WATCH_V2_TYPE,
+    // The room's signal delay (trust-tasks-tf #1084).
+    ROOMS_CREATE_V3_TYPE,
+    ROOMS_INFO_V4_TYPE,
+    ROOMS_SIGNAL_DELAY_SET_TYPE,
+    // A listing newest first, to open a conversation at its head (trust-tasks-tf #1088).
+    ROOMS_RECORDS_LIST_V7_TYPE,
+    // Load older by version, and the host's own limits (trust-tasks-tf #1289).
+    ROOMS_RECORDS_LIST_V8_TYPE,
+    ROOMS_INFO_V5_TYPE,
 ];
+
+/// `rooms/watch/0.1`: arm, re-arm or cancel one `rooms/changed/0.1` signal.
+#[allow(deprecated)] // still served beside 0.2 (trust-tasks-tf #1087)
+pub const ROOMS_WATCH_TYPE: &str =
+    <vti_specs_rooms::rooms::watch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `rooms/watch/0.2`: 0.1, and a **live** watch (`live: true`) — a signal per change,
+/// coalesced, under a lease of at most 120 seconds — on a room whose signal delay is `none`.
+pub const ROOMS_WATCH_V2_TYPE: &str =
+    <vti_specs_rooms::rooms::watch::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// What a party presents to act on a room.
 ///
@@ -269,10 +348,11 @@ pub struct CleartextContent {
     pub tags: Vec<String>,
 }
 
-/// The `rooms/create/0.2` payload is the type `trust-tasks-rs` generates from the
+/// The `rooms/create/0.3` payload is the type `trust-tasks-rs` generates from the
 /// specification — never a copy here (the generated-wire-types census). A host reads
-/// what it keeps from it with [`CreateRoomTerms::from_request`].
-pub use vti_specs_rooms::rooms::create::v0_2::Payload as CreateRoomBody;
+/// what it keeps from it with [`CreateRoomTerms::from_request`]; a 0.2 request, whose
+/// members 0.3 shares, reads as one too.
+pub use vti_specs_rooms::rooms::create::v0_3::Payload as CreateRoomBody;
 
 /// The terms a host records for a room it is asked to create, in this crate's own types.
 ///
@@ -857,134 +937,4 @@ pub struct CommitsResponse {
 pub struct MintEpochResponse {
     pub room_id: String,
     pub epoch: u32,
-}
-
-// ── The types name their own task ───────────────────────────────────────────
-//
-// `Payload` is two things at once and only one of them is the constant: it is
-// the framework's statement that this Rust type *is* the payload of that task
-// URI, and it is what lets a dispatcher be keyed on the type instead of on a
-// string written out at the call site. The URI stops being an argument a
-// registration has to be given correctly, and becomes a property of the type it
-// already belongs to.
-//
-// That is the whole reason this block exists. A router keyed on strings needs
-// the same URI written down in the router, in the served-URI list, and in
-// whatever census checks the two agree — and this repo has already shipped the
-// bug that follows: `rooms/records/curate` was dispatched and named in neither
-// list, so every version hint the service emitted was wrong about it.
-//
-// ## Why the hand-written types, and not the generated ones
-//
-// The header above explains at length why these stay hand-written, and nothing
-// here reverses that. `Payload` is a trait, not a type: implementing it says
-// what a type is *for* on the wire, and leaves its Rust shape — plain `String`
-// and `u64`, exhaustive, no builders — exactly as the storage layer needs it.
-// The generated bindings remain the authority on the *schema*, which
-// `payload_flags_match_the_published_spec` below checks against.
-impl trust_tasks_rs::Payload for CurateRecordBody {
-    const TYPE_URI: &'static str = ROOMS_RECORDS_CURATE_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
-impl trust_tasks_rs::Payload for TransferOwnerBody {
-    const TYPE_URI: &'static str = ROOMS_OWNER_TRANSFER_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
-impl trust_tasks_rs::Payload for ClaimOwnerBody {
-    const TYPE_URI: &'static str = ROOMS_OWNER_CLAIM_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
-impl trust_tasks_rs::Payload for MintEpochBody {
-    const TYPE_URI: &'static str = ROOMS_EPOCH_MINT_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
-impl trust_tasks_rs::Payload for CommitsBody {
-    const TYPE_URI: &'static str = ROOMS_EPOCH_COMMITS_TYPE;
-    const IS_PROOF_REQUIRED: bool = true;
-    const IS_RECIPIENT_REQUIRED: bool = true;
-    const IS_ISSUED_AT_REQUIRED: bool = true;
-}
-
-#[cfg(test)]
-mod payload_impl_tests {
-    use super::*;
-    use trust_tasks_rs::Payload;
-
-    /// Each type names the URI it is the payload of.
-    ///
-    /// Cheap, and it is the half a dispatcher trusts: register the wrong type
-    /// for a task and every request for it is answered `unsupportedType` while
-    /// the handler sits there, reachable by nothing.
-    #[test]
-    fn each_body_names_its_own_task() {
-        fn check<P: Payload>(expected: &str) {
-            assert_eq!(P::TYPE_URI, expected);
-        }
-        check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
-        check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
-        check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
-        check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);
-        check::<MintEpochBody>(ROOMS_EPOCH_MINT_TYPE);
-        check::<CommitsBody>(ROOMS_EPOCH_COMMITS_TYPE);
-    }
-
-    /// The framework's per-task flags must match the **published** schema, not
-    /// our memory of it.
-    ///
-    /// `Payload`'s policy consts all default to `false`, so an omission is
-    /// silent and permissive: a task whose specification says a proof is
-    /// REQUIRED would be accepted without one, and nothing in a round-trip test
-    /// would notice, because both ends of the round trip are this same type.
-    ///
-    /// `schema_index::spec_policy_for` reads those flags from the generated
-    /// bindings — the same published schemas `tests/schema_conformance.rs`
-    /// validates our serialisation against. So the split stays the one the
-    /// header describes: the generated types remain the authority on the wire
-    /// contract; these types remain the shape this crate stores. Agreeing with
-    /// the specification is required, agreeing on the Rust shape never was.
-    #[test]
-    fn payload_flags_match_the_published_spec() {
-        fn check<P: Payload>(uri: &str) {
-            let Some(published) = vti_specs_rooms::schema_index::spec_policy_for(uri) else {
-                // No published schema for this URI yet. Not a failure: the
-                // header records that some rooms tasks are still upstream. It
-                // becomes a check the moment one publishes.
-                return;
-            };
-            let ours = trust_tasks_rs::SpecPolicy::of::<P>();
-            assert_eq!(
-                (
-                    ours.is_bearer,
-                    ours.is_proof_required,
-                    ours.is_recipient_required,
-                    ours.is_issued_at_required
-                ),
-                (
-                    published.is_bearer,
-                    published.is_proof_required,
-                    published.is_recipient_required,
-                    published.is_issued_at_required
-                ),
-                "{uri}: this type's Payload flags disagree with the published \
-                 specification. The consts default to `false`, so the usual cause \
-                 is an omission here rather than a change upstream — and a missing \
-                 `IS_PROOF_REQUIRED` means unsigned requests are accepted for a \
-                 task whose spec requires a proof."
-            );
-        }
-        check::<CreateRoomBody>(ROOMS_CREATE_V2_TYPE);
-        check::<CurateRecordBody>(ROOMS_RECORDS_CURATE_TYPE);
-        check::<TransferOwnerBody>(ROOMS_OWNER_TRANSFER_TYPE);
-        check::<ClaimOwnerBody>(ROOMS_OWNER_CLAIM_TYPE);
-        check::<MintEpochBody>(ROOMS_EPOCH_MINT_TYPE);
-        check::<CommitsBody>(ROOMS_EPOCH_COMMITS_TYPE);
-    }
 }

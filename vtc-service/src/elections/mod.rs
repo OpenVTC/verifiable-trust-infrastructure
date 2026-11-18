@@ -133,7 +133,7 @@ impl Elections {
     ) -> Result<Vec<String>, crate::error::AppError> {
         let _guard = self.issue_lock.lock().await;
         let mut closed = Vec::new();
-        for mut rec in store::all(&self.ks).await? {
+        for rec in store::all(&self.ks).await? {
             let issuing = matches!(
                 rec.standing,
                 store::Standing::PendingRegistration | store::Standing::Registered
@@ -142,8 +142,10 @@ impl Elections {
                 && now >= rec.registration_opens
                 && now < rec.voting_closes;
             if issuing {
-                rec.issuance_closed_by_restore = Some(now);
-                store::put(&self.ks, &rec).await?;
+                store::update(&self.ks, &rec.election_id, |cur| {
+                    cur.issuance_closed_by_restore = Some(now);
+                })
+                .await?;
                 closed.push(rec.election_id);
             }
         }

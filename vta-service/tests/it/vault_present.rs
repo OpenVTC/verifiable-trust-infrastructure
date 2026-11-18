@@ -22,7 +22,7 @@ use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::error::SdJwtError;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::signer::{JwtSigner, JwtVerifier};
-use affinidi_sd_jwt::verifier::{VerificationOptions, verify};
+use affinidi_sd_jwt::verifier::{KbFreshness, KeyBindingCheck, VerificationOptions, verify};
 use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -210,13 +210,26 @@ fn verify_presentation(
     let sd_jwt = SdJwt::parse(compact, &hasher).expect("parse presentation");
     assert!(sd_jwt.kb_jwt.is_some(), "presentation MUST carry a kb-jwt");
     let iv = EddsaVerifier { key: issuer_vk };
-    let hv = EddsaVerifier { key: holder_vk };
-    let opts = VerificationOptions {
-        verify_kb: true,
-        expected_audience: Some(aud),
-        expected_nonce: Some(nonce),
+    // affinidi-sd-jwt 0.2 builds the kb-jwt verifier from the credential's own
+    // `cnf.jwk`; check it is the holder's key.
+    let holder_key = move |jwk: &Value| -> Result<Box<dyn JwtVerifier>, SdJwtError> {
+        let x = jwk["x"].as_str().expect("cnf.jwk x");
+        let bytes: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(x)
+            .expect("base64url")
+            .try_into()
+            .expect("32 bytes");
+        let key = VerifyingKey::from_bytes(&bytes).expect("ed25519 key");
+        assert_eq!(key, holder_vk, "cnf.jwk is the holder's key");
+        Ok(Box::new(EddsaVerifier { key }))
     };
-    let result = verify(&sd_jwt, &iv, &hasher, &opts, Some(&hv)).expect("verifies");
+    let opts = VerificationOptions::with_key_binding(KeyBindingCheck::new(
+        aud,
+        nonce,
+        KbFreshness::new(Utc::now().timestamp(), 300),
+        &holder_key,
+    ));
+    let result = verify(&sd_jwt, &iv, &hasher, &opts).expect("verifies");
     assert_eq!(result.kb_verified, Some(true));
     result.claims
 }

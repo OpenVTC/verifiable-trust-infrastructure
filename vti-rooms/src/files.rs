@@ -283,6 +283,31 @@ pub struct FileManifest {
     /// [`FileManifest::carried_key`] holds a reader to that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_key: Option<String>,
+    /// The image's width in pixels, as the uploader read it. Advisory, set with `height` or
+    /// not at all, and written only where the room's profile lists it in `recordMembers`
+    /// (trust-tasks-tf #1027). A reader checks it against the decoded image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// The image's height in pixels; see [`FileManifest::width`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    /// A small raster image standing in for the file until it is fetched. Never the file's
+    /// contents; see [`FilePreview`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<FilePreview>,
+}
+
+/// `FileManifest.preview`: at most 8192 bytes of JPEG, PNG or WebP, base64url without
+/// padding. A reader renders it only as a raster image it decodes itself — never as SVG,
+/// never as a link, never fetching anything — and never presents it as the file's contents.
+/// Its shape is checked by [`crate::record_members::check`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FilePreview {
+    /// `image/jpeg`, `image/png` or `image/webp`.
+    pub media_type: String,
+    /// The preview's bytes, base64url without padding.
+    pub data: String,
 }
 
 /// By hand, so an open room's `fileKey` never reaches a log line, panic or test failure:
@@ -300,6 +325,9 @@ impl std::fmt::Debug for FileManifest {
             .field("padding", &self.padding)
             .field("blob_ref", &self.blob_ref)
             .field("file_key", &self.file_key.as_ref().map(|_| "<redacted>"))
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("preview", &self.preview.as_ref().map(|p| &p.media_type))
             .finish()
     }
 }
@@ -820,6 +848,9 @@ mod keyed {
                 padding: (self.padding == Padding::Padme).then_some(Padding::Padme),
                 blob_ref: blob.blob_ref()?,
                 file_key: None,
+                width: None,
+                height: None,
+                preview: None,
             };
             Ok((out, blob, file))
         }
@@ -1297,8 +1328,13 @@ mod tests {
             std::fs::write(path, &json).unwrap();
         }
         let on_disk = std::fs::read_to_string(path).expect("fixture present");
+        // Compared as JSON values, not text: key order in the file is not part
+        // of the vectors, and serde_json's own order changes with its
+        // `preserve_order` feature, which any dependency can turn on.
+        let on_disk: serde_json::Value = serde_json::from_str(&on_disk).expect("fixture is JSON");
+        let built: serde_json::Value = serde_json::from_str(&json).expect("vectors are JSON");
         assert_eq!(
-            on_disk, json,
+            on_disk, built,
             "file vectors drifted; regenerate deliberately"
         );
     }

@@ -10,15 +10,15 @@
 // the refusal says what to do. Members are named by their directory entry and
 // shown with their directory name and picture.
 
-import { useMemo, useState } from "react";
-import { Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { useState } from "react";
+import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DoorOpen, KeyRound, Plus, Trash2, UserMinus, UserPlus, Users } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
 import { DidText } from "@/components/DidText";
-import { DirectoryAvatar } from "@/components/DirectoryAvatar";
+import { byFace, EntryName, faceLabel, useEntryFaces } from "@/components/EntryName";
 import { EmptyState } from "@/components/EmptyState";
 import { Field } from "@/components/Field";
 import { DidHostingCard } from "@/plugins/DidHostingCard";
@@ -26,7 +26,6 @@ import { DidPresentationCard } from "@/plugins/DidPresentationCard";
 import { type DynamicRule, RuleEditor, emptyRule, ruleReady, wireRule } from "@/plugins/GroupRule";
 import { PageHeader } from "@/components/PageHeader";
 import { COMMUNITY_ROOMS_LIST_KEY, ROOMS_MANAGE, fetchCommunityRooms } from "@/lib/community-rooms-api";
-import { listAllEntries } from "@/lib/directory";
 import {
   AUDIENCES,
   GROUPS_MANAGE,
@@ -57,6 +56,7 @@ import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
 import type { Group } from "@/lib/wire-types";
+import { formatDate } from "@/lib/format";
 
 const GROUPS_KEY = ["groups", "list"] as const;
 
@@ -71,45 +71,6 @@ function joinLabel(j: string | undefined): string {
 /** How a group's members come to be in it: its join policy, or its rule. */
 function membershipLabel(group: Group): string {
   return group.kind === "dynamic" ? "By rule" : joinLabel(group.joinPolicy);
-}
-
-/** Each directory entry's name and picture, by entry, for naming members. */
-function useEntryFaces() {
-  const q = useQuery({
-    queryKey: ["directory", "entries", "all"],
-    queryFn: listAllEntries,
-    retry: false,
-    staleTime: 60_000,
-  });
-  return useMemo(() => {
-    const out = new Map<string, { name: string | null; avatar: unknown }>();
-    for (const e of q.data ?? []) {
-      const name =
-        typeof e.fields.displayName === "string"
-          ? e.fields.displayName
-          : typeof e.fields.nickname === "string"
-            ? e.fields.nickname
-            : null;
-      out.set(e.entryId, { name, avatar: e.fields.avatar });
-    }
-    return out;
-  }, [q.data]);
-}
-
-function EntryName({
-  entryId,
-  faces,
-}: {
-  entryId: string;
-  faces: Map<string, { name: string | null; avatar: unknown }>;
-}) {
-  const face = faces.get(entryId);
-  return (
-    <span className="dir-name-cell">
-      <DirectoryAvatar entryId={entryId} value={face?.avatar} name={face?.name} colourKey={entryId} />
-      {face?.name ?? <span className="muted">(no name)</span>}
-    </span>
-  );
 }
 
 export function Groups() {
@@ -183,7 +144,11 @@ function GroupsList() {
             >
               <td>
                 <div className="group-name-cell">
-                  <strong>{group.name}</strong>
+                  {/* A link, so a keyboard or screen reader reaches the group;
+                      the row click stays as a convenience (#2611). */}
+                  <Link to={encodeURIComponent(group.groupId)} onClick={(e) => e.stopPropagation()}>
+                    <strong>{group.name}</strong>
+                  </Link>
                   {group.description && <span className="muted">{group.description}</span>}
                 </div>
               </td>
@@ -437,7 +402,7 @@ function GroupSummary({ group }: { group: Group }) {
           <dt>Credentials</dt>
           <dd>
             {group.issuesCredentials
-              ? `Each member holds one${group.credentialAuthorityValidUntil ? `; the group may issue them until ${new Date(group.credentialAuthorityValidUntil).toLocaleDateString()}` : ""}`
+              ? `Each member holds one${group.credentialAuthorityValidUntil ? `; the group may issue them until ${formatDate(group.credentialAuthorityValidUntil)}` : ""}`
               : "None"}
           </dd>
         </div>
@@ -555,7 +520,7 @@ function GroupMembers({ group, manages }: { group: Group; manages: boolean }) {
   });
   if (members.error) return null;
   const inGroup = new Set((members.data ?? []).map((m) => m.entryId));
-  const candidates = [...faces.entries()].filter(([e]) => !inGroup.has(e));
+  const candidates = [...faces.entries()].filter(([e]) => !inGroup.has(e)).sort(byFace);
   const rows = members.data ?? [];
   return (
     <section className="card" aria-labelledby="group-members-title">
@@ -574,8 +539,8 @@ function GroupMembers({ group, manages }: { group: Group; manages: boolean }) {
             <select aria-label="Member to add" value={adding} onChange={(e) => setAdding(e.target.value)}>
               <option value="">Choose a member…</option>
               {candidates.map(([entryId, f]) => (
-                <option key={entryId} value={entryId}>
-                  {f.name ?? entryId}
+                <option key={entryId} value={entryId} title={f.did ?? undefined}>
+                  {faceLabel(f)}
                 </option>
               ))}
             </select>
@@ -604,11 +569,11 @@ function GroupMembers({ group, manages }: { group: Group; manages: boolean }) {
               </td>
               <td>
                 {m.source === "added" ? "Added" : m.source === "joined" ? "Joined" : "By request"}{" "}
-                <span className="muted">{new Date(m.since).toLocaleDateString()}</span>
+                <span className="muted">{formatDate(m.since)}</span>
               </td>
               <td>
                 {m.credentialValidUntil ? (
-                  new Date(m.credentialValidUntil).toLocaleDateString()
+                  formatDate(m.credentialValidUntil)
                 ) : (
                   <span className="muted">—</span>
                 )}
@@ -760,9 +725,10 @@ function GroupManagers({ group }: { group: Group }) {
             <option value="">Choose a member…</option>
             {[...faces.entries()]
               .filter(([e]) => !managers.includes(e))
+              .sort(byFace)
               .map(([entryId, f]) => (
-                <option key={entryId} value={entryId}>
-                  {f.name ?? entryId}
+                <option key={entryId} value={entryId} title={f.did ?? undefined}>
+                  {faceLabel(f)}
                 </option>
               ))}
           </select>

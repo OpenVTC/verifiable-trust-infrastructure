@@ -33,7 +33,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use vti_common::audit::{
+use vtc_audit::{
     AuditEvent, HiddenVetterBindingResetData, HiddenVetterEnrolledData, HiddenVetterReboundData,
     HiddenVetterReissuedData, HiddenVetterResetCancelledData, HiddenVetterTokensIssuedData,
 };
@@ -404,11 +404,13 @@ pub fn derive_issuer(state: &AppState, community_did: &str) -> Result<Issuer, Ap
                 .into(),
         )
     })?;
-    let master = signer.ed25519_signing_key().ok_or_else(|| {
-        AppError::Internal("the credential signer holds no Ed25519 key to derive from".into())
+    // The derivation root, not the current signing key: the community's
+    // published vetting keys must survive a rotation of its attestation key.
+    let master = signer.derivation_root().ok_or_else(|| {
+        AppError::Internal("the credential signer holds no derivation root to derive from".into())
     })?;
     let mut secret = [0u8; 32];
-    Hkdf::<Sha256>::new(None, &master.to_bytes())
+    Hkdf::<Sha256>::new(None, master.as_bytes())
         .expand(KEY_INFO, &mut secret)
         .map_err(|e| AppError::Internal(format!("derive hidden-vetting secret: {e}")))?;
 
@@ -677,7 +679,7 @@ pub async fn enrol(
 
 /// The audit writer, or a refusal. Minting without one would leave a community unable to say
 /// what it signed, which is the question an incident review asks first.
-fn audit(state: &AppState) -> Result<&vti_common::audit::AuditWriter, AppError> {
+fn audit(state: &AppState) -> Result<&vtc_audit::AuditWriter, AppError> {
     state
         .audit_writer
         .as_ref()

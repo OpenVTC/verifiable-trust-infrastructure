@@ -63,6 +63,7 @@ use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+use vti_common::store::expiry_index::{ExpiryIndex, RecordState, Unreadable};
 
 use crate::accepted::{
     Acceptance, AcceptedIdStore, AcceptedIdsError, Claim, ClaimSettle, FALLBACK_RETENTION_SECS,
@@ -73,6 +74,15 @@ use crate::accepted::{
 /// row kind without a migration. Unchanged from the VTC's own record, so its
 /// existing rows are read as they are.
 const KEY_PREFIX: &[u8] = b"accepted:";
+
+/// The records ordered by deadline, so a sweep reads only what expired
+/// (#2626). Rows `accepted-exp:{deadline}:accepted:{id}`; records an older
+/// build wrote are indexed by the first sweep that runs without the marker.
+const EXPIRY: ExpiryIndex = ExpiryIndex {
+    record_prefix: KEY_PREFIX,
+    index_prefix: b"accepted-exp:",
+    marker: b"meta:accepted-exp-index",
+};
 
 /// How many locks the claim path stripes over. Claims for different `id`s
 /// proceed in parallel; claims for the same `id` serialise.
@@ -163,8 +173,8 @@ impl Record {
 /// locks are shared statically (see [`STRIPE_LOCKS`]). A binding builds one
 /// over the node's keyspace whenever it needs it.
 ///
-/// Give it a keyspace of its own: [`sweep_expired`] walks every
-/// `accepted:` row in it.
+/// Give it a keyspace of its own: [`sweep_expired`] walks its expiry index,
+/// and once every `accepted:` row in it.
 #[derive(Clone)]
 pub struct StoreAcceptedIds {
     ks: KeyspaceHandle,
@@ -243,6 +253,9 @@ impl StoreAcceptedIds {
             response: None,
             completed: false,
         };
+        // Indexed first: an index row without its record is dropped by the
+        // sweep, a record without one would never be swept.
+        EXPIRY.insert(&self.ks, retain_until, &k).await?;
         if !self.ks.insert_if_absent(k, &record).await? {
             // Unreachable: every writer of this row takes the stripe lock
             // first. If it ever happens, something writes the record outside
@@ -370,26 +383,28 @@ impl Drop for StoreClaim {
 /// cannot prove was never accepted — [`StoreAcceptedIds::claim`] fails closed
 /// on the same row for the same reason.
 pub async fn sweep_expired(ks: &KeyspaceHandle, now: DateTime<Utc>) -> Result<usize, AppError> {
-    let rows = ks.prefix_iter_raw(KEY_PREFIX.to_vec()).await?;
-    let mut purged = 0usize;
-    let mut unreadable = 0usize;
-    for (k, v) in rows {
-        match serde_json::from_slice::<Record>(&v) {
-            Ok(record) if record.is_expired_at(now) => {
-                ks.remove(k).await?;
-                purged += 1;
-            }
-            Ok(_) => {}
-            Err(_) => unreadable += 1,
-        }
-    }
-    if unreadable > 0 {
+    // Bounded pages over the expiry index, never one read of every record: a
+    // record carries its whole response, and over vsock a scan of them all is
+    // one frame that stops fitting (#2626).
+    let count = EXPIRY
+        .sweep(
+            ks,
+            now,
+            Unreadable::Keep,
+            |v| match serde_json::from_slice::<Record>(v) {
+                Ok(record) if record.is_expired_at(now) => RecordState::Expired,
+                Ok(record) => RecordState::Live(record.retain_until),
+                Err(_) => RecordState::Unreadable,
+            },
+        )
+        .await?;
+    if count.unreadable > 0 {
         tracing::warn!(
-            unreadable,
+            unreadable = count.unreadable,
             "accepted-id sweep: rows this build cannot parse were left in place"
         );
     }
-    Ok(purged)
+    Ok(count.purged)
 }
 
 #[cfg(test)]
@@ -576,6 +591,40 @@ mod tests {
         let remaining = ks.prefix_iter_raw(KEY_PREFIX.to_vec()).await.unwrap();
         assert_eq!(remaining.len(), 1, "the live record survives the sweep");
         assert_eq!(remaining[0].0, key("live"));
+    }
+
+    /// #2626: records an older build wrote carry no expiry-index row; the
+    /// first sweep indexes them, and they are swept when due.
+    #[tokio::test]
+    async fn records_from_before_the_expiry_index_are_still_swept() {
+        let (_ids, ks, _dir) = ids().await;
+        let now = Utc::now();
+        for (id, until) in [
+            ("legacy-dead", now - TimeDelta::minutes(1)),
+            ("legacy-live", now + TimeDelta::minutes(10)),
+        ] {
+            let record = Record {
+                digest: "d".into(),
+                retain_until: until,
+                response: Some(serde_json::json!({ "big": "response" })),
+                completed: true,
+            };
+            ks.insert(key(id), &record).await.unwrap();
+        }
+        assert_eq!(sweep_expired(&ks, now).await.unwrap(), 1);
+        assert_eq!(
+            sweep_expired(&ks, now + TimeDelta::minutes(11))
+                .await
+                .unwrap(),
+            1,
+            "the backfilled record is swept once due"
+        );
+        assert!(
+            ks.prefix_iter_raw(KEY_PREFIX.to_vec())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// **VTI-OPS-025 / VTI-OPS-027.** Two simultaneous presentations of the

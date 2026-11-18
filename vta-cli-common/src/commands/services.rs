@@ -466,6 +466,11 @@ pub async fn cmd_services_didcomm_drain_list(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.list_drain().await?;
+    // JSON under --json or off a terminal, like every read (#2588).
+    if crate::render::is_json_output() {
+        crate::render::print_json(&resp)?;
+        return Ok(());
+    }
     if resp.entries.is_empty() {
         println!("No mediators currently in drain.");
         return Ok(());
@@ -520,6 +525,13 @@ pub async fn cmd_services_report(
         .mediator_report(since.as_deref(), until.as_deref())
         .await?;
 
+    // `--format table` is the default, so JSON under --json or off a terminal
+    // wins over it (#2588); an explicit `--format json` is JSON anywhere.
+    let format = if crate::render::is_json_output() {
+        ReportFormat::Json
+    } else {
+        format
+    };
     match format {
         ReportFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&report)?);

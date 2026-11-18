@@ -31,7 +31,10 @@ existing stores were considered and each is wrong for a reason worth writing
 down, because the reasons are what keep the boundary from eroding later.
 
 **Agent memory** (`vta/memory/{put,list,delete}/0.1`) is the closest fit and the
-most dangerous. Verified against `vta-sdk/src/protocols/memory.rs`:
+most dangerous. Verified against `vta-sdk/src/protocols/memory.rs`, as it stood
+when this note was written — the first two points no longer hold since memory
+0.2 (#2115) runs on this store's machinery with versions, tombstones and paging,
+but the third, which settled the question, still does:
 
 - `MemoryItem` is `{key, value}` — no version, no timestamp, nothing to hang a
   precondition on. Two writers overwrite each other and neither can detect it

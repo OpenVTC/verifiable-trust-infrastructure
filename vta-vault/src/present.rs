@@ -431,7 +431,7 @@ mod tests {
     use affinidi_sd_jwt::error::SdJwtError;
     use affinidi_sd_jwt::hasher::Sha256Hasher;
     use affinidi_sd_jwt::signer::{JwtSigner, JwtVerifier};
-    use affinidi_sd_jwt::verifier::{VerificationOptions, verify};
+    use affinidi_sd_jwt::verifier::{KbFreshness, KeyBindingCheck, VerificationOptions, verify};
     use affinidi_secrets_resolver::secrets::Secret;
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -488,6 +488,27 @@ mod tests {
 
     /// An EdDSA `JwtVerifier` over a single Ed25519 key — used in tests to
     /// verify both the issuer JWS and the holder kb-jwt end to end.
+    /// The KB-JWT verifier sd-jwt 0.2 builds from the credential's own
+    /// `cnf.jwk` (an Ed25519 OKP key), checked to be the expected holder's.
+    fn cnf_holder_key(
+        expected: VerifyingKey,
+    ) -> impl Fn(&Value) -> Result<Box<dyn JwtVerifier>, SdJwtError> {
+        move |jwk: &Value| {
+            let x = jwk["x"]
+                .as_str()
+                .ok_or_else(|| SdJwtError::KeyBinding("cnf.jwk has no x".into()))?;
+            let bytes: [u8; 32] = URL_SAFE_NO_PAD
+                .decode(x)
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| SdJwtError::KeyBinding("cnf.jwk x is not 32 bytes".into()))?;
+            let key = VerifyingKey::from_bytes(&bytes)
+                .map_err(|e| SdJwtError::KeyBinding(e.to_string()))?;
+            assert_eq!(key, expected, "cnf.jwk is the holder's key");
+            Ok(Box::new(EddsaVerifier { key }) as Box<dyn JwtVerifier>)
+        }
+    }
+
     struct EddsaVerifier {
         key: VerifyingKey,
     }
@@ -626,14 +647,14 @@ mod tests {
         let sd_jwt = SdJwt::parse(compact, &hasher).expect("parse presentation");
         assert!(sd_jwt.kb_jwt.is_some(), "presentation MUST carry a kb-jwt");
         let issuer_v = EddsaVerifier { key: issuer_vk };
-        let holder_v = EddsaVerifier { key: holder_vk };
-        let opts = VerificationOptions {
-            verify_kb: true,
-            expected_audience: Some(aud),
-            expected_nonce: Some(nonce),
-        };
-        let result = verify(&sd_jwt, &issuer_v, &hasher, &opts, Some(&holder_v))
-            .expect("presentation verifies");
+        let holder_key = cnf_holder_key(holder_vk);
+        let opts = VerificationOptions::with_key_binding(KeyBindingCheck::new(
+            aud,
+            nonce,
+            KbFreshness::new(Utc::now().timestamp(), 300),
+            &holder_key,
+        ));
+        let result = verify(&sd_jwt, &issuer_v, &hasher, &opts).expect("presentation verifies");
         assert!(result.is_verified(), "kb-jwt must verify");
         assert_eq!(result.kb_verified, Some(true));
         result.claims
@@ -647,7 +668,7 @@ mod tests {
         use crate::bbs::{present_bbs, receive_bbs};
         use affinidi_bbs as bbs;
         use affinidi_data_integrity::bbs_2023_transform::{
-            sign_base_document, verify_derived_proof,
+            DerivedProofVerifyOptions, sign_base_document, verify_derived_proof_with,
         };
 
         let (_dir, _store, vault) = fresh_vault();
@@ -738,7 +759,8 @@ mod tests {
         // verifier binds that header to its own challenge — covered in the VTC
         // join verifier tests, not here.)
         assert!(
-            verify_derived_proof(&derived, &pk).unwrap(),
+            verify_derived_proof_with(&derived, &pk, &DerivedProofVerifyOptions::default())
+                .unwrap(),
             "BBS derived presentation must verify"
         );
     }
@@ -748,7 +770,17 @@ mod tests {
     async fn present_bbs_holder_bound_is_per_verifier_pseudonymous() {
         use crate::bbs::{issue_bbs_pseudonym_for_test, present_bbs, receive_bbs_pseudonym};
         use affinidi_bbs as bbs;
-        use affinidi_data_integrity::bbs_2023_transform::verify_pseudonym_derived_proof;
+        use affinidi_data_integrity::bbs_2023_transform::{
+            DerivedProofVerifyOptions, verify_pseudonym_derived_proof_with,
+        };
+        let verify_pseudonym_derived_proof = |doc: &Value, pk: &bbs::PublicKey, verifier: &str| {
+            verify_pseudonym_derived_proof_with(
+                doc,
+                pk,
+                verifier,
+                &DerivedProofVerifyOptions::default(),
+            )
+        };
 
         let (_dir, _store, vault) = fresh_vault();
         let (holder_did, _kb, consent_key, _vk) = holder(9);
@@ -1552,14 +1584,15 @@ mod tests {
         let hasher = Sha256Hasher;
         let sd_jwt = SdJwt::parse(&pres, &hasher).unwrap();
         let issuer_v = EddsaVerifier { key: issuer_vk };
-        let holder_v = EddsaVerifier { key: holder_vk };
-        let opts = VerificationOptions {
-            verify_kb: true,
-            expected_audience: Some(verifier),
-            expected_nonce: Some("a-different-nonce"),
-        };
+        let holder_key = cnf_holder_key(holder_vk);
+        let opts = VerificationOptions::with_key_binding(KeyBindingCheck::new(
+            verifier,
+            "a-different-nonce",
+            KbFreshness::new(Utc::now().timestamp(), 300),
+            &holder_key,
+        ));
         assert!(
-            verify(&sd_jwt, &issuer_v, &hasher, &opts, Some(&holder_v)).is_err(),
+            verify(&sd_jwt, &issuer_v, &hasher, &opts).is_err(),
             "kb-jwt bound to one nonce must not verify against another"
         );
 

@@ -1001,6 +1001,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // (`lib/community-theme.ts`), update signed from the Theme card.
     "https://trusttasks.org/spec/vtc/community/theme/show/0.1",
     "https://trusttasks.org/spec/vtc/community/theme/update/0.1",
+    // The community logo: update signed from the Logo card
+    // (`plugins/community/LogoCard.tsx`). The console reads it from the public
+    // profile; `logo/show` is for clients that do not.
+    "https://trusttasks.org/spec/vtc/community/logo/update/0.1",
     // The member directory's Directory page (`admin-ui/src/lib/directory.ts`):
     // the schema, every entry as an administrator reads it, and asserted values.
     "https://trusttasks.org/spec/vtc/directory/fields/list/0.1",
@@ -1031,11 +1035,22 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/groups/bindings/add/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/remove/0.1",
     "https://trusttasks.org/spec/vtc/groups/bindings/list/0.1",
+    // The console's Networks page (`admin-ui/src/lib/networks.ts`): the community's
+    // memberships, and joining, leaving or rejecting a network (`trust_tasks::network_tasks`).
+    "https://trusttasks.org/spec/vtc/networks/list/0.2",
+    "https://trusttasks.org/spec/vtc/networks/show/0.2",
+    "https://trusttasks.org/spec/vtc/networks/preview/0.1",
+    "https://trusttasks.org/spec/vtc/networks/join/0.2",
+    "https://trusttasks.org/spec/vtc/networks/leave/0.2",
+    "https://trusttasks.org/spec/vtc/networks/repudiate/0.2",
     // The community's boards (VTI-BRD-*): the portal's board pages, signed by the portal
     // key the member delegated `vtc/boards` to, and the console's facilitator pages.
     "https://trusttasks.org/spec/vtc/boards/create/0.1",
     "https://trusttasks.org/spec/vtc/boards/update/0.1",
     "https://trusttasks.org/spec/vtc/boards/delete/0.1",
+    "https://trusttasks.org/spec/vtc/boards/facilitators/add/0.1",
+    "https://trusttasks.org/spec/vtc/boards/facilitators/remove/0.1",
+    "https://trusttasks.org/spec/vtc/boards/facilitators/list/0.1",
     "https://trusttasks.org/spec/vtc/boards/list/0.1",
     "https://trusttasks.org/spec/vtc/boards/show/0.1",
     "https://trusttasks.org/spec/vtc/boards/ideas/propose/0.1",
@@ -1047,6 +1062,38 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/boards/notes/list/0.1",
     "https://trusttasks.org/spec/vtc/boards/notes/withdraw/0.1",
     "https://trusttasks.org/spec/vtc/boards/notes/hide/0.1",
+    // Member badges (VTI-BDG-*): the portal's badge pages, signed by the portal key the
+    // member delegated `vtc/badges` to, and the console's administrator and owner pages.
+    "https://trusttasks.org/spec/vtc/badges/settings/show/0.1",
+    "https://trusttasks.org/spec/vtc/badges/settings/update/0.1",
+    "https://trusttasks.org/spec/vtc/badges/create/0.1",
+    "https://trusttasks.org/spec/vtc/badges/update/0.1",
+    "https://trusttasks.org/spec/vtc/badges/retire/0.1",
+    "https://trusttasks.org/spec/vtc/badges/promote/0.1",
+    "https://trusttasks.org/spec/vtc/badges/list/0.1",
+    "https://trusttasks.org/spec/vtc/badges/show/0.1",
+    "https://trusttasks.org/spec/vtc/badges/images/upload/0.1",
+    "https://trusttasks.org/spec/vtc/badges/images/get/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/offer/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/withdraw/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/revoke/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/list/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/share/0.1",
+    "https://trusttasks.org/spec/vtc/badges/awards/unshare/0.1",
+    "https://trusttasks.org/spec/vtc/badges/claims/create/0.1",
+    "https://trusttasks.org/spec/vtc/badges/claims/list/0.1",
+    "https://trusttasks.org/spec/vtc/badges/claims/withdraw/0.1",
+    "https://trusttasks.org/spec/vtc/badges/claims/redeem/0.1",
+    "https://trusttasks.org/spec/vtc/badges/holders/list/0.1",
+    "https://trusttasks.org/spec/vtc/badges/wall/show/0.1",
+    "https://trusttasks.org/spec/vtc/badges/mine/list/0.1",
+    "https://trusttasks.org/spec/vtc/badges/mine/accept/0.1",
+    "https://trusttasks.org/spec/vtc/badges/mine/decline/0.1",
+    "https://trusttasks.org/spec/vtc/badges/mine/hide/0.1",
+    "https://trusttasks.org/spec/vtc/badges/mine/show/0.1",
+    "https://trusttasks.org/spec/vtc/badges/mine/arrange/0.1",
+    "https://trusttasks.org/spec/vtc/badges/kudos/give/0.1",
+    "https://trusttasks.org/spec/vtc/badges/kudos/list/0.1",
     // The Notifications page: a community's received notifications and the relay decision
     // (VTI-NTF-070 – 074).
     "https://trusttasks.org/spec/vtc/notifications/list/0.1",
@@ -1090,6 +1137,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/storage/configs/retire/0.3",
     "https://trusttasks.org/spec/vtc/storage/configs/probe/0.1",
     "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3",
+    // The key the console seals a credential to, for any DID method.
+    "https://trusttasks.org/spec/vtc/storage/credentials/recipient/0.1",
     "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.2",
     "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.3",
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).

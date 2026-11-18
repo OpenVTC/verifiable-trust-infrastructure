@@ -1,39 +1,15 @@
-pub(crate) mod acl;
-pub(crate) mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
-pub(crate) mod audit;
 pub mod auth;
-pub(crate) mod backup;
-pub(crate) mod ceremonies;
 pub(crate) mod community;
 pub(crate) mod credential_exchange;
 pub(crate) mod did_log;
-pub(crate) mod endorsement_types;
-pub(crate) mod endorsements;
 pub(crate) mod health;
-pub(crate) mod install;
-pub(crate) mod invitations;
-pub mod join_requests;
 pub(crate) mod member_portal;
-pub(crate) mod members;
-pub(crate) mod networks;
 pub(crate) mod oid4vp;
-pub(crate) mod policies;
-pub mod recognise;
-pub(crate) mod recognition_admin;
-pub(crate) mod registry_admin;
-pub(crate) mod relationships;
 pub(crate) mod rooms;
-pub(crate) mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
-pub(crate) mod vetting;
-/// Hidden-vetter admission: the operator's publish route (development branch `zkp-pcs`).
-#[cfg(feature = "vetting-pcs")]
-pub mod vetting_hidden;
-#[cfg(feature = "website")]
-pub(crate) mod website;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -84,7 +60,6 @@ use crate::server::AppState;
     // Likewise the admin verbs with no route at all — signed documents only —
     // whose shapes the console's signed calls are typed by.
     components(schemas(
-        policies::read::PolicyStatusFilter,
         crate::git_ns::admin_reads::GitNsNamespaceList,
         crate::git_ns::admin_reads::GitNsRepoList,
         crate::git_ns::admin_reads::GitNsRightList,
@@ -95,11 +70,11 @@ use crate::server::AppState;
         crate::git_ns::admin_reads::GitNsActivity,
         // A repository's drift, as `git-ns/view/0.6`'s `repos[].sync` carries it.
         vta_sdk::openapi::GitNsView06DriftItem,
-        acl::AclEntryEnvelope,
+        crate::acl::ops::AclEntryEnvelope,
         vta_sdk::openapi::VetterList01Payload,
         vta_sdk::openapi::VetterList01Response,
-        endorsement_types::RegisterBody,
-        endorsement_types::RegisterResponse,
+        vta_sdk::openapi::EndorsementTypeRegister01Payload,
+        crate::endorsement_types::ops::RegisterResponse,
         vta_sdk::openapi::EndorsementTypeDelete01Response,
         // The operational verbs the console signs (`trust_tasks::admin_tasks`).
         health::DiagnosticsResponse,
@@ -171,6 +146,20 @@ use crate::server::AppState;
         vta_sdk::openapi::GroupsDelete01Payload,
         vta_sdk::openapi::GroupsDelete01Response,
         vta_sdk::openapi::GroupsList02Payload,
+        // A community's network memberships (`trust_tasks::network_tasks`), signed
+        // documents only.
+        vta_sdk::openapi::NetworksList02Payload,
+        vta_sdk::openapi::NetworksList02Response,
+        vta_sdk::openapi::NetworksShow02Payload,
+        vta_sdk::openapi::NetworksShow02Response,
+        vta_sdk::openapi::NetworksPreview01Payload,
+        vta_sdk::openapi::NetworksPreview01Response,
+        vta_sdk::openapi::NetworksJoin02Payload,
+        vta_sdk::openapi::NetworksJoin02Response,
+        vta_sdk::openapi::NetworksLeave02Payload,
+        vta_sdk::openapi::NetworksLeave02Response,
+        vta_sdk::openapi::NetworksRepudiate02Payload,
+        vta_sdk::openapi::NetworksRepudiate02Response,
         vta_sdk::openapi::GroupsList02Response,
         vta_sdk::openapi::GroupsShow01Payload,
         vta_sdk::openapi::GroupsShow01Response,
@@ -190,6 +179,12 @@ use crate::server::AppState;
         vta_sdk::openapi::BoardsUpdate01Response,
         vta_sdk::openapi::BoardsDelete01Payload,
         vta_sdk::openapi::BoardsDelete01Response,
+        vta_sdk::openapi::BoardsFacilitatorsAdd01Payload,
+        vta_sdk::openapi::BoardsFacilitatorsAdd01Response,
+        vta_sdk::openapi::BoardsFacilitatorsRemove01Payload,
+        vta_sdk::openapi::BoardsFacilitatorsRemove01Response,
+        vta_sdk::openapi::BoardsFacilitatorsList01Payload,
+        vta_sdk::openapi::BoardsFacilitatorsList01Response,
         vta_sdk::openapi::BoardsList01Payload,
         vta_sdk::openapi::BoardsList01Response,
         vta_sdk::openapi::BoardsShow01Payload,
@@ -212,6 +207,66 @@ use crate::server::AppState;
         vta_sdk::openapi::BoardsNotesWithdraw01Response,
         vta_sdk::openapi::BoardsNotesHide01Payload,
         vta_sdk::openapi::BoardsNotesHide01Response,
+        vta_sdk::openapi::BadgesSettingsShow01Payload,
+        vta_sdk::openapi::BadgesSettingsShow01Response,
+        vta_sdk::openapi::BadgesSettingsUpdate01Payload,
+        vta_sdk::openapi::BadgesSettingsUpdate01Response,
+        vta_sdk::openapi::BadgesCreate01Payload,
+        vta_sdk::openapi::BadgesCreate01Response,
+        vta_sdk::openapi::BadgesUpdate01Payload,
+        vta_sdk::openapi::BadgesUpdate01Response,
+        vta_sdk::openapi::BadgesRetire01Payload,
+        vta_sdk::openapi::BadgesRetire01Response,
+        vta_sdk::openapi::BadgesPromote01Payload,
+        vta_sdk::openapi::BadgesPromote01Response,
+        vta_sdk::openapi::BadgesList01Payload,
+        vta_sdk::openapi::BadgesList01Response,
+        vta_sdk::openapi::BadgesShow01Payload,
+        vta_sdk::openapi::BadgesShow01Response,
+        vta_sdk::openapi::BadgesImagesUpload01Payload,
+        vta_sdk::openapi::BadgesImagesUpload01Response,
+        vta_sdk::openapi::BadgesImagesGet01Payload,
+        vta_sdk::openapi::BadgesImagesGet01Response,
+        vta_sdk::openapi::BadgesAwardsOffer01Payload,
+        vta_sdk::openapi::BadgesAwardsOffer01Response,
+        vta_sdk::openapi::BadgesAwardsWithdraw01Payload,
+        vta_sdk::openapi::BadgesAwardsWithdraw01Response,
+        vta_sdk::openapi::BadgesAwardsRevoke01Payload,
+        vta_sdk::openapi::BadgesAwardsRevoke01Response,
+        vta_sdk::openapi::BadgesClaimsCreate01Payload,
+        vta_sdk::openapi::BadgesClaimsCreate01Response,
+        vta_sdk::openapi::BadgesClaimsList01Payload,
+        vta_sdk::openapi::BadgesClaimsList01Response,
+        vta_sdk::openapi::BadgesClaimsWithdraw01Payload,
+        vta_sdk::openapi::BadgesClaimsWithdraw01Response,
+        vta_sdk::openapi::BadgesClaimsRedeem01Payload,
+        vta_sdk::openapi::BadgesClaimsRedeem01Response,
+        vta_sdk::openapi::BadgesAwardsShare01Payload,
+        vta_sdk::openapi::BadgesAwardsShare01Response,
+        vta_sdk::openapi::BadgesAwardsUnshare01Payload,
+        vta_sdk::openapi::BadgesAwardsUnshare01Response,
+        vta_sdk::openapi::BadgesAwardsList01Payload,
+        vta_sdk::openapi::BadgesAwardsList01Response,
+        vta_sdk::openapi::BadgesHoldersList01Payload,
+        vta_sdk::openapi::BadgesHoldersList01Response,
+        vta_sdk::openapi::BadgesWallShow01Payload,
+        vta_sdk::openapi::BadgesWallShow01Response,
+        vta_sdk::openapi::BadgesMineList01Payload,
+        vta_sdk::openapi::BadgesMineList01Response,
+        vta_sdk::openapi::BadgesMineAccept01Payload,
+        vta_sdk::openapi::BadgesMineAccept01Response,
+        vta_sdk::openapi::BadgesMineDecline01Payload,
+        vta_sdk::openapi::BadgesMineDecline01Response,
+        vta_sdk::openapi::BadgesMineHide01Payload,
+        vta_sdk::openapi::BadgesMineHide01Response,
+        vta_sdk::openapi::BadgesMineShow01Payload,
+        vta_sdk::openapi::BadgesMineShow01Response,
+        vta_sdk::openapi::BadgesMineArrange01Payload,
+        vta_sdk::openapi::BadgesMineArrange01Response,
+        vta_sdk::openapi::BadgesKudosGive01Payload,
+        vta_sdk::openapi::BadgesKudosGive01Response,
+        vta_sdk::openapi::BadgesKudosList01Payload,
+        vta_sdk::openapi::BadgesKudosList01Response,
         vta_sdk::openapi::GroupsRequestsList02Payload,
         vta_sdk::openapi::GroupsRequestsList02Response,
         vta_sdk::openapi::GroupsRequestsDecide01Payload,
@@ -253,19 +308,19 @@ use crate::server::AppState;
         vta_sdk::openapi::StorageCredentialsSet03Payload,
         vta_sdk::openapi::StorageCredentialsSet03Response,
         vta_sdk::openapi::StorageCredentialsSet03Cleartext,
+        vta_sdk::openapi::StorageCredentialsRecipient01Response,
         vta_sdk::openapi::StorageConfigsUpdate03Payload,
         vta_sdk::openapi::StorageConfigsUpdate03Response,
         vta_sdk::openapi::StorageConfigsRetire03Response,
         vta_sdk::openapi::StorageConfigsProbe01Response,
-        audit::AuditListResponse,
+        crate::audit_ops::AuditListResponse,
         crate::config_store::EffectiveConfig,
-        admin::config::PatchResponse,
-        admin::config::ReloadResponse,
-        admin::config::RestartResponse,
-        admin::invites::ListInvitesResponse,
-        admin::invites::CreateInviteRequest,
-        admin::invites::CreateInviteResponse,
-        admin::invites::RevokeInviteResponse,
+        crate::community::ops::config::PatchResponse,
+        crate::community::ops::config::ReloadResponse,
+        crate::community::ops::config::RestartResponse,
+        crate::install::ops::invites::ListInvitesResponse,
+        crate::install::ops::invites::CreateInviteResponse,
+        crate::install::ops::invites::RevokeInviteResponse,
         auth::SessionListResponse,
         auth::RevokeSessionResponse,
         // The console's bearer → cookie bridge and an administrator's own
@@ -274,45 +329,43 @@ use crate::server::AppState;
         auth::AdminSessionResponse,
         auth::WhoamiResponse,
         auth::SessionView,
-        admin::passkeys::ListResponse,
-        admin::passkeys::RegisteredCredential,
-        admin::passkeys::RegisterStartResponse,
-        admin::passkeys::RegisterFinishResponse,
-        admin::passkeys::RevokeStartResponse,
-        admin::passkeys::RevokeFinishResponse,
+        crate::auth::admin_passkeys::ListResponse,
+        crate::auth::admin_passkeys::RegisteredCredential,
+        crate::auth::admin_passkeys::RegisterStartResponse,
+        crate::auth::admin_passkeys::RegisterFinishResponse,
+        crate::auth::admin_passkeys::RevokeStartResponse,
+        crate::auth::admin_passkeys::RevokeFinishResponse,
         // The community verbs the console signs (`trust_tasks::community_tasks`).
-        community::profile::CommunityProfileResponse,
-        ceremonies::CeremonyListResponse,
+        crate::community::ops::profile::CommunityProfileResponse,
+        crate::ceremony::listing::CeremonyListResponse,
         vti_common::pagination::Paginated<crate::endorsement_types::EndorsementType>,
-        recognition_admin::RecognitionCheck,
-        members::read::RemovedMembersResponse,
-        members::read::MemberEnvelope,
-        members::request_vmc::RequestVmcBody,
-        members::request_vmc::RequestVmcResponse,
-        join_requests::read::JoinRequestEnvelope,
-        relationships::RelationshipsGraph,
-        invitations::IssueInvitationBody,
-        invitations::IssueInvitationResponse,
-        invitations::InvitationListResponse,
-        invitations::RevokeResponse,
+        crate::recognition::admin::RecognitionCheck,
+        crate::members::ops::read::RemovedMembersResponse,
+        crate::members::ops::read::MemberEnvelope,
+        crate::members::ops::request_vmc::RequestVmcResponse,
+        crate::join::ops::read::JoinRequestEnvelope,
+        crate::relationships::ops::RelationshipsGraph,
+        crate::join::invitations::IssueInvitationResponse,
+        crate::join::invitations::InvitationListResponse,
+        crate::join::invitations::RevokeResponse,
         vta_sdk::openapi::InvitationDeliver01Payload,
         vta_sdk::openapi::InvitationDeliver01Response,
         // The verbs whose shapes are documented for codegen though every
         // bearer route is gone: the roster and join queue, a member's
         // credentials, the join decision, a vetter grant, and the policy log.
-        vti_common::pagination::Paginated<members::read::MemberResponse>,
+        vti_common::pagination::Paginated<crate::members::ops::read::MemberResponse>,
         vti_common::pagination::Paginated<crate::join::JoinRequest>,
         vta_sdk::openapi::MemberCredentials01Response,
-        join_requests::decide::DecideResponse,
+        crate::join::ops::decide::DecideResponse,
         vta_sdk::openapi::VetterGrant01Response,
-        policies::read::PolicyListResponse,
-        policies::read::PolicyModuleResponse,
-        policies::admin::UploadResponse,
+        crate::policy::ops::read::PolicyListResponse,
+        crate::policy::ops::read::PolicyModuleResponse,
+        crate::policy::ops::admin::UploadResponse,
         crate::policy::PolicyPurpose,
         // The administration surfaces the console signs (`trust_tasks::surface_tasks`).
-        join_requests::read::JoinRequestVettingResponse,
-        join_requests::read::JoinRequestVetting,
-        join_requests::read::JoinRequestVettingStatement,
+        crate::join::ops::read::JoinRequestVettingResponse,
+        crate::join::ops::read::JoinRequestVetting,
+        crate::join::ops::read::JoinRequestVettingStatement,
         // The join criteria, as the console registers and lists them
         // (`vtc/schemas/accepts/{register,list}/0.2`) and as applicants read
         // them (`vtc/join-requests/manifest/0.4`).
@@ -324,10 +377,10 @@ use crate::server::AppState;
         // (`vtc/endorsements/{list,show,revoke}/0.1`) — bearer REST routes for
         // all three had no caller once the spine dispatched them (tt-tf#689)
         // and were removed.
-        endorsements::EndorsementRow,
-        vti_common::pagination::Paginated<endorsements::EndorsementRow>,
-        endorsements::EndorsementEnvelope,
-        endorsements::RevokeResponse,
+        crate::endorsements::ops::EndorsementRow,
+        vti_common::pagination::Paginated<crate::endorsements::ops::EndorsementRow>,
+        crate::endorsements::ops::EndorsementEnvelope,
+        crate::endorsements::ops::RevokeResponse,
         // The admin resend-on-behalf the console signs
         // (`vtc/vetting/vetters/resend/0.2`) — its admin-only bearer REST
         // route had no caller once the spine dispatched it (tt-tf#689) and
@@ -337,12 +390,12 @@ use crate::server::AppState;
         // (`vtc/website/{files/list,files/delete,generations/list,rollback}/0.1`,
         // `trust_tasks::website_tasks`) — every bearer REST route for these had
         // no caller once vtc-client/cnm-cli/admin-ui moved onto the signed door.
-        website::files::ListResponse,
-        website::files::FileEntry,
-        website::files::DeleteResponse,
-        website::generations::GenerationsResponse,
-        website::generations::GenerationRow,
-        website::generations::RollbackResponse,
+        crate::website::ops::files::ListResponse,
+        crate::website::ops::files::FileEntry,
+        crate::website::ops::files::DeleteResponse,
+        crate::website::ops::generations::GenerationsResponse,
+        crate::website::ops::generations::GenerationRow,
+        crate::website::ops::generations::RollbackResponse,
         // The vetting admin reads the console signs
         // (`vtc/vetting/vetters/grants/list/0.1`, `vtc/vetting/auto-grant/
         // {show,update}/0.1`, `vtc/vetting/revocations/list/0.1`,
@@ -356,8 +409,8 @@ use crate::server::AppState;
         vta_sdk::protocols::vetting::AutoGrantStatus,
         vta_sdk::protocols::vetting::AutoGrantConfig,
         vta_sdk::protocols::vetting::AutoGrantSweep,
-        crate::routes::vetting::VettingRevocationRow,
-        crate::routes::vetting::RevocationReviewState,
+        crate::vetting::ops::VettingRevocationRow,
+        crate::vetting::ops::RevocationReviewState,
     )),
 )]
 pub struct ApiDoc;
@@ -440,7 +493,7 @@ fn tt(
 pub fn router() -> Router<AppState> {
     #[cfg(feature = "website")]
     {
-        router_with(&RoutingConfig::default(), None)
+        router_with(&RoutingConfig::default(), Default::default())
     }
     #[cfg(not(feature = "website"))]
     {
@@ -473,9 +526,9 @@ pub fn router() -> Router<AppState> {
 #[cfg(feature = "website")]
 pub fn router_with(
     routing: &RoutingConfig,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
 ) -> Router<AppState> {
-    router_with_inner(routing, website_state, &[])
+    router_with_inner(routing, website, &[])
 }
 
 /// The router, with the per-IP limiters attributing clients through
@@ -489,10 +542,10 @@ pub fn router_with(
 #[cfg(feature = "website")]
 pub fn router_with_xff(
     routing: &RoutingConfig,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
     trust_xff_cidrs: &[IpNetwork],
 ) -> Router<AppState> {
-    router_with_inner(routing, website_state, trust_xff_cidrs)
+    router_with_inner(routing, website, trust_xff_cidrs)
 }
 
 #[cfg(not(feature = "website"))]
@@ -529,13 +582,13 @@ fn router_with_inner(routing: &RoutingConfig, trust_xff_cidrs: &[IpNetwork]) -> 
 #[cfg(feature = "website")]
 fn router_with_inner(
     routing: &RoutingConfig,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
     trust_xff_cidrs: &[IpNetwork],
 ) -> Router<AppState> {
     let api_chain = build_api_chain(routing, trust_xff_cidrs)
         .split_for_parts()
         .0;
-    with_csrf(assemble_with_website(routing, api_chain, website_state))
+    with_csrf(assemble_with_website(routing, api_chain, website))
 }
 
 /// Attach the CSRF double-submit + `Sec-Fetch-Site` middleware
@@ -693,6 +746,10 @@ fn build_api_chain(
         // The community DID as a QR code, for a wallet to scan off the landing
         // page. Public for the same reason as the profile: it is the same DID.
         .routes(routes!(community::did_qr::get_did_qr))
+        // The logo the community stored (`vtc/community/logo/update/0.1`),
+        // served from its own origin because its pages admit images from
+        // nowhere else. Public for the same reason as the profile.
+        .routes(routes!(community::logo::get_logo))
         // Community branding (`vtc/community/branding/{show,update}/0.1`) and
         // what the community asks an applicant to tell it about themselves
         // (`vtc/community/requested-attributes/{show,update}/0.1`), both
@@ -976,10 +1033,6 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
     });
 
     let unauth_router = OpenApiRouter::<AppState>::new()
-        // A Verifiable Trust Network delivering a broadcast for a group this community
-        // registered with it. The envelope's signatures are the authority; the governor and
-        // body cap bound what an unauthenticated caller can make it verify.
-        .routes(routes!(networks::relay))
         // Redeem a credential offer over HTTPS — for a holder with no messaging
         // service, such as an invitee who scanned a delivered offer. The
         // key-binding proof inside is the authority; the governor and body cap
@@ -1099,7 +1152,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // bearer token, #1084) was already served on the spine
         // (`trust_tasks::member_tasks::handle_relationships_publish`) —
         // `vtc-client` has signed it since #1845, and its bearer route
-        // (`routes::relationships::publish`, the twin `publish_inner` also
+        // (`relationships::ops::publish`, the twin `publish_inner` also
         // calls) had no caller left either.
         // The single Trust Task document endpoint (P0.5: governed unauth
         // chain). The holder-facing join ceremony verbs (submit/request,
@@ -1218,6 +1271,26 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
             "/group-dids/{id}/did.jsonl",
             get(crate::groups::identity::serve_group_did_log),
         )
+        // The public artefacts of a badge its holders may show outside (VTI-BDG-051):
+        // the Achievement document and the picture its credentials name. Public, like
+        // the identity logs above; a badge kept inside answers 404.
+        .route(
+            "/badges/{id}",
+            get(crate::badges::public::serve_achievement),
+        )
+        .route(
+            "/badges/{id}/image",
+            get(crate::badges::public::serve_image),
+        )
+        // A holder's share of one award (VTI-BDG-070): unguessable, public, 404 once stopped.
+        .route(
+            "/badges/shared/{token}",
+            get(crate::badges::public::serve_shared),
+        )
+        .route(
+            "/badges/shared/{token}/image.png",
+            get(crate::badges::public::serve_shared_image),
+        )
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1250,7 +1323,7 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
 pub fn assemble_with_website(
     routing: &RoutingConfig,
     api: Router<AppState>,
-    website_state: Option<crate::website::WebsiteState>,
+    website: crate::website::WebsiteSource,
 ) -> Router<AppState> {
     use axum::middleware::from_fn;
 
@@ -1281,35 +1354,46 @@ pub fn assemble_with_website(
         .route("/{*path}", any(placeholder_503))
         .layer(from_fn(security_headers));
 
-    // Website sub-router. Two dispatch paths, same rationale for
+    // Website sub-router. Three dispatch paths, same rationale for
     // explicit wildcard routes as the admin block above.
     //
     // - Operator configured `website.root_dir` → serve from the
-    //   filesystem via the M5.4 handler. `website_state` is
-    //   `Some`.
-    // - No `root_dir` → serve the in-tree default landing page
-    //   from `vtc-service/website-default/`. `website_state` is
-    //   `None`. This is the freshly-installed-daemon
-    //   out-of-the-box experience.
+    //   filesystem via the M5.4 handler (`Filesystem`).
+    // - Operator configured `website.landing_dir` → serve their
+    //   landing page from disk, re-read per request (`Landing`).
+    // - Neither → serve the in-tree default landing page from
+    //   `vtc-service/website-default/` (`BuiltIn`). This is the
+    //   freshly-installed-daemon out-of-the-box experience.
     //
-    // Both paths share the security-headers layer so the default
+    // All share the security-headers layer so the default
     // CSP applies uniformly.
     // Built as `Router<()>` (state baked in via `with_state` for
-    // the operator-config branch; the default-site branch is
-    // state-less) so the parent `Router<AppState>` can mount it
+    // the root_dir branch; the landing branches are state-less)
+    // so the parent `Router<AppState>` can mount it
     // via `fallback_service` / `nest_service`. axum 0.8's `merge`
     // doesn't preserve nested-router precedence when the merged
     // router has a wildcard `route("/{*path}")` — the website's
     // wildcard scores higher than the admin nest, so `/admin/*`
     // ends up routed to the website. The service-level mount
     // sidesteps that.
-    let website: axum::Router<()> = match website_state {
-        Some(state) => Router::new()
+    let website: axum::Router<()> = match website {
+        crate::website::WebsiteSource::Filesystem(state) => Router::new()
             .route("/", get(crate::website::serve))
             .route("/{*path}", get(crate::website::serve))
             .layer(from_fn(security_headers))
             .with_state(state),
-        None => Router::new()
+        crate::website::WebsiteSource::Landing(dir) => {
+            let dir = std::sync::Arc::new(dir);
+            let handler = move |req: axum::extract::Request| {
+                let dir = dir.clone();
+                async move { crate::website::default_site::serve_dir(&dir, req).await }
+            };
+            Router::new()
+                .route("/", get(handler.clone()))
+                .route("/{*path}", get(handler))
+                .layer(from_fn(security_headers))
+        }
+        crate::website::WebsiteSource::BuiltIn => Router::new()
             .route("/", get(crate::website::default_site::serve))
             .route("/{*path}", get(crate::website::default_site::serve))
             .layer(from_fn(security_headers)),
@@ -1333,6 +1417,26 @@ pub fn assemble_with_website(
         .route(
             "/group-dids/{id}/did.jsonl",
             get(crate::groups::identity::serve_group_did_log),
+        )
+        // The public artefacts of a badge its holders may show outside (VTI-BDG-051):
+        // the Achievement document and the picture its credentials name. Public, like
+        // the identity logs above; a badge kept inside answers 404.
+        .route(
+            "/badges/{id}",
+            get(crate::badges::public::serve_achievement),
+        )
+        .route(
+            "/badges/{id}/image",
+            get(crate::badges::public::serve_image),
+        )
+        // A holder's share of one award (VTI-BDG-070): unguessable, public, 404 once stopped.
+        .route(
+            "/badges/shared/{token}",
+            get(crate::badges::public::serve_shared),
+        )
+        .route(
+            "/badges/shared/{token}/image.png",
+            get(crate::badges::public::serve_shared_image),
         )
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);
@@ -1417,11 +1521,6 @@ mod openapi_tests {
     const REST_EXCEPTIONS: &[(&str, &str, &str)] = &[
         (
             "POST",
-            "/v1/networks/relay/{group_id}",
-            "a Verifiable Trust Network's broadcast delivery: the VTN relay protocol posts a bare `{ envelope }` whose own signatures (originating network, then one per relay hop) are the authority, not a Trust Task document",
-        ),
-        (
-            "POST",
             "/v1/auth/refresh",
             "the admin console's cookie-bound session renewal; it has no signed-document equivalent",
         ),
@@ -1459,6 +1558,7 @@ mod openapi_tests {
         const PUBLIC: &[(&str, &str)] = &[
             ("GET", "/v1/community/public-profile"),
             ("GET", "/v1/community/did-qr.svg"),
+            ("GET", "/v1/community/logo"),
             ("GET", "/v1/status-lists/{purpose}"),
         ];
         PUBLIC.contains(&(method, path))
@@ -1508,11 +1608,10 @@ mod openapi_tests {
         let stale: Vec<&str> = REST_EXCEPTIONS
             .iter()
             .filter(|(m, p, _)| {
-                !spec
-                    .paths
+                spec.paths
                     .paths
                     .get(*p)
-                    .is_some_and(|item| op_for(item, m).is_some())
+                    .is_none_or(|item| op_for(item, m).is_none())
             })
             .map(|(_, p, _)| *p)
             .collect();
@@ -1557,9 +1656,6 @@ mod openapi_tests {
     /// (`build_unauth_routes`): per-IP rate limit + [`UNAUTH_BODY_SIZE`]
     /// body cap. Attacker-driven crypto / IO belongs here.
     const GOVERNED_UNAUTH: &[(&str, &str)] = &[
-        // A network delivering a broadcast for a registered group: unauthenticated by session,
-        // authenticated by the envelope's signatures, so it is governed and body-capped.
-        ("POST", "/v1/networks/relay/{group_id}"),
         // `auth/refresh/0.2` keeps its dedicated mount: it is also the admin
         // console's cookie-bound session renewal, which has no
         // signed-document equivalent. `auth/challenge/0.1` and
@@ -1598,6 +1694,11 @@ mod openapi_tests {
         ("GET", "/v1/community/public-profile"),
         // The community DID as an SVG QR code — the same public DID, drawn.
         ("GET", "/v1/community/did-qr.svg"),
+        // The community's stored logo — public by design, served from memory
+        // against a small record read, 304 on a matching ETag. Pages load it
+        // on every navigation, which the unauth governor's 1-per-5-s refill
+        // would break.
+        ("GET", "/v1/community/logo"),
         // (The join manifest is now the `join-requests/manifest/1.0` Trust
         // Task verb on `POST /v1/trust-tasks`, not a bespoke public GET.)
         // Verifier-facing status list — public by the W3C BitstringStatusList model.

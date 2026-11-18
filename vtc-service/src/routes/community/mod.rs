@@ -1,12 +1,9 @@
 //! `/v1/community/*` route handlers.
 //!
-//! Implements **M0.7.2** of the VTC MVP Phase 0 plan. Handlers
-//! consume the [`crate::community`] storage layer; the routing
-//! wiring lives in [`crate::routes::router`].
+//! The public reads a visitor needs before any session exists: the
+//! community profile, its DID as a QR code, and its stored logo. Everything else about the
+//! community is a signed document (`crate::community::ops`).
 
-pub mod branding;
 pub mod did_qr;
-pub mod join_discovery;
+pub mod logo;
 pub mod profile;
-pub mod requested_attributes;
-pub mod theme;

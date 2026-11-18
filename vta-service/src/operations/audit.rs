@@ -206,7 +206,7 @@ pub async fn verify_audit_chain(
             // rows the walk never reached, and make the number move with the
             // batch size.
             entries_examined += 1;
-            let env = match serde_json::from_slice::<vti_common::audit::AuditEnvelope>(value) {
+            let env = match serde_json::from_slice::<vta_audit::VtaAuditEnvelope>(value) {
                 Ok(env) => env,
                 Err(_) => {
                     // Before the first envelope this is a row from before the
@@ -274,7 +274,7 @@ fn read_row(value: &[u8]) -> Option<AuditLogEntry> {
     if let Ok(row) = serde_json::from_slice::<AuditLogEntry>(value) {
         return Some(row);
     }
-    serde_json::from_slice::<vti_common::audit::AuditEnvelope>(value)
+    serde_json::from_slice::<vta_audit::VtaAuditEnvelope>(value)
         .ok()
         .map(|env| flatten(&env))
 }
@@ -285,8 +285,8 @@ fn read_row(value: &[u8]) -> Option<AuditLogEntry> {
 /// none, and the empty actor is the honest answer: the identifier was erased,
 /// and what survives is a commitment that answers *was it this DID?* rather
 /// than *who was it?* — which is what an erasure is supposed to leave behind.
-fn flatten(env: &vti_common::audit::AuditEnvelope) -> AuditLogEntry {
-    use vti_common::audit::event::AuditEvent;
+fn flatten(env: &vta_audit::VtaAuditEnvelope) -> AuditLogEntry {
+    use vta_audit::VtaAuditEvent as AuditEvent;
 
     let (action, resource, outcome, channel, context_id, detail) = match &env.event {
         AuditEvent::VtaOperation(op) => (
@@ -338,6 +338,36 @@ fn flatten(env: &vti_common::audit::AuditEnvelope) -> AuditLogEntry {
 /// matches, handing back a cursor whose next page may be empty — the reading
 /// as results-withheld this ordering exists to prevent. Revisit the budget
 /// and the guarantee together, or not at all.
+/// Every successful row of `action` recorded on `channel` still in the audit
+/// keyspace, oldest first. For the VTA's own boot-time reconstruction of
+/// facts it once recorded only here (`operations::collection::
+/// backfill_provisioned`); no caller-facing path reads through it. Rows pruned
+/// by retention, or written only to an external sink, are not seen.
+pub(crate) async fn successful_rows_on_channel(
+    audit_ks: &KeyspaceHandle,
+    action: &str,
+    channel: &str,
+) -> Result<Vec<AuditLogEntry>, AppError> {
+    let mut out = Vec::new();
+    let mut pages = audit_ks.scan_pager(ScanOpts::new("log:", MAX_LIMIT));
+    loop {
+        let pairs = pages.next_page().await?;
+        if pairs.is_empty() {
+            break;
+        }
+        for (_, value) in &pairs {
+            if let Some(row) = read_row(value)
+                && row.action == action
+                && row.outcome == "success"
+                && row.channel.as_deref() == Some(channel)
+            {
+                out.push(row);
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub async fn list_audit_logs(
     audit_ks: &KeyspaceHandle,
     auth: &AuthClaims,
@@ -618,9 +648,8 @@ mod verify_tests {
             .iter()
             .max_by(|(a, _), (b, _)| a.cmp(b))
             .expect("a row");
-        let mut env: vti_common::audit::AuditEnvelope =
-            serde_json::from_slice(raw).expect("envelope");
-        if let vti_common::audit::event::AuditEvent::VtaOperation(op) = &mut env.event {
+        let mut env: vta_audit::VtaAuditEnvelope = serde_json::from_slice(raw).expect("envelope");
+        if let vta_audit::VtaAuditEvent::VtaOperation(op) = &mut env.event {
             op.outcome = "failure".to_string();
         }
         audit_ks
@@ -852,9 +881,8 @@ mod paged_reader_tests {
         let mut pairs = audit_ks.prefix_iter_raw("log:").await.expect("scan");
         pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
         let (key, raw) = pairs.get(2).expect("an early row");
-        let mut env: vti_common::audit::AuditEnvelope =
-            serde_json::from_slice(raw).expect("envelope");
-        if let vti_common::audit::event::AuditEvent::VtaOperation(op) = &mut env.event {
+        let mut env: vta_audit::VtaAuditEnvelope = serde_json::from_slice(raw).expect("envelope");
+        if let vta_audit::VtaAuditEvent::VtaOperation(op) = &mut env.event {
             op.outcome = "failure".to_string();
         }
         audit_ks

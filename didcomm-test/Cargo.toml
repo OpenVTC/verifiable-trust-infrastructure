@@ -4,6 +4,8 @@ description = "Standalone DIDComm connectivity test — mimics VTA TEE key + mes
 readme = "README.md"
 version = "0.6.9"
 edition.workspace = true
+# Not published: a diagnostic binary run from this checkout against a live
+# mediator, not a tool anyone installs or a library anyone depends on.
 publish = false
 rust-version.workspace = true
 license.workspace = true
@@ -13,7 +15,7 @@ name = "didcomm-test"
 path = "src/main.rs"
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.81", features = ["didcomm", "crypto-provider"] }
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = ["didcomm", "crypto-provider"] }
 affinidi-tdk = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 tokio = { workspace = true }
@@ -21,12 +23,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 clap = { workspace = true }
-multibase = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 # SLIP-0010 key derivation (`vti_common::slip10`) — the harness re-derives the
 # same keys the VTA does, from the same seed and paths.
-vti-common = { path = "../vti-common", version = "0.57" }
+vti-common = { path = "../vti-common", version = "0.66" }
 
 [lints]
 workspace = true

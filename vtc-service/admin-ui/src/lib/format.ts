@@ -116,17 +116,49 @@ function shortenDidKeep(did: string, keep: number): string {
 }
 
 /**
- * Format an RFC3339 / ISO-8601 timestamp into the operator's
- * locale-string. Used for `joinedAt`, `created_at`, `activated_at`,
+ * How every timestamp is shown (#2613). Dates as "Nov 12, 2026"; a moment as
+ * "Nov 12, 2026, 3:00 PM GMT+1" — always with its zone, since administrators
+ * in different zones approve the same action before the same deadline, and a
+ * bare "3:00 PM" does not say whose. Component options, not `dateStyle` /
+ * `timeStyle`, which cannot be combined with `timeZoneName`.
+ */
+const DATE_OPTIONS: Intl.DateTimeFormatOptions = { year: "numeric", month: "short", day: "numeric" };
+const DATE_TIME_OPTIONS: Intl.DateTimeFormatOptions = {
+  ...DATE_OPTIONS,
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+};
+
+/** A timestamp as a `Date`: an RFC3339 string, epoch milliseconds or a
+ *  `Date`. `null` when it does not parse — `new Date("x")` does not throw, it
+ *  is an Invalid Date that formats as the string "Invalid Date". */
+export function parseTime(value: string | number | Date): Date | null {
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** A day: "Nov 12, 2026". An unparseable input is returned as given. */
+export function formatDate(value: string | number | Date): string {
+  const d = parseTime(value);
+  return d ? d.toLocaleDateString(undefined, DATE_OPTIONS) : String(value);
+}
+
+/** A moment, with its time zone: "Nov 12, 2026, 3:00 PM GMT+1". An
+ *  unparseable input is returned as given. */
+export function formatDateTime(value: string | number | Date): string {
+  const d = parseTime(value);
+  return d ? d.toLocaleString(undefined, DATE_TIME_OPTIONS) : String(value);
+}
+
+/**
+ * Format an RFC3339 / ISO-8601 timestamp as a moment, with its zone
+ * (`formatDateTime`). Used for `joinedAt`, `created_at`, `activated_at`,
  * audit envelope timestamps, etc. Falls back to the raw input on
- * parse failure so the cell never goes blank.
+ * parse failure so the cell never goes blank (or reads "Invalid Date").
  */
 export function formatIso(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  return formatDateTime(iso);
 }
 
 /**
@@ -148,7 +180,7 @@ export function formatRelative(iso: string, now: number = Date.now()): string {
   const days = Math.floor(hours / 24);
   if (days === 1) return "yesterday";
   if (days < 7) return `${days} days ago`;
-  return new Date(at).toLocaleDateString();
+  return formatDate(at);
 }
 
 /**
@@ -181,9 +213,5 @@ export function formatDuration(seconds: number): string {
  * that carry epochs rather than ISO strings.
  */
 export function formatEpoch(epoch: number): string {
-  try {
-    return new Date(epoch * 1000).toLocaleString();
-  } catch {
-    return String(epoch);
-  }
+  return Number.isFinite(epoch) ? formatDateTime(epoch * 1000) : String(epoch);
 }

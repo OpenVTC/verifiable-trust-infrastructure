@@ -4,7 +4,9 @@
 // Read-only fields (community_did, created_at) render as plain
 // text. Editable fields (name, description, language, contact
 // email, public url, logo url) are inputs in a single form. The
-// form tracks "dirty" state and only sends fields that changed.
+// form tracks "dirty" state and only sends fields that changed. The Logo URL
+// field warns when these pages will not draw the address (`logoUrlWarning`);
+// the Logo card below stores a logo they always draw.
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -14,7 +16,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import { CommunityBrandingCard } from "@/plugins/vetting/BrandingCard";
 import { JoinDiscoveryCard } from "@/plugins/community/JoinDiscoveryCard";
+import { CommunityLogoCard } from "@/plugins/community/LogoCard";
 import { CommunityThemeCard } from "@/plugins/community/ThemeCard";
+import { logoUrlWarning } from "@/lib/display-logo";
 
 const TRUST_TASK =
   "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
@@ -186,7 +190,13 @@ export function Profile() {
               }
             />
           </Field>
-          <Field label="Logo URL">
+          <Field
+            label="Logo URL"
+            hint={
+              logoUrlWarning(draft.logoUrl) ??
+              "Published in the community's public profile. A logo uploaded in the Logo card takes its place on these pages."
+            }
+          >
             <input
               type="url"
               placeholder="https://community.example.com/logo.svg"
@@ -245,6 +255,7 @@ export function Profile() {
 
       <JoinDiscoveryCard />
       <CommunityBrandingCard />
+      <CommunityLogoCard />
       <CommunityThemeCard />
     </section>
   );

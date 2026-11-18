@@ -1294,6 +1294,7 @@ async fn vtc_rooms_community_reads_answer_not_found() {
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     };
@@ -2202,6 +2203,7 @@ async fn vtc_rooms_community_update_answers_not_found_for_a_room_it_only_hosts()
         mirror_of: None,
         record_retention: None,
         last_prune: None,
+        signal_delay: Default::default(),
         epoch_floor: None,
         frozen_at: None,
     };
@@ -2503,7 +2505,8 @@ async fn vtc_rooms_community_create_0_3_answers_pending_and_the_sweeper_writes_i
 }
 
 /// `vtc/rooms/community/update/0.3` items 10–11: a rename writes the profile again,
-/// carrying over the tags and emoji a curator set in the room; a change of the
+/// carrying over every member a curator set in the room — tags, emoji and the
+/// `recordMembers` its writers reply and react with; a change of the
 /// administrators' tags alone writes nothing (`unchanged`); and the change to the
 /// community's own record stands whatever the VTA answers.
 #[tokio::test]
@@ -2514,11 +2517,12 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
         .as_str()
         .unwrap()
         .to_string();
-    // A curator gave the room tags and an emoji of its own, in the room.
+    // A curator gave the room tags, an emoji and record members of its own, in the room.
     fix.vta.set_profile(
         &room,
         json!({ "name": "Board pack", "description": "Papers for the board's meetings.",
-                "tags": ["minutes"], "emoji": "📋" }),
+                "tags": ["minutes"], "emoji": "📋",
+                "recordMembers": ["kind", "inReplyTo", "writtenAt"] }),
     );
     fix.vta.clear_calls();
 
@@ -2534,7 +2538,8 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     assert_eq!(
         fix.vta.profile(&room).unwrap(),
         json!({ "name": "Board pack — 2027", "description": "Papers for the board's meetings.",
-                "tags": ["minutes"], "emoji": "📋" }),
+                "tags": ["minutes"], "emoji": "📋",
+                "recordMembers": ["kind", "inReplyTo", "writtenAt"] }),
         "the members the community does not manage are carried over"
     );
 
@@ -2590,6 +2595,59 @@ async fn vtc_rooms_community_update_0_2_rewrites_the_profile_on_a_rename_only() 
     let written = fix.vta.profile(&room).unwrap();
     assert_eq!(written["name"], "Board pack — 2027");
     assert!(written.get("description").is_none(), "{written}");
+    assert_eq!(
+        written["recordMembers"],
+        json!(["kind", "inReplyTo", "writtenAt"]),
+        "{written}"
+    );
+}
+
+/// Update item 10: a profile the community could not read first is not written blind —
+/// one without its `recordMembers` would stop the room's writers replying and reacting.
+/// The write stays pending, and the next attempt carries them over.
+#[tokio::test]
+async fn vtc_rooms_community_update_does_not_write_the_profile_when_it_cannot_read_it() {
+    let mut fix = fixture().await;
+    let reply = create_v0_3(&mut fix, "Board pack", "attributed").await;
+    let room = reply["payload"]["room"]["room"]["roomId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let set = json!({ "name": "Board pack", "tags": ["minutes"],
+                      "recordMembers": ["kind", "inReplyTo", "writtenAt"] });
+    fix.vta.set_profile(&room, set.clone());
+    fix.vta.clear_calls();
+
+    fix.vta.script(
+        PROFILE_READ,
+        Script::Refuse("rooms/keys/profile/read:unavailable"),
+    );
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": room, "label": "Board pack — 2027", "reason": "the 2027 cycle" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "pending", "{r}");
+    assert!(profile_writes(&fix).is_empty(), "nothing is written blind");
+    assert_eq!(fix.vta.profile(&room).unwrap(), set);
+
+    // The next attempt reads the profile and carries the record members over.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": room, "label": "Board pack — 2028", "reason": "the 2028 cycle" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    assert_eq!(
+        fix.vta.profile(&room).unwrap(),
+        json!({ "name": "Board pack — 2028", "description": "Papers for the board's meetings.",
+                "tags": ["minutes"], "recordMembers": ["kind", "inReplyTo", "writtenAt"] }),
+    );
 }
 
 /// Item 10: a room made before create 0.3 (by an older VTC) has never had its profile
@@ -2845,6 +2903,44 @@ async fn joined_on_attributed_room(fix: &mut Fixture) -> (String, Party) {
     .await;
     fix.vta.clear_calls();
     (room, alice)
+}
+
+/// The `attributed` counterpart of [`a_member_removed_at_0_2_can_be_admitted_again`], on
+/// the community's side: a member removed from a sealed room (withdrawn and dropped from
+/// the group) is offered admission again and accepts with a fresh KeyPackage, and the
+/// record says `admitted`. The member's own key holder accepting that second Welcome —
+/// the old group a prior membership, not `alreadyJoined` (`rooms/keys/welcome/0.1`) — is
+/// the VTA's, and is held end to end against a real MLS group in `vta-service`
+/// (`room_owner_group::a_member_removed_from_an_attributed_room_is_admitted_again_and_reads_on`):
+/// this harness's VTA is scripted and holds no group.
+#[tokio::test]
+async fn a_member_removed_from_an_attributed_room_can_be_admitted_again() {
+    let mut fix = fixture().await;
+    let (room, alice) = joined_on_attributed_room(&mut fix).await;
+    let (_, removed) = admin_call(
+        &mut fix,
+        REMOVE,
+        json!({ "roomId": room, "member": alice.did, "reason": "left the board" }),
+    )
+    .await;
+    assert!(removed["payload"]["epoch"].is_number(), "{removed}");
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "removed");
+
+    fix.vta.0.lock().unwrap().issue_from_now = true;
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    add_member(&mut fix, &room, &alice.did, &in_a_year()).await;
+    let accepted = call_as(
+        &fix,
+        &alice,
+        ACCEPT,
+        json!({ "roomId": room, "keyPackage": "S1B" }),
+    )
+    .await;
+    assert!(
+        accepted["payload"]["welcome"].is_string(),
+        "a Welcome for the re-admission: {accepted}"
+    );
+    assert_eq!(state_in(&fix, &room, &alice.did).await, "admitted");
 }
 
 /// `rooms/owner/group/remove/0.4` item 8.2: the VTA gave up an earlier removal it was

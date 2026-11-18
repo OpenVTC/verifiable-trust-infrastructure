@@ -177,6 +177,18 @@ type_uri = "https://trusttasks.org/spec/vtn/outbox/retry/0.1"
 digest = "sha256:45fd23f7c440b84a79d718b75dc41cf9401a8711e10552498f577ddf221461d5"
 
 [[task]]
+slug = "vtn/registry/check"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtn/registry/check/0.1"
+digest = "sha256:a9e19dbd1ad8eb581e2fc28651395c943d558d60ea4df050f34316460d1d69ad"
+
+[[task]]
+slug = "vtn/registry/status"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtn/registry/status/0.1"
+digest = "sha256:8ccd07e1d4c52982462e186db902ed8df5d0d42f3e4a65d64ef96febe45224b8"
+
+[[task]]
 slug = "vtn/relay/deliver"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtn/relay/deliver/0.1"

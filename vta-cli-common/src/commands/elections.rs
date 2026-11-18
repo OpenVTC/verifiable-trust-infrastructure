@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use vta_sdk::client::VtaClient;
 use vtc_client::VtcClient;
 
-use crate::render::{BOLD, DIM, GREEN, RESET, YELLOW, is_json_output, print_json};
+use crate::render::{BOLD, DIM, GREEN, RED, RESET, YELLOW, is_json_output, print_json};
 
 type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -71,7 +71,7 @@ async fn read(
     read_presenting(client, t, which, payload, Presenting::default()).await
 }
 
-/// [`read`], presenting the member's membership credential in a `show` (`vta/pcs/voter/read/0.6`,
+/// [`read`], presenting the member's membership credential in a `show` (`vta/pcs/voter/read/0.7`,
 /// VTI-VOT-015): to read an election put to the members of a party that is itself a member of
 /// the community, which the community shows nobody else.
 async fn read_presenting(
@@ -652,6 +652,174 @@ pub async fn cmd_vote(
     Ok(())
 }
 
+/// The head to check receipts against, and where it came from: the newest head the community
+/// kept, once voting has closed. From `vtc/elections/show`, only once the election is closed or
+/// tallied and the community kept a head dated at or after the close; from a tombstone, the
+/// newest it keeps — a board is deleted only after its elections have ended (VTI-BRD-007).
+fn closing_checkpoint(shown: &Value, from_tombstone: bool) -> Result<Value, String> {
+    if !from_tombstone {
+        match shown["state"].as_str().unwrap_or_default() {
+            "closed" | "tallied" => {}
+            "cancelled" => {
+                return Err("the election was cancelled: no cast in it is counted".into());
+            }
+            other => {
+                return Err(format!(
+                    "voting has not closed (the election is {other}): check your vote once it has"
+                ));
+            }
+        }
+    }
+    let last = shown["checkpoints"]
+        .as_array()
+        .and_then(|c| c.last())
+        .ok_or("the community has kept no head of this election's board yet: try again later")?;
+    if !from_tombstone
+        && let (Some(at), Some(closes)) = (
+            last["head"]["issuedAt"].as_str(),
+            shown["manifest"]["votingClosesAt"].as_str(),
+        )
+        && let (Ok(at), Ok(closes)) = (
+            chrono::DateTime::parse_from_rfc3339(at),
+            chrono::DateTime::parse_from_rfc3339(closes),
+        )
+        && at < closes
+    {
+        return Err(
+            "the community has not kept the head from the close yet: try again in a little while"
+                .into(),
+        );
+    }
+    Ok(last["document"].clone())
+}
+
+/// The inclusion proof of `leaf` in a tree of `size`, from the ballot box over its HTTPS door,
+/// unsigned: on a private board the receipt token is the whole authority, and nothing names the
+/// voter (`voting/board/inclusion`, VTI-VOT-052). A head too small to hold the leaf has no proof
+/// to fetch; the VTA answers that `notIncluded` without a path.
+async fn inclusion(
+    url: &str,
+    ballot_box: &str,
+    community: &str,
+    receipt: &Value,
+    size: u64,
+) -> CliResult<Value> {
+    let p = &receipt["payload"];
+    let leaf = p["leafIndex"].as_u64().unwrap_or_default();
+    if leaf >= size {
+        return Ok(
+            json!({ "leafIndex": leaf, "treeSize": size, "entryHash": p["entryHash"], "path": [] }),
+        );
+    }
+    let mut payload = json!({
+        "community": community, "electionId": p["electionId"],
+        "leafIndex": leaf, "treeSize": size,
+    });
+    if let Some(token) = p["receiptToken"].as_str() {
+        payload["receiptToken"] = json!(token);
+    }
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        "https://trusttasks.org/spec/voting/board/inclusion/0.1#request",
+        payload,
+        ballot_box,
+        ballot_box,
+    )
+    .map_err(|e| e.to_string())?;
+    doc.issuer = None;
+    let resp = vta_sdk::http::foreign_fetch_client()
+        .post(format!("{}/trust-tasks", url.trim_end_matches('/')))
+        .header("content-type", "application/json")
+        .body(serde_json::to_string(&doc)?)
+        .send()
+        .await
+        .map_err(|e| format!("the ballot box did not answer ({e}); try again later"))?;
+    let status = resp.status();
+    let answer: Value = resp.json().await?;
+    if !status.is_success() {
+        return Err(format!(
+            "the ballot box refused the inclusion read: {}",
+            answer["payload"]["code"].as_str().unwrap_or("unknown")
+        )
+        .into());
+    }
+    Ok(answer["payload"].clone())
+}
+
+/// `pnm elections verify <id>`: after voting closes, check each cast your VTA keeps a receipt
+/// for against the head the community kept at close (VTI-VOT-053) — from `vtc/elections/show`,
+/// or from the tombstone once the board the election was opened on is deleted (VTI-BRD-009).
+/// The inclusion proofs come from the ballot box over this connection, never through the VTA or
+/// the community. A cast the head omits is reported, and the command fails.
+pub async fn cmd_verify(client: &VtaClient, t: VoteTarget<'_>, election_id: &str) -> CliResult {
+    let id = json!({ "electionId": election_id });
+    let (shown, from_tombstone) = match read(client, &t, "show", id.clone()).await {
+        Ok(shown) => (shown, false),
+        Err(e) if e.to_string().contains("electionUnknown") => {
+            (read(client, &t, "tombstone", id).await?, true)
+        }
+        Err(e) => return Err(e),
+    };
+    let checkpoint = closing_checkpoint(&shown, from_tombstone)?;
+    let size = checkpoint["payload"]["head"]["treeSize"]
+        .as_u64()
+        .ok_or("the community's head carries no tree size")?;
+    let kept = client
+        .pcs_voter_receipts_list_json(json!({
+            "contextId": t.context, "community": t.vtc_did, "electionId": election_id,
+        }))
+        .await?;
+    let receipts = kept["receipts"].as_array().cloned().unwrap_or_default();
+    if receipts.is_empty() {
+        return Err(format!(
+            "your VTA keeps no receipt for {election_id}: there is nothing to check"
+        )
+        .into());
+    }
+    let ballot_box = kept["ballotBox"].as_str().unwrap_or_default();
+    let url = ballot_box_url(ballot_box).await?;
+    let mut checked = Vec::new();
+    for receipt in receipts {
+        let proof = inclusion(&url, ballot_box, t.vtc_did, &receipt, size).await?;
+        let answer = client
+            .pcs_voter_receipt_json(json!({
+                "contextId": t.context, "community": t.vtc_did, "electionId": election_id,
+                "receipt": receipt, "checkpoint": checkpoint, "inclusion": proof,
+            }))
+            .await?;
+        checked.push(answer);
+    }
+    let missing = checked
+        .iter()
+        .filter(|a| a["status"] == "notIncluded")
+        .count();
+    if is_json_output() {
+        print_json(
+            &json!({ "electionId": election_id, "treeSize": size, "deleted": from_tombstone, "receipts": checked }),
+        )?;
+    } else {
+        for a in &checked {
+            match a["status"].as_str() {
+                Some("included") => println!(
+                    "{GREEN}included{RESET} board entry {} is in the head the community kept ({size} entries)",
+                    a["leafIndex"]
+                ),
+                _ => println!(
+                    "{RED}{BOLD}NOT INCLUDED{RESET} board entry {}: the ballot box admitted this cast, and the head the community kept at close does not hold it",
+                    a["leafIndex"]
+                ),
+            }
+        }
+    }
+    if missing > 0 {
+        return Err(format!(
+            "{missing} of your casts in {election_id} is missing from the board the community kept. \
+             Your VTA keeps the receipt as evidence: raise it with the community."
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +832,46 @@ mod tests {
                 { "key": "budget", "type": "choice", "options": [{ "key": "yes" }, { "key": "no" }], "optional": true }
             ]
         })
+    }
+
+    #[test]
+    fn vti_vot_053_a_receipt_is_checked_against_the_head_kept_after_close() {
+        let cp = |at: &str| json!({ "head": { "issuedAt": at, "treeSize": 9 }, "document": { "at": at } });
+        let mut shown = json!({
+            "state": "voting",
+            "manifest": { "votingClosesAt": "2026-11-10T00:00:00Z" },
+            "checkpoints": [cp("2026-11-09T00:00:00Z")],
+        });
+        assert!(
+            closing_checkpoint(&shown, false)
+                .unwrap_err()
+                .contains("not closed")
+        );
+        shown["state"] = json!("closed");
+        // Only a head from before the close: not yet.
+        assert!(
+            closing_checkpoint(&shown, false)
+                .unwrap_err()
+                .contains("not kept the head")
+        );
+        shown["checkpoints"]
+            .as_array_mut()
+            .unwrap()
+            .push(cp("2026-11-10T00:00:05Z"));
+        assert_eq!(
+            closing_checkpoint(&shown, false).unwrap(),
+            json!({ "at": "2026-11-10T00:00:05Z" })
+        );
+        shown["state"] = json!("cancelled");
+        assert!(closing_checkpoint(&shown, false).is_err());
+        // A tombstone: the newest head it keeps, with no state or manifest to read.
+        let tomb =
+            json!({ "checkpoints": [cp("2026-11-08T00:00:00Z"), cp("2026-11-09T00:00:00Z")] });
+        assert_eq!(
+            closing_checkpoint(&tomb, true).unwrap(),
+            json!({ "at": "2026-11-09T00:00:00Z" })
+        );
+        assert!(closing_checkpoint(&json!({ "checkpoints": [] }), true).is_err());
     }
 
     #[test]

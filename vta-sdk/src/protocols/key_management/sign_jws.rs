@@ -12,5 +12,5 @@ pub use vti_specs::keys::sign_jws::v0_1::{
 
 /// Header members a producer may not send: the custodian sets `alg` itself, and
 /// signs no `crit`, `b64`, `jwk`, `jku` or `x5u` (the specification's
-/// *Forbidden header members*).
-pub const FORBIDDEN_HEADER_MEMBERS: &[&str] = &["alg", "crit", "b64", "jwk", "jku", "x5u"];
+/// *Forbidden header members*). Defined by the signer, `vta-signing`.
+pub use vta_signing::jws::FORBIDDEN_HEADER_MEMBERS;

@@ -72,7 +72,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
+use vtc_audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
 use vti_specs::rooms::owner::{
     issue_authority::v0_2 as owner_authority, issue_membership::v0_1 as owner_membership,
@@ -101,6 +101,7 @@ const RETRY_CAP: Duration = Duration::from_secs(6 * 60 * 60);
 const OWNER_ACTIONS: [&str; 4] = ["read", "write", "curate", "admin"];
 
 const OWNER_MEMBERSHIP: &str = <owner_membership::Payload as Payload>::TYPE_URI;
+#[allow(deprecated)] // a community's own grant states no purposes, which 0.2 issues
 const OWNER_AUTHORITY: &str = <owner_authority::Payload as Payload>::TYPE_URI;
 const VAULT_RECEIVE: &str = <vault_receive::Payload as Payload>::TYPE_URI;
 const VAULT_QUERY: &str = <vault_query::Payload as Payload>::TYPE_URI;
@@ -509,6 +510,7 @@ async fn ask(holder: &KeyHolder, task: &str, name: &str, payload: Value) -> Resu
 
 /// Issue and store a fresh membership and authority for the community in `room`, each
 /// replacing the one it renews. Records each handle in `rec` as soon as it is known.
+#[allow(deprecated)] // a community's own grant states no purposes, which 0.2 issues
 async fn renew(
     holder: &KeyHolder,
     community: &CommunityRoomsConfig,
@@ -599,9 +601,10 @@ async fn store(
     )
 }
 
-/// For a room created before its handles were recorded: the handle of the one credential
-/// of `type_tag` the room issued to this community, as the VTA's vault holds it. `None`
-/// when it holds none — the renewal then stores a first one.
+/// For a room created before its handles were recorded: the handle of the credential of
+/// `type_tag` the room issued to this community that the VTA acts on, as its vault holds
+/// it — of several, the one [`choose`] picks, as the VTA itself does. `None` when it holds
+/// none — the renewal then stores a first one.
 async fn held(
     holder: &KeyHolder,
     room: &OwnedRoom,
@@ -616,7 +619,7 @@ async fn held(
         .ask(VAULT_QUERY, query, SIGN_TIMEOUT)
         .await
         .map_err(|e| match e {
-            HolderError::Refused { code, message } if code.contains("ermission") || code.contains("orbidden") => format!(
+            HolderError::Refused { code, message } if code == trust_tasks_rs::StandardCode::PermissionDenied.as_str() => format!(
                 "vault/credentials/query: the community's VTA refused ({code} {message}). A room \
                  created before this release has no record of where the VTA keeps the \
                  community's credentials for it, and finding them takes `vault-read` on this \
@@ -635,27 +638,93 @@ async fn held(
         let got = read::<vault_get::Response>("vault/credentials/get", answer)?;
         // A room's credentials are Data Integrity credentials, so the body is a
         // JSON object; one carried as bytes is some other credential.
-        let subject = match &got {
-            vault_get::Response::Variant0 { credential, .. } => credential
+        if let vault_get::Response::Variant0 { credential, .. } = &got
+            && credential
                 .get("credentialSubject")
                 .and_then(|s| s.get("id"))
-                .and_then(Value::as_str),
-            _ => None,
-        };
-        if subject == Some(vtc_did) {
-            mine.push(id);
+                .and_then(Value::as_str)
+                == Some(vtc_did)
+        {
+            mine.push(Candidate::from_credential(id, credential));
         }
     }
-    match mine.len() {
-        0 => Ok(None),
-        1 => Ok(mine.pop()),
-        n => Err(format!(
-            "the community's VTA holds {n} {type_tag}s issued by room `{}` to this community, \
-             and acts on the room with none of them until one is left; remove the older \
-             (`pnm cred-vault delete`) and this renewal completes on its next attempt",
-            room.room_id
+    match choose(mine, Utc::now()) {
+        Ok(chosen) => Ok(chosen),
+        Err(Tied { valid_from, ids }) => Err(format!(
+            "the community's VTA holds {} {type_tag}s issued by room `{}` to this community \
+             with the same validFrom ({}); which one is current is not a question this can \
+             answer safely — archive the one you do not mean (`pnm cred-vault archive <id>`): \
+             {}",
+            ids.len(),
+            room.room_id,
+            valid_from.map_or_else(|| "none".to_string(), rfc3339),
+            ids.join(", ")
         )),
     }
+}
+
+/// One credential [`held`] found, with the validity window [`choose`] reads.
+#[derive(Debug, Clone)]
+struct Candidate {
+    id: String,
+    valid_from: Option<DateTime<Utc>>,
+    valid_until: Option<DateTime<Utc>>,
+}
+
+impl Candidate {
+    fn from_credential(id: String, credential: &serde_json::Map<String, Value>) -> Self {
+        let at = |field: &str| {
+            credential
+                .get(field)
+                .and_then(Value::as_str)
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&Utc))
+        };
+        Self {
+            id,
+            valid_from: at("validFrom"),
+            valid_until: at("validUntil"),
+        }
+    }
+
+    fn in_force(&self, now: DateTime<Utc>) -> bool {
+        self.valid_from.is_some_and(|from| from <= now)
+            && self.valid_until.is_none_or(|until| now < until)
+    }
+}
+
+/// Two or more credentials [`choose`] cannot tell apart: the same latest `validFrom`.
+#[derive(Debug, PartialEq, Eq)]
+struct Tied {
+    valid_from: Option<DateTime<Utc>>,
+    ids: Vec<String>,
+}
+
+/// Of the credentials of one type a room issued to this community, the one the community's
+/// VTA acts on — the rule `vta-service`'s `room_oracle::current` applies (VTI #2424), so the
+/// renewal replaces the credential the VTA presents and never another: the latest
+/// `validFrom` among those in force at `now`, or among all of them where none is. Two with
+/// that same `validFrom` are a choice the rule does not make, answered with their vault ids.
+fn choose(mut held: Vec<Candidate>, now: DateTime<Utc>) -> Result<Option<String>, Tied> {
+    if held.iter().any(|c| c.in_force(now)) {
+        held.retain(|c| c.in_force(now));
+    }
+    held.sort_by_key(|c| std::cmp::Reverse(c.valid_from));
+    let Some(latest) = held.first().map(|c| c.valid_from) else {
+        return Ok(None);
+    };
+    let tied: Vec<String> = held
+        .iter()
+        .take_while(|c| c.valid_from == latest)
+        .map(|c| c.id.clone())
+        .collect();
+    if tied.len() > 1 {
+        return Err(Tied {
+            valid_from: latest,
+            ids: tied,
+        });
+    }
+    Ok(Some(held.swap_remove(0).id))
 }
 
 #[cfg(test)]
@@ -694,6 +763,94 @@ mod tests {
         assert_eq!(c.authority_renew_within(), chrono::Duration::days(365) / 2);
         c.authority_valid_days = Some(1);
         assert_eq!(c.authority_renew_within(), chrono::Duration::hours(12));
+    }
+
+    fn candidate(id: &str, from: &str, until: Option<&str>) -> Candidate {
+        let mut credential = serde_json::Map::new();
+        credential.insert("validFrom".into(), json!(from));
+        if let Some(until) = until {
+            credential.insert("validUntil".into(), json!(until));
+        }
+        Candidate::from_credential(id.into(), &credential)
+    }
+
+    fn at(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    /// The rule `room_oracle::current` applies (#2424): of several, the latest `validFrom`
+    /// in force — so the renewal replaces the credential the VTA acts on.
+    #[test]
+    fn the_credential_chosen_is_the_latest_in_force() {
+        let now = at("2026-11-04T00:00:00Z");
+        assert_eq!(choose(Vec::new(), now), Ok(None));
+        assert_eq!(
+            choose(vec![candidate("one", "2026-01-01T00:00:00Z", None)], now),
+            Ok(Some("one".into()))
+        );
+        assert_eq!(
+            choose(
+                vec![
+                    candidate(
+                        "older",
+                        "2026-01-01T00:00:00Z",
+                        Some("2027-01-01T00:00:00Z")
+                    ),
+                    candidate(
+                        "newer",
+                        "2026-06-01T00:00:00Z",
+                        Some("2027-06-01T00:00:00Z")
+                    ),
+                ],
+                now
+            ),
+            Ok(Some("newer".into()))
+        );
+        // One not yet valid never displaces one in force; nor does a lapsed one, however late.
+        assert_eq!(
+            choose(
+                vec![
+                    candidate("in-force", "2026-01-01T00:00:00Z", None),
+                    candidate("ahead", "2026-12-01T00:00:00Z", None),
+                    candidate(
+                        "lapsed",
+                        "2026-10-01T00:00:00Z",
+                        Some("2026-11-01T00:00:00Z")
+                    ),
+                ],
+                now
+            ),
+            Ok(Some("in-force".into()))
+        );
+        // None in force: the latest of all of them.
+        assert_eq!(
+            choose(
+                vec![
+                    candidate("a", "2025-01-01T00:00:00Z", Some("2025-06-01T00:00:00Z")),
+                    candidate("b", "2025-02-01T00:00:00Z", Some("2025-07-01T00:00:00Z")),
+                ],
+                now
+            ),
+            Ok(Some("b".into()))
+        );
+    }
+
+    #[test]
+    fn a_tie_names_the_vault_ids_and_says_archive() {
+        let now = at("2026-11-04T00:00:00Z");
+        let tie = choose(
+            vec![
+                candidate("x", "2026-06-01T00:00:00Z", None),
+                candidate("y", "2026-06-01T00:00:00Z", None),
+                candidate("old", "2026-01-01T00:00:00Z", None),
+            ],
+            now,
+        )
+        .unwrap_err();
+        assert_eq!(tie.valid_from, Some(at("2026-06-01T00:00:00Z")));
+        let mut ids = tie.ids;
+        ids.sort();
+        assert_eq!(ids, ["x", "y"]);
     }
 
     #[test]

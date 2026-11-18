@@ -1,5 +1,8 @@
 # VTI Credential Architecture — implementation plan
 
+**Status:** **largely implemented; historical** — see the status line of
+[`vti-credential-architecture.md`](vti-credential-architecture.md).
+
 **Phase:** PLAN (spec-driven). Companion to
 `vti-credential-architecture.md` (the SPECIFY artifact, PR #230) and
 `vti-credential-architecture-tasks.md` (the task checklist).

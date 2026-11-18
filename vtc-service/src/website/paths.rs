@@ -202,6 +202,53 @@ pub fn canonical_within_root_for_create(
     Ok(target)
 }
 
+/// Boot check for a directory the **host operator** points the daemon at and
+/// the daemon then serves on its own origin: the console (`admin_ui.dir`),
+/// the member portal (`admin_ui.members_dir`) and the landing page
+/// (`website.landing_dir`). It must hold a readable `index.html`, and neither
+/// it nor that file may be world-writable: scripts served from it run
+/// same-origin with the console and portal sessions, so whoever can write it
+/// can act as everyone who next opens a page there, and a world-writable one
+/// hands that to every local user. Fails closed — the daemon does not start
+/// serving a directory it cannot vouch for, nor silently fall back to the
+/// baked copy.
+///
+/// `what` names what the directory replaces ("the admin console");
+/// `export_hint` is the command that writes the built-in copy out.
+pub fn check_operator_dir(dir: &Path, what: &str, export_hint: &str) -> Result<(), String> {
+    let index = dir.join("index.html");
+    let meta = std::fs::metadata(&index).map_err(|e| {
+        format!(
+            "{}: cannot read index.html ({e}) — `{export_hint} {}` \
+             writes the built-in one there to start from",
+            dir.display(),
+            dir.display()
+        )
+    })?;
+    if !meta.is_file() {
+        return Err(format!("{} is not a file", index.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [dir, index.as_path()] {
+            let mode = std::fs::metadata(path)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+                .permissions()
+                .mode();
+            if mode & 0o002 != 0 {
+                return Err(format!(
+                    "{} is world-writable — anyone on this host could replace \
+                     {what}; run `chmod o-w {}`",
+                    path.display(),
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

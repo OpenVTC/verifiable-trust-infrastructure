@@ -72,6 +72,16 @@ pub struct SessionRecord {
     pub opened_at: DateTime<Utc>,
     /// When it stops being submittable.
     pub expires_at: DateTime<Utc>,
+    /// Submissions on it whose presentation did not verify. The session is
+    /// closed when this reaches `witness::MAX_FAILED_SUBMITS`. Absent on a row
+    /// written before it was counted, which reads as none.
+    #[serde(default)]
+    pub failed_submits: u32,
+    /// Submissions that failed while a DID could not be resolved, counted
+    /// apart because the cause may be the network. Closed at
+    /// `witness::MAX_INCONCLUSIVE_SUBMITS`.
+    #[serde(default)]
+    pub inconclusive_submits: u32,
 }
 
 /// Hand-written: the challenge is live binding material while the session is
@@ -221,6 +231,14 @@ impl WitnessStore {
         .transpose()
     }
 
+    /// Overwrite a stored session with `session` (its failure count moved).
+    pub async fn replace_session(&self, session: &SessionRecord) -> anyhow::Result<()> {
+        self.sessions
+            .insert(row_key(&session.identity_did, &session.session_id), session)
+            .await
+            .map_err(|e| anyhow::anyhow!("update a session: {e}"))
+    }
+
     /// Put back a session taken by [`Self::take_session`] whose VWC could not
     /// be issued, so the party can submit again.
     pub async fn restore_session(&self, session: &SessionRecord) -> anyhow::Result<()> {
@@ -275,7 +293,45 @@ impl WitnessStore {
                 removed += 1;
             }
         }
-        removed += crate::replay::sweep(&self.accepted, now).await?;
+        removed += vti_trust_task_server::accepted_store::sweep_expired(&self.accepted, now)
+            .await
+            .map_err(|e| anyhow::anyhow!("sweep the accepted-id record: {e}"))?;
+        removed += self.sweep_legacy_accepted(now).await?;
+        Ok(removed)
+    }
+
+    /// Drop the duplicate-execution rows the witness's own record wrote before
+    /// it moved to `vti_trust_task_server::StoreAcceptedIds` (#2576), once their
+    /// retention has passed. They were keyed `<identity DID>\0<id>`, so they
+    /// all begin `did:`, which no row of the shared record does; the shared
+    /// record never reads them, and without this they would never go.
+    ///
+    /// Remove this once every deployment has run a release with it for longer
+    /// than the thirty-day horizon (VTI-OPS-028).
+    async fn sweep_legacy_accepted(&self, now: DateTime<Utc>) -> anyhow::Result<usize> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Legacy {
+            retain_until: DateTime<Utc>,
+        }
+        let rows = self
+            .accepted
+            .prefix_iter_raw(b"did:".to_vec())
+            .await
+            .map_err(|e| anyhow::anyhow!("scan the legacy accepted-id rows: {e}"))?;
+        let mut removed = 0;
+        for (key, value) in rows {
+            let expired = serde_json::from_slice::<Legacy>(&value)
+                .map(|r| r.retain_until <= now)
+                .unwrap_or(true);
+            if expired {
+                self.accepted
+                    .remove(key)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("remove a legacy accepted-id row: {e}"))?;
+                removed += 1;
+            }
+        }
         Ok(removed)
     }
 }
@@ -320,6 +376,8 @@ mod tests {
             document: "{\"secret-ish\":true}".into(),
             opened_at: Utc::now(),
             expires_at: Utc::now(),
+            failed_submits: 0,
+            inconclusive_submits: 0,
         };
         let shown = format!("{s:?}");
         assert!(!shown.contains("CHALLENGE-VALUE"), "{shown}");

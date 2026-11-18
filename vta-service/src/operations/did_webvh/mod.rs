@@ -7,9 +7,10 @@
 //! - `servers` — webvh hosting-server CRUD + DID validation
 
 mod concurrency;
-mod document;
+pub(crate) mod document;
 pub(crate) mod host;
 mod lifecycle;
+pub(crate) mod log_authority;
 pub(crate) mod presentation;
 mod realign;
 mod register_server;
@@ -118,6 +119,11 @@ pub struct WebvhDeps<'a> {
     pub imported_ks: &'a KeyspaceHandle,
     pub contexts_ks: &'a KeyspaceHandle,
     pub webvh_ks: &'a KeyspaceHandle,
+    /// The did:webs records, for what must see every slot this VTA holds on a
+    /// server — reconcile and retire-orphan, where a did:webs slot read as
+    /// missing from this VTA would be offered up for removal. `None` only on
+    /// paths that never compare against a host.
+    pub webs_ks: Option<&'a KeyspaceHandle>,
     /// The state a *deletion* must reach, absent on callers that only read or
     /// publish.
     ///
@@ -164,6 +170,7 @@ impl<'a> WebvhDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
+            webs_ks: Some(&s.webs_ks),
             delete_cascade: Some(DeleteCascadeDeps {
                 acl_ks: &s.acl_ks,
                 sessions_ks: &s.sessions_ks,
@@ -193,6 +200,7 @@ impl<'a> WebvhDeps<'a> {
             imported_ks: &s.imported_ks,
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
+            webs_ks: Some(&s.webs_ks),
             delete_cascade: Some(DeleteCascadeDeps {
                 acl_ks: &s.acl_ks,
                 sessions_ks: &s.sessions_ks,
@@ -546,7 +554,7 @@ fn plan_key_slots(
     Ok(plan)
 }
 
-async fn resolve_template_for_render(
+pub(crate) async fn resolve_template_for_render(
     did_templates_ks: &KeyspaceHandle,
     name: &str,
     template_context: Option<&str>,
@@ -884,7 +892,24 @@ async fn create_path_host_client<'a>(
 /// removes `KeyMint` stops the next call — the rule every capability gate
 /// follows. `None` is for offline callers only; see
 /// [`CreateDidWebvhDeps::acl_ks`].
-async fn ensure_may_mint(
+/// A DID in a context `auth` cannot reach is answered as not held — the
+/// `notFound` every `vta/webvh/dids/*` task declares for it "whether or not the
+/// VTA holds it", and the answer `vta/dids/get` and the did:webs tasks give.
+/// `Forbidden` would confirm the DID exists to a caller with no business
+/// knowing.
+pub(crate) fn hide_unreachable(
+    auth: &AuthClaims,
+    context_id: &str,
+    did: &str,
+) -> Result<(), AppError> {
+    if auth.has_context_access(context_id) {
+        Ok(())
+    } else {
+        Err(AppError::NotFound(format!("webvh DID not found: {did}")))
+    }
+}
+
+pub(crate) async fn ensure_may_mint(
     acl_ks: Option<&KeyspaceHandle>,
     auth: &AuthClaims,
 ) -> Result<(), AppError> {
@@ -910,7 +935,7 @@ async fn ensure_may_mint(
         Ok(())
     } else {
         Err(AppError::Forbidden(format!(
-            "webvh/dids/create denied: {} does not carry the KeyMint capability",
+            "DID creation denied: {} does not carry the KeyMint capability",
             auth.did
         )))
     }
@@ -958,6 +983,22 @@ pub async fn create_did_webvh(
     // `KeyMint` decides *whether*; the context check below still bounds *where*.
     ensure_may_mint(acl_ks, auth).await?;
     auth.require_context(&params.context_id)?;
+
+    // No create repoints the context that holds this VTA's own identity: that
+    // is a re-identification (new keys installed, peers told), which setup
+    // does. A did:webs create has always refused it; a did:webvh one silently
+    // replaced the node's identity (`operations::dids::primary`).
+    if params.set_primary
+        && let Some(ctx) = crate::contexts::get_context(contexts_ks, &params.context_id).await?
+        && crate::operations::dids::primary::is_node_identity(config, ctx.did.as_deref())
+    {
+        return Err(AppError::Conflict(format!(
+            "context {} holds this VTA's own DID: a create cannot replace a node's identity. \
+             Create the DID with setPrimary false, or set the VTA up under another DID \
+             (`vta setup`)",
+            params.context_id
+        )));
+    }
 
     // Template is mutually exclusive with raw did_document / did_log — it
     // renders into did_document, so specifying both would ambiguously
@@ -2214,8 +2255,8 @@ pub async fn delete_did_webvh_with(
     // enforce on this record. Without this check, any context-scoped
     // admin could trigger remote deletion (via record.mnemonic) and
     // local key cleanup of DIDs owned by other contexts on the same
-    // VTA.
-    auth.require_context(&record.context_id)?;
+    // VTA. Answered as NotFound, as `vta/webvh/dids/delete/1.0` declares.
+    hide_unreachable(auth, &record.context_id, did)?;
 
     // ---- Refuse before destroying anything --------------------------------
     //
@@ -2777,8 +2818,7 @@ mod tests {
     /// `Role::Admin`. The full function is heavyweight (DIDComm bridge,
     /// resolver, seed store) so this exercises the invariant against a
     /// realistic planted record using the same `webvh_store::get_did` +
-    /// `auth.require_context(&record.context_id)` sequence the operation
-    /// runs first.
+    /// `hide_unreachable` sequence the operation runs first.
     #[tokio::test]
     async fn delete_did_webvh_blocks_cross_context_admin() {
         let dir = TempDir::new().expect("tempdir");
@@ -2826,12 +2866,12 @@ mod tests {
             .await
             .expect("get_did ok")
             .expect("record present");
-        let err = auth_a
-            .require_context(&record.context_id)
-            .expect_err("context-A admin must not pass require_context for ctx-b");
+        let err = hide_unreachable(&auth_a, &record.context_id, did)
+            .expect_err("context-A admin must not reach a ctx-b DID");
+        // NotFound, not Forbidden: the refusal must not confirm the DID exists.
         assert!(
-            matches!(err, AppError::Forbidden(_)),
-            "expected Forbidden, got: {err:?}"
+            matches!(err, AppError::NotFound(_)),
+            "expected NotFound, got: {err:?}"
         );
 
         // Sanity check: same call from a ctx-B admin passes.
@@ -2845,9 +2885,8 @@ mod tests {
             amr: Vec::new(),
             acr: String::new(),
         };
-        auth_b
-            .require_context(&record.context_id)
-            .expect("ctx-B admin passes require_context for ctx-b");
+        hide_unreachable(&auth_b, &record.context_id, did)
+            .expect("ctx-B admin reaches a ctx-b DID");
     }
 
     fn claims_as(did: &str, role: Role) -> AuthClaims {

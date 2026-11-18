@@ -69,24 +69,32 @@ jobs:
         with:
           persist-credentials: false
 
+      # The bounded, index-first apt logic every other job uses (#2644).
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+        run: bash scripts/install-build-deps.sh
 
       # rustup from the runner image, not dtolnay/rust-toolchain: that action
       # offers only branch refs, so there is nothing immutable to pin. See the
       # longer note in ci.yml.
       - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+        run: bash scripts/install-rust-toolchain.sh
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The repository's wrapper, not Swatinem/rust-cache directly: it saves
+      # from main only, so a soak dispatched on a branch no longer writes a
+      # cache into the shared allowance (#2644).
+      - uses: ./.github/actions/rust-cache
 
       # Built once, then executed in a loop: `cargo test` would re-check the
       # workspace on every iteration and most of the wall-clock would be cargo,
       # not the code under investigation.
+      #
+      # vtc-service has one integration-test target, `it` (tests/it/main.rs,
+      # `autotests = false`); the test is in its `join_didcomm` module. The old
+      # `--test join_didcomm` target no longer exists, so this step failed
+      # before anything ran (#2644). ci.yml's `Feature combos (mediator-backed)`
+      # compiles this exact command on every run, so it cannot drift again.
       - name: Build the test binary
-        run: cargo test -p vtc-service --features transport-harness --test join_didcomm --no-run
+        run: cargo test -p vtc-service --features transport-harness --test it --no-run
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
@@ -107,11 +115,14 @@ jobs:
             || { echo "::error::parallel must be an integer from 1 to 99"; exit 1; }
           runs="$RUNS"
           streams="$STREAMS"
-          bin=$(cargo test -p vtc-service --features transport-harness --test join_didcomm \
+          bin=$(cargo test -p vtc-service --features transport-harness --test it \
                   --no-run --message-format=json 2>/dev/null \
-                | jq -r 'select(.executable != null and (.target.name == "join_didcomm")) | .executable' \
+                | jq -r 'select(.executable != null and (.target.name == "it")) | .executable' \
                 | tail -1)
           echo "test binary: $bin"
+          if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+            echo "::error::no executable for the vtc-service \`it\` test target"; exit 1
+          fi
           echo "soaking: $streams concurrent streams x $runs iterations = $((streams * runs)) runs"
           nproc
 
@@ -123,8 +134,8 @@ jobs:
             local id=$1
             for i in $(seq 1 "$runs"); do
               if [ -f "$workdir/stop" ]; then return 0; fi
-              if ! "$bin" --test-threads=1 --nocapture \
-                   didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery \
+              if ! "$bin" --test-threads=1 --nocapture --exact \
+                   join_didcomm::didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery \
                    > "$workdir/stream-$id.log" 2>&1; then
                 echo "$id $i" > "$workdir/stop"
                 return 1

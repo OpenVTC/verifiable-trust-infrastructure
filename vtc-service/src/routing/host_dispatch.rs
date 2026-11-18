@@ -181,6 +181,7 @@ impl HostMap {
         if INFRA_PATHS.contains(&path)
             || crate::rooms::community::is_room_did_log_path(path)
             || crate::groups::identity::is_group_did_log_path(path)
+            || crate::badges::public::is_badge_artefact_path(path)
         {
             return true;
         }

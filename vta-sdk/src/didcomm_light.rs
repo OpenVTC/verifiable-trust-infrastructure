@@ -153,14 +153,16 @@ pub async fn resolve_vta_keyagreement(
         let x_pub = ed25519_pub_to_x25519_pub(&ed_pub)?;
         let kid = did_key_agreement_kid(vta_did)?;
         Ok((kid, x_pub))
-    } else if crate::did_scid::is_durable(vta_did) {
-        // did:webvh, or a did:scid:vh:1 verified by a did:webvh log: the same
-        // resolver resolves both, the did:scid to its own document (VTI-KEY-161).
+    } else if crate::resolved_methods::is_durable_identity(vta_did) {
+        // did:webvh, a did:scid:vh:1 verified by a did:webvh log, or a
+        // did:webs verified by its key event log: the same resolver resolves
+        // each to its own document (VTI-KEY-161), whose `keyAgreement` — a
+        // key-role did:webs's `messaging` key — is the one to encrypt to.
         resolve_webvh_keyagreement(vta_did).await
     } else {
         Err(format!(
-            "unsupported VTA DID method (lightweight path supports did:key, did:webvh and \
-             did:scid:vh:1 only): {vta_did}"
+            "unsupported VTA DID method (lightweight path supports did:key, did:webvh, \
+             did:scid:vh:1 and did:webs only): {vta_did}"
         )
         .into())
     }

@@ -137,93 +137,123 @@ fn witnesses() -> Vec<Witness> {
         ),
         // `vtc/networks/*` (`crate::networks`), against a fake network.
         witness!(
-            s::networks::join::v0_1::error_codes::NOT_LISTED,
+            s::networks::preview::v0_1::error_codes::NETWORK_UNREACHABLE,
+            crate::trust_tasks::network_tasks::PREVIEW_ERR_NETWORK_UNREACHABLE,
+            "networks.rs",
+            "a_preview_reads_the_network_and_where_the_community_stands"
+        ),
+        witness!(
+            s::networks::preview::v0_1::error_codes::NETWORK_MISMATCH,
+            crate::trust_tasks::network_tasks::PREVIEW_ERR_NETWORK_MISMATCH,
+            "networks.rs",
+            "a_preview_reads_the_network_and_where_the_community_stands"
+        ),
+        witness!(
+            s::networks::join::v0_2::error_codes::NOT_LISTED,
             crate::trust_tasks::network_tasks::JOIN_ERR_NOT_LISTED,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::NETWORK_MISMATCH,
+            s::networks::join::v0_2::error_codes::NETWORK_MISMATCH,
             crate::trust_tasks::network_tasks::JOIN_ERR_NETWORK_MISMATCH,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::ROLE_UNASSIGNED,
+            s::networks::join::v0_2::error_codes::ROLE_UNASSIGNED,
             crate::trust_tasks::network_tasks::JOIN_ERR_ROLE_UNASSIGNED,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::UNKNOWN_GROUP,
+            s::networks::join::v0_2::error_codes::UNKNOWN_GROUP,
             crate::trust_tasks::network_tasks::JOIN_ERR_UNKNOWN_GROUP,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::join::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::join::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::JOIN_ERR_NETWORK_REFUSED,
             "networks.rs",
             "join_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::NOT_LISTED,
+            s::networks::repudiate::v0_2::error_codes::NOT_LISTED,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_NOT_LISTED,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::NETWORK_MISMATCH,
+            s::networks::repudiate::v0_2::error_codes::NETWORK_MISMATCH,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_NETWORK_MISMATCH,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::IS_MEMBER,
+            s::networks::repudiate::v0_2::error_codes::IS_MEMBER,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_IS_MEMBER,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::repudiate::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::repudiate::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::REPUDIATE_ERR_NETWORK_REFUSED,
             "networks.rs",
             "repudiate_refusals_say_why"
         ),
         witness!(
-            s::networks::leave::v0_1::error_codes::NOT_MEMBER,
+            s::networks::leave::v0_2::error_codes::NOT_MEMBER,
             crate::trust_tasks::network_tasks::LEAVE_ERR_NOT_MEMBER,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::leave::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::leave::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::LEAVE_ERR_NETWORK_REFUSED,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::groups::register::v0_1::error_codes::NOT_MEMBER,
+            s::networks::groups::register::v0_2::error_codes::NOT_MEMBER,
             crate::trust_tasks::network_tasks::REGISTER_ERR_NOT_MEMBER,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::groups::register::v0_1::error_codes::UNKNOWN_GROUP,
+            s::networks::groups::register::v0_2::error_codes::UNKNOWN_GROUP,
             crate::trust_tasks::network_tasks::REGISTER_ERR_UNKNOWN_GROUP,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
         witness!(
-            s::networks::groups::register::v0_1::error_codes::NETWORK_REFUSED,
+            s::networks::groups::register::v0_2::error_codes::NETWORK_REFUSED,
             crate::trust_tasks::network_tasks::REGISTER_ERR_NETWORK_REFUSED,
             "networks.rs",
             "leave_and_register_refusals_say_why"
         ),
+        witness!(
+            s::networks::deliver::v0_1::error_codes::NOT_MEMBER,
+            crate::trust_tasks::network_tasks::DELIVER_ERR_NOT_MEMBER,
+            "networks.rs",
+            "deliveries_are_taken_only_from_a_joined_network_for_a_registered_role"
+        ),
+        witness!(
+            s::networks::deliver::v0_1::error_codes::ROLE_UNREGISTERED,
+            crate::trust_tasks::network_tasks::DELIVER_ERR_ROLE_UNREGISTERED,
+            "networks.rs",
+            "deliveries_are_taken_only_from_a_joined_network_for_a_registered_role"
+        ),
+        witness!(
+            s::networks::deliver::v0_1::error_codes::ENVELOPE_INVALID,
+            crate::trust_tasks::network_tasks::DELIVER_ERR_ENVELOPE_INVALID,
+            "networks.rs",
+            "deliveries_are_taken_only_from_a_joined_network_for_a_registered_role"
+        ),
         // Declared since trust-tasks-tf #789; minted here before that.
         witness!(
             s::members::update::v0_1::error_codes::CONSENT_GRANT_FORBIDDEN,
-            crate::routes::members::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
+            crate::members::ops::update::UPDATE_ERR_CONSENT_GRANT_FORBIDDEN,
             "members_crud.rs",
             "the_update_task_refuses_to_grant_registry_consent"
         ),
@@ -731,6 +761,12 @@ fn witnesses() -> Vec<Witness> {
             "vtc_storage_credentials_set_refuses_with_its_declared_codes"
         ),
         witness!(
+            s::storage::credentials::recipient::v0_1::error_codes::NOT_PUBLISHED,
+            crate::rooms::storage_configs::codes::RECIPIENT_NOT_PUBLISHED,
+            "room_storage_auth.rs",
+            "vtc_storage_credentials_recipient_refuses_a_key_its_document_does_not_publish"
+        ),
+        witness!(
             s::storage::credentials::set::v0_3::error_codes::CANNOT_OPEN,
             crate::rooms::storage_configs::codes::SET_CANNOT_OPEN,
             "room_storage_auth.rs",
@@ -870,37 +906,37 @@ fn witnesses() -> Vec<Witness> {
         ),
         witness!(
             s::invitations::deliver::v0_1::error_codes::NOT_FOUND,
-            crate::routes::invitations::INVITATION_DELIVER_ERR_NOT_FOUND,
+            crate::join::invitations::INVITATION_DELIVER_ERR_NOT_FOUND,
             "invitations.rs",
             "deliver_refuses_what_it_cannot_deliver"
         ),
         witness!(
             s::invitations::deliver::v0_1::error_codes::REVOKED,
-            crate::routes::invitations::INVITATION_DELIVER_ERR_REVOKED,
+            crate::join::invitations::INVITATION_DELIVER_ERR_REVOKED,
             "invitations.rs",
             "deliver_refuses_what_it_cannot_deliver"
         ),
         witness!(
             s::invitations::deliver::v0_1::error_codes::NO_ROUTE,
-            crate::routes::invitations::INVITATION_DELIVER_ERR_NO_ROUTE,
+            crate::join::invitations::INVITATION_DELIVER_ERR_NO_ROUTE,
             "invitations.rs",
             "deliver_refuses_what_it_cannot_deliver"
         ),
         witness!(
             s::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE,
-            crate::routes::invitations::INVITATION_ISSUE_ERR_UNKNOWN_ROLE,
+            crate::join::invitations::INVITATION_ISSUE_ERR_UNKNOWN_ROLE,
             "invitations.rs",
             "invite_refuses_a_role_the_community_does_not_define"
         ),
         witness!(
             s::invitations::revoke::v0_1::error_codes::NOT_FOUND,
-            crate::routes::invitations::INVITATION_REVOKE_ERR_NOT_FOUND,
+            crate::join::invitations::INVITATION_REVOKE_ERR_NOT_FOUND,
             "invitations.rs",
             "revoke_unknown_invitation_is_404"
         ),
         witness!(
             s::members::credentials::v0_1::error_codes::NOT_FOUND,
-            crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
+            crate::members::ops::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
             "members_crud.rs",
             "member_credentials_for_an_unknown_member_is_the_declared_not_found"
         ),
@@ -908,25 +944,25 @@ fn witnesses() -> Vec<Witness> {
         // through the generic mapping; it now emits the declared code.
         witness!(
             s::join_requests::decide::v0_1::error_codes::NOT_FOUND,
-            crate::routes::join_requests::decide::DECIDE_ERR_NOT_FOUND,
+            crate::join::ops::decide::DECIDE_ERR_NOT_FOUND,
             "join_requests.rs",
             "the_decide_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::join_requests::decide::v0_1::error_codes::NOT_PENDING,
-            crate::routes::join_requests::decide::DECIDE_ERR_NOT_PENDING,
+            crate::join::ops::decide::DECIDE_ERR_NOT_PENDING,
             "join_requests.rs",
             "the_decide_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::join_requests::show::v0_1::error_codes::NOT_FOUND,
-            crate::routes::join_requests::read::SHOW_ERR_NOT_FOUND,
+            crate::join::ops::read::SHOW_ERR_NOT_FOUND,
             "join_requests.rs",
             "show_for_an_unknown_request_is_the_declared_not_found"
         ),
         witness!(
             s::join_requests::status::v0_1::error_codes::NOT_FOUND,
-            crate::routes::join_requests::status::STATUS_ERR_NOT_FOUND,
+            crate::join::ops::status::STATUS_ERR_NOT_FOUND,
             "join_requests.rs",
             "status_is_not_found_alike_for_an_unknown_and_a_foreign_request"
         ),
@@ -1004,13 +1040,13 @@ fn witnesses() -> Vec<Witness> {
         ),
         witness!(
             s::members::show::v0_1::error_codes::NOT_FOUND,
-            crate::routes::members::read::SHOW_ERR_NOT_FOUND,
+            crate::members::ops::read::SHOW_ERR_NOT_FOUND,
             "members_crud.rs",
             "show_member_returns_404_for_unknown_did"
         ),
         witness!(
             s::members::update::v0_1::error_codes::NOT_FOUND,
-            crate::routes::members::update::UPDATE_ERR_NOT_FOUND,
+            crate::members::ops::update::UPDATE_ERR_NOT_FOUND,
             "members_crud.rs",
             "patch_member_404_for_unknown_did"
         ),
@@ -1034,121 +1070,121 @@ fn witnesses() -> Vec<Witness> {
         ),
         witness!(
             s::members::solicit_vmc::v0_1::error_codes::NOT_FOUND,
-            crate::routes::members::request_vmc::SOLICIT_VMC_ERR_NOT_FOUND,
+            crate::members::ops::request_vmc::SOLICIT_VMC_ERR_NOT_FOUND,
             "members_crud.rs",
             "soliciting_a_vmc_from_a_non_member_is_the_declared_not_found"
         ),
         witness!(
             s::members::renew::v0_1::error_codes::NOT_MEMBER,
-            crate::routes::members::renew::RENEW_ERR_NOT_MEMBER,
+            crate::members::ops::renew::RENEW_ERR_NOT_MEMBER,
             "renewal.rs",
             "renew_by_a_caller_who_is_not_a_member_is_the_declared_not_member"
         ),
         witness!(
             s::members::rotate_challenge::v0_1::error_codes::NOT_MEMBER,
-            crate::routes::members::rotate::ROTATE_CHALLENGE_ERR_NOT_MEMBER,
+            crate::members::ops::rotate::ROTATE_CHALLENGE_ERR_NOT_MEMBER,
             "rotation.rs",
             "a_rotation_challenge_for_a_non_member_is_the_declared_not_member"
         ),
         witness!(
             s::members::rotate::v0_1::error_codes::ROTATION_EXPIRED,
-            crate::routes::members::rotate::ROTATE_ERR_ROTATION_EXPIRED,
+            crate::members::ops::rotate::ROTATE_ERR_ROTATION_EXPIRED,
             "rotation.rs",
             "the_rotate_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::members::rotate::v0_1::error_codes::SIGNATURE_INVALID,
-            crate::routes::members::rotate::ROTATE_ERR_SIGNATURE_INVALID,
+            crate::members::ops::rotate::ROTATE_ERR_SIGNATURE_INVALID,
             "rotation.rs",
             "the_rotate_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::members::personhood::challenge::v0_1::error_codes::NOT_FOUND,
-            crate::routes::members::personhood::CHALLENGE_ERR_NOT_FOUND,
+            crate::members::ops::personhood::CHALLENGE_ERR_NOT_FOUND,
             "personhood.rs",
             "personhood_challenge_and_revoke_for_a_non_member_are_the_declared_not_found"
         ),
         witness!(
             s::members::personhood::revoke::v0_1::error_codes::NOT_FOUND,
-            crate::routes::members::personhood::REVOKE_ERR_NOT_FOUND,
+            crate::members::ops::personhood::REVOKE_ERR_NOT_FOUND,
             "personhood.rs",
             "personhood_challenge_and_revoke_for_a_non_member_are_the_declared_not_found"
         ),
         witness!(
             s::members::personhood::assert::v0_1::error_codes::NOT_FOUND,
-            crate::routes::members::personhood::ASSERT_ERR_NOT_FOUND,
+            crate::members::ops::personhood::ASSERT_ERR_NOT_FOUND,
             "personhood.rs",
             "the_personhood_assert_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::members::personhood::assert::v0_1::error_codes::CHALLENGE_EXPIRED,
-            crate::routes::members::personhood::ASSERT_ERR_CHALLENGE_EXPIRED,
+            crate::members::ops::personhood::ASSERT_ERR_CHALLENGE_EXPIRED,
             "personhood.rs",
             "the_personhood_assert_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::members::personhood::assert::v0_1::error_codes::PRESENTATION_INVALID,
-            crate::routes::members::personhood::ASSERT_ERR_PRESENTATION_INVALID,
+            crate::members::ops::personhood::ASSERT_ERR_PRESENTATION_INVALID,
             "personhood.rs",
             "the_personhood_assert_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::relationships::list::v0_3::error_codes::NOT_FOUND,
-            crate::routes::members::relationships::LIST_ERR_NOT_FOUND,
+            crate::members::ops::relationships::LIST_ERR_NOT_FOUND,
             "relationships.rs",
             "list_for_a_did_that_is_not_a_member_is_the_declared_not_found"
         ),
         witness!(
             s::relationships::revoke::v0_2::error_codes::NOT_FOUND,
-            crate::routes::relationships::REVOKE_ERR_NOT_FOUND,
+            crate::relationships::ops::REVOKE_ERR_NOT_FOUND,
             "relationships.rs",
             "revoke_404_on_unknown"
         ),
         witness!(
             s::relationships::publish::v0_2::error_codes::VRC_INVALID,
-            crate::routes::relationships::PUBLISH_ERR_VRC_INVALID,
+            crate::relationships::ops::PUBLISH_ERR_VRC_INVALID,
             "relationships.rs",
             "the_publish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::relationships::publish::v0_2::error_codes::SUBJECT_NOT_MEMBER,
-            crate::routes::relationships::PUBLISH_ERR_SUBJECT_NOT_MEMBER,
+            crate::relationships::ops::PUBLISH_ERR_SUBJECT_NOT_MEMBER,
             "relationships.rs",
             "the_publish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::policies::test::v0_1::error_codes::NOT_FOUND,
-            crate::routes::policies::admin::TEST_ERR_NOT_FOUND,
+            crate::policy::ops::admin::TEST_ERR_NOT_FOUND,
             "policy_spine.rs",
             "the_codes_the_specifications_declare_are_answered"
         ),
         witness!(
             s::policies::test::v0_1::error_codes::EVALUATION_FAILED,
-            crate::routes::policies::admin::TEST_ERR_EVALUATION_FAILED,
+            crate::policy::ops::admin::TEST_ERR_EVALUATION_FAILED,
             "policy_spine.rs",
             "the_codes_the_specifications_declare_are_answered"
         ),
         witness!(
             s::website::files::delete::v0_1::error_codes::NOT_FOUND,
-            crate::routes::website::files::FILES_DELETE_ERR_NOT_FOUND,
+            crate::website::ops::files::FILES_DELETE_ERR_NOT_FOUND,
             "website_task_gating.rs",
             "deleting_a_missing_file_is_the_declared_not_found"
         ),
         witness!(
             s::website::generations::list::v0_1::error_codes::NOT_MANAGED,
-            crate::routes::website::generations::GENERATIONS_LIST_ERR_NOT_MANAGED,
+            crate::website::ops::generations::GENERATIONS_LIST_ERR_NOT_MANAGED,
             "website_task_gating.rs",
             "the_generation_tasks_answer_with_the_codes_their_specs_declare"
         ),
         witness!(
             s::website::rollback::v0_1::error_codes::NOT_MANAGED,
-            crate::routes::website::generations::ROLLBACK_ERR_NOT_MANAGED,
+            crate::website::ops::generations::ROLLBACK_ERR_NOT_MANAGED,
             "website_task_gating.rs",
             "the_generation_tasks_answer_with_the_codes_their_specs_declare"
         ),
         witness!(
             s::website::rollback::v0_1::error_codes::GENERATION_NOT_FOUND,
-            crate::routes::website::generations::ROLLBACK_ERR_GENERATION_NOT_FOUND,
+            crate::website::ops::generations::ROLLBACK_ERR_GENERATION_NOT_FOUND,
             "website_task_gating.rs",
             "the_generation_tasks_answer_with_the_codes_their_specs_declare"
         ),
@@ -1156,25 +1192,25 @@ fn witnesses() -> Vec<Witness> {
         // directory, endorsement and install tasks.
         witness!(
             s::admin::bootstrap::v0_1::error_codes::INVALID_TOKEN,
-            crate::routes::admin::bootstrap::BOOTSTRAP_ERR_INVALID_TOKEN,
+            crate::install::ops::bootstrap::BOOTSTRAP_ERR_INVALID_TOKEN,
             "admin_bootstrap.rs",
             "the_bootstrap_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED,
-            crate::routes::admin::bootstrap::BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED,
+            crate::install::ops::bootstrap::BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED,
             "admin_bootstrap.rs",
             "the_bootstrap_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::admin::invites::create::v0_2::error_codes::TTL_TOO_LONG,
-            crate::routes::admin::invites::CREATE_INVITE_ERR_TTL_TOO_LONG,
+            crate::install::ops::invites::CREATE_INVITE_ERR_TTL_TOO_LONG,
             "admin_invites.rs",
             "the_create_task_answers_with_the_code_its_spec_declares"
         ),
         witness!(
             s::admin::invites::revoke::v0_1::error_codes::NOT_FOUND,
-            crate::routes::admin::invites::REVOKE_INVITE_ERR_NOT_FOUND,
+            crate::install::ops::invites::REVOKE_INVITE_ERR_NOT_FOUND,
             "admin_invites.rs",
             "the_revoke_task_answers_with_the_code_its_spec_declares"
         ),
@@ -1186,19 +1222,19 @@ fn witnesses() -> Vec<Witness> {
         ),
         witness!(
             s::community::profile::update::v0_1::error_codes::VALIDATION_FAILED,
-            crate::routes::community::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED,
+            crate::community::ops::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED,
             "community_profile.rs",
             "a_profile_field_failing_validation_is_the_declared_validation_failed"
         ),
         witness!(
             s::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH,
-            crate::routes::admin::config::IMPORT_ERR_COMMUNITY_DID_MISMATCH,
+            crate::community::ops::config::IMPORT_ERR_COMMUNITY_DID_MISMATCH,
             "admin_config.rs",
             "import_refuses_mismatched_community_did"
         ),
         witness!(
             s::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION,
-            crate::routes::admin::config::IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
+            crate::community::ops::config::IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
             "admin_config.rs",
             "import_wrong_schema_version_is_refused"
         ),
@@ -1659,6 +1695,546 @@ fn witnesses() -> Vec<Witness> {
             "members_list_refuses_what_its_specification_declares"
         ),
         witness!(
+            s::badges::settings::update::v0_1::error_codes::SETTINGS_INVALID,
+            crate::trust_tasks::badge_tasks::SETTINGS_ERR_INVALID,
+            "badges.rs",
+            "settings_change_takes_config_admin_and_a_bound_step_up"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_BADGES_OFF,
+            "badges.rs",
+            "badges_are_off_until_turned_on_and_settings_are_read_by_members"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::KIND_NOT_PERMITTED,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_KIND_NOT_PERMITTED,
+            "badges.rs",
+            "settings_change_takes_config_admin_and_a_bound_step_up"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::LIMIT_REACHED,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_LIMIT_REACHED,
+            "badges.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::IMAGE_NOT_FOUND,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_IMAGE_NOT_FOUND,
+            "badges.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::SETTINGS_INVALID,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_SETTINGS_INVALID,
+            "badges.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::RULE_INVALID,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_RULE_INVALID,
+            "badges.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::OWNER_NOT_ELIGIBLE,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_OWNER_NOT_ELIGIBLE,
+            "badges.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::NO_KEY_HOLDER,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_NO_KEY_HOLDER,
+            "badges.rs",
+            "create_and_promote_without_a_key_holder_are_refused"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_KEY_HOLDER_UNAVAILABLE,
+            "badges.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::create::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::badge_tasks::CREATE_ERR_KEY_HOLDER_REFUSED,
+            "badges.rs",
+            "create_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::update::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::UPDATE_ERR_BADGES_OFF,
+            "badges.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::update::v0_1::error_codes::BADGE_RETIRED,
+            crate::trust_tasks::badge_tasks::UPDATE_ERR_BADGE_RETIRED,
+            "badges.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::update::v0_1::error_codes::IMAGE_NOT_FOUND,
+            crate::trust_tasks::badge_tasks::UPDATE_ERR_IMAGE_NOT_FOUND,
+            "badges.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::update::v0_1::error_codes::SETTINGS_INVALID,
+            crate::trust_tasks::badge_tasks::UPDATE_ERR_SETTINGS_INVALID,
+            "badges.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::retire::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::RETIRE_ERR_BADGES_OFF,
+            "badges.rs",
+            "update_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::retire::v0_1::error_codes::ALREADY_RETIRED,
+            crate::trust_tasks::badge_tasks::RETIRE_ERR_ALREADY_RETIRED,
+            "badges.rs",
+            "retiring_keeps_the_record_and_deletes_the_group"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_BADGES_OFF,
+            "badges.rs",
+            "promote_refuses_what_its_specification_declares_then_offers_every_holder"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::BADGE_RETIRED,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_BADGE_RETIRED,
+            "badges.rs",
+            "promote_refuses_what_its_specification_declares_then_offers_every_holder"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::KIND_MISMATCH,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_KIND_MISMATCH,
+            "badges.rs",
+            "promote_refuses_what_its_specification_declares_then_offers_every_holder"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::SETTINGS_INVALID,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_SETTINGS_INVALID,
+            "badges.rs",
+            "promote_refuses_what_its_specification_declares_then_offers_every_holder"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::OWNER_NOT_ELIGIBLE,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_OWNER_NOT_ELIGIBLE,
+            "badges.rs",
+            "promote_refuses_what_its_specification_declares_then_offers_every_holder"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::NO_KEY_HOLDER,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_NO_KEY_HOLDER,
+            "badges.rs",
+            "create_and_promote_without_a_key_holder_are_refused"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_KEY_HOLDER_UNAVAILABLE,
+            "badges.rs",
+            "promote_refuses_what_its_specification_declares_then_offers_every_holder"
+        ),
+        witness!(
+            s::badges::promote::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::badge_tasks::PROMOTE_ERR_KEY_HOLDER_REFUSED,
+            "badges.rs",
+            "promote_refuses_what_its_specification_declares_then_offers_every_holder"
+        ),
+        witness!(
+            s::badges::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::badge_tasks::LIST_ERR_CURSOR_INVALID,
+            "badges.rs",
+            "the_reads_refuse_foreign_cursors_and_what_the_caller_may_not_see"
+        ),
+        witness!(
+            s::badges::images::upload::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::UPLOAD_ERR_BADGES_OFF,
+            "badges.rs",
+            "images_upload_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::images::upload::v0_1::error_codes::NOT_MEMBER,
+            crate::trust_tasks::badge_tasks::UPLOAD_ERR_NOT_MEMBER,
+            "badges.rs",
+            "images_upload_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::images::upload::v0_1::error_codes::TOO_LARGE,
+            crate::trust_tasks::badge_tasks::UPLOAD_ERR_TOO_LARGE,
+            "badges.rs",
+            "images_upload_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::images::upload::v0_1::error_codes::NOT_AN_IMAGE,
+            crate::trust_tasks::badge_tasks::UPLOAD_ERR_NOT_AN_IMAGE,
+            "badges.rs",
+            "images_upload_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::images::upload::v0_1::error_codes::RATE_LIMITED,
+            crate::trust_tasks::badge_tasks::UPLOAD_ERR_RATE_LIMITED,
+            "badges.rs",
+            "images_upload_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::images::get::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::GET_ERR_NOT_FOUND,
+            "badges.rs",
+            "the_reads_refuse_foreign_cursors_and_what_the_caller_may_not_see"
+        ),
+        witness!(
+            s::badges::awards::offer::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::OFFER_ERR_BADGES_OFF,
+            "badges.rs",
+            "offer_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::awards::offer::v0_1::error_codes::BADGE_RETIRED,
+            crate::trust_tasks::badge_tasks::OFFER_ERR_BADGE_RETIRED,
+            "badges.rs",
+            "offer_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::awards::offer::v0_1::error_codes::KIND_MISMATCH,
+            crate::trust_tasks::badge_tasks::OFFER_ERR_KIND_MISMATCH,
+            "badges.rs",
+            "kudos_are_given_by_any_member_counted_and_bounded"
+        ),
+        witness!(
+            s::badges::awards::offer::v0_1::error_codes::AUTOMATIC_BADGE,
+            crate::trust_tasks::badge_tasks::OFFER_ERR_AUTOMATIC_BADGE,
+            "badges.rs",
+            "offer_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::awards::offer::v0_1::error_codes::GROUP_NOT_VISIBLE,
+            crate::trust_tasks::badge_tasks::OFFER_ERR_GROUP_NOT_VISIBLE,
+            "badges.rs",
+            "offer_refuses_what_its_specification_declares"
+        ),
+        witness!(
+            s::badges::awards::offer::v0_1::error_codes::NOTHING_TO_OFFER,
+            crate::trust_tasks::badge_tasks::OFFER_ERR_NOTHING_TO_OFFER,
+            "badges.rs",
+            "declining_records_nothing_and_withdrawing_closes_the_offer"
+        ),
+        witness!(
+            s::badges::awards::withdraw::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::WITHDRAW_ERR_BADGES_OFF,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::withdraw::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::WITHDRAW_ERR_NOT_FOUND,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::withdraw::v0_1::error_codes::ALREADY_DECIDED,
+            crate::trust_tasks::badge_tasks::WITHDRAW_ERR_ALREADY_DECIDED,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::revoke::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::REVOKE_ERR_BADGES_OFF,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::revoke::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::REVOKE_ERR_NOT_FOUND,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::revoke::v0_1::error_codes::NOT_ACCEPTED,
+            crate::trust_tasks::badge_tasks::REVOKE_ERR_NOT_ACCEPTED,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::revoke::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::badge_tasks::REVOKE_ERR_KEY_HOLDER_UNAVAILABLE,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::revoke::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::badge_tasks::REVOKE_ERR_KEY_HOLDER_REFUSED,
+            "badges.rs",
+            "withdraw_and_revoke_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::create::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::CLAIMS_CREATE_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::create::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::CLAIMS_CREATE_ERR_NOT_FOUND,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::create::v0_1::error_codes::NOT_CLAIMABLE,
+            crate::trust_tasks::badge_tasks::CLAIMS_CREATE_ERR_NOT_CLAIMABLE,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::create::v0_1::error_codes::SETTINGS_INVALID,
+            crate::trust_tasks::badge_tasks::CLAIMS_CREATE_ERR_SETTINGS_INVALID,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::CLAIMS_LIST_ERR_NOT_FOUND,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::badge_tasks::CLAIMS_LIST_ERR_CURSOR_INVALID,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::withdraw::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::CLAIMS_WITHDRAW_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::withdraw::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::CLAIMS_WITHDRAW_ERR_NOT_FOUND,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::redeem::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::REDEEM_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::redeem::v0_1::error_codes::CODE_INVALID,
+            crate::trust_tasks::badge_tasks::REDEEM_ERR_CODE_INVALID,
+            "badges.rs",
+            "a_claim_code_admits_the_members_who_redeem_it_within_its_limit_and_time"
+        ),
+        witness!(
+            s::badges::claims::redeem::v0_1::error_codes::ALREADY_CLAIMED,
+            crate::trust_tasks::badge_tasks::REDEEM_ERR_ALREADY_CLAIMED,
+            "badges.rs",
+            "a_claim_code_admits_the_members_who_redeem_it_within_its_limit_and_time"
+        ),
+        witness!(
+            s::badges::claims::redeem::v0_1::error_codes::ALREADY_HELD,
+            crate::trust_tasks::badge_tasks::REDEEM_ERR_ALREADY_HELD,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::redeem::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::badge_tasks::REDEEM_ERR_KEY_HOLDER_UNAVAILABLE,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::claims::redeem::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::badge_tasks::REDEEM_ERR_KEY_HOLDER_REFUSED,
+            "badges.rs",
+            "the_claim_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::share::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_BADGES_OFF,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::share::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_NOT_FOUND,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::share::v0_1::error_codes::NOT_SHAREABLE,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_NOT_SHAREABLE,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::share::v0_1::error_codes::PUBLIC_LOCATION_UNAVAILABLE,
+            crate::trust_tasks::badge_tasks::SHARE_ERR_PUBLIC_LOCATION_UNAVAILABLE,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::unshare::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::UNSHARE_ERR_BADGES_OFF,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::unshare::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::UNSHARE_ERR_NOT_FOUND,
+            "badges.rs",
+            "share_and_unshare_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::awards::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::AWARDS_LIST_ERR_NOT_FOUND,
+            "badges.rs",
+            "the_reads_refuse_foreign_cursors_and_what_the_caller_may_not_see"
+        ),
+        witness!(
+            s::badges::awards::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::badge_tasks::AWARDS_LIST_ERR_CURSOR_INVALID,
+            "badges.rs",
+            "the_reads_refuse_foreign_cursors_and_what_the_caller_may_not_see"
+        ),
+        witness!(
+            s::badges::holders::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::HOLDERS_ERR_NOT_FOUND,
+            "badges.rs",
+            "the_reads_refuse_foreign_cursors_and_what_the_caller_may_not_see"
+        ),
+        witness!(
+            s::badges::holders::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::badge_tasks::HOLDERS_ERR_CURSOR_INVALID,
+            "badges.rs",
+            "the_reads_refuse_foreign_cursors_and_what_the_caller_may_not_see"
+        ),
+        witness!(
+            s::badges::wall::show::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::badge_tasks::WALL_ERR_NOT_FOUND,
+            "badges.rs",
+            "arranging_the_wall_pins_within_the_limit_and_never_a_hidden_badge"
+        ),
+        witness!(
+            s::badges::mine::accept::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::ACCEPT_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::accept::v0_1::error_codes::ALREADY_DECIDED,
+            crate::trust_tasks::badge_tasks::ACCEPT_ERR_ALREADY_DECIDED,
+            "badges.rs",
+            "an_award_is_an_offer_until_accepted_then_the_group_issues_the_credential"
+        ),
+        witness!(
+            s::badges::mine::accept::v0_1::error_codes::BADGE_RETIRED,
+            crate::trust_tasks::badge_tasks::ACCEPT_ERR_BADGE_RETIRED,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::accept::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+            crate::trust_tasks::badge_tasks::ACCEPT_ERR_KEY_HOLDER_UNAVAILABLE,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::accept::v0_1::error_codes::KEY_HOLDER_REFUSED,
+            crate::trust_tasks::badge_tasks::ACCEPT_ERR_KEY_HOLDER_REFUSED,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::decline::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::DECLINE_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::decline::v0_1::error_codes::ALREADY_DECIDED,
+            crate::trust_tasks::badge_tasks::DECLINE_ERR_ALREADY_DECIDED,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::hide::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::HIDE_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::show::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::SHOW_AGAIN_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::arrange::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::ARRANGE_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::mine::arrange::v0_1::error_codes::BADGE_NOT_HELD,
+            crate::trust_tasks::badge_tasks::ARRANGE_ERR_BADGE_NOT_HELD,
+            "badges.rs",
+            "arranging_the_wall_pins_within_the_limit_and_never_a_hidden_badge"
+        ),
+        witness!(
+            s::badges::mine::arrange::v0_1::error_codes::TOO_MANY_PINNED,
+            crate::trust_tasks::badge_tasks::ARRANGE_ERR_TOO_MANY_PINNED,
+            "badges.rs",
+            "arranging_the_wall_pins_within_the_limit_and_never_a_hidden_badge"
+        ),
+        witness!(
+            s::badges::mine::arrange::v0_1::error_codes::BADGE_HIDDEN,
+            crate::trust_tasks::badge_tasks::ARRANGE_ERR_BADGE_HIDDEN,
+            "badges.rs",
+            "arranging_the_wall_pins_within_the_limit_and_never_a_hidden_badge"
+        ),
+        witness!(
+            s::badges::kudos::give::v0_1::error_codes::BADGES_OFF,
+            crate::trust_tasks::badge_tasks::KUDOS_ERR_BADGES_OFF,
+            "badges.rs",
+            "the_holders_tasks_refuse_what_their_specifications_declare"
+        ),
+        witness!(
+            s::badges::kudos::give::v0_1::error_codes::KIND_MISMATCH,
+            crate::trust_tasks::badge_tasks::KUDOS_ERR_KIND_MISMATCH,
+            "badges.rs",
+            "kudos_give_refuses_a_member_too_new_to_give"
+        ),
+        witness!(
+            s::badges::kudos::give::v0_1::error_codes::SELF_GIVING,
+            crate::trust_tasks::badge_tasks::KUDOS_ERR_SELF_GIVING,
+            "badges.rs",
+            "kudos_are_given_by_any_member_counted_and_bounded"
+        ),
+        witness!(
+            s::badges::kudos::give::v0_1::error_codes::NOT_ELIGIBLE,
+            crate::trust_tasks::badge_tasks::KUDOS_ERR_NOT_ELIGIBLE,
+            "badges.rs",
+            "kudos_give_refuses_a_member_too_new_to_give"
+        ),
+        witness!(
+            s::badges::kudos::give::v0_1::error_codes::LIMIT_REACHED,
+            crate::trust_tasks::badge_tasks::KUDOS_ERR_LIMIT_REACHED,
+            "badges.rs",
+            "kudos_are_given_by_any_member_counted_and_bounded"
+        ),
+        witness!(
+            s::badges::kudos::list::v0_1::error_codes::CURSOR_INVALID,
+            crate::trust_tasks::badge_tasks::KUDOS_LIST_ERR_CURSOR_INVALID,
+            "badges.rs",
+            "the_reads_refuse_foreign_cursors_and_what_the_caller_may_not_see"
+        ),
+        witness!(
             s::boards::create::v0_1::error_codes::TEMPLATE_INVALID,
             crate::trust_tasks::board_tasks::CREATE_ERR_TEMPLATE_INVALID,
             "board_tasks.rs",
@@ -1687,6 +2263,49 @@ fn witnesses() -> Vec<Witness> {
             crate::trust_tasks::board_tasks::CREATE_ERR_TIMETABLE_INVALID,
             "board_tasks.rs",
             "vti_brd_002_create_refuses_what_its_specification_declares"
+        ),
+        #[cfg(feature = "voting")]
+        witness!(
+            s::elections::tombstones::show::v0_1::error_codes::ELECTION_UNKNOWN,
+            crate::trust_tasks::election_tasks::TOMBSTONE_ERR_ELECTION_UNKNOWN,
+            "board_tasks.rs",
+            "vti_brd_009_a_tombstone_is_read_by_members_until_it_is_removed"
+        ),
+        witness!(
+            s::boards::facilitators::add::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_ADD_ERR_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::add::v0_1::error_codes::ENTRY_NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_ADD_ERR_ENTRY_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::add::v0_1::error_codes::ALREADY_FACILITATOR,
+            crate::trust_tasks::board_tasks::FACILITATORS_ADD_ERR_ALREADY_FACILITATOR,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::remove::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_REMOVE_ERR_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::remove::v0_1::error_codes::NOT_FACILITATOR,
+            crate::trust_tasks::board_tasks::FACILITATORS_REMOVE_ERR_NOT_FACILITATOR,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
+        ),
+        witness!(
+            s::boards::facilitators::list::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::board_tasks::FACILITATORS_LIST_ERR_NOT_FOUND,
+            "board_tasks.rs",
+            "vti_brd_090_a_member_appointed_facilitator_runs_the_board_until_removed"
         ),
         witness!(
             s::boards::delete::v0_1::error_codes::NOT_FOUND,
@@ -2302,177 +2921,177 @@ fn witnesses() -> Vec<Witness> {
         ),
         witness!(
             s::endorsement_types::delete::v0_1::error_codes::IN_USE,
-            crate::routes::endorsement_types::DELETE_ERR_IN_USE,
+            crate::endorsement_types::ops::DELETE_ERR_IN_USE,
             "endorsements.rs",
             "delete_type_refused_while_a_criterion_names_it"
         ),
         witness!(
             s::endorsement_types::delete::v0_1::error_codes::NOT_FOUND,
-            crate::routes::endorsement_types::DELETE_ERR_NOT_FOUND,
+            crate::endorsement_types::ops::DELETE_ERR_NOT_FOUND,
             "endorsements.rs",
             "delete_type_404_when_unknown"
         ),
         witness!(
             s::endorsement_types::register::v0_1::error_codes::EXISTS,
-            crate::routes::endorsement_types::REGISTER_ERR_EXISTS,
+            crate::endorsement_types::ops::REGISTER_ERR_EXISTS,
             "endorsements.rs",
             "register_rejects_duplicate"
         ),
         witness!(
             s::endorsement_types::register::v0_1::error_codes::INVALID_URI,
-            crate::routes::endorsement_types::REGISTER_ERR_INVALID_URI,
+            crate::endorsement_types::ops::REGISTER_ERR_INVALID_URI,
             "endorsements.rs",
             "an_empty_or_oversized_type_uri_is_the_declared_invalid_uri"
         ),
         witness!(
             s::endorsement_types::register::v0_1::error_codes::RESERVED,
-            crate::routes::endorsement_types::REGISTER_ERR_RESERVED,
+            crate::endorsement_types::ops::REGISTER_ERR_RESERVED,
             "endorsements.rs",
             "register_rejects_reserved_uri"
         ),
         witness!(
             s::endorsements::issue::v0_1::error_codes::CLAIM_SCHEMA_VIOLATION,
-            crate::routes::endorsements::ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
+            crate::endorsements::ops::ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
             "endorsements.rs",
             "a_claim_failing_the_type_claim_schema_is_the_declared_violation"
         ),
         witness!(
             s::endorsements::issue::v0_1::error_codes::CLAIM_TOO_LARGE,
-            crate::routes::endorsements::ISSUE_ERR_CLAIM_TOO_LARGE,
+            crate::endorsements::ops::ISSUE_ERR_CLAIM_TOO_LARGE,
             "endorsements.rs",
             "a_claim_over_the_cap_is_the_declared_claim_too_large"
         ),
         witness!(
             s::endorsements::issue::v0_1::error_codes::PREDICATE_NOT_ISSUABLE,
-            crate::routes::endorsements::ISSUE_ERR_PREDICATE_NOT_ISSUABLE,
+            crate::endorsements::ops::ISSUE_ERR_PREDICATE_NOT_ISSUABLE,
             "endorsements.rs",
             "a_task_bound_predicate_is_the_declared_predicate_not_issuable"
         ),
         witness!(
             s::endorsements::issue::v0_1::error_codes::STATUS_LIST_EXHAUSTED,
-            crate::routes::endorsements::ISSUE_ERR_STATUS_LIST_EXHAUSTED,
+            crate::endorsements::ops::ISSUE_ERR_STATUS_LIST_EXHAUSTED,
             "endorsements.rs",
             "a_full_revocation_list_is_the_declared_status_list_exhausted"
         ),
         witness!(
             s::endorsements::issue::v0_1::error_codes::TYPE_NOT_REGISTERED,
-            crate::routes::endorsements::ISSUE_ERR_TYPE_NOT_REGISTERED,
+            crate::endorsements::ops::ISSUE_ERR_TYPE_NOT_REGISTERED,
             "endorsements.rs",
             "issue_rejects_unregistered_type"
         ),
         witness!(
             s::endorsements::list::v0_2::error_codes::INVALID_CURSOR,
-            crate::routes::endorsements::LIST_ERR_INVALID_CURSOR,
+            crate::endorsements::ops::LIST_ERR_INVALID_CURSOR,
             "endorsements.rs",
             "a_forged_cursor_is_the_declared_invalid_cursor"
         ),
         witness!(
             s::endorsements::revoke::v0_1::error_codes::ALREADY_REVOKED,
-            crate::routes::endorsements::REVOKE_ERR_ALREADY_REVOKED,
+            crate::endorsements::ops::REVOKE_ERR_ALREADY_REVOKED,
             "endorsements.rs",
             "re_revoking_is_the_declared_already_revoked"
         ),
         witness!(
             s::endorsements::revoke::v0_1::error_codes::NOT_FOUND,
-            crate::routes::endorsements::REVOKE_ERR_NOT_FOUND,
+            crate::endorsements::ops::REVOKE_ERR_NOT_FOUND,
             "endorsements.rs",
             "an_unknown_endorsement_is_the_declared_not_found"
         ),
         witness!(
             s::endorsements::show::v0_1::error_codes::NOT_FOUND,
-            crate::routes::endorsements::SHOW_ERR_NOT_FOUND,
+            crate::endorsements::ops::SHOW_ERR_NOT_FOUND,
             "endorsements.rs",
             "an_unknown_endorsement_is_the_declared_not_found"
         ),
         // The passkey install — `vtc/install/claim/passkey/{start,finish}/0.1`.
         witness!(
             s::install::claim::passkey::start::v0_1::error_codes::INVALID_TOKEN,
-            crate::routes::install::START_ERR_INVALID_TOKEN,
+            crate::install::ops::START_ERR_INVALID_TOKEN,
             "install_claim.rs",
             "the_claim_start_task_answers_with_the_code_its_spec_declares"
         ),
         witness!(
             s::install::claim::passkey::finish::v0_1::error_codes::BINDING_INVALID,
-            crate::routes::install::FINISH_ERR_BINDING_INVALID,
+            crate::install::ops::FINISH_ERR_BINDING_INVALID,
             "install_claim.rs",
             "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::passkey::finish::v0_1::error_codes::INVALID_TOKEN,
-            crate::routes::install::FINISH_ERR_INVALID_TOKEN,
+            crate::install::ops::FINISH_ERR_INVALID_TOKEN,
             "install_claim.rs",
             "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::passkey::finish::v0_1::error_codes::REGISTRATION_MISMATCH,
-            crate::routes::install::FINISH_ERR_REGISTRATION_MISMATCH,
+            crate::install::ops::FINISH_ERR_REGISTRATION_MISMATCH,
             "install_claim.rs",
             "the_claim_finish_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::passkey::finish::v0_1::error_codes::POSSESSION_UNPROVEN,
-            crate::routes::install::FINISH_ERR_POSSESSION_UNPROVEN,
+            crate::install::ops::FINISH_ERR_POSSESSION_UNPROVEN,
             "install_claim.rs",
             "possession_is_proven_before_any_authority"
         ),
         witness!(
             s::install::claim::passkey::finish::v0_1::error_codes::UNSUPPORTED_ALGORITHM,
-            crate::routes::install::FINISH_ERR_UNSUPPORTED_ALGORITHM,
+            crate::install::ops::FINISH_ERR_UNSUPPORTED_ALGORITHM,
             "install_claim.rs",
             "a_passkey_no_did_key_can_name_is_unsupported_algorithm"
         ),
         // 0.3 — the claim under an existing DID with a step-up approver.
         witness!(
             s::install::claim::start::v0_3::error_codes::INVALID_TOKEN,
-            crate::routes::install::START_V0_3_ERR_INVALID_TOKEN,
+            crate::install::ops::START_V0_3_ERR_INVALID_TOKEN,
             "install_claim_v0_3.rs",
             "claim_start_v0_3_answers_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::finish::v0_3::error_codes::INVALID_TOKEN,
-            crate::routes::install::FINISH_V0_3_ERR_INVALID_TOKEN,
+            crate::install::ops::FINISH_V0_3_ERR_INVALID_TOKEN,
             "install_claim_v0_3.rs",
             "claim_finish_v0_3_answers_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::finish::v0_3::error_codes::REGISTRATION_MISMATCH,
-            crate::routes::install::FINISH_V0_3_ERR_REGISTRATION_MISMATCH,
+            crate::install::ops::FINISH_V0_3_ERR_REGISTRATION_MISMATCH,
             "install_claim_v0_3.rs",
             "claim_finish_v0_3_answers_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::start::v0_3::error_codes::TOKEN_NAMES_NO_DID,
-            crate::routes::install::START_V0_3_ERR_TOKEN_NAMES_NO_DID,
+            crate::install::ops::START_V0_3_ERR_TOKEN_NAMES_NO_DID,
             "install_claim_v0_3.rs",
             "claim_start_v0_3_answers_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::finish::v0_3::error_codes::SUBJECT_MISMATCH,
-            crate::routes::install::FINISH_V0_3_ERR_SUBJECT_MISMATCH,
+            crate::install::ops::FINISH_V0_3_ERR_SUBJECT_MISMATCH,
             "install_claim_v0_3.rs",
             "claim_finish_v0_3_answers_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::finish::v0_3::error_codes::STATEMENT_INVALID,
-            crate::routes::install::FINISH_V0_3_ERR_STATEMENT_INVALID,
+            crate::install::ops::FINISH_V0_3_ERR_STATEMENT_INVALID,
             "install_claim_v0_3.rs",
             "claim_finish_v0_3_answers_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::finish::v0_3::error_codes::APPROVER_NOT_DISTINCT,
-            crate::routes::install::FINISH_V0_3_ERR_APPROVER_NOT_DISTINCT,
+            crate::install::ops::FINISH_V0_3_ERR_APPROVER_NOT_DISTINCT,
             "install_claim_v0_3.rs",
             "claim_finish_v0_3_answers_the_codes_its_spec_declares"
         ),
         witness!(
             s::install::claim::finish::v0_3::error_codes::DID_UNRESOLVABLE,
-            crate::routes::install::FINISH_V0_3_ERR_DID_UNRESOLVABLE,
+            crate::install::ops::FINISH_V0_3_ERR_DID_UNRESOLVABLE,
             "install_claim_v0_3.rs",
             "claim_finish_v0_3_refuses_a_founder_did_that_does_not_resolve"
         ),
         witness!(
             s::members::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN,
-            crate::routes::members::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
+            crate::members::ops::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
             "members_crud.rs",
             "the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_declares"
         ),
@@ -2484,13 +3103,13 @@ fn witnesses() -> Vec<Witness> {
         ),
         witness!(
             s::auth::recognise::v0_3::error_codes::ROLE_NOT_MAPPED,
-            crate::routes::recognise::RECOGNISE_ERR_ROLE_NOT_MAPPED,
+            crate::recognition::recognise::RECOGNISE_ERR_ROLE_NOT_MAPPED,
             "recognise.rs",
             "the_recognise_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
             s::auth::recognise::v0_3::error_codes::CREDENTIAL_INVALID,
-            crate::routes::recognise::RECOGNISE_ERR_CREDENTIAL_INVALID,
+            crate::recognition::recognise::RECOGNISE_ERR_CREDENTIAL_INVALID,
             "recognise.rs",
             "the_recognise_task_answers_with_the_codes_its_spec_declares"
         ),
@@ -2499,6 +3118,24 @@ fn witnesses() -> Vec<Witness> {
             crate::trust_tasks::surface_tasks::THEME_UPDATE_ERR_OUTSIDE_PROFILE,
             "community_theme.rs",
             "a_theme_outside_the_profile_is_refused_where_it_breaks_it"
+        ),
+        witness!(
+            s::community::logo::update::v0_1::error_codes::TOO_LARGE,
+            crate::trust_tasks::surface_tasks::LOGO_UPDATE_ERR_TOO_LARGE,
+            "community_logo.rs",
+            "a_picture_claiming_more_pixels_than_are_decoded_is_too_large"
+        ),
+        witness!(
+            s::community::logo::update::v0_1::error_codes::NOT_AN_IMAGE,
+            crate::trust_tasks::surface_tasks::LOGO_UPDATE_ERR_NOT_AN_IMAGE,
+            "community_logo.rs",
+            "what_is_not_a_raster_of_its_type_is_refused"
+        ),
+        witness!(
+            s::community::logo::update::v0_1::error_codes::RATE_LIMITED,
+            crate::trust_tasks::surface_tasks::LOGO_UPDATE_ERR_RATE_LIMITED,
+            "community_logo.rs",
+            "updates_beyond_the_hourly_bound_are_rate_limited"
         ),
         witness!(
             s::community::requested_attributes::update::v0_1::error_codes::DUPLICATE_TYPE,
@@ -3526,6 +4163,11 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // `kindNotServed` is for a community serving room bindings only
         // (bindings/add item 7). This one serves every kind.
         s::groups::bindings::add::v0_1::error_codes::KIND_NOT_SERVED,
+        // Retiring a community badge deletes its badge group, which asks the community's
+        // VTA nothing (the authority is revoked in the community's own list), so the
+        // key holder is never unavailable or refusing here.
+        s::badges::retire::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
+        s::badges::retire::v0_1::error_codes::KEY_HOLDER_REFUSED,
         // BASELINE-END
     ]
 }
@@ -3538,7 +4180,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 19;
+const UNWITNESSED_CEILING: usize = 21;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

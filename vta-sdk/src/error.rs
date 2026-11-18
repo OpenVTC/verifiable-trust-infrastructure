@@ -224,6 +224,12 @@ pub enum VtaError {
         theirs: Vec<crate::protocol::matching::Protocol>,
     },
 
+    /// The peer refused the document because relying on it needs an
+    /// identifier of a method the peer does not resolve (VTI-KEY-009,
+    /// `details.reason` `unsupportedDidMethod`).
+    #[error("the peer does not resolve did:{method}, so it refused the document (VTI-KEY-009)")]
+    UnsupportedDidMethod { method: String },
+
     /// The peer does not serve this Trust Task type — the standard
     /// `unsupportedType` / `unsupportedVersion` rejections.
     ///
@@ -255,9 +261,10 @@ pub enum VtaError {
     #[error("{}", match .served_versions.is_empty() {
         true => format!("peer does not serve {}", .type_uri),
         false => format!(
-            "peer does not serve {} — it serves {}",
+            "peer does not serve {} — it serves {}{}",
             .type_uri,
             .served_versions.join(", "),
+            version_age_hint(.type_uri, .served_versions),
         ),
     })]
     UnsupportedTaskType {
@@ -320,6 +327,37 @@ pub enum VtaError {
         retry_after: Option<chrono::DateTime<chrono::Utc>>,
         limiter: Option<String>,
         url: Option<String>,
+    },
+
+    /// A record body uses a member the room's profile does not list in `recordMembers` —
+    /// `kind`, `inReplyTo`, `writtenAt`, `editedAt`, or a file's `width`, `height` or
+    /// `preview` — so the writer must not write it (`SealedRecordBody`, *When a writer may
+    /// use these members*). Refused here, before anything was sealed or sent.
+    ///
+    /// Typed so a CLI can print the fix: a curator lists the members with
+    /// `pnm rooms profile set --record-members …`, or the writer leaves them out.
+    /// `unresolved` is set when the profile could not be read at all, which permits none.
+    #[error(
+        "{} may not be written to room {room_id}: its profile lists {}{}",
+        refused.join(", "),
+        match listed.is_empty() {
+            true => "no record members".to_string(),
+            false => format!("only {}", listed.join(", ")),
+        },
+        match unresolved {
+            Some(why) => format!(" (its profile could not be read: {why})"),
+            None => String::new(),
+        }
+    )]
+    RecordMembersNotPermitted {
+        /// The room.
+        room_id: String,
+        /// The members the body uses that the profile does not list.
+        refused: Vec<String>,
+        /// What the profile lists; empty for none.
+        listed: Vec<String>,
+        /// Why the profile could not be read, where it could not.
+        unresolved: Option<String>,
     },
 
     #[error("{0}")]
@@ -395,6 +433,20 @@ impl VtaError {
         })
     }
 
+    /// [`Self::UnsupportedDidMethod`] from a rejection's `details` (or a REST
+    /// error body) whose `reason` (or `error`) is the VTI-KEY-009
+    /// discriminator. `None` for any other, or
+    /// when `method` is absent.
+    pub fn method_refusal_from(fields: &serde_json::Value) -> Option<Self> {
+        use crate::protocols::trust_task_reject_reasons as r;
+        let marker = fields
+            .get("reason")
+            .or_else(|| fields.get("error"))
+            .and_then(|v| v.as_str())?;
+        let method = fields.get("method")?.as_str()?.to_string();
+        (marker == r::UNSUPPORTED_DID_METHOD).then_some(Self::UnsupportedDidMethod { method })
+    }
+
     /// True for a TSP request that timed out waiting for its reply — the
     /// signature of a §7.2.2 silent drop (the peer dropped our frame because it
     /// holds no relationship with us). The self-repair path in
@@ -424,6 +476,13 @@ impl VtaError {
             && parsed.get("error").and_then(|e| e.as_str())
                 == Some(crate::protocols::trust_task_reject_reasons::NO_MATCHING_PROTOCOL)
             && let Some(e) = Self::no_matching_protocol_from(&parsed)
+        {
+            return e;
+        }
+        // The VTI-KEY-009 refusal carries its discriminator and method in the
+        // body whatever the status.
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body)
+            && let Some(e) = Self::method_refusal_from(&parsed)
         {
             return e;
         }
@@ -621,10 +680,13 @@ impl VtaError {
     /// Returns true if this is a network-level error (retryable).
     pub fn is_network(&self) -> bool {
         #[cfg(feature = "client")]
-        if matches!(self, Self::Network(_)) {
-            return true;
+        {
+            matches!(self, Self::Network(_))
         }
-        false
+        #[cfg(not(feature = "client"))]
+        {
+            false
+        }
     }
 
     /// Returns true if the resource was not found.
@@ -695,6 +757,11 @@ impl VtaError {
             Self::RateLimited { limited_by, .. } => {
                 Some(crate::rate_limit::suggested_fix(*limited_by))
             }
+            Self::RecordMembersNotPermitted { .. } => Some(
+                "The room's profile does not list these record members, so a writer must not \
+                 use them. A curator lists them with `rooms profile set --record-members …`; \
+                 otherwise write the record without them.",
+            ),
             Self::Validation(_) => Some(
                 "The request body or parameters were rejected by the VTA's schema. \
                  Inspect the response body for the specific field that failed.",
@@ -768,6 +835,10 @@ impl VtaError {
                 "The two parties share no transport protocol. Enable a common \
                  transport (TSP, DIDComm, or REST) on both sides — compare each \
                  DID document's advertised `service` entries and add the missing one.",
+            ),
+            Self::UnsupportedDidMethod { .. } => Some(
+                "The peer cannot resolve this identity's DID method. Use a did:webvh, \
+                 did:scid or did:key identity toward it, or a peer that resolves the method.",
             ),
             // No generic hint for these — the message itself is the
             // hint, or the failure is a protocol/programmer error
@@ -1186,5 +1257,72 @@ mod tests {
             .is_none()
         );
         assert!(VtaError::Other("x".into()).to_typed_payload().is_none());
+    }
+}
+
+/// Which side of an `unsupportedVersion` is behind, where the versions say so: a requested version older
+/// than every one served means this client is older than the peer, newer than
+/// every one served means the peer is older than this client. Empty where the
+/// versions do not order (one is unreadable, or the request falls between).
+pub fn version_age_hint(type_uri: &str, served: &[String]) -> &'static str {
+    fn version(uri: &str) -> Option<(u32, u32)> {
+        let (major, minor) = uri.rsplit('/').next()?.split_once('.')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
+    }
+    let Some(asked) = version(type_uri) else {
+        return "";
+    };
+    let Some(served) = served
+        .iter()
+        .map(|s| version(s))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return "";
+    };
+    if served.iter().all(|v| asked < *v) {
+        " (this client is older than the peer: upgrade the client)"
+    } else if served.iter().all(|v| asked > *v) {
+        " (the peer is older than this client: upgrade the peer)"
+    } else {
+        ""
+    }
+}
+
+#[cfg(test)]
+mod version_age_hint_tests {
+    use super::version_age_hint;
+
+    fn served(v: &[&str]) -> Vec<String> {
+        v.iter()
+            .map(|v| format!("https://trusttasks.org/spec/acl/list/{v}"))
+            .collect()
+    }
+
+    #[test]
+    fn an_older_client_is_told_to_upgrade_itself() {
+        let hint = version_age_hint(
+            "https://trusttasks.org/spec/acl/list/0.3",
+            &served(&["0.4"]),
+        );
+        assert!(hint.contains("upgrade the client"), "{hint}");
+    }
+
+    #[test]
+    fn an_older_peer_is_named_as_the_one_behind() {
+        let hint = version_age_hint(
+            "https://trusttasks.org/spec/acl/list/0.4",
+            &served(&["0.2", "0.3"]),
+        );
+        assert!(hint.contains("upgrade the peer"), "{hint}");
+    }
+
+    #[test]
+    fn versions_that_do_not_order_say_nothing() {
+        let between = version_age_hint(
+            "https://trusttasks.org/spec/acl/list/0.3",
+            &served(&["0.2", "0.4"]),
+        );
+        assert_eq!(between, "");
+        assert_eq!(version_age_hint("not-a-uri", &served(&["0.2"])), "");
     }
 }

@@ -86,7 +86,7 @@ pub(crate) fn check_holder_secrets(
 
     for entry in secrets {
         let key_id = entry.key_id.as_str();
-        if !key_id.strip_prefix(&prefix).is_some_and(|f| !f.is_empty()) {
+        if key_id.strip_prefix(&prefix).is_none_or(|f| f.is_empty()) {
             return Err(refuse(format!(
                 "secret id `{key_id}` is not a verification method of {holder_did}"
             )));

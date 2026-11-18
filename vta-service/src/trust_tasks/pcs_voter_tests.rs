@@ -217,6 +217,9 @@ async fn a_member_votes_through_the_vta_and_checks_the_receipt() {
         now,
     )
     .unwrap();
+    let sel = json!({ "community": COMMUNITY, "electionId": "agm-2027" });
+    // The head as it stood before the cast: one that cannot hold it.
+    let before = bb.board_head(BoxCaller::Anonymous, &sel, now).unwrap();
     let receipt_payload = bb.cast(&cast_doc["payload"], now).unwrap();
     assert_eq!(receipt_payload["outcome"], "counted");
     let receipt = signed(
@@ -226,7 +229,6 @@ async fn a_member_votes_through_the_vta_and_checks_the_receipt() {
         receipt_payload.clone(),
     )
     .await;
-    let sel = json!({ "community": COMMUNITY, "electionId": "agm-2027" });
     let head = bb.board_head(BoxCaller::Anonymous, &sel, now).unwrap();
     let checkpoint = signed(
         "https://trusttasks.org/spec/voting/board/head/0.1#response",
@@ -256,6 +258,49 @@ async fn a_member_votes_through_the_vta_and_checks_the_receipt() {
         ok(&handle_voter_receipt(&state, &auth, receipt_doc(&receipt, Some(&checkpoint))).await)["status"],
         "included"
     );
+
+    // After close the client asks the VTA for what it kept, and checks again (VTI-VOT-053).
+    let list_doc = |election: &str| {
+        doc(
+            uris::TASK_VTA_PCS_VOTER_RECEIPTS_LIST_0_1,
+            json!({ "contextId": "member", "community": COMMUNITY, "electionId": election }),
+        )
+    };
+    let kept = ok(&handle_voter_receipts_list(&state, &auth, list_doc("agm-2027")).await);
+    assert_eq!(kept["ballotBox"], box_did);
+    assert_eq!(
+        kept["receipts"],
+        json!([receipt]),
+        "kept whole, exactly as received"
+    );
+    assert_eq!(
+        code(&handle_voter_receipts_list(&state, &auth, list_doc("agm-2099")).await),
+        "vta/pcs/voter/receipts/list:notFound"
+    );
+    // A head too small to hold the cast omits it, whatever path comes with it (item 7.2).
+    let size = before["head"]["treeSize"].as_u64().unwrap();
+    let leaf = receipt_payload["leafIndex"].as_u64().unwrap();
+    assert!(leaf >= size);
+    if size > 0 {
+        let short = signed(
+            "https://trusttasks.org/spec/voting/board/head/0.1#response",
+            &box_did,
+            &box_signer,
+            before.clone(),
+        )
+        .await;
+        let mut p = json!({ "contextId": "member", "community": COMMUNITY,
+                            "electionId": "agm-2027", "receipt": receipt, "checkpoint": short,
+                            "inclusion": { "leafIndex": leaf, "treeSize": size,
+                                           "entryHash": receipt_payload["entryHash"], "path": [] } });
+        let answer = ok(&handle_voter_receipt(
+            &state,
+            &auth,
+            doc(uris::TASK_VTA_PCS_VOTER_RECEIPT_0_1, p.take()),
+        )
+        .await);
+        assert_eq!(answer["status"], "notIncluded");
+    }
 
     // A receipt somebody else signed, or a checkpoint nobody signed, proves nothing.
     let (other, other_signer) = box_key(6);
@@ -629,7 +674,7 @@ async fn the_vta_keeps_no_clear_pairing_and_discards_after_the_election() {
     );
 }
 
-/// `vta/pcs/voter/read`: one of the two election reads, signed as the member — and nothing else.
+/// `vta/pcs/voter/read`: one of the election reads, signed as the member — and nothing else.
 #[tokio::test]
 async fn an_election_read_is_signed_as_the_member() {
     let (state, _dir) = build_signing_test_app_state().await;
@@ -650,11 +695,45 @@ async fn an_election_read_is_signed_as_the_member() {
     .await;
     let read = |member: &str, which: &str, payload: Value| {
         doc(
-            uris::TASK_VTA_PCS_VOTER_READ_0_6,
+            uris::TASK_VTA_PCS_VOTER_READ_0_7,
             json!({ "contextId": "member", "community": COMMUNITY, "member": member,
                     "read": which, "payload": payload }),
         )
     };
+
+    // 0.7 also signs the tombstone read (VTI-BRD-009), with no presentation in it.
+    let tomb = ok(&handle_voter_read(
+        &state,
+        &auth,
+        read(
+            &persona.did,
+            "tombstone",
+            json!({ "electionId": "agm-2028" }),
+        ),
+    )
+    .await);
+    assert_eq!(
+        tomb["document"]["type"],
+        "https://trusttasks.org/spec/vtc/elections/tombstones/show/0.1"
+    );
+    assert_eq!(tomb["document"]["issuer"], persona.did.as_str());
+    let out = handle_voter_read(&state, &auth, read(&persona.did, "tombstone", json!({}))).await;
+    assert_eq!(code(&out), "malformedRequest");
+    // 0.6, still served, signs no tombstone read.
+    let out = handle_voter_read(
+        &state,
+        &auth,
+        doc(
+            uris::TASK_VTA_PCS_VOTER_READ_0_6,
+            json!({ "contextId": "member", "community": COMMUNITY, "member": persona.did,
+                    "read": "show", "payload": { "electionId": "agm-2028" } }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        ok(&out)["document"]["type"],
+        "https://trusttasks.org/spec/vtc/elections/show/0.6"
+    );
 
     let shown = ok(&handle_voter_read(
         &state,

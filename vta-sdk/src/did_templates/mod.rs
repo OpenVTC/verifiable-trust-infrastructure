@@ -44,6 +44,7 @@ mod sign_in_portal;
 mod transports;
 mod trust_registry;
 mod validate;
+pub mod webs;
 
 #[cfg(test)]
 mod tests;
@@ -348,6 +349,27 @@ impl DidTemplate {
         render::render(self, vars)
     }
 
+    /// The caller-supplied variable names this template declares neither in
+    /// `requiredVars` nor in `optionalVars`, sorted. A reserved name (`DID`, a
+    /// key slot's placeholder, …) is the renderer's to supply, so a caller
+    /// supplying one is supplying an unknown variable too.
+    ///
+    /// [`Self::render`] takes extra variables without complaint, because the
+    /// server passes its ambient ones through the same map; a caller whose
+    /// variables come from a request checks them here first.
+    pub fn undeclared_vars<'a>(&self, supplied: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let mut unknown: Vec<String> = supplied
+            .into_iter()
+            .filter(|k| {
+                !self.required_vars.iter().any(|r| r == k) && !self.optional_vars.contains_key(*k)
+            })
+            .map(str::to_string)
+            .collect();
+        unknown.sort();
+        unknown.dedup();
+        unknown
+    }
+
     /// Structural + semantic lint. Called automatically by [`Self::from_json`].
     pub fn validate(&self) -> Result<(), TemplateError> {
         validate::validate(self)
@@ -490,7 +512,7 @@ pub enum TemplateError {
     ReservedVar(String),
 
     #[error(
-        "builtin template '{0}' not found (available: ai-agent, ai-agent-peer, did-host-didcomm, did-host-http, did-host-http-didcomm, did-host-http-tsp, did-host-tsp, didcomm-mediator, vta-admin, vtc-host)"
+        "builtin template '{0}' not found (available: ai-agent, ai-agent-peer, ballot-box, did-host-didcomm, did-host-http, did-host-http-didcomm, did-host-http-tsp, did-host-tsp, didcomm-mediator, dtg-witness, push-gateway, room, room-host, swiyu-verifier, trust-registry, vta-admin, vtc-group, vtc-host, vtc-host-classical)"
     )]
     BuiltinNotFound(String),
 }

@@ -41,7 +41,7 @@ vi.mock("@/lib/sealed-transfer", async (original) => {
     ...real,
     communitySealingKey: async () => {
       if (sealingKey.fail) {
-        throw new real.SealingUnavailableError("this community does not serve its own DID document here (HTTP 404)");
+        throw new real.SealingUnavailableError("this community's key is not the one its DID document publishes yet");
       }
       return new Uint8Array(32).fill(9);
     },
@@ -585,7 +585,7 @@ describe("Setting a sealed config's credential", () => {
     fireEvent.click(screen.getByRole("button", { name: "Seal and send for approval" }));
 
     const card = (await screen.findByText("Not sealed")).closest("section")!;
-    expect(within(card).getByText(/does not serve its own DID document/)).toBeTruthy();
+    expect(within(card).getByText(/not the one its DID document publishes/)).toBeTruthy();
     expect(within(card).getByText(/cnm storage credentials set --config r2-archive/)).toBeTruthy();
     expect(sentPayloads(requests, CREDENTIALS_SET)).toEqual([]);
     sealingKey.fail = false;

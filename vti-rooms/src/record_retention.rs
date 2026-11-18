@@ -201,6 +201,9 @@ mod tests {
             cleartext: None,
             author: None,
             updated_at: NOW - age_days * DAY,
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         }
     }
 

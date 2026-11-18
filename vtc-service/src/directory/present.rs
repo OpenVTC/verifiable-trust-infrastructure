@@ -215,7 +215,7 @@ pub async fn verify(
         return Err(invalid("the holder is not the signer's membership".into()));
     }
 
-    let fetcher = crate::routes::join_requests::present::credential_status_fetcher(state);
+    let fetcher = crate::join::ops::present::credential_status_fetcher(state);
     let mut out = Vec::with_capacity(set.presentations.len());
     for p in set.presentations {
         out.push(presented(p, &set.holder, &fetcher).await?);
@@ -239,7 +239,7 @@ async fn presented(
     {
         return Err(invalid("the credential is about someone else"));
     }
-    let status = crate::routes::join_requests::present::resolve_presented_status(
+    let status = crate::join::ops::present::resolve_presented_status(
         p.credential_status.as_ref(),
         Some(&p.issuer_did),
         fetcher,

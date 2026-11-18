@@ -11,9 +11,15 @@
 use serde_json::{Value, json};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+#[allow(deprecated)]
 use vti_specs_rooms::rooms::create::v0_2 as create_v2;
 use vti_specs_rooms::rooms::info::v0_3 as info_v3;
 use vti_specs_rooms::rooms::records::list::v0_5 as list_v5;
+use vti_specs_rooms::rooms::records::list::v0_6 as list_v6;
+#[allow(deprecated)]
+// still served beside list/0.8, to readers that ask for it (trust-tasks-tf #1289)
+use vti_specs_rooms::rooms::records::list::v0_7 as list_v7;
+use vti_specs_rooms::rooms::records::list::v0_8 as list_v8;
 use vti_specs_rooms::rooms::records::prune::v0_2 as prune_spec;
 use vti_specs_rooms::rooms::records::retention::set::v0_1 as set_spec;
 
@@ -22,13 +28,112 @@ use crate::authz::{Action, AuthorizedAction};
 use crate::blob_tasks::{Refusal, TaskResult, checked, declared, parse};
 use crate::blobs::{BlobHost, ReadSnapshot};
 use crate::record_retention::{PruneKind, RecordPrune, RecordRetention};
-use crate::storage;
+use crate::storage::{self, RecordOrder, VersionBounds};
+use crate::wire::ListRecordsBody;
 
 pub use crate::wire::{
     ROOMS_CREATE_V2_TYPE as CREATE_V2_TYPE, ROOMS_INFO_V3_TYPE as INFO_V3_TYPE,
-    ROOMS_RECORDS_LIST_V5_TYPE as LIST_V5_TYPE, ROOMS_RECORDS_PRUNE_V2_TYPE as PRUNE_TYPE,
+    ROOMS_RECORDS_LIST_V5_TYPE as LIST_V5_TYPE, ROOMS_RECORDS_LIST_V6_TYPE as LIST_V6_TYPE,
+    ROOMS_RECORDS_LIST_V7_TYPE as LIST_V7_TYPE, ROOMS_RECORDS_LIST_V8_TYPE as LIST_V8_TYPE,
+    ROOMS_RECORDS_PRUNE_V2_TYPE as PRUNE_TYPE,
     ROOMS_RECORDS_RETENTION_SET_TYPE as RETENTION_SET_TYPE,
 };
+
+/// The version a `rooms/records/list` is answered at — what both hosts read and answer by,
+/// so the page a version asks for is chosen in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ListAt {
+    /// 0.5: `RecordMetadata` rows, oldest first.
+    V5,
+    /// 0.6: `RecordMetadataV3` rows, oldest first.
+    V6,
+    /// 0.7: 0.6's rows, in the order the request asked for (trust-tasks-tf #1088).
+    V7(RecordOrder),
+    /// 0.8: 0.7, and an exclusive `beforeVersion` upper bound; the cursor is bound to the
+    /// order and both bounds (trust-tasks-tf #1289).
+    V8 {
+        order: RecordOrder,
+        before_version: Option<u64>,
+    },
+}
+
+impl ListAt {
+    /// Whether the rows are `RecordMetadataV3` (0.6 on) rather than `RecordMetadata`.
+    pub fn rows_v3(self) -> bool {
+        !matches!(self, Self::V5)
+    }
+}
+
+/// The page a listing at `at` asks for: one read of the room's version index, for both
+/// hosts. `req` is the request read as 0.1 ([`list_v7_parts`], [`list_v8_parts`]).
+pub async fn list_page(
+    records: &KeyspaceHandle,
+    req: &ListRecordsBody,
+    at: ListAt,
+) -> Result<storage::Page, AppError> {
+    match at {
+        ListAt::V8 {
+            order,
+            before_version,
+        } => {
+            storage::list_records_bounded(
+                records,
+                &req.room_id,
+                req.prefix.as_deref(),
+                VersionBounds {
+                    since_version: req.since_version,
+                    before_version,
+                },
+                req.cursor.as_deref(),
+                req.limit,
+                order,
+            )
+            .await
+        }
+        ListAt::V7(order) => {
+            storage::list_records_page_in(
+                records,
+                &req.room_id,
+                req.prefix.as_deref(),
+                req.since_version,
+                req.cursor.as_deref(),
+                req.limit,
+                order,
+            )
+            .await
+        }
+        ListAt::V5 | ListAt::V6 => {
+            storage::list_records_page(
+                records,
+                &req.room_id,
+                req.prefix.as_deref(),
+                req.since_version,
+                req.cursor.as_deref(),
+                req.limit,
+            )
+            .await
+        }
+    }
+}
+
+/// A listing answered at `at`: the page's response checked against that version's schema.
+pub async fn list_response(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    response: impl serde::Serialize,
+    at: ListAt,
+) -> TaskResult {
+    match at {
+        ListAt::V5 => list_v5_response(snapshot, room, response).await,
+        ListAt::V6 => list_v6_response(snapshot, room, response).await,
+        ListAt::V7(_) => list_v7_response(snapshot, room, response).await,
+        ListAt::V8 { .. } => {
+            let body = list_v5_body(snapshot, room, response).await?;
+            checked::<list_v8::Response>(body)
+        }
+    }
+}
 
 /// What a prune or a retention change leaves in the host's audit trail
 /// (`rooms/records/prune/0.2` *The audit trail*; `retention/set/0.1` item 5): the mark, the
@@ -136,7 +241,7 @@ pub async fn prune(
     let reason = req.reason.to_string();
     let dry_run = req.dry_run.unwrap_or(false);
 
-    let lock = files.records_lock().await;
+    let lock = files.records_lock(&room.room_id).await;
     // Re-read under the lock: the retention and the records are decided together.
     let room = storage::get_room(rooms, &room.room_id)
         .await
@@ -264,7 +369,7 @@ pub async fn retention_set(
 
     // Under the record-write lock, so a prune never decides eligibility under one retention
     // while this replaces it.
-    let _lock = files.records_lock().await;
+    let _lock = files.records_lock(&room.room_id).await;
     let current = storage::get_room(rooms, &room.room_id)
         .await
         .map_err(Refusal::App)?;
@@ -304,6 +409,7 @@ pub async fn retention_set(
 /// The record retention a `rooms/create/0.2` asks for, after checking the payload is that
 /// task's — `None` when it states none — and the payload read as 0.1, which the hosts'
 /// create path takes for everything else.
+#[allow(deprecated)] // still served beside create/0.3 (trust-tasks-tf #1084)
 pub fn create_v2_parts(payload: &Value) -> Result<(Option<RecordRetention>, Value), Refusal> {
     parse::<create_v2::Payload>(payload)?;
     let retention = match payload.get("recordRetention") {
@@ -319,6 +425,7 @@ pub fn create_v2_parts(payload: &Value) -> Result<(Option<RecordRetention>, Valu
 
 /// The 0.1 members of a `rooms/create` response, with what 0.2 echoes: the record retention the host
 /// recorded, absent when none was.
+#[allow(deprecated)] // still served beside create/0.3 (trust-tasks-tf #1084)
 pub fn create_v2_response(
     response: impl serde::Serialize,
     recorded: Option<&RecordRetention>,
@@ -333,6 +440,8 @@ pub fn create_v2_response(
 
 /// `rooms/info/0.3`: 0.1's answer, and the record retention in force (omitted when there is
 /// none) and the room's latest prune, its instant named `prunedAt` (`rooms/_shared/0.2`).
+/// [`crate::signal_delay::info_v4`] adds the room's signal delay.
+#[allow(deprecated)] // still served beside info/0.4 (trust-tasks-tf #1084)
 pub async fn info_v3(
     files: &BlobHost,
     room: &Room,
@@ -357,11 +466,126 @@ pub async fn info_v3(
 /// A listing as `rooms/records/list/0.5` answers: each record's `blobs`, the room's
 /// `lastPrune` on every page once the room has been pruned (omitted otherwise), and the
 /// continuation token named `nextCursor` (0.4), absent on the last page.
+#[allow(deprecated)] // still served beside list/0.6, to readers that ask for it (trust-tasks-tf #1027)
 pub async fn list_v5_response(
     snapshot: &ReadSnapshot<'_>,
     room: &Room,
     response: impl serde::Serialize,
 ) -> TaskResult {
+    let body = list_v5_body(snapshot, room, response).await?;
+    checked::<list_v5::Response>(body)
+}
+
+/// A listing as `rooms/records/list/0.6` answers: 0.5's, with rows that are
+/// `RecordMetadataV3` — which the host builds with [`crate::Record::metadata_v3`] for the
+/// room's tier — and `blobs` on each, as before.
+#[allow(deprecated)] // still served beside list/0.7, to readers that ask for it (trust-tasks-tf #1088)
+pub async fn list_v6_response(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> TaskResult {
+    let body = list_v5_body(snapshot, room, response).await?;
+    checked::<list_v6::Response>(body)
+}
+
+/// A `rooms/records/list/0.7` request, checked against its schema, as the order it asks
+/// for and the payload read as 0.1 — which the hosts' listing takes for everything else.
+///
+/// The cursor is checked here, against the order, so a cursor issued under the other order
+/// (or not by this host) is the task's declared `invalidCursor` (*Order* item 5) and never
+/// a page read in the wrong direction.
+#[allow(deprecated)] // still served beside list/0.8 (trust-tasks-tf #1289)
+pub fn list_v7_parts(payload: &Value) -> Result<(RecordOrder, Value), Refusal> {
+    let req: list_v7::Payload = parse(payload)?;
+    let order = match req.order {
+        Some(list_v7::ListOrder::NewestFirst) => RecordOrder::NewestFirst,
+        Some(list_v7::ListOrder::OldestFirst) | None => RecordOrder::OldestFirst,
+        Some(other) => {
+            return Err(Refusal::Malformed(format!(
+                "`order` {other:?} is not one this host lists in"
+            )));
+        }
+    };
+    if let Some(cursor) = payload.get("cursor").and_then(Value::as_str)
+        && let Err(e) = storage::decode_cursor(cursor, order)
+    {
+        return Err(declared(
+            list_v7::error_codes::INVALID_CURSOR,
+            e.to_string(),
+            None,
+        ));
+    }
+    let mut v0_1 = crate::blob_tasks::as_v0_1(payload.clone());
+    if let Some(obj) = v0_1.as_object_mut() {
+        obj.remove("order");
+    }
+    Ok((order, v0_1))
+}
+
+/// A `rooms/records/list/0.8` request, checked against its schema, as what it is answered
+/// at — the order and `beforeVersion` — and the payload read as 0.1.
+///
+/// The cursor is checked here against the order **and** the request's `sinceVersion` and
+/// `beforeVersion`: one issued under any other is the declared `invalidCursor`, never a
+/// page from a band the caller did not ask for.
+pub fn list_v8_parts(payload: &Value) -> Result<(ListAt, Value), Refusal> {
+    let req: list_v8::Payload = parse(payload)?;
+    let order = match req.order {
+        Some(list_v8::ListOrder::NewestFirst) => RecordOrder::NewestFirst,
+        Some(list_v8::ListOrder::OldestFirst) | None => RecordOrder::OldestFirst,
+        Some(other) => {
+            return Err(Refusal::Malformed(format!(
+                "`order` {other:?} is not one this host lists in"
+            )));
+        }
+    };
+    let before_version = req.before_version.map(|b| b.get());
+    if let Some(cursor) = req.cursor.as_deref() {
+        let bounds = VersionBounds {
+            since_version: req.since_version,
+            before_version,
+        };
+        if let Err(e) = storage::decode_bounded_cursor(cursor, order, bounds) {
+            return Err(declared(
+                list_v8::error_codes::INVALID_CURSOR,
+                e.to_string(),
+                None,
+            ));
+        }
+    }
+    let mut v0_1 = crate::blob_tasks::as_v0_1(payload.clone());
+    if let Some(obj) = v0_1.as_object_mut() {
+        obj.remove("order");
+        obj.remove("beforeVersion");
+    }
+    Ok((
+        ListAt::V8 {
+            order,
+            before_version,
+        },
+        v0_1,
+    ))
+}
+
+/// A listing as `rooms/records/list/0.7` answers: 0.6's page, its rows in the order the
+/// request asked for. The response shape is 0.6's; only its type moves.
+#[allow(deprecated)] // still served beside list/0.8 (trust-tasks-tf #1289)
+pub async fn list_v7_response(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> TaskResult {
+    let body = list_v5_body(snapshot, room, response).await?;
+    checked::<list_v7::Response>(body)
+}
+
+/// 0.5's page before its schema check, which 0.6 shares.
+async fn list_v5_body(
+    snapshot: &ReadSnapshot<'_>,
+    room: &Room,
+    response: impl serde::Serialize,
+) -> Result<Value, Refusal> {
     let mut body = crate::blob_tasks::list_v2_body(snapshot, &room.room_id, response).await?;
     if let Some(obj) = body.as_object_mut()
         && let Some(cursor) = obj.remove("cursor")
@@ -372,7 +596,7 @@ pub async fn list_v5_response(
     if let Some(mark) = &room.last_prune {
         body["lastPrune"] = mark.to_wire();
     }
-    checked::<list_v5::Response>(body)
+    Ok(body)
 }
 
 /// A `rooms/epoch/chain/0.1` response answered as 0.2: the same rungs (a host serves none at

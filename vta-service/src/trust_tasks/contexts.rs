@@ -12,8 +12,8 @@ use vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody;
 use vta_sdk::protocols::context_management::get::GetContextBody;
 use vta_sdk::protocols::context_management::list::ListContextsBody;
 use vta_sdk::protocols::context_management::update::UpdateContextBody;
-use vti_specs::vta::contexts::delete::v1_1::Payload as DeletePayload;
-use vti_specs::vta::contexts::update_did::v1_1::Payload as UpdateDidPayload;
+use vti_specs::vta::contexts::delete::v1_2::Payload as DeletePayload;
+use vti_specs::vta::contexts::update_did::v1_2::Payload as UpdateDidPayload;
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -86,7 +86,7 @@ fn reject_context_error(
             Some(serde_json::json!({
                 "subContexts": holds.sub_contexts,
                 "keys": holds.keys,
-                "webvhDids": holds.webvh_dids,
+                "dids": holds.dids,
                 "aclEntries": holds.acl_entries,
                 "didTemplates": holds.did_templates,
             })),
@@ -94,6 +94,18 @@ fn reject_context_error(
         // Only 1.1 asks for this refusal, so only `vta/contexts/delete` emits
         // it; the details are the shape its `detailsSchema` pins, so a
         // consumer can show the DIDs and ask before abandoning them.
+        ContextError::NotHeld(message) => {
+            reject_with_code(doc, ext(&slug, "notHeld"), message, None)
+        }
+        ContextError::DidClassConflict {
+            message,
+            required_class,
+        } => reject_with_code(
+            doc,
+            ext(&slug, "didClassConflict"),
+            message,
+            required_class.map(|c| serde_json::json!({ "requiredClass": c })),
+        ),
         ContextError::HostCleanupFailed(failures) => reject_with_code(
             doc,
             ext(&slug, "hostCleanupFailed"),
@@ -138,11 +150,9 @@ pub(super) async fn handle_create(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // Admin role required; `create_context` enforces the finer gate (super-admin
-    // for a top-level context, admin-of-parent for a sub-context).
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
+    // The gate — admin role, or the narrow `context-create` capability, then
+    // super-admin for a top-level context and reach-the-parent for a
+    // sub-context — lives in `create_context`, so every transport meets it.
     let req: CreateContextBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -150,6 +160,7 @@ pub(super) async fn handle_create(
     let audit_id = req.id.clone();
     match operations::contexts::create_context(
         &state.contexts_ks,
+        &state.acl_ks,
         auth,
         &req.id,
         req.name,
@@ -237,6 +248,7 @@ pub(super) async fn handle_secrets(
         acl_ks: &state.acl_ks,
         #[cfg(feature = "webvh")]
         webvh_ks: &state.webvh_ks,
+        webs_ks: &state.webs_ks,
         seed_store: &state.seed_store,
     };
     let channel = super::keys::export_channel();
@@ -284,27 +296,31 @@ pub(super) async fn handle_update(
     }
 }
 
-/// Handler for `spec/vta/contexts/update-did/1.1`. Admin only.
+/// Handler for `spec/vta/contexts/update-did/1.1`.
 ///
 /// `did` may be `null` (clear it) and must otherwise be a DID; the generated
 /// `PayloadDid` holds the pattern. The member is REQUIRED — serde would read a
 /// missing `Option` as `None`, i.e. as a clear, but the dispatch spine has
 /// already refused a document without it against the schema.
+///
+/// The gate lives in the operation, not here: admin **or** a provisioner
+/// naming a context that has no DID yet. Pre-gating on admin would make the
+/// provisioning path unreachable through this surface.
 pub(super) async fn handle_update_did(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: UpdateDidPayload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
     let (id, did) = (req.id.to_string(), req.did.map(String::from));
-    match operations::contexts::update_context_did(
-        &state.contexts_ks,
+    let config = state.config.read().await;
+    match operations::contexts::update_context_did_held(
+        operations::dids::DidStores::from_state(state),
+        &state.acl_ks,
+        &config,
         auth,
         &id,
         did,
@@ -338,6 +354,7 @@ pub(super) async fn handle_preview_delete(
         &state.did_templates_ks,
         #[cfg(feature = "webvh")]
         &state.webvh_ks,
+        &state.webs_ks,
         auth,
         &req.id,
         TRANSPORT_TRUST_TASK,
@@ -388,10 +405,17 @@ pub(super) async fn handle_delete(
         match state.did_resolver.as_ref() {
             Some(did_resolver) => {
                 let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+                #[cfg(feature = "webs")]
+                let webs = super::webs::ContextWebsSettler {
+                    state,
+                    resolver: did_resolver,
+                };
                 let cleanup = operations::contexts::ContextDidCleanup {
                     deps: &deps,
                     vta_did: vta_did.as_deref(),
                     host_copies,
+                    #[cfg(feature = "webs")]
+                    webs: Some(&webs),
                 };
                 operations::contexts::delete_context(
                     &ks,

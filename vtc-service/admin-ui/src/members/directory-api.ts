@@ -34,7 +34,7 @@ import type {
   DirectoryImagesUploadResponse,
 } from "@/lib/wire-types";
 
-import { vtcDid } from "./api";
+import { MEMBER_SESSION_EVENT, vtcDid } from "./api";
 
 export const FIELDS_LIST_TASK = "https://trusttasks.org/spec/vtc/directory/fields/list/0.1";
 export const CARD_SHOW_TASK = "https://trusttasks.org/spec/vtc/directory/card/show/0.1";
@@ -96,6 +96,9 @@ export async function send<T>(typeUri: string, payload: unknown): Promise<T> {
   } | null;
   const ok = res.ok && !(body?.type ?? "").includes("/trust-task-error/");
   if (ok) return (body?.payload ?? {}) as T;
+  // The delegation to this key ends with the session: have the portal check
+  // whether it still has one (#2612).
+  if (res.status === 401 || res.status === 403) window.dispatchEvent(new Event(MEMBER_SESSION_EVENT));
   const p = body?.payload ?? {};
   const raw = typeof p.code === "string" ? p.code : `http${res.status}`;
   const local = raw.includes(":") ? raw.slice(raw.lastIndexOf(":") + 1) : raw;

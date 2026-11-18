@@ -37,6 +37,7 @@ import type {
   StorageConfigUpdatePayload,
   StorageConfigUpdateResponse,
   StorageCredentialState,
+  StorageCredentialsRecipientResponse,
   StorageCredentialsSetPayload,
   StorageCredentialsSetResponse,
   SealedStorageCredential,
@@ -51,6 +52,8 @@ export const STORAGE_PROBE_TASK = "https://trusttasks.org/spec/vtc/storage/confi
 export const ROOM_STORAGE_ASSIGN_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/assign/0.2";
 export const ROOM_STORAGE_MIGRATE_TASK = "https://trusttasks.org/spec/vtc/rooms/storage/migrate/0.3";
 export const STORAGE_CREDENTIALS_SET_TASK = "https://trusttasks.org/spec/vtc/storage/credentials/set/0.3";
+export const STORAGE_CREDENTIALS_RECIPIENT_TASK =
+  "https://trusttasks.org/spec/vtc/storage/credentials/recipient/0.1";
 
 /** The most configs the spec returns per page. */
 const CONFIGS_PAGE = 100;
@@ -130,14 +133,16 @@ export function assignRoomStorage(
 
 /**
  * Seal a `sealed` config's credential to this community, here, before anything is
- * sent: HPKE to the X25519 form of the community DID's key, produced by this
- * browser's console key. The cleartext goes no further than this call, so seal
+ * sent: HPKE to the X25519 form of the community DID's key — asked of the community
+ * (`vtc/storage/credentials/recipient/0.1`) — produced by this browser's console key. The cleartext goes no further than this call, so seal
  * before handing the result to anything that keeps its input (a mutation does).
  */
 export async function sealCredentialForCommunity(credential: SealedStorageCredential): Promise<SealedBlock> {
   const key = await loadConsoleKey();
   if (!key) throw new SigningUnavailableError("no-key");
-  const recipient = await communitySealingKey(await vtcDid());
+  const recipient = await communitySealingKey(await vtcDid(), () =>
+    postSignedRead<StorageCredentialsRecipientResponse>(STORAGE_CREDENTIALS_RECIPIENT_TASK, {}),
+  );
   return sealStorageCredential(recipient, key.consoleDid, credential);
 }
 

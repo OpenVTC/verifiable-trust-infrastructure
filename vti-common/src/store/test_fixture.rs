@@ -74,6 +74,7 @@ fn templates() -> &'static Mutex<HashMap<Vec<String>, Snapshot>> {
 /// still be opened on the result; it is created the ordinary (fsyncing)
 /// way. Test fixtures only — see the module docs.
 pub fn open_with_keyspaces(data_dir: &Path, keyspaces: &[&str]) -> Result<Store, AppError> {
+    install_storage_logger();
     let mut key: Vec<String> = keyspaces.iter().map(|s| s.to_string()).collect();
     key.sort();
     key.dedup();
@@ -107,6 +108,37 @@ fn copy_and_open(snapshot: &Snapshot, data_dir: &Path) -> Result<Store, AppError
     Store::open(&StoreConfig {
         data_dir: data_dir.to_path_buf(),
     })
+}
+
+/// Print fjall's and lsm-tree's own warnings and errors to stderr.
+///
+/// fjall says why it poisoned a database (a failed journal write, a crashed
+/// flush or compaction worker) only through the `log` crate, and tests
+/// install no logger, so a test failing with `Store(Poisoned)` showed no
+/// cause. nextest prints a failing test's stderr, so the reason now appears
+/// beside it. Leaves any logger a test installed itself in place.
+fn install_storage_logger() {
+    struct StorageLog;
+    impl log::Log for StorageLog {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+                && (metadata.target().starts_with("fjall")
+                    || metadata.target().starts_with("lsm_tree"))
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if self.enabled(record.metadata()) {
+                eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: StorageLog = StorageLog;
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if log::set_logger(&LOGGER).is_ok() {
+            log::set_max_level(log::LevelFilter::Warn);
+        }
+    });
 }
 
 /// Where the template for `key` is published.

@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 
 import App from "@/App";
 import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { ThemePreviewBar } from "@/components/ThemePreviewBar";
 import { applyStoredCommunityTheme } from "@/lib/community-theme";
@@ -75,16 +76,19 @@ registerBuiltinPlugins();
 (isThemePreview() ? Promise.resolve() : loadThirdPartyPlugins()).finally(() => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <ToastProvider>
-          <ConfirmDialogProvider>
-            <BrowserRouter basename="/admin">
-              {isThemePreview() && <ThemePreviewBar />}
-              <App />
-            </BrowserRouter>
-          </ConfirmDialogProvider>
-        </ToastProvider>
-      </QueryClientProvider>
+      {/* The last resort: each screen has its own boundary (`PluginHost`). */}
+      <ErrorBoundary what="The console">
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <ConfirmDialogProvider>
+              <BrowserRouter basename="/admin">
+                {isThemePreview() && <ThemePreviewBar />}
+                <App />
+              </BrowserRouter>
+            </ConfirmDialogProvider>
+          </ToastProvider>
+        </QueryClientProvider>
+      </ErrorBoundary>
     </StrictMode>,
   );
 });

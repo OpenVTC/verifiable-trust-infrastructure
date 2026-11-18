@@ -559,8 +559,13 @@ mod tests {
                     .verifying_key()
                     .to_bytes(),
             ),
-            JwsKey::from_resolved(&ResolvedKey::new(KeyType::P256, p256.public_bytes)).unwrap(),
-            JwsKey::from_resolved(&ResolvedKey::new(KeyType::Secp256k1, k1.public_bytes)).unwrap(),
+            JwsKey::from_resolved(&ResolvedKey::new(KeyType::P256, p256.public_bytes.clone()))
+                .unwrap(),
+            JwsKey::from_resolved(&ResolvedKey::new(
+                KeyType::Secp256k1,
+                k1.public_bytes.clone(),
+            ))
+            .unwrap(),
         ] {
             let did = key.did_key();
             assert_eq!(JwsKey::from_did_key(&did).unwrap(), key, "{did}");

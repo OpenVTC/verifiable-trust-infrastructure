@@ -23,6 +23,7 @@ pub mod storage_configs;
 pub mod storage_credentials;
 pub mod vta_access;
 pub mod vta_storage;
+pub mod watch;
 
 pub use vti_rooms::{
     ROOM_RECORDS_KEYSPACE, ROOMS_KEYSPACE, Record, RecordStatus, Room, Visibility, authz, storage,

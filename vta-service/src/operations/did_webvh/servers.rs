@@ -106,7 +106,7 @@ pub async fn list_webvh_servers(
 
 /// Relay the registered hosting server's `did-management/me/domains/0.1`
 /// view to the caller: the domains this VTA may mint into, and the default.
-/// Used by `pnm did-mgmt list-domains` and the interactive `--domain` prompt in
+/// Used by `pnm did-mgmt dids list-domains` and the interactive `--domain` prompt in
 /// `create-did` / `register-did`.
 pub async fn list_webvh_server_domains(
     deps: &crate::operations::did_webvh::WebvhDeps<'_>,
@@ -211,7 +211,7 @@ pub async fn reconcile_webvh_server_dids(
     let hosted =
         crate::operations::did_webvh::list_dids_on_server(deps, vta_did_value, &server).await?;
 
-    let all_local = webvh_store::list_dids(deps.webvh_ks).await?;
+    let all_local = held_slots(deps).await?;
     let report = diff_host_against_local(&hosted, &all_local, &server.id, server_id);
 
     info!(
@@ -224,6 +224,19 @@ pub async fn reconcile_webvh_server_dids(
     );
 
     Ok(report)
+}
+
+/// Every slot this VTA holds, of either method. A did:webs slot on a shared
+/// server is this VTA's as much as a did:webvh one: compared against webvh
+/// records alone it read as host-only, and retire-orphan would remove it.
+async fn held_slots(
+    deps: &crate::operations::did_webvh::WebvhDeps<'_>,
+) -> Result<Vec<vta_sdk::webvh::WebvhDidRecord>, AppError> {
+    let mut all = webvh_store::list_dids(deps.webvh_ks).await?;
+    if let Some(webs_ks) = deps.webs_ks {
+        all.extend(crate::webs_store::held_slots(webs_ks).await?);
+    }
+    Ok(all)
 }
 
 /// The comparison itself, with the I/O lifted out so it can be tested.
@@ -653,7 +666,7 @@ pub async fn retire_orphan_slot(
             }));
         }
     };
-    let all_local = webvh_store::list_dids(deps.webvh_ks).await?;
+    let all_local = held_slots(deps).await?;
     let report = diff_host_against_local(&hosted, &all_local, &server.id, &body.server_id);
 
     let (retired_did, domain) = match decide_retirement(

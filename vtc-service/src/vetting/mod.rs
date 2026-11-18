@@ -82,6 +82,11 @@ pub fn redact_hidden_submission(extensions: &mut JsonValue) -> bool {
     true
 }
 
+/// Hidden-vetter admission: publish, withdraw, show (development branch `zkp-pcs`).
+#[cfg(feature = "vetting-pcs")]
+pub mod hidden;
+/// The operations its Trust Tasks run, over their generated payloads (#2574).
+pub(crate) mod ops;
 /// Hidden-vetter admission (ZKP), development branch `zkp-pcs`.
 #[cfg(feature = "vetting-pcs")]
 pub mod pcs;
@@ -116,8 +121,8 @@ use vta_sdk::vetting::statement::verify_statement;
 use vti_common::error::AppError;
 
 use crate::endorsements::{VETTER_GRANT_ROW_TYPE, endorsements_for_subject};
+use crate::join::ops::manifest::ServedCriterion;
 use crate::members::storage::get_member;
-use crate::routes::join_requests::manifest::ServedCriterion;
 use crate::server::AppState;
 
 /// The generic need a policy returns when vetting is incomplete. The host

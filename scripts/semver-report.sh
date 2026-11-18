@@ -104,7 +104,8 @@ esac
 #
 # `vtc-service` is here for the same reason by a different route: it is
 # published as a binary (`cargo install vtc-service`), and nothing consumes its
-# library API.
+# library API. `vtc-audit` (the community's audit vocabulary, #2568) is the first
+# of its subsystem crates, published only because `vtc-service` is.
 #
 # `vta-service` is deliberately NOT here: it has a real consumer (openvtc-core
 # dev-depends on it for MockVta), so a silent break there reaches somebody.
@@ -124,6 +125,8 @@ EXCLUDED=(
   vta-vault
   vta-webvh
   vti-webauthn
+  vtc-audit
+  vti-rooms-host
   vtc-service
 )
 

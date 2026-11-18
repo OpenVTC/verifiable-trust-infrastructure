@@ -109,10 +109,10 @@ async fn audited(f: &Fixture, action: &str) -> Vec<Option<String>> {
         .await
         .unwrap()
     {
-        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+        let Ok(env) = serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v) else {
             continue;
         };
-        if let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event
+        if let vtc_audit::AuditEvent::GitNsOperation(d) = env.event
             && d.action == action
         {
             out.push(d.detail);

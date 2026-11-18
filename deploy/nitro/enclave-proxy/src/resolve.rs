@@ -1,7 +1,8 @@
 //! Resolve a DID using the embedded Affinidi DID resolver and extract service endpoints.
 //!
 //! Uses `affinidi-did-resolver-cache-sdk` for local DID resolution — no external
-//! resolver service needed. Supports did:key, did:web, did:webvh, and other methods.
+//! resolver service needed. Supports did:key, did:web, did:webvh, did:scid,
+//! did:webs (VTI-KEY-003) and other methods.
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use tracing::{debug, info, warn};

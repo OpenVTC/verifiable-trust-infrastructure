@@ -94,6 +94,10 @@ pub mod error;
 /// Files: the blob manifest everywhere; the file key and STREAM sealing behind `files`.
 pub mod files;
 pub mod lifecycle;
+/// A member's name in a room: a record of kind `memberProfile` (`rooms/_shared/0.3`
+/// `member-profile`, trust-tasks-tf #1035). The writer's and the reader's rules; no host
+/// or key holder changes for it.
+pub mod member_profile;
 /// The record commitment — a Merkle tree over a room's records, so a listing
 /// that omits one can be caught.
 ///
@@ -117,6 +121,12 @@ pub mod profile;
 /// be used for, and when it lapses (trust-tasks-tf #865). Display and weighting, never
 /// authority; expiry is a reader's rule.
 pub mod provenance;
+/// What an authority chain grants room content to be used for (VTI-ACL-100 – 110).
+pub mod purpose;
+/// A record's kind, what it answers, when it was written and edited, and an image's size and
+/// preview — the members a room's profile governs (`recordMembers`, trust-tasks-tf #1027).
+/// Description, never authority; whether a writer may use them is the writer's rule.
+pub mod record_members;
 /// A room's record retention, what it makes eligible, and the mark a prune leaves
 /// (trust-tasks-tf #868).
 pub mod record_retention;
@@ -135,9 +145,14 @@ pub mod revocation;
 pub mod revocation_tasks;
 #[cfg(feature = "mls")]
 pub mod sealed;
+pub mod signal_delay;
 /// The room and record keyspaces, behind the `host` feature.
 #[cfg(feature = "host")]
 pub mod storage;
+/// `rooms/watch/0.1` and the `rooms/changed/0.1` signal it arms, host-neutral, behind the
+/// `host` feature: one content-free signal per arming, to an address the member names.
+#[cfg(feature = "host")]
+pub mod watch;
 pub mod wire;
 
 use serde::{Deserialize, Serialize};
@@ -367,6 +382,20 @@ pub struct Room {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_prune: Option<record_retention::RecordPrune>,
 
+    /// Whether this host waits a randomised interval before the room's `rooms/changed`
+    /// signals ([`signal_delay::SignalDelay`]; trust-tasks-tf #1084). Set at `rooms/create`
+    /// 0.3, changed by `rooms/signal-delay/set`, served by `rooms/info` 0.4, and applied by
+    /// [`watch::RoomWatches`] to every signal it sends for the room.
+    ///
+    /// Absent — every room stored before this existed, and every room created at
+    /// `rooms/create` 0.2 — is `randomised`, so an upgraded host keeps every room's wait
+    /// and needs no migration.
+    #[serde(
+        default,
+        skip_serializing_if = "signal_delay::SignalDelay::is_randomised"
+    )]
+    pub signal_delay: signal_delay::SignalDelay,
+
     /// The room's **epoch floor** (`rooms/_shared/0.1` `EpochFloor`; trust-tasks-tf #869):
     /// the earliest epoch whose key the room still lets anybody derive. Raised by every
     /// `rooms/epoch/prune` (to `beforeEpoch − 1`, never lowered), served by
@@ -535,6 +564,33 @@ pub struct Record {
 
     /// Unix-epoch seconds.
     pub updated_at: u64,
+
+    /// When this host stored the record's **first** version, unix seconds — served as
+    /// `createdAt` (`rooms/records/put/0.5` Host item 16, `RecordMetadataV3`).
+    ///
+    /// Set by [`storage::put_record`] and never by a writer: whatever a caller puts here is
+    /// replaced. Kept unchanged across every later version and every curation, retraction
+    /// included. `None` on a record stored before this host kept it, and served absent —
+    /// never guessed from `updated_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+
+    /// The author of the record's first version — the party the host authenticated for that
+    /// write — served as `createdBy` (Host item 17). Kept like [`Record::created_at`].
+    ///
+    /// Only where the tier discloses an actor (`open`, `attributed`); never on `private`,
+    /// where the host records no author. `None` on a record stored before this host kept it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+
+    /// When this host stored the body the record's current version carries, unix seconds —
+    /// served as `bodyStoredAt` (Host item 16).
+    ///
+    /// Moved by every put, which stores a new author body; left alone by a curation, which
+    /// moves the version and stores none. `None` on a version stored before this host kept
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_stored_at: Option<u64>,
 }
 
 /// Unix seconds as an RFC 3339 timestamp.
@@ -584,6 +640,58 @@ impl Record {
             }
         }
         serde_json::Value::Object(map)
+    }
+
+    /// The metadata projection `rooms/records/list/0.6` returns (`RecordMetadataV3`):
+    /// [`Record::metadata`], and
+    ///
+    /// - `kind`, as the current version's `cleartext.kind` carries it, on an `open` room
+    ///   only — absent where the record carries none and on a tombstone, which keeps no
+    ///   body; never derived or defaulted;
+    /// - `createdAt` and `bodyStoredAt`, on every tier, where this host kept them;
+    /// - `createdBy`, on `open` and `attributed` only, where this host kept it.
+    ///
+    /// `visibility` is the room's: what a tier may disclose is decided here as well as at
+    /// the write, so a row can never carry what its tier withholds.
+    pub fn metadata_v3(&self, visibility: Visibility) -> serde_json::Value {
+        let mut row = self.metadata();
+        let Some(map) = row.as_object_mut() else {
+            return row;
+        };
+        if visibility.stores_cleartext()
+            && self.status != RecordStatus::Retracted
+            && let Some(kind) = self
+                .cleartext
+                .as_ref()
+                .and_then(|c| c.get("kind"))
+                .filter(|k| k.is_string())
+        {
+            map.insert("kind".into(), kind.clone());
+        }
+        for (name, value) in self.host_times(visibility) {
+            map.insert(name.into(), value);
+        }
+        row
+    }
+
+    /// The host's own times and first author for this record, as `rooms/records/list/0.6`
+    /// and `rooms/records/get/0.3` serve them: `createdAt`, `createdBy` (never on a
+    /// `private` room) and `bodyStoredAt`, each only where this host kept it. None of them
+    /// is committed ([`Record::committed`] leaves them out).
+    pub fn host_times(&self, visibility: Visibility) -> Vec<(&'static str, serde_json::Value)> {
+        let mut out = Vec::new();
+        if let Some(at) = self.created_at {
+            out.push(("createdAt", serde_json::json!(rfc3339(at))));
+        }
+        if visibility.discloses_actor()
+            && let Some(by) = &self.created_by
+        {
+            out.push(("createdBy", serde_json::json!(by)));
+        }
+        if let Some(at) = self.body_stored_at {
+            out.push(("bodyStoredAt", serde_json::json!(rfc3339(at))));
+        }
+        out
     }
 
     /// The **leaf preimage**: this record in the form the room's commitment
@@ -677,6 +785,11 @@ impl Record {
             cleartext: record.cleartext.clone(),
             author: record.author.clone(),
             updated_at,
+            // Not on the wire record, which commits to none of them: a copy learns them
+            // from nothing it can verify, so it serves them absent rather than guessed.
+            created_at: None,
+            created_by: None,
+            body_stored_at: None,
         })
     }
 }

@@ -120,6 +120,22 @@ pub async fn maybe_generate_vta_did(
         return Ok(());
     }
 
+    // A did:webs identity (`vta_did_webs`) is minted by
+    // `vta_service::tee_webs`, which runs next: the create lives in the
+    // service's `did:webs` operations. Asking for both is ambiguous, and
+    // choosing one silently would boot as an identifier the operator did not
+    // ask for (VTI-KEY-009) — refuse.
+    if let Some(kms) = &config.tee.kms
+        && kms.vta_did_webs.is_some()
+        && kms.vta_did_template.is_some()
+    {
+        return Err(AppError::Config(
+            "[tee.kms] sets both vta_did_template (did:webvh) and vta_did_webs (did:webs): \
+             choose one identity for this VTA"
+                .into(),
+        ));
+    }
+
     // Guard: no KMS config or no template → nothing to generate.
     let kms_config = match &config.tee.kms {
         Some(kms) if kms.vta_did_template.is_some() => kms.clone(),

@@ -44,7 +44,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use trust_tasks_rs::Payload;
-use vti_common::audit::{AuditEvent, CommunityRoomChangedData};
+use vtc_audit::{AuditEvent, CommunityRoomChangedData};
 use vti_common::error::AppError;
 use vti_specs::rooms::owner::group::remove::v0_4 as owner_remove;
 use vti_specs::rooms::owner::revoke::v0_1 as owner_revoke;
@@ -470,7 +470,7 @@ async fn drive_one(
     // issued is already withdrawn at its host and none is ever restored, so the removal is
     // recorded without asking the VTA (`vtc/rooms/community/remove/0.1`).
     let closed_for_good = room.status.state.withdrew_everyone_for_good();
-    if !closed_for_good && !(withdrawn && room.visibility == "private") {
+    if !(closed_for_good || (withdrawn && room.visibility == "private")) {
         if *vta_down {
             return Ok(());
         }

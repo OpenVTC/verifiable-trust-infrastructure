@@ -34,7 +34,7 @@ serde_json = { workspace = true }
 trust-tasks-rs = { workspace = true }
 # The generated Trust Task wire types, at the versions VTI pins (CLAUDE.md,
 # "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.6" }
+vti-specs = { path = "../vti-specs", version = "0.15" }
 # Parsing the caller-supplied `issuedAt` (RFC 3339) into the DateTime<Utc> the
 # TrustTask envelope carries.
 chrono = { workspace = true }
@@ -62,7 +62,7 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 # under `assertionMethod` before signing a decision with it.
 affinidi-did-common = { workspace = true }
 # DIDComm v2 authcrypt/anoncrypt pack + unpack. Pinned to vta-sdk's version.
-affinidi-messaging-didcomm = "0.15.9"
+affinidi-messaging-didcomm = { workspace = true }
 # Mediator-connected DIDComm session (ATM): the `MediatorSession` FFI wraps
 # `vta-sdk::DIDCommSession` (connect + receive_next) so the mobile approver can
 # pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
@@ -71,7 +71,7 @@ affinidi-messaging-didcomm = "0.15.9"
 # lookup the approval sheets render through. Costs a DID resolution plus an
 # outbound fetch per claimed name, which is why the app resolves lazily and
 # caches; see `crate::display_name`.
-vta-sdk = { path = "../vta-sdk", version = "0.81", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.90", features = [
   "session",
   "tsp",
   "agent-names",
@@ -107,6 +107,7 @@ affinidi-tdk = { workspace = true }
 # Path-only (no version): neither this crate nor `vti-witness` is published,
 # and nothing here reaches the mobile artifacts, which build no dev-deps.
 vta-service = { path = "../vta-service", features = ["test-support"] }
+vta-test-support = { path = "../vta-test-support" }
 vti-witness = { path = "../vti-witness" }
 vti-common = { path = "../vti-common", features = ["test-support"] }
 # `client` (`trust_task_sign`) and `proof-verify` (`trust_task_proof`) for the
@@ -114,7 +115,7 @@ vti-common = { path = "../vti-common", features = ["test-support"] }
 vta-sdk = { path = "../vta-sdk", features = ["client", "proof-verify"] }
 dtg-credentials = { workspace = true }
 reqwest = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 uuid = { workspace = true }
 
 [[bin]]

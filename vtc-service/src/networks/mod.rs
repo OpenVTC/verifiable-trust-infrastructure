@@ -15,9 +15,10 @@
 //! - **Repudiate** a listing, or **leave** by repudiating the grant.
 //! - **Register a group** for a network role. The network learns the group's DID, never
 //!   its members.
-//! - **Relay**: a network delivers a broadcast for a registered group to this community's
-//!   relay endpoint. The envelope is verified end to end, and the community pushes it,
-//!   unchanged, to the group's active members as `vtc/networks/notice/0.1`.
+//! - **Deliver**: a network delivers a broadcast for a role to this community's Trust Task
+//!   endpoint (`vtc/networks/deliver/0.1`), signed by the network. The envelope is verified
+//!   end to end, and the community pushes it, unchanged, to the active members of the group
+//!   it registered for that role as `vtc/networks/notice/0.1`.
 //! - **Evidence**: a member gets the registration and acceptance linking a group they are
 //!   in to a network, to present for a network room pass.
 //!
@@ -35,7 +36,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::RequestPayload;
-use vti_common::audit::{AuditEvent, NetworkMembershipChangedData};
+use vtc_audit::{AuditEvent, NetworkMembershipChangedData};
 use vti_common::error::AppError;
 use vti_specs::vtn::entries::show::v0_1 as entries_show;
 use vti_specs::vtn::membership::{
@@ -56,9 +57,9 @@ use crate::server::AppState;
 
 const KEY_PREFIX: &str = "network-membership:";
 const SEEN_PREFIX: &str = "network-broadcast-seen:";
-/// Where a network delivers broadcasts for one of this community's groups, under the API
-/// base: `<public URL>/v1/networks/relay/<group id>`.
-pub const RELAY_PATH: &str = "/networks/relay/";
+/// Where a network delivers broadcasts for this community's groups, under the public URL:
+/// its Trust Task endpoint, as `vtc/networks/deliver`.
+pub const DELIVERY_PATH: &str = "/v1/trust-tasks";
 /// What the community pushes to a group member for each relayed broadcast.
 pub const NOTICE_TYPE: &str =
     <vti_specs::vtc::networks::notice::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -132,6 +133,9 @@ pub enum NetError {
     NotFound,
     #[error("{0}")]
     Unavailable(String),
+    /// An inbound delivery for a role no group is registered for with that network.
+    #[error("{0}")]
+    RoleUnregistered(String),
     /// An inbound delivery that does not verify.
     #[error("{0}")]
     Rejected(String),
@@ -250,7 +254,9 @@ fn client(state: &AppState, url: &str) -> Result<VtnClient, NetError> {
     )
 }
 
-async fn relay_endpoint(state: &AppState, group_id: &str) -> Result<String, NetError> {
+/// Where the network delivers broadcasts for the community's groups: the same endpoint for
+/// every group, since each delivery names its role.
+async fn delivery_endpoint(state: &AppState) -> Result<String, NetError> {
     let base = state
         .config
         .read()
@@ -263,11 +269,7 @@ async fn relay_endpoint(state: &AppState, group_id: &str) -> Result<String, NetE
                 "this community has no public_url, so a network cannot reach its groups".into(),
             )
         })?;
-    Ok(format!(
-        "{}/v1{RELAY_PATH}{}",
-        base.trim_end_matches('/'),
-        group_id
-    ))
+    Ok(format!("{}{DELIVERY_PATH}", base.trim_end_matches('/')))
 }
 
 async fn group(state: &AppState, group_id: &str) -> Result<crate::groups::Group, NetError> {
@@ -372,6 +374,16 @@ async fn own_listing(
     community: &Community,
     resolver: &VmKeyResolver,
 ) -> Result<Value, NetError> {
+    Ok(own_entry(client, network, community, resolver).await?["listing"].clone())
+}
+
+/// [`own_listing`], with the rest of the entry the network answered.
+async fn own_entry(
+    client: &VtnClient,
+    network: &str,
+    community: &Community,
+    resolver: &VmKeyResolver,
+) -> Result<Value, NetError> {
     // A party always reads its own entry; any refusal means it has none there. An answer
     // that is not the network's says nothing about the entry.
     let answer =
@@ -397,7 +409,64 @@ async fn own_listing(
             "the network's listing does not list this party as a community".into(),
         ));
     }
-    Ok(listing)
+    Ok(answer["entry"].clone())
+}
+
+/// What [`preview`] found at a network.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub network: String,
+    pub url: String,
+    /// The network's `/.well-known/vtn` profile, as it answered.
+    pub profile: Value,
+    /// `Ok(entry state)` when the network verifiably lists this community; `Err(why)` when
+    /// it does not.
+    pub listing: Result<String, String>,
+    /// The community's own record of the membership, if it holds one.
+    pub membership: Option<State>,
+}
+
+/// Read a network before joining it (`vtc/networks/preview`): its profile, and whether it
+/// lists this community, with the same check [`join`] makes. Signs nothing but the
+/// community's own read of its entry, and changes nothing here or there.
+pub async fn preview(
+    state: &AppState,
+    url: &str,
+    expected: Option<&str>,
+) -> Result<Preview, NetError> {
+    let url = url.trim_end_matches('/');
+    let client = client(state, url)?;
+    let profile = client.profile().await.map_err(|e| match refused(e) {
+        NetError::Mismatch(m) => NetError::Mismatch(m),
+        other => NetError::Unavailable(format!("{url} did not answer as a network: {other}")),
+    })?;
+    let network = profile["did"]
+        .as_str()
+        .filter(|d| d.starts_with("did:"))
+        .ok_or_else(|| NetError::Unavailable(format!("{url} names no network DID")))?
+        .to_string();
+    if let Some(expected) = expected
+        && expected != network
+    {
+        return Err(NetError::Mismatch(format!(
+            "the network at {url} answers as {network}, not {expected}"
+        )));
+    }
+    let community = community(state).await?;
+    let listing = match own_entry(&client, &network, &community, &resolver(state)).await {
+        Ok(entry) => Ok(entry["state"].as_str().unwrap_or("listed").to_string()),
+        Err(NetError::NotListed(why)) => Err(why),
+        Err(NetError::Mismatch(m)) => return Err(NetError::Mismatch(m)),
+        Err(other) => Err(other.to_string()),
+    };
+    let membership = load(state, &network).await?.map(|m| m.state);
+    Ok(Preview {
+        network,
+        url: url.to_string(),
+        profile,
+        listing,
+        membership,
+    })
 }
 
 /// Register `group` for `role` with the network, and verify the network's acceptance.
@@ -410,7 +479,7 @@ async fn register_with(
     group: &crate::groups::Group,
     resolver: &VmKeyResolver,
 ) -> Result<RegisteredGroup, NetError> {
-    let endpoint = relay_endpoint(state, &group.group_id).await?;
+    let endpoint = delivery_endpoint(state).await?;
     let registration =
         vti_vtn::groups::register_as(community, network, role, &group.group_did, &endpoint).await?;
     // The registration is the signed `vtn/groups/register` request itself.
@@ -436,6 +505,76 @@ async fn register_with(
     })
 }
 
+/// What [`join`] checks before it signs anything: not already a member, every assigned
+/// group exists with a DID, the network at `url` answers as `network`, every role it
+/// requires is assigned, and it lists this community. Run before the administrator's
+/// step-up, so a join that would fail does not cost them a gesture; [`join`] checks it all
+/// again, since any of it can change between the two.
+pub async fn join_preflight(
+    state: &AppState,
+    url: &str,
+    network: &str,
+    assignments: &[(String, String)],
+) -> Result<(), NetError> {
+    let community = community(state).await?;
+    if load(state, network)
+        .await?
+        .is_some_and(|m| m.state == State::Acknowledged)
+    {
+        return Err(NetError::AlreadyMember);
+    }
+    for (_, group_id) in assignments {
+        group(state, group_id).await?;
+    }
+    let (client, profile) = session(state, url.trim_end_matches('/'), network).await?;
+    if let Some(required) = unassigned_role(&profile, assignments) {
+        return Err(NetError::RoleUnassigned(required));
+    }
+    own_listing(&client, network, &community, &resolver(state)).await?;
+    Ok(())
+}
+
+/// What [`repudiate`] checks before it signs anything: not a member, the network at `url`
+/// answers as `network` and lists this community. Run before the step-up, as
+/// [`join_preflight`].
+pub async fn repudiate_preflight(
+    state: &AppState,
+    url: &str,
+    network: &str,
+) -> Result<(), NetError> {
+    let community = community(state).await?;
+    if load(state, network)
+        .await?
+        .is_some_and(|m| m.state == State::Acknowledged)
+    {
+        return Err(NetError::IsMember);
+    }
+    let (client, _) = session(state, url.trim_end_matches('/'), network).await?;
+    own_listing(&client, network, &community, &resolver(state)).await?;
+    Ok(())
+}
+
+/// What [`leave`] checks before it signs anything: the community is a member.
+pub async fn leave_preflight(state: &AppState, network: &str) -> Result<(), NetError> {
+    load(state, network)
+        .await?
+        .filter(|m| m.state == State::Acknowledged && m.grant.is_some())
+        .map(|_| ())
+        .ok_or(NetError::NotMember)
+}
+
+/// The first role the network's profile marks required that `assignments` leaves out.
+fn unassigned_role(profile: &Value, assignments: &[(String, String)]) -> Option<String> {
+    profile["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["required"] == true)
+        .filter_map(|r| r["name"].as_str())
+        .find(|required| !assignments.iter().any(|(role, _)| role == required))
+        .map(str::to_string)
+}
+
 /// Accept a network's listing: register the assigned groups, acknowledge, verify the grant.
 pub async fn join(
     state: &AppState,
@@ -458,16 +597,8 @@ pub async fn join(
     }
     let url = url.trim_end_matches('/');
     let (client, profile) = session(state, url, network).await?;
-    for required in profile["roles"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|r| r["required"] == true)
-        .filter_map(|r| r["name"].as_str())
-    {
-        if !assignments.iter().any(|(role, _)| role == required) {
-            return Err(NetError::RoleUnassigned(required.to_string()));
-        }
+    if let Some(required) = unassigned_role(&profile, assignments) {
+        return Err(NetError::RoleUnassigned(required));
     }
     let resolver = resolver(state);
     let listing = own_listing(&client, network, &community, &resolver).await?;
@@ -646,18 +777,32 @@ pub async fn register_group(
     Ok(membership)
 }
 
-// -------------------------------------------------------------------- relay
+// ------------------------------------------------------------------ deliver
 
-/// A network delivers a broadcast for `group_id`. Verified end to end, then pushed to the
-/// group's active members. Answers the network's relay receipt.
-pub async fn relay(
+/// The network `deliverer` (the delivery's verified signer) delivers a broadcast for its
+/// `role` (`vtc/networks/deliver/0.1`). Verified end to end, then pushed to the active
+/// members of the group this community registered for that role. Answers the status.
+pub async fn deliver(
     state: &AppState,
-    group_id: &str,
+    deliverer: &str,
+    role: &str,
     envelope: Envelope,
 ) -> Result<Value, NetError> {
-    let g = crate::groups::get(state.directory.ks(), group_id)
+    // Who delivers first: a party this community has not joined learns nothing more.
+    let membership = load(state, deliverer)
         .await?
-        .ok_or_else(|| NetError::Rejected(format!("no group {group_id}")))?;
+        .filter(|m| m.state == State::Acknowledged)
+        .ok_or(NetError::NotMember)?;
+    let registered = membership
+        .groups
+        .iter()
+        .find(|r| r.role == role)
+        .ok_or_else(|| {
+            NetError::RoleUnregistered(format!(
+                "this community registered no group for {role} with {deliverer}"
+            ))
+        })?;
+    let group_id = registered.group_id.as_str();
     let verified = relay::verify(
         &envelope,
         &resolver(state),
@@ -666,30 +811,18 @@ pub async fn relay(
     )
     .await
     .map_err(|e| NetError::Rejected(e.to_string()))?;
-    if verified.to != g.group_did {
+    // The last hop is the deliverer's, to the group it registered for the role.
+    if verified.from != deliverer {
+        return Err(NetError::Rejected(format!(
+            "the envelope's last hop is {}'s, not the deliverer's",
+            verified.from
+        )));
+    }
+    if verified.to != registered.group_did {
         return Err(NetError::Rejected(
-            "the envelope is not addressed to this group".into(),
+            "the envelope is not addressed to the group registered for this role".into(),
         ));
     }
-    let membership = load(state, &verified.from)
-        .await?
-        .filter(|m| m.state == State::Acknowledged)
-        .ok_or_else(|| {
-            NetError::Rejected(format!(
-                "{} is not a network this community is a member of",
-                verified.from
-            ))
-        })?;
-    let registered = membership
-        .groups
-        .iter()
-        .find(|r| r.group_id == group_id)
-        .ok_or_else(|| {
-            NetError::Rejected(format!(
-                "this community did not register {group_id} with {}",
-                verified.from
-            ))
-        })?;
     let first = state
         .community_ks
         .insert_if_absent(format!("{SEEN_PREFIX}{}", verified.id), &Utc::now())
@@ -698,7 +831,7 @@ pub async fn relay(
         return Ok(json!({ "status": "duplicate" }));
     }
     let payload = json!({
-        "network": verified.from,
+        "network": deliverer,
         "role": registered.role,
         "groupId": group_id,
         "envelope": envelope,

@@ -262,6 +262,15 @@ url       = "https://mediator.example.com"
 # "simple mode" (VTA generates keys + document). Operators who need
 # advanced options (template-from-file, pre-signed log import,
 # user-specified key IDs) should use interactive setup instead.
+# Mint a new did:webs for the VTA (alpha): a key-role identity on a
+# did-hosting server, published at first boot by self-registration. Needs
+# `webs_enabled = true` under [dids]; see docs/02-vta/did-webs.md.
+# [vta_did]
+# kind       = "create_webs"
+# server_did = "did:webvh:QmHost…:did.example.com"
+# domain     = "did.example.com"
+# path       = "nodes"          # optional; under the host's self-registration prefixes
+
 [vta_did]
 kind               = "create_webvh"
 url                = "https://trust.example.com/dids/vta"

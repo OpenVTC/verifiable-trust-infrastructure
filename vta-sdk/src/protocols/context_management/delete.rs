@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 pub struct DeleteContextResultBody {
     pub id: String,
     pub deleted: bool,
-    /// One entry per `did:webvh` DID in the deleted subtree whose local record
-    /// went while its hosting server did not confirm removal of the published
-    /// log. **Those DIDs may still resolve.**
+    /// One entry per DID in the deleted subtree — of any method — whose local
+    /// record went while its hosting server did not confirm what deleting it
+    /// requires there (a did:webvh log removed; a did:webs deactivated and its
+    /// slot removed). **Those DIDs may still resolve.**
     ///
     /// A partial success reported as a success — the subtree-wide form of
     /// `vta/webvh/dids/delete/1.0`'s `daemonCleanupError` — so a consumer
@@ -43,8 +44,10 @@ pub struct DeleteContextPreviewResultBody {
     #[serde(default, alias = "sub_contexts", skip_serializing_if = "Vec::is_empty")]
     pub sub_contexts: Vec<String>,
     pub keys: Vec<String>,
-    #[serde(alias = "webvh_dids")]
-    pub webvh_dids: Vec<String>,
+    /// Every identity the deletion would delete, of every method
+    /// (`vta/contexts/preview-delete/2.0`; it replaced 1.0's did:webvh-only
+    /// `webvhDids`, which left did:webs out of the confirmation).
+    pub dids: Vec<String>,
     /// ACL entries that will be deleted (only have this context).
     #[serde(alias = "acl_entries_removed")]
     pub acl_entries_removed: Vec<String>,
@@ -115,7 +118,7 @@ pub enum HostCleanupRefusal {
 /// are ignored rather than refused, so an addition the schema later makes does
 /// not hide the DIDs it came with.
 pub fn host_cleanup_refusal(err: &crate::error::VtaError) -> Option<HostCleanupRefusal> {
-    use vti_specs::vta::contexts::delete::v1_1::error_codes::HOST_CLEANUP_FAILED;
+    use vti_specs::vta::contexts::delete::v1_2::error_codes::HOST_CLEANUP_FAILED;
     let crate::error::VtaError::Rejected { code, details, .. } = err else {
         return None;
     };
@@ -174,7 +177,7 @@ mod tests {
     use super::*;
     use crate::error::VtaError;
     use serde_json::{Value, json};
-    use vti_specs::vta::contexts::delete::v1_1::error_codes::HOST_CLEANUP_FAILED;
+    use vti_specs::vta::contexts::delete::v1_2::error_codes::HOST_CLEANUP_FAILED;
 
     fn refusal(code: &str, details: Option<Value>) -> VtaError {
         VtaError::Rejected {

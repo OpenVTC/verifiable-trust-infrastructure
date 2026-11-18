@@ -2,8 +2,8 @@
 
 Thank you for contributing! Before you contribute, we ask some things of you:
 
-- Please follow our Code of Conduct, the Contributor Covenant. You can find a copy [in this repository](CODE_OF_CONDUCT.md) or under https://www.contributor-covenant.org/
-- All Contributors must agree to [a CLA](.github/CLA/INDIVIDUAL.md). When opening a PR, the system will guide you through the process. However, if you contribute on behalf of a legal entity, we ask of you to agree to [a different CLA](.github/CLA/ENTITY.md). In that case, please contact us.
+- Please follow our Code of Conduct, the [Contributor Covenant](https://www.contributor-covenant.org/).
+- Sign off every commit (`git commit -s`) under the [Developer Certificate of Origin](https://developercertificate.org/). The DCO check is the contribution gate; there is no CLA.
 
 ## The specification
 
@@ -137,7 +137,7 @@ release-plz maintains, not by you. See [RELEASING.md](RELEASING.md).
 ## Coding Guidelines
 
 - **Error handling**: Use `?` operator and `AppError` variants. Never `unwrap()` on user input or I/O in production code paths. `expect()` is acceptable only in `main()` for unrecoverable startup failures.
-- **Auth**: All new REST endpoints must use an auth extractor (`AuthClaims`, `ManageAuth`, `AdminAuth`, `SuperAdminAuth`). DIDComm handlers must call `auth_from_message()`.
+- **Auth**: Every new remote operation is a Trust Task, authorized from the caller the spine authenticated (`auth_for_trust_task_envelope` over DIDComm, the same for TSP and HTTPS) — not a new DIDComm message handler. A REST route kept as a declared exception (`deprecation::REST_EXCEPTIONS`) must use an auth extractor (`AuthClaims`, `ManageAuth`, `AdminAuth`, `SuperAdminAuth`).
 - **Audit**: Security-sensitive operations (key creation, ACL changes, backup, restart) must emit an audit log entry via `crate::audit::record()`.
 - **Feature flags**: Gate platform-specific code behind features. Don't add unconditional dependencies on `tokio-vsock`, cloud SDKs, etc.
 - **Secrets**: Never log seeds, mnemonics, private keys, or passwords. Use `Zeroize` on structs holding secrets.
@@ -154,6 +154,6 @@ See [README.md](README.md) for the crate overview. Key design documents:
 - [Secret-storage backends](docs/02-vta/secret-backends.md)
 - [Feature flags](docs/02-vta/feature-flags.md)
 - [Integration guide](docs/02-vta/integration-guide.md)
-- [DIDComm protocol](docs/02-vta/didcomm-protocol.md)
+- [TSP operator guide](docs/02-vta/tsp.md) (how Trust Tasks ride TSP, DIDComm and HTTPS)
 - [BIP-32 paths](docs/04-reference/bip32-paths.md)
 - [Store migration](docs/05-design-notes/store-migration.md)

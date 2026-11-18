@@ -21,7 +21,12 @@ use vta_audit::SharedAuditSink;
 use vta_vault::model::StoredCredential;
 use vta_vault::storage as cred_storage;
 use vti_common::error::AppError;
-use vti_common::store::KeyspaceHandle;
+use vti_common::store::{KeyspaceHandle, ScanOpts};
+
+/// Rows one sweep page reads. A page at a time, never one read of the whole
+/// prefix: over vsock that is one response frame, and a vault past 16 MiB
+/// would fail the sweep on every tick (#2626).
+const SWEEP_PAGE: usize = 256;
 
 /// Sweep the shared `vault` keyspace, hard-purging every soft-deleted password
 /// entry and credential whose grace window has elapsed.
@@ -33,51 +38,65 @@ pub async fn sweep_expired(
     let mut purged = 0usize;
 
     // Password-vault tombstones (`vault:` records).
-    for (_key, value) in vault_ks.prefix_iter_raw("vault:").await? {
-        let stored: StoredVaultEntry = match serde_json::from_slice(&value) {
-            Ok(s) => s,
-            Err(e) => {
-                debug!(error = %e, "vault sweeper: skipping unreadable vault row");
-                continue;
+    let mut pages = vault_ks.scan_pager(ScanOpts::new("vault:", SWEEP_PAGE));
+    loop {
+        let page = pages.next_page().await?;
+        if page.is_empty() {
+            break;
+        }
+        for (_key, value) in page {
+            let stored: StoredVaultEntry = match serde_json::from_slice(&value) {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!(error = %e, "vault sweeper: skipping unreadable vault row");
+                    continue;
+                }
+            };
+            if is_purgeable(
+                stored.entry.status,
+                stored.entry.grace_until.as_deref(),
+                &now,
+            ) {
+                delete_vault_entry(vault_ks, &stored.entry.id).await?;
+                purged += 1;
+                audit_purge(
+                    audit,
+                    "vault.purge",
+                    &stored.entry.id,
+                    Some(stored.entry.context_id.as_str()),
+                )
+                .await;
             }
-        };
-        if is_purgeable(
-            stored.entry.status,
-            stored.entry.grace_until.as_deref(),
-            &now,
-        ) {
-            delete_vault_entry(vault_ks, &stored.entry.id).await?;
-            purged += 1;
-            audit_purge(
-                audit,
-                "vault.purge",
-                &stored.entry.id,
-                Some(stored.entry.context_id.as_str()),
-            )
-            .await;
         }
     }
 
     // Credential-store tombstones (`cred:` records). `cred_storage::delete`
     // removes the record AND its secondary-index rows.
-    for (_key, value) in vault_ks.prefix_iter_raw("cred:").await? {
-        let cred: StoredCredential = match serde_json::from_slice(&value) {
-            Ok(c) => c,
-            Err(e) => {
-                debug!(error = %e, "vault sweeper: skipping unreadable cred row");
-                continue;
+    let mut pages = vault_ks.scan_pager(ScanOpts::new("cred:", SWEEP_PAGE));
+    loop {
+        let page = pages.next_page().await?;
+        if page.is_empty() {
+            break;
+        }
+        for (_key, value) in page {
+            let cred: StoredCredential = match serde_json::from_slice(&value) {
+                Ok(c) => c,
+                Err(e) => {
+                    debug!(error = %e, "vault sweeper: skipping unreadable cred row");
+                    continue;
+                }
+            };
+            if is_purgeable(cred.lifecycle, cred.grace_until.as_deref(), &now) {
+                cred_storage::delete(vault_ks, &cred.id).await?;
+                purged += 1;
+                audit_purge(
+                    audit,
+                    "vault.cred.purge",
+                    &cred.id,
+                    cred.community_did.as_deref(),
+                )
+                .await;
             }
-        };
-        if is_purgeable(cred.lifecycle, cred.grace_until.as_deref(), &now) {
-            cred_storage::delete(vault_ks, &cred.id).await?;
-            purged += 1;
-            audit_purge(
-                audit,
-                "vault.cred.purge",
-                &cred.id,
-                cred.community_did.as_deref(),
-            )
-            .await;
         }
     }
 

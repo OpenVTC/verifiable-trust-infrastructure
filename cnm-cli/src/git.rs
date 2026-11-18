@@ -61,8 +61,13 @@ pub enum GitCommands {
         /// `github.com/acme/widgets`.
         #[arg(long)]
         resource: String,
-        /// Lapse after this long (`90d`, `12h`).
-        #[arg(long)]
+        /// Lapse after this long (`90d`, `12h`). `--expires`, as every lapsing
+        /// grant spells it (#2589); `--expires-in` is the older name.
+        #[arg(
+            long = "expires",
+            visible_alias = "expires-in",
+            value_name = "DURATION"
+        )]
         expires_in: Option<String>,
         /// Why — shown to the resource's owners and admins, never published.
         #[arg(long)]

@@ -6,10 +6,13 @@
 //! document (VTI-45).
 
 use serde_json::Value;
+use trust_tasks_rs::TrustTask;
 use vta_sdk::trust_task_proof::{
     TrustTaskVmResolver, verify_approval_proof_value, verify_trust_task_proof_value,
 };
 use vti_common::error::AppError;
+
+use crate::TrustTaskOutcome;
 
 /// The spine's step 3: verify the proof on `received` and return the proven
 /// signer DID (the base DID of the proof's `verificationMethod`).
@@ -21,20 +24,35 @@ pub trait ProofVerifier: Send + Sync {
     /// Verify `received`, a document of type `type_uri`. An error refuses the
     /// document (rendered through [`crate::reject::app_error_to_reject`]).
     async fn verify(&self, received: &Value, type_uri: &str) -> Result<String, AppError>;
+
+    /// The answer to a document whose proof [`Self::verify`] refused with
+    /// `err`.
+    ///
+    /// The default renders `err` through
+    /// [`crate::reject::app_error_to_reject`]. A verifier whose refusals carry
+    /// more than an `AppError` says — `proofInvalid` rather than
+    /// `permissionDenied` for a signature that does not verify, or the
+    /// retryable `unavailable` for a resolution that did not finish in time —
+    /// answers them here.
+    fn refusal(&self, doc: &TrustTask<Value>, err: &AppError) -> TrustTaskOutcome {
+        crate::reject::app_error_to_reject(doc, err)
+    }
 }
 
 /// Verify an operational document's `eddsa-jcs-2022` proof as received.
 ///
 /// A resolver failure and a bad signature render identically
 /// (`AppError::Unauthorized`), so an anonymous caller cannot learn whether a
-/// DID resolves.
+/// DID resolves. A signer of a method this party does not resolve at all is
+/// the exception, refused by name (`AppError::UnsupportedDidMethod`,
+/// VTI-KEY-009) — the method is in the producer's own identifier.
 pub async fn verify_received_proof(
     resolver: &TrustTaskVmResolver,
     received: &Value,
 ) -> Result<String, AppError> {
     verify_trust_task_proof_value(received, resolver)
         .await
-        .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
+        .map_err(vti_common::auth::proof_refusal)
 }
 
 /// Verify a human approver's own decision as received: the proof must be made
@@ -55,7 +73,7 @@ pub async fn verify_received_approval_proof(
                 cause = e.cause().unwrap_or_default(),
                 "approval refused at its proof"
             );
-            AppError::Unauthorized(format!("Trust Task {e}"))
+            vti_common::auth::proof_refusal(e)
         })
 }
 

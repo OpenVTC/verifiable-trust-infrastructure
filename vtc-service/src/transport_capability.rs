@@ -477,7 +477,9 @@ pub fn public_transport_view_for_build(
 /// mediator-connection invariant: nothing may block `server::run` from
 /// reaching its shutdown select).
 ///
-/// `None` for a VTC that hasn't been set up, isn't a `did:webvh`, or whose log
+/// `None` for a VTC that hasn't been set up, isn't a `did:webvh` (a `did:webs`
+/// VTC's document is published by its VTA to its host; the published document
+/// is checked over the network by [`resolved_capabilities`]), or whose log
 /// is hosted elsewhere and not mirrored locally — all legitimate, and all
 /// cases where there is simply nothing to check here. A malformed or
 /// unreadable log is also `None`: `routes::did_log` already owns reporting

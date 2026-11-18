@@ -55,7 +55,16 @@ pub const MEMBER_REFRESH_COOKIE: &str = "vtc_member_refresh";
 /// The portal's CSRF double-submit cookie. Not the console's `csrf`: the two
 /// applications share an origin, and one signing in must not overwrite the
 /// value the other has already mirrored into its request headers.
-pub const MEMBER_CSRF_COOKIE: &str = "vtc_member_csrf";
+///
+/// `__Host-`-prefixed (it is `Path=/`, `Secure`, no `Domain`), so a sibling
+/// subdomain cannot plant or overwrite it (#2661). The session and refresh
+/// cookies cannot take the prefix: they are scoped to `Path=/v1/member`, and
+/// `__Host-` requires `Path=/`.
+pub const MEMBER_CSRF_COOKIE: &str = "__Host-vtc_member_csrf";
+
+/// The name [`MEMBER_CSRF_COOKIE`] had before its `__Host-` prefix: read,
+/// after the prefixed name, for one release; never written, only cleared.
+pub const LEGACY_MEMBER_CSRF_COOKIE: &str = "vtc_member_csrf";
 
 /// Path the session and refresh cookies are scoped to — every member API route
 /// sits under it, and no administrator route does.

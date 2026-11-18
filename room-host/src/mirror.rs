@@ -236,19 +236,39 @@ pub async fn pull_once(state: &HostState, mirror: &MirroredRoom) -> anyhow::Resu
         // what put a storage type on the wire. `Record::from_wire` is the stated
         // inverse of `Record::committed`, so the mirror now reads a response and
         // rebuilds a record, rather than assuming they are one thing.
-        let wire: vti_rooms::wire::GetRecordResponse = serde_json::from_value(full)?;
-        let record = Record::from_wire(&wire.record)?;
+        let wire: vti_rooms::wire::GetRecordResponse = serde_json::from_value(full.clone())?;
+        let mut record = Record::from_wire(&wire.record)?;
+        // The primary's record times, as `rooms/records/get/0.3` serves them: a copy keeps
+        // what the primary recorded, never its own arrival time, and a primary that served
+        // none (an older one, or a record it stored before it kept them) leaves them absent.
+        let at = |name: &str| {
+            full.get(name)
+                .and_then(serde_json::Value::as_str)
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .and_then(|t| u64::try_from(t.timestamp()).ok())
+        };
+        record.created_at = at("createdAt");
+        record.body_stored_at = at("bodyStoredAt");
+        record.created_by = full
+            .get("createdBy")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         let version = record.version;
 
-        match storage::store_mirrored_record(
-            state.rooms(),
-            state.records(),
-            &mirror.room_id,
-            record,
-            now(),
-        )
-        .await
-        {
+        // Under the room's record lock, as every record write is: a read pairs a record, its
+        // index rows and the room's head from one moment (`vti_rooms::storage`).
+        let stored = {
+            let _lock = state.files.records_lock(&mirror.room_id).await;
+            storage::store_mirrored_record(
+                state.rooms(),
+                state.records(),
+                &mirror.room_id,
+                record,
+                now(),
+            )
+            .await
+        };
+        match stored {
             Ok(_) => {
                 outcome.copied += 1;
                 outcome.watermark = version;
@@ -261,6 +281,10 @@ pub async fn pull_once(state: &HostState, mirror: &MirroredRoom) -> anyhow::Resu
         }
     }
 
+    // A copy moved too: a watch armed at this host fires as at the primary.
+    if outcome.copied > 0 {
+        state.room_moved(&mirror.room_id).await;
+    }
     Ok(outcome)
 }
 

@@ -57,6 +57,7 @@ import {
   type FieldType,
 } from "@/lib/directory";
 import { gestureFromConfirm } from "@/lib/signed-act";
+import { parkedOf } from "@/lib/parked-action";
 import { useToast } from "@/lib/toast";
 import { holds, useCapabilities } from "@/lib/viewer";
 import type { DirectoryFieldDefinition } from "@/lib/wire-types";
@@ -371,8 +372,12 @@ function EditFieldForm({ field, onDone }: { field: DirectoryFieldDefinition; onD
       onDone();
     },
     onError: (err) => {
-      toast.pushFromError(err, wider ? "Sent for approval" : "Change failed");
-      onDone();
+      // A widening that parks is told so by `pushFromError` itself, which
+      // ignores the prefix; the prefix is for a real refusal only, so it
+      // never reads "Sent for approval: …" over an error (#2609).
+      toast.pushFromError(err, "Change failed");
+      // Close only once parked; on a failure keep the form and its edits.
+      if (parkedOf(err)) onDone();
     },
   });
 

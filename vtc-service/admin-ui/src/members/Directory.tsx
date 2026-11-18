@@ -35,6 +35,7 @@ import {
   updateCard,
   uploadImage,
 } from "./directory-api";
+import { WallSection } from "./Badges";
 import { PictureError, prepare, toBase64Url } from "./picture";
 import {
   Crumbs,
@@ -61,6 +62,7 @@ import {
   type EntryMark,
   type Marks,
 } from "./wallet-marks";
+import { formatDate } from "@/lib/format";
 
 /** The wallet's directory channel (`window.vtaWallet.directory`), where the
  *  member's wallet offers one: it publishes the card after showing the member
@@ -436,7 +438,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
               <Pills fields={f} connected={entry.data.entry.connected} />
               {text(f.joinedAt) && (
                 <p className="muted profile-since">
-                  Member since {new Date(text(f.joinedAt)).toLocaleDateString()}
+                  Member since {formatDate(text(f.joinedAt))}
                 </p>
               )}
             </div>
@@ -480,6 +482,7 @@ export function EntryPage({ entryId }: { entryId: string }) {
               </ul>
             </section>
           )}
+          <WallSection entryId={entryId} name={name} own={own} />
           {(rest.length > 0 || text(f.did)) && (
             <section className="profile-section">
               <h2>Details</h2>

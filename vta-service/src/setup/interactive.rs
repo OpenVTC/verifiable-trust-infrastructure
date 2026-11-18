@@ -897,6 +897,7 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
         "Create a new did:key (no external hosting; great for local dev)",
         "Enter an existing DID",
         "Skip (no VTA DID for now)",
+        "Create a new did:webs (alpha; on a did-hosting server, published at first boot)",
     ];
     let choice = p.select("VTA DID", &did_options, 0)?;
 
@@ -985,6 +986,27 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
             let did = p.text("VTA DID", None, false, None)?;
             Ok(VtaDidInput::Existing { did })
         }
+        4 => {
+            eprintln!();
+            eprintln!(
+                "  \x1b[2mdid:webs is alpha. The host's operator must allow self-registration on\n  \
+                 the domain ([[hosting.webs_self_register]]).\x1b[0m"
+            );
+            let server_did = p.text("did-hosting server DID", None, false, None)?;
+            let domain = p.text("Domain the host serves it on", None, false, None)?;
+            let path = p.text(
+                "Slot path before the AID (e.g. nodes; empty for none)",
+                None,
+                true,
+                None,
+            )?;
+            Ok(VtaDidInput::CreateWebs {
+                server_did,
+                domain,
+                path: (!path.trim().is_empty()).then(|| path.trim().to_string()),
+                server_id: None,
+            })
+        }
         _ => Ok(VtaDidInput::Skip),
     }
 }
@@ -997,6 +1019,11 @@ fn prompt_did_presentation(
     vta_did: &VtaDidInput,
 ) -> Result<crate::config::DidsConfig, DynErr> {
     let mut dids = crate::config::DidsConfig::default();
+    // A did:webs VTA turns did:webs on: choosing it is the opt-in.
+    if matches!(vta_did, VtaDidInput::CreateWebs { .. }) {
+        dids.webs_enabled = true;
+        return Ok(dids);
+    }
     if !matches!(vta_did, VtaDidInput::CreateWebvh { .. }) {
         return Ok(dids);
     }
@@ -1392,6 +1419,7 @@ async fn gather_inputs(
 /// Entry point for `vta setup`. Gathers inputs interactively, then runs the
 /// shared engine.
 pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), DynErr> {
+    require_terminal(std::io::IsTerminal::is_terminal(&std::io::stdin()))?;
     eprintln!("Welcome to the VTA setup wizard.\n");
     let prompter = DialoguerPrompter;
     let Some(inputs) = gather_inputs(&prompter, config_path).await? else {
@@ -1406,10 +1434,40 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), DynErr
     .await
 }
 
+/// Refuse the interactive wizard without a terminal on stdin, naming the
+/// unattended path (#2593).
+///
+/// Without this, `vta setup` in a Dockerfile, a systemd unit or CI dies at its
+/// first prompt with a terminal I/O error that says nothing about
+/// `vta setup --from`, which exists for exactly that.
+fn require_terminal(stdin_is_terminal: bool) -> Result<(), DynErr> {
+    if stdin_is_terminal {
+        return Ok(());
+    }
+    Err(
+        "`vta setup` is interactive and stdin is not a terminal. For unattended setup run: \
+         `vta setup --from <setup.toml>` (see docs/02-vta/non-interactive-setup.md)."
+            .into(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    /// #2593: without a terminal the wizard refuses before its first prompt
+    /// and names `vta setup --from`.
+    #[test]
+    fn without_a_terminal_the_wizard_names_the_unattended_setup() {
+        assert!(require_terminal(true).is_ok());
+        let message = require_terminal(false).unwrap_err().to_string();
+        assert!(message.contains("vta setup --from"), "{message}");
+        assert!(
+            message.contains("docs/02-vta/non-interactive-setup.md"),
+            "{message}"
+        );
+    }
     use std::collections::VecDeque;
 
     /// A single scripted answer, consumed in prompt-call order.

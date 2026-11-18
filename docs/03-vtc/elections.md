@@ -99,6 +99,27 @@ the cast to the ballot box itself, after a random pause, as `pnm` does. The page
 whether a vote was cast. The wallet must be allowed to reach the ballot box's address (the
 `TrustTaskHTTPS` service in its DID document) from its popup.
 
+Beside the community's own list, the page shows the elections the member's agent holds a
+[notification](notifications.md) of from this community (VTI-NTF-063) — one the community's list
+does not show them, such as an election put to the members of a party that is itself a member of
+the community (VTI-VOT-015), and a mark on a listed one. Until the member opens it the page sees
+only what the notification says: the election's identifier, the party it is put to, the voting
+period and whether the notice was withdrawn. Opening one passes that party to the wallet as
+`memberOf` for show, ticket and vote; the wallet asks the member in its own window before it
+presents the membership credential that party issued, and presents no other (VTI-VOT-016). The
+page presents nothing itself. A withdrawn notice cannot be opened from the page. The community's
+`electionUnknown` (the same answer whether the election does not exist, is not open to the
+member, or is put to a party whose membership was not shown) and `indeterminate` (a check it
+could not complete, which records nothing) are shown in words, read from the `code` on the
+wallet's error (the Trust Task error code, passed on verbatim) where the wallet gives one and from
+its wording where it does not. A decline in the wallet's own window is not an error and can be
+asked again. A wallet that predates notifications lists as before and is never sent `memberOf`.
+
+The portal's home page puts a notified election the community does not list in *Needs your
+attention* while its notice stands and its voting period, as the notice states it, has not
+closed — by identifier only, since that is all the page knows of it — and links it to the same
+election page, which takes `memberOf` from the notice.
+
 ### From the command line, as a member
 
 A member, with their membership persona held by their VTA:
@@ -109,7 +130,15 @@ pnm elections show agm-2027 --vtc https://vtc.example.com/v1 --vtc-did <communit
 pnm elections ticket agm-2027 --vtc … --vtc-did … --member … --context …
 # later — after voting opens, and not straight after the ticket
 pnm elections vote agm-2027 --answer chair=alice --vtc … --vtc-did … --member … --context …
+# after voting closes: is each of my casts in the board the community kept at close?
+pnm elections verify agm-2027 --vtc … --vtc-did … --member … --context …
 ```
+
+`verify` is VTI-VOT-053's check. The VTA keeps every receipt (`vta/pcs/voter/receipts/list`);
+`pnm` reads the head the community kept at close, fetches each cast's inclusion proof from the
+ballot box over its own connection, and the VTA answers `included` or `notIncluded`. A cast the
+head omits is printed in red and the command fails: the VTA keeps the receipt as the evidence to
+raise with the community. It works until the VTA sweeps the receipts, 30 days after close.
 
 Taking the ticket and voting are separate runs: the community knows when it issued a ticket and
 the ballot box when a cast arrived, so a cast sent straight after its ticket can be paired by
@@ -326,6 +355,16 @@ ceremony, every step's signature, every cast's attestation over its encrypted fo
 decryption, and the openings and totals they give — and the board's order (CONVENTIONS §3.9):
 nothing cast after the close, the authorization after the close and before any partial, one
 result, last, over the board before it (`orderInvalid` / `ceremonyInvalid` faults).
+
+### After a board is deleted
+
+An election opened on a community board that is later deleted keeps only a tombstone: its
+identifier, manifest digest, ballot box and the board heads the community kept
+([boards.md](boards.md), VTI-BRD-007 – 009). `vtc/elections/show` no longer knows it; read the
+tombstone with `vtc/elections/tombstones/show` (`cnm elections tombstone <election-id>`) for as
+long as `[boards] tombstone_retention` keeps it. A member's `pnm elections verify` and the
+wallet's "Check my vote" fall back to the tombstone when `show` answers `electionUnknown`, so a
+voter can still check their receipts against the heads it keeps (VTI-VOT-053).
 
 ## Code
 

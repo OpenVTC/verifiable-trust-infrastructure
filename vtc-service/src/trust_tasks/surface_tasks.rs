@@ -34,6 +34,7 @@
 //! administrator's view of one community, bounded by what the community holds,
 //! so the cursor is the offset of the next item.
 
+use super::routing::{Routes, on};
 use serde::Serialize;
 use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
@@ -41,6 +42,7 @@ use uuid::Uuid;
 use vti_specs::vtc::community::{
     branding::{show::v0_1 as branding_show, update::v0_1 as branding_update},
     join_discovery::{show::v0_1 as join_discovery_show, update::v0_1 as join_discovery_update},
+    logo::{show::v0_1 as logo_show, update::v0_1 as logo_update},
     requested_attributes::{show::v0_1 as requested_show, update::v0_1 as requested_update},
     theme::{show::v0_1 as theme_show, update::v0_1 as theme_update},
 };
@@ -74,38 +76,59 @@ use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::error::AppError;
 use crate::server::AppState;
 
-pub(crate) const BRANDING_SHOW_TYPE: &str = <branding_show::Payload as Payload>::TYPE_URI;
-pub(crate) const BRANDING_UPDATE_TYPE: &str = <branding_update::Payload as Payload>::TYPE_URI;
+#[cfg(test)]
+pub(crate) const VETTER_GRANTS_LIST_TYPE: &str = <grants_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const THEME_SHOW_TYPE: &str = <theme_show::Payload as Payload>::TYPE_URI;
-pub(crate) const THEME_UPDATE_TYPE: &str = <theme_update::Payload as Payload>::TYPE_URI;
+/// Read by the proof census (`spine_proof_tests`); dispatch keys on the type.
+#[cfg(test)]
+pub(crate) const LOGO_SHOW_TYPE: &str = <logo_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const SCHEMAS_SHOW_TYPE: &str = <schemas_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const SCHEMAS_LIST_TYPE: &str = <schemas_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ROOMS_LIST_TYPE: &str = <rooms_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const REVOCATIONS_LIST_TYPE: &str = <revocations_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const REQUESTED_SHOW_TYPE: &str = <requested_show::Payload as Payload>::TYPE_URI;
-pub(crate) const REQUESTED_UPDATE_TYPE: &str = <requested_update::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const JOIN_VETTING_SHOW_TYPE: &str = <join_vetting_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const JOIN_DISCOVERY_SHOW_TYPE: &str =
     <join_discovery_show::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_DISCOVERY_UPDATE_TYPE: &str =
-    <join_discovery_update::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_REGISTER_TYPE: &str = <schemas_register::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_LIST_TYPE: &str = <schemas_list::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_SHOW_TYPE: &str = <schemas_show::Payload as Payload>::TYPE_URI;
-pub(crate) const SCHEMAS_DELETE_TYPE: &str = <schemas_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_REGISTER_TYPE: &str = <accepts_register::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_LIST_TYPE: &str = <accepts_list::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_SHOW_TYPE: &str = <accepts_show::Payload as Payload>::TYPE_URI;
-pub(crate) const ACCEPTS_DELETE_TYPE: &str = <accepts_delete::Payload as Payload>::TYPE_URI;
-pub(crate) const VETTER_GRANTS_LIST_TYPE: &str = <grants_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const BRANDING_SHOW_TYPE: &str = <branding_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
 pub(crate) const AUTO_GRANT_SHOW_TYPE: &str = <auto_grant_show::Payload as Payload>::TYPE_URI;
-pub(crate) const AUTO_GRANT_UPDATE_TYPE: &str = <auto_grant_update::Payload as Payload>::TYPE_URI;
-pub(crate) const REVOCATIONS_LIST_TYPE: &str = <revocations_list::Payload as Payload>::TYPE_URI;
-pub(crate) const RELATIONSHIPS_SUSPEND_TYPE: &str = <rel_suspend::Payload as Payload>::TYPE_URI;
-pub(crate) const RELATIONSHIPS_RESTORE_TYPE: &str = <rel_restore::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_VETTING_SHOW_TYPE: &str = <join_vetting_show::Payload as Payload>::TYPE_URI;
-pub(crate) const JOIN_QUERY_TYPE: &str = <join_query::Payload as Payload>::TYPE_URI;
-pub(crate) const ROOMS_LIST_TYPE: &str = <rooms_list::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ACCEPTS_SHOW_TYPE: &str = <accepts_show::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const ACCEPTS_LIST_TYPE: &str = <accepts_list::Payload as Payload>::TYPE_URI;
+
+pub(crate) const ACCEPTS_REGISTER_TYPE: &str = <accepts_register::Payload as Payload>::TYPE_URI;
+pub(crate) const ACCEPTS_DELETE_TYPE: &str = <accepts_delete::Payload as Payload>::TYPE_URI;
 
 // ─── the codes these tasks declare, as the error-code census witnesses them ─
 
 pub(crate) const THEME_UPDATE_ERR_OUTSIDE_PROFILE: &str =
     theme_update::error_codes::OUTSIDE_PROFILE.code;
+pub(crate) const LOGO_UPDATE_ERR_TOO_LARGE: &str = logo_update::error_codes::TOO_LARGE.code;
+pub(crate) const LOGO_UPDATE_ERR_NOT_AN_IMAGE: &str = logo_update::error_codes::NOT_AN_IMAGE.code;
+pub(crate) const LOGO_UPDATE_ERR_RATE_LIMITED: &str = logo_update::error_codes::RATE_LIMITED.code;
 pub(crate) const REQUESTED_ERR_DUPLICATE_TYPE: &str =
     requested_update::error_codes::DUPLICATE_TYPE.code;
 pub(crate) const SCHEMAS_REGISTER_ERR_INVALID_CREDENTIAL_SCHEMA: &str =
@@ -138,73 +161,37 @@ pub(crate) const JOIN_VETTING_ERR_NOT_FOUND: &str = join_vetting_show::error_cod
 pub(crate) const JOIN_QUERY_ERR_CRITERION_NOT_FOUND: &str =
     join_query::error_codes::CRITERION_NOT_FOUND.code;
 
-/// Exactly what [`dispatch`] routes.
-pub(crate) const URIS: &[&str] = &[
-    BRANDING_SHOW_TYPE,
-    BRANDING_UPDATE_TYPE,
-    THEME_SHOW_TYPE,
-    THEME_UPDATE_TYPE,
-    REQUESTED_SHOW_TYPE,
-    REQUESTED_UPDATE_TYPE,
-    JOIN_DISCOVERY_SHOW_TYPE,
-    JOIN_DISCOVERY_UPDATE_TYPE,
-    SCHEMAS_REGISTER_TYPE,
-    SCHEMAS_LIST_TYPE,
-    SCHEMAS_SHOW_TYPE,
-    SCHEMAS_DELETE_TYPE,
-    ACCEPTS_REGISTER_TYPE,
-    ACCEPTS_LIST_TYPE,
-    ACCEPTS_SHOW_TYPE,
-    ACCEPTS_DELETE_TYPE,
-    VETTER_GRANTS_LIST_TYPE,
-    AUTO_GRANT_SHOW_TYPE,
-    AUTO_GRANT_UPDATE_TYPE,
-    REVOCATIONS_LIST_TYPE,
-    RELATIONSHIPS_SUSPEND_TYPE,
-    RELATIONSHIPS_RESTORE_TYPE,
-    JOIN_VETTING_SHOW_TYPE,
-    JOIN_QUERY_TYPE,
-    ROOMS_LIST_TYPE,
-];
-
-pub(super) async fn dispatch(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-    type_uri: &str,
-) -> Option<TrustTaskOutcome> {
-    Some(match type_uri {
-        BRANDING_SHOW_TYPE => handle_branding_show(state, ctx, doc).await,
-        BRANDING_UPDATE_TYPE => handle_branding_update(state, ctx, doc).await,
-        THEME_SHOW_TYPE => handle_theme_show(state, doc).await,
-        THEME_UPDATE_TYPE => handle_theme_update(state, ctx, doc).await,
-        REQUESTED_SHOW_TYPE => handle_requested_show(state, ctx, doc).await,
-        REQUESTED_UPDATE_TYPE => handle_requested_update(state, ctx, doc).await,
-        JOIN_DISCOVERY_SHOW_TYPE => handle_join_discovery_show(state, ctx, doc).await,
-        JOIN_DISCOVERY_UPDATE_TYPE => handle_join_discovery_update(state, ctx, doc).await,
-        SCHEMAS_REGISTER_TYPE => handle_schemas_register(state, ctx, doc).await,
-        SCHEMAS_LIST_TYPE => handle_schemas_list(state, ctx, doc).await,
-        SCHEMAS_SHOW_TYPE => handle_schemas_show(state, ctx, doc).await,
-        SCHEMAS_DELETE_TYPE => handle_schemas_delete(state, ctx, doc).await,
-        ACCEPTS_REGISTER_TYPE => handle_accepts_register(state, ctx, doc).await,
-        ACCEPTS_LIST_TYPE => handle_accepts_list(state, ctx, doc).await,
-        ACCEPTS_SHOW_TYPE => handle_accepts_show(state, ctx, doc).await,
-        ACCEPTS_DELETE_TYPE => handle_accepts_delete(state, ctx, doc).await,
-        VETTER_GRANTS_LIST_TYPE => handle_vetter_grants_list(state, ctx, doc).await,
-        AUTO_GRANT_SHOW_TYPE => handle_auto_grant_show(state, ctx, doc).await,
-        AUTO_GRANT_UPDATE_TYPE => handle_auto_grant_update(state, ctx, doc).await,
-        REVOCATIONS_LIST_TYPE => handle_revocations_list(state, ctx, doc).await,
-        RELATIONSHIPS_SUSPEND_TYPE => {
-            handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Suspend).await
-        }
-        RELATIONSHIPS_RESTORE_TYPE => {
-            handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Restore).await
-        }
-        JOIN_VETTING_SHOW_TYPE => handle_join_vetting_show(state, ctx, doc).await,
-        JOIN_QUERY_TYPE => handle_join_query(state, ctx, doc).await,
-        ROOMS_LIST_TYPE => handle_rooms_list(state, ctx, doc).await,
-        _ => return None,
-    })
+/// Register every task this family serves (#2579).
+pub(super) fn register(routes: Routes) -> Routes {
+    let routes = on!(routes, branding_show::Payload => |state, ctx, doc| handle_branding_show(state, ctx, doc));
+    let routes = on!(routes, branding_update::Payload => |state, ctx, doc| handle_branding_update(state, ctx, doc));
+    let routes = on!(routes, theme_show::Payload => |state, _, doc| handle_theme_show(state, doc));
+    let routes = on!(routes, theme_update::Payload => |state, ctx, doc| handle_theme_update(state, ctx, doc));
+    let routes = on!(routes, logo_show::Payload => |state, _, doc| handle_logo_show(state, doc));
+    let routes =
+        on!(routes, logo_update::Payload => |state, ctx, doc| handle_logo_update(state, ctx, doc));
+    let routes = on!(routes, requested_show::Payload => |state, ctx, doc| handle_requested_show(state, ctx, doc));
+    let routes = on!(routes, requested_update::Payload => |state, ctx, doc| handle_requested_update(state, ctx, doc));
+    let routes = on!(routes, join_discovery_show::Payload => |state, ctx, doc| handle_join_discovery_show(state, ctx, doc));
+    let routes = on!(routes, join_discovery_update::Payload => |state, ctx, doc| handle_join_discovery_update(state, ctx, doc));
+    let routes = on!(routes, schemas_register::Payload => |state, ctx, doc| handle_schemas_register(state, ctx, doc));
+    let routes = on!(routes, schemas_list::Payload => |state, ctx, doc| handle_schemas_list(state, ctx, doc));
+    let routes = on!(routes, schemas_show::Payload => |state, ctx, doc| handle_schemas_show(state, ctx, doc));
+    let routes = on!(routes, schemas_delete::Payload => |state, ctx, doc| handle_schemas_delete(state, ctx, doc));
+    let routes = on!(routes, accepts_register::Payload => |state, ctx, doc| handle_accepts_register(state, ctx, doc));
+    let routes = on!(routes, accepts_list::Payload => |state, ctx, doc| handle_accepts_list(state, ctx, doc));
+    let routes = on!(routes, accepts_show::Payload => |state, ctx, doc| handle_accepts_show(state, ctx, doc));
+    let routes = on!(routes, accepts_delete::Payload => |state, ctx, doc| handle_accepts_delete(state, ctx, doc));
+    let routes = on!(routes, grants_list::Payload => |state, ctx, doc| handle_vetter_grants_list(state, ctx, doc));
+    let routes = on!(routes, auto_grant_show::Payload => |state, ctx, doc| handle_auto_grant_show(state, ctx, doc));
+    let routes = on!(routes, auto_grant_update::Payload => |state, ctx, doc| handle_auto_grant_update(state, ctx, doc));
+    let routes = on!(routes, revocations_list::Payload => |state, ctx, doc| handle_revocations_list(state, ctx, doc));
+    let routes = on!(routes, rel_suspend::Payload => |state, ctx, doc| handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Suspend));
+    let routes = on!(routes, rel_restore::Payload => |state, ctx, doc| handle_edge_lifecycle(state, ctx, doc, EdgeVerb::Restore));
+    let routes = on!(routes, join_vetting_show::Payload => |state, ctx, doc| handle_join_vetting_show(state, ctx, doc));
+    let routes =
+        on!(routes, join_query::Payload => |state, ctx, doc| handle_join_query(state, ctx, doc));
+    on!(routes, rooms_list::Payload => |state, ctx, doc| handle_rooms_list(state, ctx, doc))
 }
 
 // ─── authority, payloads and pages ───────────────────────────────────────
@@ -247,7 +234,7 @@ async fn as_capable_claims<P>(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
     cap: crate::acl::Capability,
-) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome>
+) -> Result<crate::acl::AdminActor, TrustTaskOutcome>
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
@@ -281,7 +268,7 @@ fn stated_requirements(c: &crate::schemas::AcceptsCriterion) -> Value {
 /// to it in the meantime voids the action.
 async fn settle_criteria_gate(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     id: &str,
     summary: &str,
@@ -302,7 +289,7 @@ async fn settle_criteria_gate(
 /// too, which `vtc/vetting/hidden/{publish,withdraw}` settle before they write.
 pub(crate) async fn settle_criterion_consent(
     state: &AppState,
-    actor: &vti_common::auth::extractor::AuthClaims,
+    actor: &crate::acl::AdminActor,
     doc: &TrustTask<Value>,
     act: crate::acl::admin_consent::Act,
     id: &str,
@@ -444,7 +431,7 @@ async fn handle_branding_update(
         Err(reject) => return reject,
     };
     let body = doc.payload.get("branding").cloned().unwrap_or(Value::Null);
-    match crate::routes::community::branding::update_branding(state, &actor, &body).await {
+    match crate::community::ops::branding::update_branding(state, &actor, &body).await {
         Ok(b) => success_response(&doc, json!({ "branding": b })),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -473,7 +460,7 @@ async fn handle_theme_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    use crate::routes::community::theme::{ThemeUpdateError, update_theme};
+    use crate::community::ops::theme::{ThemeUpdateError, update_theme};
 
     let actor = match as_capable::<theme_update::Payload>(
         state,
@@ -514,6 +501,151 @@ async fn handle_theme_update(
         // Item 2's byte bound arrives here as a validation error, so it is
         // `malformedRequest`, not `outsideProfile`.
         Err(ThemeUpdateError::App(e)) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// The absolute URL the community serves its logo at, for a `LogoRef`.
+async fn served_logo_url(state: &AppState) -> Option<String> {
+    crate::community::logo::logo_url(state.config.read().await.public_url.as_deref())
+}
+
+/// `vtc/community/logo/show/0.1` — a public read, answered to an unidentified
+/// caller too (item 1): the sign-in pages draw the logo before the visitor has
+/// an identity. Answered from the same snapshot the route serves, so `data`
+/// is exactly the bytes whose digest is `logo.sha256` (item 3).
+async fn handle_logo_show(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    use base64::Engine as _;
+
+    let payload = match parse_spec_payload::<logo_show::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let snapshot = state.community_logo.snapshot(&state.community_ks).await;
+    let url = served_logo_url(state).await;
+    let logo = match snapshot
+        .held
+        .as_ref()
+        .map(|h| crate::community::logo::logo_ref!(logo_show::LogoRef, &h.meta, url))
+        .transpose()
+    {
+        Ok(l) => l,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let data = match (&snapshot.held, payload.include_data) {
+        (Some(held), Some(true)) => {
+            let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&held.bytes);
+            match logo_show::ResponseData::try_from(encoded) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    return app_error_to_reject(
+                        &doc,
+                        &AppError::Internal(format!("logo/show data: {e}")),
+                    );
+                }
+            }
+        }
+        _ => None,
+    };
+    let built: Result<logo_show::Response, _> = logo_show::Response::builder()
+        .logo(logo)
+        .data(data)
+        .updated_at(snapshot.updated_at)
+        .try_into();
+    match built {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(
+            &doc,
+            &AppError::Internal(format!("logo/show response: {e}")),
+        ),
+    }
+}
+
+/// `vtc/community/logo/update/0.1` — administrator standing, as for the theme,
+/// checked before `data` is decoded (item 1).
+async fn handle_logo_update(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::community::ops::logo::{LogoChange, LogoUpdateError, update_logo};
+
+    let actor = match as_capable::<logo_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<logo_update::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    // Exactly one of `image` and `remove: true` (item 6): the schema's
+    // `oneOf`, and `remove`'s `const`, already hold this; a `remove: false`
+    // that reached here is still never read as anything.
+    let change = match &payload {
+        logo_update::Payload::Variant0 { image, .. } => LogoChange::Set(image),
+        logo_update::Payload::Variant1 { remove: true, .. } => LogoChange::Remove,
+        _ => {
+            return reject_with_code(
+                &doc,
+                trust_tasks_rs::TrustTaskCode::Standard(
+                    trust_tasks_rs::StandardCode::MalformedRequest,
+                ),
+                "send exactly one of `image` and `remove: true`",
+                None,
+            );
+        }
+    };
+    match update_logo(state, &actor, change).await {
+        Ok(u) => {
+            let url = served_logo_url(state).await;
+            let logo = match u
+                .logo
+                .as_ref()
+                .map(|m| crate::community::logo::logo_ref!(logo_update::LogoRef, m, url))
+                .transpose()
+            {
+                Ok(l) => l,
+                Err(e) => return app_error_to_reject(&doc, &e),
+            };
+            let built: Result<logo_update::Response, _> = logo_update::Response::builder()
+                .logo(logo)
+                .stored(u.stored)
+                .updated_at(u.updated_at)
+                .try_into();
+            match built {
+                Ok(response) => success_response(&doc, response),
+                Err(e) => app_error_to_reject(
+                    &doc,
+                    &AppError::Internal(format!("logo/update response: {e}")),
+                ),
+            }
+        }
+        Err(LogoUpdateError::TooLarge) => reject_with_code(
+            &doc,
+            extended_code(LOGO_UPDATE_ERR_TOO_LARGE),
+            "the logo is larger than the community stores or decodes; nothing was stored",
+            None,
+        ),
+        Err(LogoUpdateError::NotAnImage) => reject_with_code(
+            &doc,
+            extended_code(LOGO_UPDATE_ERR_NOT_AN_IMAGE),
+            "`data` is not an image of its `mediaType` this community can read; \
+             nothing was stored",
+            None,
+        ),
+        Err(LogoUpdateError::RateLimited) => reject_with_code(
+            &doc,
+            extended_code(LOGO_UPDATE_ERR_RATE_LIMITED),
+            "too many logo updates in the last hour; try again later",
+            None,
+        ),
+        Err(LogoUpdateError::App(e)) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -565,7 +697,7 @@ async fn handle_requested_update(
             }
         }
     }
-    match crate::routes::community::requested_attributes::update_requested_attributes(
+    match crate::community::ops::requested_attributes::update_requested_attributes(
         state, &actor, body,
     )
     .await
@@ -583,7 +715,7 @@ async fn handle_join_discovery_show(
     if let Err(reject) = as_member::<join_discovery_show::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    match crate::routes::community::join_discovery::show_join_discovery(state).await {
+    match crate::community::ops::join_discovery::show_join_discovery(state).await {
         Ok(d) => success_response(&doc, json!({ "joinDiscovery": d })),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -625,7 +757,7 @@ async fn handle_join_discovery_update(
                 );
             }
         };
-    match crate::routes::community::join_discovery::update_join_discovery(state, &actor, &setting)
+    match crate::community::ops::join_discovery::update_join_discovery(state, &actor, &setting)
         .await
     {
         Ok(d) => success_response(&doc, json!({ "joinDiscovery": d })),
@@ -640,23 +772,19 @@ async fn handle_schemas_register(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_capable::<schemas_register::Payload>(
-        state,
-        ctx,
-        &doc,
-        crate::acl::Capability::SurfaceAdmin,
-    )
-    .await
-    {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let body: crate::routes::schemas::RegisterSchemaBody = match parse_payload(&doc) {
+    let actor =
+        match super::capable_signer(state, ctx, &doc, crate::acl::Capability::SurfaceAdmin, None)
+            .await
+        {
+            Ok(a) => a.did,
+            Err(reject) => return reject,
+        };
+    let body = match parse_spec_payload::<schemas_register::Payload>(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
     if let Some(schema) = &body.credential_schema
-        && let Err(e) = jsonschema::validator_for(schema)
+        && let Err(e) = jsonschema::validator_for(&Value::Object(schema.0.clone()))
     {
         return declared(
             &doc,
@@ -664,7 +792,7 @@ async fn handle_schemas_register(
             format!("credentialSchema does not compile: {e}"),
         );
     }
-    match crate::routes::schemas::register_inner(state, &actor, body).await {
+    match crate::schemas::ops::register_inner(state, &actor, body).await {
         Ok(entry) => success_response(&doc, json!({ "schema": entry })),
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -790,7 +918,7 @@ async fn handle_schemas_delete(
             Some(json!({ "criterionIds": users.iter().take(16).collect::<Vec<_>>() })),
         );
     }
-    match crate::routes::schemas::delete_inner(state, &actor, &type_uri).await {
+    match crate::schemas::ops::delete_inner(state, &actor, &type_uri).await {
         Ok(id) => success_response(&doc, json!({ "typeUri": id })),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, SCHEMAS_DELETE_ERR_NOT_FOUND, e),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -826,16 +954,28 @@ async fn handle_accepts_register(
     // names are registered, the statement type is registered, the vetting
     // requirements are satisfiable, every requirement is one this community
     // can evaluate, and the manifest can publish the result.
-    if let Some(query) = &criterion.query
-        && let Err(AppError::Validation(m)) =
-            crate::schemas::accepts::validate_accepts_query(&state.schemas_ks, query).await
-    {
-        let code = if m.starts_with("invalid DCQL query") {
-            ACCEPTS_REGISTER_ERR_INVALID_QUERY
-        } else {
-            ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE
-        };
-        return declared(&doc, code, m);
+    if let Some(query) = &criterion.query {
+        use crate::schemas::accepts::AcceptsQueryError;
+        let code =
+            match crate::schemas::accepts::validate_accepts_query(&state.schemas_ks, query).await {
+                Ok(_) => None,
+                Err(e @ AcceptsQueryError::InvalidQuery(_)) => {
+                    Some((ACCEPTS_REGISTER_ERR_INVALID_QUERY, e))
+                }
+                // An uncheckable `trusted_authorities` has no code of its own in
+                // register 0.x; it has always been answered as the unregistered-type
+                // refusal, and stays so until the specification names one.
+                Err(e @ AcceptsQueryError::UnregisteredType(_))
+                | Err(e @ AcceptsQueryError::UncheckableTrustedAuthorities(_)) => {
+                    Some((ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE, e))
+                }
+                // A store failure is not a refusal of the query; `store_accepts`
+                // re-runs the check below and propagates it.
+                Err(AcceptsQueryError::Store(_)) => None,
+            };
+        if let Some((code, e)) = code {
+            return declared(&doc, code, e.to_string());
+        }
     }
     if let Some(vetting) = &criterion.vetting {
         match crate::endorsement_types::storage::type_exists(
@@ -894,7 +1034,7 @@ async fn handle_accepts_register(
             return refusal;
         }
     }
-    match crate::routes::schemas::register_accepts_inner(state, &actor, criterion).await {
+    match crate::schemas::ops::register_accepts_inner(state, &actor, criterion).await {
         Ok(criterion) => success_response(&doc, json!({ "criterion": criterion.to_wire() })),
         // Every check above passed, so what is left is the manifest refusing it.
         Err(AppError::Validation(m)) => declared(&doc, ACCEPTS_REGISTER_ERR_NOT_PUBLISHABLE, m),
@@ -1057,7 +1197,7 @@ async fn handle_accepts_delete(
         }
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    match crate::routes::schemas::delete_accepts_inner(state, &actor, id.trim()).await {
+    match crate::schemas::ops::delete_accepts_inner(state, &actor, id.trim()).await {
         Ok(id) => success_response(&doc, json!({ "id": id })),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, ACCEPTS_DELETE_ERR_NOT_FOUND, e),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -1136,12 +1276,12 @@ async fn handle_revocations_list(
     if let Err(reject) = as_admin::<revocations_list::Payload>(state, ctx, &doc).await {
         return reject;
     }
-    let wanted: Option<crate::routes::vetting::RevocationReviewState> =
+    let wanted: Option<crate::vetting::ops::RevocationReviewState> =
         match member_of(&doc, "reviewState") {
             Ok(w) => w,
             Err(reject) => return reject,
         };
-    match crate::routes::vetting::revocation_rows(state).await {
+    match crate::vetting::ops::revocation_rows(state).await {
         Ok(rows) => page(
             &doc,
             rows.into_iter()
@@ -1172,7 +1312,9 @@ async fn handle_edge_lifecycle(
     doc: TrustTask<Value>,
     verb: EdgeVerb,
 ) -> TrustTaskOutcome {
-    use crate::routes::relationships::EdgeLifecycleVerb;
+    use crate::credentials::lifecycle::LifecycleError;
+    use crate::relationships::LifecycleRecordError;
+    use crate::relationships::ops::EdgeLifecycleVerb;
     let (not_found, already, terminal, route_verb) = match verb {
         EdgeVerb::Suspend => (
             SUSPEND_ERR_NOT_FOUND,
@@ -1238,18 +1380,23 @@ async fn handle_edge_lifecycle(
             Err(_) => return missing(&doc),
         }
     };
-    match crate::routes::relationships::record_lifecycle_as(
+    match crate::relationships::ops::record_lifecycle_as(
         state, &actor, capacity, &rel, route_verb, reason,
     )
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(AppError::Conflict(m)) if m.contains("terminal") => {
-            declared_as(&doc, terminal, AppError::Conflict(m))
+        Err(LifecycleRecordError::Refused(e @ LifecycleError::Terminal { .. })) => {
+            declared_as(&doc, terminal, e.into())
         }
-        Err(e @ AppError::Conflict(_)) => declared_as(&doc, already, e),
-        Err(AppError::NotFound(_)) => missing(&doc),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(LifecycleRecordError::Refused(e)) => declared_as(&doc, already, e.into()),
+        // The row kept changing under the retries: a state conflict, answered
+        // as the edge already being where the verb would put it, as before.
+        Err(LifecycleRecordError::Other(e @ AppError::Conflict(_))) => {
+            declared_as(&doc, already, e)
+        }
+        Err(LifecycleRecordError::Other(AppError::NotFound(_))) => missing(&doc),
+        Err(LifecycleRecordError::Other(e)) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -1277,7 +1424,7 @@ async fn handle_join_vetting_show(
     let Ok(uuid) = id.parse::<Uuid>() else {
         return not_found(&doc);
     };
-    match crate::routes::join_requests::read::vetting_of(state, uuid).await {
+    match crate::join::ops::read::vetting_of(state, uuid).await {
         Ok(response) => success_response(&doc, response),
         Err(AppError::NotFound(_)) => not_found(&doc),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -1289,22 +1436,19 @@ async fn handle_join_query(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = as_admin::<join_query::Payload>(state, ctx, &doc).await {
+    // A write, not a read: it queues a credential query the community signs to
+    // a DID the caller names. So it asks the capability that decides join
+    // requests, not merely an administrative role.
+    if let Err(reject) =
+        super::capable_signer(state, ctx, &doc, crate::acl::Capability::JoinDecide, None).await
+    {
         return reject;
     }
-    let body: crate::routes::join_requests::present::SendQueryRequest =
-        match serde_json::from_value(without_ext(&doc)) {
-            Ok(b) => b,
-            Err(e) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::MalformedRequest {
-                        reason: format!("payload: {e}"),
-                    },
-                );
-            }
-        };
-    match crate::routes::join_requests::present::send_query_inner(state, body).await {
+    let body = match parse_spec_payload::<join_query::Payload>(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    match crate::join::ops::present::send_query_inner(state, &body).await {
         Ok(response) => success_response(&doc, response),
         Err(e @ AppError::NotFound(_)) => declared_as(&doc, JOIN_QUERY_ERR_CRITERION_NOT_FOUND, e),
         Err(e) => app_error_to_reject(&doc, &e),

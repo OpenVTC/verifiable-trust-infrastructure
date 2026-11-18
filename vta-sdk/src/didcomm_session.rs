@@ -505,16 +505,26 @@ impl DIDCommSession {
         // wrap the (now websocket-enabled) ATM + profile in a `DidCommTransport`,
         // back an ephemeral in-memory outbox (the client is short-lived — no
         // durability needed), and start the merged inbound dispatcher via
-        // `MessagingService::new`. The dispatcher is what demuxes replies to
-        // `request` waiters and unsolicited pushes to `subscribe`, deleting each
-        // message from the mediator exactly once (the F5 fix).
+        // `MessagingService::with_receipts`. The dispatcher is what demuxes
+        // replies to `request` waiters and unsolicited pushes to `subscribe`,
+        // deleting each message from the mediator exactly once (the F5 fix),
+        // and it receipts a push that asks for one — a VTA's consent request,
+        // a VTC's credential — so its sender's outbox settles `Delivered`
+        // across mediators (VTI-TRN-061).
         let transport: Arc<dyn MessageTransport> = Arc::new(
             DidCommTransport::new((**atm).clone(), profile.clone())
                 .await
                 .map_err(|e| format!("bind DidComm transport: {e}"))?,
         );
         let outbox: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());
-        let service = Arc::new(MessagingService::new(transport, outbox));
+        let service = Arc::new(MessagingService::with_receipts(
+            transport,
+            outbox,
+            Arc::new(affinidi_tdk::messaging::delivery::AtmReceiptPacker::new(
+                (**atm).clone(),
+                profile.clone(),
+            )),
+        ));
         // ONE persistent subscriber for `receive_next` — a per-call `subscribe()`
         // would miss anything delivered before it started.
         let subscriber = Arc::new(tokio::sync::Mutex::new(service.subscribe()));

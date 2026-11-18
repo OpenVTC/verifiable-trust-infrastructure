@@ -119,7 +119,8 @@ pub(super) async fn verify_did_signed_gate(
         DiProofError::NoDid
         | DiProofError::ResolverFailed(_)
         | DiProofError::VerifyFailed(_)
-        | DiProofError::WrongPurpose { .. } => GateError::ProofInvalid(e.to_string()),
+        | DiProofError::WrongPurpose { .. }
+        | DiProofError::UnsupportedDidMethod { .. } => GateError::ProofInvalid(e.to_string()),
         // `DiProofError` is `#[non_exhaustive]`: any other failure is an
         // invalid proof.
         _ => GateError::ProofInvalid(e.to_string()),
@@ -892,7 +893,6 @@ fn approve_request_payload(
     reason: &str,
     accepts: &[String],
 ) -> Result<approve_request::Payload, String> {
-    use trust_tasks_rs::validate::ValidatedPayload as _;
     let value = json!({
         "subject": subject,
         "sessionId": session_id,
@@ -902,7 +902,8 @@ fn approve_request_payload(
         "accepts": accepts,
         "ttlSeconds": STEP_UP_TTL_SECS,
     });
-    approve_request::Payload::validate_value(&value).map_err(|e| e.to_string())?;
+    vta_sdk::schema_cache::check_payload::<approve_request::Payload>(&value)
+        .map_err(|e| e.to_string())?;
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
@@ -1050,6 +1051,21 @@ pub(super) async fn push_to_device(
     document: &Value,
     deliver_by: Duration,
 ) -> DevicePush {
+    push_to_device_with(state, recipient, document, deliver_by, true).await
+}
+
+/// [`push_to_device`], ringing the doorbell only when `wake`. A document whose
+/// specification asks the sender not to wake the device itself
+/// (`rooms/keys/changed/0.1` Producer item 5: the waiting document is what the
+/// recipient's mediator wakes it for) is pushed the same way, without one.
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+pub(super) async fn push_to_device_with(
+    state: &AppState,
+    recipient: &str,
+    document: &Value,
+    deliver_by: Duration,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] wake: bool,
+) -> DevicePush {
     // Cloned out so the config read-lock is released before the route decision:
     // resolving a routable recipient's DID document is network I/O, and holding
     // the lock across it stalls every config writer for that long.
@@ -1091,7 +1107,9 @@ pub(super) async fn push_to_device(
     // next voluntary pickup. Contentless by design — the wake says only "you
     // have mail", never what the task is or who is asking.
     #[cfg(feature = "didcomm")]
-    trigger_gateway_wake(state, recipient, &mediator).await;
+    if wake {
+        trigger_gateway_wake(state, recipient, &mediator, &push).await;
+    }
     DevicePush::Queued { push, mediator }
 }
 
@@ -1155,25 +1173,36 @@ pub(crate) fn push_wake_document(
     })
 }
 
-/// Send a `push/wake` to the approver device's push gateway over DIDComm
-/// (spawned, best-effort): a contentless doorbell telling the device to connect
-/// to `approver_mediator` and drain the queued `approve-request`. No-op if the
-/// approver has no wake channel (set via `device/set-wake`) or its gateway isn't
-/// a DID. The document carries this VTA's Data Integrity proof (`proofPurpose:
-/// authentication`), which is what identifies it to the gateway as a party on
-/// the handle's allowlist (provisioned at set-wake).
+/// Ring the device's doorbell for push `push` (spawned, best-effort).
+///
+/// **The ACL wake channel first**: where the recipient's ACL `DeviceBinding`
+/// carries one (set via `device/set-wake`), send a `push/wake` to its push
+/// gateway over DIDComm — a contentless doorbell telling the device to connect
+/// to `approver_mediator` and drain the queued document. The document carries
+/// this VTA's Data Integrity proof (`proofPurpose: authentication`), which is
+/// what identifies it to the gateway as a party on the handle's allowlist
+/// (provisioned at set-wake). A URL gateway is the HTTPS path (follow-up).
+///
+/// **With none**, ask the recipient's own mediator to ring it
+/// (`messaging/wake/request/0.1`, design C of #2663; VTI-TRN-070 – 074,
+/// VTI-APV-024): once per push, naming the first attempt's stored id, never
+/// re-ringing a pending request ([`crate::messaging::mediator_wake`]). A
+/// mediator that does not serve the task leaves today's behaviour: the device
+/// collects on its next connection.
 #[cfg(feature = "didcomm")]
 pub(super) async fn trigger_gateway_wake(
     state: &AppState,
     recipient: &str,
     approver_mediator: &str,
+    push: &str,
 ) {
     let wake = match get_acl_entry(&state.acl_ks, recipient).await {
         Ok(Some(entry)) => entry.device.and_then(|d| d.wake),
         _ => None,
     };
     let Some(wake) = wake else {
-        return; // approver has no push wake channel — mediator queue + pickup applies.
+        crate::messaging::mediator_wake::request_wake(state, recipient, approver_mediator, push);
+        return;
     };
     if !wake.gateway.starts_with("did:") {
         return; // URL gateway → HTTPS path (follow-up).
@@ -2424,6 +2453,113 @@ mod envelope_push_tests {
                 .await
                 .is_empty(),
             "a caller satisfying its own step-up must not ring its own phone"
+        );
+    }
+
+    // ── #2663: waking a device through its own mediator ─────────────────
+
+    #[cfg(feature = "didcomm")]
+    fn wake_requested_for(recipient: &str) -> Vec<String> {
+        crate::messaging::mediator_wake::REQUESTED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(r, _)| r == recipient)
+            .map(|(_, push)| push.clone())
+            .collect()
+    }
+
+    /// VTI-TRN-070 / VTI-APV-024: a recipient with no ACL wake channel is
+    /// woken through its own mediator, once for the push.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn no_acl_wake_channel_asks_the_mediator_once() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let (recipient, _) = crate::test_support::did_for_seed(0xA1);
+        crate::trust_tasks::step_up::trigger_gateway_wake(
+            &state,
+            &recipient,
+            "did:web:their-mediator.example",
+            "push-a1",
+        )
+        .await;
+        assert_eq!(wake_requested_for(&recipient), vec!["push-a1".to_string()]);
+    }
+
+    /// The ACL `DeviceBinding` path stays first: a recipient with a wake
+    /// channel is rung through its gateway, and its mediator is not asked.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn an_acl_wake_channel_is_used_and_the_mediator_is_not_asked() {
+        use crate::acl::{AclEntry, Role, store_acl_entry};
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let (recipient, _) = crate::test_support::did_for_seed(0xA2);
+        let mut entry = AclEntry::new(&recipient, Role::Admin, "test");
+        entry.device = Some(vti_common::acl::DeviceBinding {
+            device_id: "d1".into(),
+            display_name: "phone".into(),
+            platform: None,
+            registered_at: "2026-11-15T00:00:00Z".into(),
+            last_seen_at: None,
+            disabled_at: None,
+            wiped_at: None,
+            hpke_public_key: None,
+            // A URL gateway: the HTTPS path, so nothing is dialled here.
+            wake: Some(vti_common::acl::WakeChannel {
+                gateway: "https://gateway.example".into(),
+                handle: "h1".into(),
+                allowed_triggers: vec![],
+            }),
+            uv_key: None,
+        });
+        store_acl_entry(&state.acl_ks, &entry).await.unwrap();
+        crate::trust_tasks::step_up::trigger_gateway_wake(
+            &state,
+            &recipient,
+            "did:web:their-mediator.example",
+            "push-a2",
+        )
+        .await;
+        assert!(wake_requested_for(&recipient).is_empty());
+    }
+
+    /// VTI-TRN-072: a message named once is never named again — a re-poll,
+    /// or a second ring for the same push, does not re-ring a pending request.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn a_pending_wake_request_is_not_rung_again() {
+        use crate::messaging::mediator_wake::{WakeSend, send_once};
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let mediator = "did:web:mediator-a3.example";
+        let id = "sha256-of-a-queued-message-a3";
+        // No session in a unit test: claimed, then not sent.
+        assert_eq!(
+            send_once(&state, "did:example:a3", mediator, id).await,
+            WakeSend::NoMessaging
+        );
+        assert_eq!(
+            send_once(&state, "did:example:a3", mediator, id).await,
+            WakeSend::NotAsked
+        );
+    }
+
+    /// An older mediator's refusal of the task is consumed quietly by the
+    /// inbound spine and the mediator is not asked again.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn a_mediators_refusal_of_a_wake_request_is_quiet_and_remembered() {
+        use crate::messaging::mediator_wake::{WakeSend, note_refusal, send_once};
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let mediator = "did:web:old-mediator-a4.example";
+        let _ = send_once(&state, "did:example:a4", mediator, "id-a4-1").await;
+        assert!(note_refusal(mediator), "the error answers the wake request");
+        assert_eq!(
+            send_once(&state, "did:example:a4", mediator, "id-a4-2").await,
+            WakeSend::NotAsked
+        );
+        assert!(
+            !note_refusal("did:web:never-asked-a4.example"),
+            "an error from anyone else is not a wake refusal"
         );
     }
 }

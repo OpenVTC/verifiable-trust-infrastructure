@@ -35,7 +35,7 @@ async fn build_router(routing: &RoutingConfig) -> (Router, TestVtc) {
         .build()
         .await;
     #[cfg(feature = "website")]
-    let router = routes::router_with(routing, None).with_state(vtc.state.clone());
+    let router = routes::router_with(routing, Default::default()).with_state(vtc.state.clone());
     #[cfg(not(feature = "website"))]
     let router = routes::router_with(routing).with_state(vtc.state.clone());
     (router, vtc)
@@ -154,7 +154,7 @@ async fn member_portal_is_served_from_its_directory_when_configured() {
         .body(Body::empty())
         .unwrap();
     let (_, body) = request(&router, req).await;
-    assert!(String::from_utf8_lossy(&body).contains("VTC Admin"));
+    assert!(String::from_utf8_lossy(&body).contains("<title>Operator console</title>"));
 }
 
 #[tokio::test]
@@ -173,7 +173,7 @@ async fn path_mode_admin_bare_prefix_serves_admin_spa() {
     assert_eq!(status, StatusCode::OK, "/admin returned {status}");
     let html = String::from_utf8_lossy(&body);
     assert!(
-        html.contains("VTC Admin"),
+        html.contains("<title>Operator console</title>"),
         "/admin did not serve admin SPA — got first 200 chars: {}",
         &html[..html.len().min(200)]
     );
@@ -196,7 +196,7 @@ async fn path_mode_admin_trailing_slash_serves_admin_spa() {
     assert_eq!(status, StatusCode::OK, "/admin/ returned {status}");
     let html = String::from_utf8_lossy(&body);
     assert!(
-        html.contains("VTC Admin"),
+        html.contains("<title>Operator console</title>"),
         "/admin/ did not serve admin SPA — got first 200 chars: {}",
         &html[..html.len().min(200)]
     );
@@ -222,6 +222,52 @@ async fn path_mode_website_fallback_serves_default_landing_page() {
         html.contains("Verifiable Trust Community"),
         "default landing page drifted: {html}"
     );
+}
+
+/// `website.landing_dir`: the operator's page is served at `/` in path mode —
+/// one origin, no second host — while `/health` and `/admin` keep their own
+/// surfaces, and an edit on disk shows on the next request.
+#[cfg(feature = "website")]
+#[tokio::test]
+async fn path_mode_serves_the_landing_dir_beside_the_other_surfaces() {
+    let landing = tempfile::tempdir().unwrap();
+    std::fs::write(landing.path().join("index.html"), "<h1>Our community</h1>").unwrap();
+    std::fs::write(landing.path().join("site.css"), "h1 { color: teal }").unwrap();
+
+    let vtc = TestVtc::builder()
+        .vtc_did("did:key:z6MkTestVTC")
+        .build()
+        .await;
+    let router = routes::router_with(
+        &RoutingConfig::default(),
+        vtc_service::website::WebsiteSource::Landing(landing.path().to_path_buf()),
+    )
+    .with_state(vtc.state.clone());
+    let get = |uri: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (status, body) = request(&router, get("/")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"<h1>Our community</h1>");
+    let (_, body) = request(&router, get("/site.css")).await;
+    assert_eq!(body, b"h1 { color: teal }");
+
+    let (status, _) = request(&router, get("/health")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = request(&router, get("/admin/")).await;
+    assert_ne!(
+        body, b"<h1>Our community</h1>",
+        "/admin is not the landing page"
+    );
+
+    std::fs::write(landing.path().join("index.html"), "<h1>Edited</h1>").unwrap();
+    let (_, body) = request(&router, get("/")).await;
+    assert_eq!(body, b"<h1>Edited</h1>");
 }
 
 #[tokio::test]

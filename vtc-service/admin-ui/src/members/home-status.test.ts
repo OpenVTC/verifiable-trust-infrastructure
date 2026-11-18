@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DirectoryError } from "./directory-api";
+import { electionHref } from "./Elections";
 import {
   boardsAttention,
   boardsStatus,
@@ -14,7 +15,7 @@ import {
   roomsStatus,
   type Read,
 } from "./home-status";
-import type { PageElection } from "./wallet-elections";
+import type { ElectionList, PageElection, PageNotifiedElection } from "./wallet-elections";
 import type { PageOffer } from "./wallet-rooms";
 
 const NOW = Date.parse("2026-11-04T12:00:00Z");
@@ -53,7 +54,8 @@ describe("rooms", () => {
 });
 
 describe("elections", () => {
-  const list = ok({
+  const list = ok<ElectionList>({
+    notified: [],
     elections: [
       election("vote-now", "voting", -1, 2, true),
       election("tickets", "registered", 2, 4),
@@ -74,10 +76,77 @@ describe("elections", () => {
     ]);
   });
   it("says nothing is open when nothing is", () => {
-    expect(electionsStatus(true, ok({ elections: [election("done", "closed", -5, -2)] }), NOW)).toEqual({
+    expect(electionsStatus(true, ok({ elections: [election("done", "closed", -5, -2)], notified: [] }), NOW)).toEqual({
       text: "Nothing open right now",
       tone: "muted",
     });
+  });
+});
+
+describe("elections the member was told about", () => {
+  const PARTY = "did:webvh:QmParty:partner.example";
+  const notice = (over: Partial<PageNotifiedElection> = {}): PageNotifiedElection => ({
+    electionId: "partner-poll",
+    audience: PARTY,
+    status: "available",
+    votingOpensAt: at(1),
+    votingClosesAt: at(3),
+    ...over,
+  });
+  // The Elections list's own link: the election page takes `memberOf` from the standing notice.
+  const href = electionHref;
+
+  it("asks for attention on a standing notice the community does not list, linked as the list links it", () => {
+    const q = ok<ElectionList>({ elections: [], notified: [notice()] });
+    expect(electionsAttention(q, href, NOW)).toEqual([
+      { key: "el-partner-poll", text: "You were told about an election: partner-poll", href: "#/elections/partner-poll" },
+    ]);
+    expect(electionsStatus(true, q, NOW)).toEqual({ text: "1 you were told about", tone: "attention" });
+  });
+
+  it("says when its voting is open, from the period the notice states", () => {
+    const q = ok<ElectionList>({ elections: [], notified: [notice({ votingOpensAt: at(-1) })] });
+    expect(electionsAttention(q, href, NOW).map((a) => a.text)).toEqual([
+      "Voting is open: partner-poll (you were told about it)",
+    ]);
+  });
+
+  it("keeps only what VTI-NTF-063 lets the page see: the attention names no audience", () => {
+    const q = ok<ElectionList>({ elections: [], notified: [notice()] });
+    const [a] = electionsAttention(q, href, NOW);
+    expect(a).toBeDefined();
+    expect(a!.text).not.toContain(PARTY);
+    expect(a!.href).not.toContain(PARTY);
+  });
+
+  it("never offers a withdrawn notice, nor one whose voting is over", () => {
+    const q = ok<ElectionList>({
+      elections: [],
+      notified: [notice({ status: "withdrawn" }), notice({ electionId: "past", votingOpensAt: at(-3), votingClosesAt: at(-1) })],
+    });
+    expect(electionsAttention(q, href, NOW)).toEqual([]);
+    expect(electionsStatus(true, q, NOW)).toEqual({ text: "Nothing open right now", tone: "muted" });
+  });
+
+  it("offers one with no stated period, and one standing beside a withdrawn copy, once", () => {
+    const q = ok<ElectionList>({
+      elections: [],
+      notified: [
+        notice({ status: "withdrawn" }),
+        notice(),
+        notice({ electionId: "undated", votingOpensAt: undefined, votingClosesAt: undefined }),
+      ],
+    });
+    expect(electionsAttention(q, href, NOW).map((a) => a.key)).toEqual(["el-partner-poll", "el-undated"]);
+  });
+
+  it("does not repeat an election the community lists", () => {
+    const q = ok<ElectionList>({
+      elections: [election("partner-poll", "voting", -1, 2, true)],
+      notified: [notice()],
+    });
+    expect(electionsAttention(q, href, NOW).map((a) => a.text)).toEqual(["Voting is open: partner-poll"]);
+    expect(electionsStatus(true, q, NOW)).toEqual({ text: "1 open for voting", tone: "attention" });
   });
 });
 

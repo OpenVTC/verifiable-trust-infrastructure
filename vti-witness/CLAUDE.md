@@ -34,8 +34,13 @@ When adding a flow, add it here and a line to the root index.
 - **Invariants to preserve**: no ACL and no admin surface on the wire; a reply
   is signed by **that identity's own key**, its `issuer` set to that identity
   (never copied from the request), never naming the operator VTA; inbound goes
-  through freshness → expiry/`recipient` → issuer consistency → routing →
-  spec policy → proof; errors and unclaimed `#response`s are dropped, never
+  through `vti_trust_task_server::Spine` (#2576): freshness → expiry/`recipient`
+  → spec policy (of a served type only) → issuer consistency and routing
+  (`dispatch::Gate`, before any proof is read) → proof (unsigned only where the
+  spec makes it optional — discovery) → the duplicate-id record
+  (`StoreAcceptedIds`, shared by every identity; its `did:`-prefixed legacy rows
+  are swept by `WitnessStore::sweep`) → dispatch → a reply addressed and signed
+  as the identity (`dispatch::ReplySigner`); errors and unclaimed `#response`s are dropped, never
   answered. Discovery lists only what is served: in P1 the witness tasks are
   refused `unsupportedType` and **not** listed — add them to
   `dispatch::SERVED` only when P2 serves them. Shared-mediator / shared-domain

@@ -1943,22 +1943,19 @@ async fn vti_apv_022_a_sole_admin_publishes_hidden_vetting_on_the_gesture() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let waived: Vec<_> = h
-        .tv
-        .state
-        .audit_ks
-        .prefix_iter_raw(Vec::new())
-        .await
-        .unwrap()
-        .into_iter()
-        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
-        .filter_map(|env| match env.event {
-            vti_common::audit::AuditEvent::SingleAdminMode(d) if d.event == "consentWaived" => {
-                Some(d)
-            }
-            _ => None,
-        })
-        .collect();
+    let waived: Vec<_> =
+        h.tv.state
+            .audit_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
+            .filter_map(|env| match env.event {
+                vtc_audit::AuditEvent::SingleAdminMode(d) if d.event == "consentWaived" => Some(d),
+                _ => None,
+            })
+            .collect();
     assert_eq!(waived.len(), 1, "{waived:?}");
     assert_eq!(waived[0].requirement.as_deref(), Some("VTI-APV-023"));
 }
