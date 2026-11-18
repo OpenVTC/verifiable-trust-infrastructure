@@ -96,9 +96,13 @@ fn row(did: &str, role: VtcRole) -> VtcAclEntry {
 async fn enrol_passkey(fix: &mut Fixture, did: &str) {
     let webauthn = build_webauthn(RP_ORIGIN).unwrap();
     let user_uuid = Uuid::new_v4();
-    let (ccr, reg_state) =
-        vtc_service::webauthn::start_passkey_registration(&webauthn, user_uuid, did, did, None)
-            .unwrap();
+    let (ccr, reg_state) = vtc_service::webauthn::start_passkey_registration(
+        &webauthn,
+        user_uuid,
+        &vti_common::auth::passkey::AuthenticatorName::for_did(did),
+        None,
+    )
+    .unwrap();
     let (cred, _) = fix.authenticator.register(&ccr, RP_ORIGIN);
     let passkey =
         vtc_service::webauthn::finish_passkey_registration(&webauthn, &cred, &reg_state).unwrap();

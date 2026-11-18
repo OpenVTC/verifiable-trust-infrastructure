@@ -47,6 +47,8 @@ use webauthn_rs::prelude::{
 };
 use webauthn_rs_proto::PubKeyCredParams;
 
+use vti_common::auth::passkey::AuthenticatorName;
+
 use crate::error::AppError;
 
 /// COSE algorithm identifier for EdDSA. Pinned in code so the
@@ -61,21 +63,23 @@ pub const EDDSA_ALG: i64 = -8;
 /// the install token, so the algorithm of the credential the
 /// authenticator produces is purely an auth-factor choice — not an
 /// identity input.
+///
+/// `name` is what the authenticator shows the passkey as — for a passkey whose
+/// subject is a DID, [`AuthenticatorName::for_did`]. Its type holds it to the
+/// 64 bytes some authenticators refuse to go past.
 pub fn start_passkey_registration(
     webauthn: &Webauthn,
     user_unique_id: uuid::Uuid,
-    user_name: &str,
-    user_display_name: &str,
+    name: &AuthenticatorName,
     exclude_credentials: Option<Vec<webauthn_rs::prelude::CredentialID>>,
 ) -> Result<(CreationChallengeResponse, PasskeyRegistration), AppError> {
-    let (mut ccr, reg_state) = webauthn
-        .start_passkey_registration(
-            user_unique_id,
-            user_name,
-            user_display_name,
-            exclude_credentials,
-        )
-        .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
+    let (mut ccr, reg_state) = vti_common::auth::passkey::start_passkey_registration(
+        webauthn,
+        user_unique_id,
+        name,
+        exclude_credentials,
+    )
+    .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
 
     extend_ccr_with_eddsa(&mut ccr);
     let reg_state = extend_state_with_eddsa(&reg_state)?;
@@ -191,10 +195,14 @@ pub fn start_install_passkey_registration(
     webauthn: &Webauthn,
     user_unique_id: uuid::Uuid,
 ) -> Result<(CreationChallengeResponse, PasskeyRegistration), AppError> {
-    const NAMES_NO_ONE: &str = "first administrator";
-    let (mut ccr, reg_state) = webauthn
-        .start_passkey_registration(user_unique_id, NAMES_NO_ONE, NAMES_NO_ONE, None)
-        .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
+    let names_no_one = AuthenticatorName::from_label("first administrator");
+    let (mut ccr, reg_state) = vti_common::auth::passkey::start_passkey_registration(
+        webauthn,
+        user_unique_id,
+        &names_no_one,
+        None,
+    )
+    .map_err(|e| AppError::Internal(format!("webauthn registration start failed: {e}")))?;
     ccr.public_key.pub_key_cred_params = [EDDSA_ALG, ES256_ALG]
         .into_iter()
         .map(|alg| PubKeyCredParams {
@@ -342,9 +350,13 @@ mod tests {
     #[test]
     fn start_advertises_eddsa_alongside_default_algorithms() {
         let w = webauthn();
-        let (ccr, _state) =
-            start_passkey_registration(&w, Uuid::new_v4(), "did:key:zABC", "did:key:zABC", None)
-                .unwrap();
+        let (ccr, _state) = start_passkey_registration(
+            &w,
+            Uuid::new_v4(),
+            &AuthenticatorName::for_did("did:key:zABC"),
+            None,
+        )
+        .unwrap();
 
         // EdDSA must be in the advertised list so Ed25519-capable
         // authenticators (YubiKey 5+, soft test harness) work.
@@ -367,9 +379,13 @@ mod tests {
     #[test]
     fn start_state_credential_algorithms_includes_eddsa() {
         let w = webauthn();
-        let (_ccr, state) =
-            start_passkey_registration(&w, Uuid::new_v4(), "did:key:zABC", "did:key:zABC", None)
-                .unwrap();
+        let (_ccr, state) = start_passkey_registration(
+            &w,
+            Uuid::new_v4(),
+            &AuthenticatorName::for_did("did:key:zABC"),
+            None,
+        )
+        .unwrap();
 
         // `PasskeyRegistration` exposes no public algorithms accessor;
         // inspect the JSON instead.

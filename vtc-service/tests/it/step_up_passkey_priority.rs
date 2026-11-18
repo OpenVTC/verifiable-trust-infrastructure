@@ -98,8 +98,13 @@ async fn enrol_console_passkey(
 
     let webauthn = build_webauthn(RP_ORIGIN).unwrap();
     let user_uuid = Uuid::new_v4();
-    let (ccr, reg_state) =
-        start_passkey_registration(&webauthn, user_uuid, did, did, None).unwrap();
+    let (ccr, reg_state) = start_passkey_registration(
+        &webauthn,
+        user_uuid,
+        &vti_common::auth::passkey::AuthenticatorName::for_did(did),
+        None,
+    )
+    .unwrap();
     let (cred, _) = authenticator.register(&ccr, RP_ORIGIN);
     let passkey = finish_passkey_registration(&webauthn, &cred, &reg_state).unwrap();
     let cred_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(passkey.cred_id()));

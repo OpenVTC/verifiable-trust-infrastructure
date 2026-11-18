@@ -40,8 +40,7 @@ fn register_then_authenticate_completes_end_to_end() {
     let (ccr, reg_state) = start_passkey_registration(
         &webauthn,
         user_uuid,
-        "did:key:zHarness",
-        "did:key:zHarness",
+        &vti_common::auth::passkey::AuthenticatorName::for_did("did:key:zHarness"),
         None,
     )
     .expect("start_passkey_registration");
@@ -98,8 +97,7 @@ fn second_authenticate_increments_sign_count() {
     let (ccr, reg_state) = start_passkey_registration(
         &webauthn,
         Uuid::new_v4(),
-        "did:key:zHarness2",
-        "did:key:zHarness2",
+        &vti_common::auth::passkey::AuthenticatorName::for_did("did:key:zHarness2"),
         None,
     )
     .unwrap();

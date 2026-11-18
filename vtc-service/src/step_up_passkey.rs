@@ -619,22 +619,6 @@ pub async fn issue_invite(
 
 // ── enroll/redeem/start 0.1 ─────────────────────────────────────────────────
 
-/// What the member's authenticator shows the passkey as. WebAuthn's `user.name`
-/// is at most 64 characters in the published options, and a `did:peer` or
-/// `did:webvh` is often far longer, so a long DID is shown by its two ends.
-/// Display only: the credential is bound to the DID by this service's record,
-/// never by this name.
-fn authenticator_name(did: &str) -> String {
-    const MAX: usize = 64;
-    let chars: Vec<char> = did.chars().collect();
-    if chars.len() <= MAX {
-        return did.to_string();
-    }
-    let head: String = chars[..40].iter().collect();
-    let tail: String = chars[chars.len() - 16..].iter().collect();
-    format!("{head}…{tail}")
-}
-
 /// Claim codes are typed by people: case and separators do not matter.
 fn normalise_code(code: &str) -> String {
     // The alphabet is upper-case only ([`claim_secret`]), so folding case
@@ -741,14 +725,9 @@ pub async fn redeem_start(
     let user_uuid = existing.as_ref().map_or_else(Uuid::new_v4, |u| u.user_uuid);
     let held: Vec<Passkey> = existing.map(|u| u.credentials).unwrap_or_default();
     let exclude = held.iter().map(|p| p.cred_id().clone()).collect::<Vec<_>>();
-    let name = authenticator_name(&subject);
-    let (ccr, reg_state) = crate::webauthn::start_passkey_registration(
-        webauthn,
-        user_uuid,
-        &name,
-        &name,
-        Some(exclude),
-    )?;
+    let name = vti_common::auth::passkey::AuthenticatorName::for_did(&subject);
+    let (ccr, reg_state) =
+        crate::webauthn::start_passkey_registration(webauthn, user_uuid, &name, Some(exclude))?;
     let (uv_options, uv_state) = if held.is_empty() {
         (None, None)
     } else {
@@ -1240,15 +1219,6 @@ mod tests {
     #[test]
     fn a_claim_code_is_read_as_people_type_it() {
         assert_eq!(normalise_code(" abcd-efgh "), "ABCDEFGH");
-    }
-
-    #[test]
-    fn a_long_did_is_named_by_its_two_ends_within_webauthns_limit() {
-        assert_eq!(authenticator_name("did:key:z6Mkshort"), "did:key:z6Mkshort");
-        let long = format!("did:peer:2.{}", "V".repeat(900));
-        let name = authenticator_name(&long);
-        assert!(name.chars().count() <= 64, "{name}");
-        assert!(name.starts_with("did:peer:2."));
     }
 
     #[test]

@@ -62,9 +62,13 @@ impl Gesturer {
         let origin = origin(vtc).await;
         let webauthn = build_webauthn(&origin).unwrap();
         let user_uuid = Uuid::new_v4();
-        let (ccr, reg_state) =
-            vtc_service::webauthn::start_passkey_registration(&webauthn, user_uuid, did, did, None)
-                .unwrap();
+        let (ccr, reg_state) = vtc_service::webauthn::start_passkey_registration(
+            &webauthn,
+            user_uuid,
+            &vti_common::auth::passkey::AuthenticatorName::for_did(did),
+            None,
+        )
+        .unwrap();
         let (cred, _) = self.authenticator.register(&ccr, &origin);
         let passkey =
             vtc_service::webauthn::finish_passkey_registration(&webauthn, &cred, &reg_state)
