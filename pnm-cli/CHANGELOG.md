@@ -2,6 +2,34 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.63.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.62.0...pnm-cli-v0.63.0) — 2026-11-18
+
+
+### Added
+
+- **vta**: Every DID the VTA holds through one method-neutral surface (vta/dids/*) ([#2763](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2763))
+
+* feat(vta)!: every DID the VTA holds through one method-neutral surface (vta/dids/*)
+
+
+
+### Documentation
+
+- **design-notes**: DID management, one question asked once whatever the method ([#2761](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2761))
+
+Records the split between method-neutral DID questions (vta/dids list,
+  get, methods/list; a context's DID through update-did 1.2) and the
+  per-method operations that stay in their families; the DidEngine seam in
+  vta-service; and the rules the webvh and webs paths had drifted on.
+
+  Also corrects three stale statements found in the review: the did:webs
+  note's section 1 table, which section 4 had overtaken (did:webs is a
+  service-DID method since dtgwg-vti-spec#121/#123); pnm's 'never a node's
+  own identity' help text; and the webvh handler header, which listed
+  retired URIs and wrong auth for domains and agent names.
+
+
+
 ## [0.62.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.61.0...pnm-cli-v0.62.0) — 2026-11-15
 
 

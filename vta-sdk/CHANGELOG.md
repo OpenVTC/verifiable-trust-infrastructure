@@ -2,6 +2,75 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.91.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.90.0...vta-sdk-v0.91.0) — 2026-11-18
+
+
+### Added
+
+- **vtc-service**: Serve vtc/storage/credentials/recipient/0.1 so the console seals for any DID method ([#2762](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2762))
+
+* feat(vtc-service): serve vtc/storage/credentials/recipient/0.1 so the console seals for any DID method
+
+  The console sealed a storage credential to the key it read from the
+  community's same-origin /.well-known/did.jsonl. A did:webs community
+  serves no log, so sealing always failed and the console fell back to
+  `cnm`. A did:webvh community on a DID host failed the same way.
+
+  The community now answers vtc/storage/credentials/recipient/0.1
+  (trustoverip/dtgwg-trust-tasks-tf#1329):
+  - It returns the Ed25519 key it opens sealed blocks with, as a did:key,
+    plus the verification method that publishes it (item 2).
+  - When its own DID resolves, the answer is checked against that
+    document. If the document publishes a different signing key, the
+    answer is `notPublished` (retryable) and carries no key, so nothing
+    is sealed to a key that has rotated away (item 3).
+  - It requires `vtc.rooms.admin`, the same authority as credentials/set
+    (item 1).
+
+  The console asks this task instead of reading did.jsonl. It accepts the
+  answer only when it names the community's own DID (item 4) and seals to
+  it as given (item 5).
+
+- **vta**: Every DID the VTA holds through one method-neutral surface (vta/dids/*) ([#2763](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2763))
+
+* feat(vta)!: every DID the VTA holds through one method-neutral surface (vta/dids/*)
+
+- **vta-signing**: A small signing library the VTA and its callers share ([#2745](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2745))
+
+* feat(keys): keys/sign-jws/0.1 — a VTA-built compact JWS walled off to JWT types
+
+  Add a `keys/sign-jws/0.1` Trust Task that produces a compact JWS (a JWT) over
+  a caller-supplied JOSE header and claims set, signed by a stored key. Unlike
+  `keys/sign/0.1` it is not a general signing oracle: the VTA assembles the
+  `b64url(header).b64url(payload)` signing input itself and signs it under
+  `SigningDomain::ProtocolDefined`, so the result verifies as a JWS rather than
+  as a VTA opaque-signing payload.
+
+  The task is walled off so it can never be pointed at producing a credential or
+  issuer artifact:
+
+  - the finalized protected header's `typ` must be on a small allow-list of JWT
+    profiles (`JWT`, `at+jwt`, `oauth-id-jag+jwt`, `dpop+jwt`, `logout+jwt`);
+    anything else — e.g. a Verifiable Credential media type — is refused before
+    the key is touched;
+  - the VTA, not the caller, sets `alg` from the key, so a caller cannot request
+    a signature under an algorithm the key does not implement or mislabel one;
+  - the payload must be a JSON object (a JWT claims set); raw bytes still go
+    through the opaque oracle, not here.
+
+  Authorized exactly as `keys/sign` is — per the key's context — so the same
+  context separation that walls off a signer's identities applies. Added to the
+  dispatch table with the spec's (none / none / actsAsSubject) class, and
+  acknowledged in `UNSPECCED_DISPATCHED_URIS` pending an upstream spec in
+  trustoverip/dtgwg-trust-tasks-tf (dispatched unvalidated like any
+  unknown-schema task until then).
+
+  Enables the Agent Gateway to delegate JWT signing (STS access tokens, ID-JAG)
+  to the VTA while keeping the JWT-signing path structurally separate from
+  credential signing.
+
+
+
 ## [0.90.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.89.0...vta-sdk-v0.90.0) — 2026-11-15
 
 

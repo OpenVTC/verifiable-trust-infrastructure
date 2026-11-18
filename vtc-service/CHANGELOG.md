@@ -2,6 +2,160 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.31.0...vtc-service-v0.32.0) — 2026-11-18
+
+
+### Added
+
+- **vtc-service**: Serve the landing page from a directory (website.landing_dir) ([#2767](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2767))
+
+A community wanting its own landing page had two choices: edit
+  website-default/ and rebuild the daemon, or set website.root_dir, which
+  must sit on a host of its own because administrators can deploy into it
+  over the network.
+
+  website.landing_dir is a third: a directory the host operator places,
+  served at the website mount in place of the built-in page and re-read on
+  every request, so an edit shows on the next load with no rebuild and no
+  restart. Nothing over the network writes it (the /v1/website/* tasks act
+  only on root_dir), so it is as trusted as the operator and may share the
+  console's origin, the footing admin_ui.dir already has. Boot refuses one
+  without a readable index.html or that is world-writable (the check is now
+  shared with admin_ui.dir / members_dir as
+  website::paths::check_operator_dir); naming both root_dir and
+  landing_dir is refused. Paths go through the website's safety chain.
+
+  `vtc website export <dir>` writes the built-in page out to start from.
+
+- **vtc-service**: Serve vtc/storage/credentials/recipient/0.1 so the console seals for any DID method ([#2762](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2762))
+
+* feat(vtc-service): serve vtc/storage/credentials/recipient/0.1 so the console seals for any DID method
+
+  The console sealed a storage credential to the key it read from the
+  community's same-origin /.well-known/did.jsonl. A did:webs community
+  serves no log, so sealing always failed and the console fell back to
+  `cnm`. A did:webvh community on a DID host failed the same way.
+
+  The community now answers vtc/storage/credentials/recipient/0.1
+  (trustoverip/dtgwg-trust-tasks-tf#1329):
+  - It returns the Ed25519 key it opens sealed blocks with, as a did:key,
+    plus the verification method that publishes it (item 2).
+  - When its own DID resolves, the answer is checked against that
+    document. If the document publishes a different signing key, the
+    answer is `notPublished` (retryable) and carries no key, so nothing
+    is sealed to a key that has rotated away (item 3).
+  - It requires `vtc.rooms.admin`, the same authority as credentials/set
+    (item 1).
+
+  The console asks this task instead of reading did.jsonl. It accepts the
+  answer only when it names the community's own DID (item 4) and seals to
+  it as given (item 5).
+
+- **vtc-service**: Store and serve an uploaded community logo ([#2751](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2751))
+
+* feat(vtc-service): store and serve an uploaded community logo
+
+  A community can now upload its logo, and the VTC serves it from its own
+  origin, so it shows in the console, the member portal, both sign-in
+  pages and the default landing page wherever the VTC is hosted.
+
+  Before this, the logo was only the profile's `logoUrl`. Those pages are
+  served with `img-src 'self' data:`, so a logo at any other address was
+  never drawn, and a deployment with nowhere on the VTC's own origin to
+  put a file (a hosted VTC, say) had no logo at all: a filesystem website
+  must have its own host, and `admin_ui.members_dir` is a snapshot that
+  stops following the daemon on every upgrade.
+
+  What it adds:
+  - `vtc/community/logo/update/0.1` (pinned in `vti-specs-vtc`): an
+    administrator (`vtc.surface.admin`) sends a PNG, JPEG or WebP, or
+    `image: null` to remove the logo. The community re-encodes it as a PNG
+    of at most 512 px (`directory::images::reencode_logo`, sharing the
+    directory's decoding and its bounds), dropping all metadata and any
+    bytes after the image data, and stores it in the `community` keyspace,
+    which is backed up. 20 changes per administrator per hour, one
+    re-encoding at a time, audited as `CommunityLogoUpdated` by digest.
+  - `GET /v1/community/logo`: public, like `public-profile`. Served from
+    memory against a small record read, with a fixed `Content-Type`,
+    `nosniff`, `default-src 'none'; sandbox`, an `ETag` and `304`. Bytes
+    that do not match their record are never served.
+  - A `logo` member (`url`, `sha256`, `mediaType`, `width`, `height`) on
+    the public profile and on `/v1/member/me`'s `community`. Every page
+    draws it in preference to `logoUrl`, which is unchanged.
+  - Console: a Logo card on the Community profile page. It rasterizes an
+    SVG in the browser, from a `data:` URL inside an `<img>` where it runs
+    no script, so no SVG is ever sent or stored. The Logo URL field now
+    says when these pages will not draw the address it holds.
+
+  Design note: docs/05-design-notes/vtc-community-logo.md.
+
+
+
+### Fixed
+
+- **vtc-service**: Setup speaks did:webs, not webvh, once the operator chooses it ([#2760](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2760))
+
+The interactive wizard asked "WebVH path (blank → server-assigned)" and
+  described the path as the DID's trailing segment after a did:webs choice.
+  A did:webs path is the slot before the AID, and blank publishes at the
+  domain's top level. The path prompt now follows the chosen method and
+  refuses `.well-known` for a did:webs, as `vtc setup --from` and the VTA do.
+  The hosting intro presents both DID shapes instead of did:webvh alone.
+
+  The same webvh-only advice for changing the document after mint (the
+  registry prompt, the `registry_did` and `[webvh]` docs, the example setup
+  TOML, community-lifecycle.md) now gives the did:webs route as well.
+
+- **vtc-service**: Vtc setup finds a TSP-only VTA's mediator ([#2755](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2755))
+
+The setup wizard suggested only the mediator from the VTA's
+  `DIDCommMessaging` service, so a VTA advertising only `TSPTransport` was
+  reported as having no mediator. The suggestion now reads the TSP entry
+  first and the DIDComm entry second (TSP > DIDComm), naming the transports
+  the VTA uses it for, and the prompt's wording is transport-neutral.
+
+  The did-hosting picker's connect had the same gap: without REST it tried
+  only DIDComm. It now connects over TSP before DIDComm.
+
+- **vtc-service**: Setup never mints a did:webvh for an operator who chose did:webs ([#2756](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2756))
+
+When the interactive wizard could not read the VTA's did-hosting catalogue
+  (for example against a TSP-only VTA, which the catalogue client could not
+  reach), it returned `IdentityMethod::Webvh` before asking for the method, so
+  an operator who wanted a did:webs got a did:webvh with only a printed line to
+  say so.
+
+  The method is now asked in every case. Without the catalogue, a did:webvh is
+  still left to the VTA's own server pick; a did:webs, which needs a named
+  server and has no serverless mode, is refused with the fix:
+  `vtc setup --from` with `identity_method = "webs"` and `[webvh] server_id`.
+
+
+
+### Performance
+
+- Use jemalloc in every service binary so freed memory returns to the OS ([#2758](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2758))
+
+The service binaries ran on the system allocator. glibc malloc keeps freed
+  pages in its arenas instead of returning them, so a service's RSS ratchets
+  up to its high-water mark and stays there; on a memory graph that is
+  indistinguishable from a leak (the VTC in particular has been climbing).
+
+  vtc, vta, vta-enclave, vti-witness, room-host and vti-voting-service now
+  set tikv-jemallocator as the global allocator behind a default-on
+  `jemalloc` feature (non-MSVC only), matching the mediator. jemalloc is
+  tuned through the exported `_rjem_malloc_conf` symbol:
+  background_thread:true (purge while idle) and 5s dirty/muzzy decay.
+  The symbol must carry the `_rjem_` prefix tikv-jemalloc-sys builds with;
+  an unprefixed `malloc_conf` is silently ignored.
+
+  Both Dockerfiles build with --no-default-features, so they append
+  `jemalloc` to FEATURES for every profile. Each crate now carries the
+  deny-not-forbid unsafe_code lint table for the one exported static, and
+  is listed in scripts/check-workspace-lints.py.
+
+
+
 ## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.30.0...vtc-service-v0.31.0) — 2026-11-15
 
 

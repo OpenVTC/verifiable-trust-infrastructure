@@ -2,6 +2,163 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.84.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.83.0...vta-service-v0.84.0) — 2026-11-18
+
+
+### Added
+
+- **vta**: Every DID the VTA holds through one method-neutral surface (vta/dids/*) ([#2763](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2763))
+
+* feat(vta)!: every DID the VTA holds through one method-neutral surface (vta/dids/*)
+
+- **vta-signing**: A small signing library the VTA and its callers share ([#2745](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2745))
+
+* feat(keys): keys/sign-jws/0.1 — a VTA-built compact JWS walled off to JWT types
+
+  Add a `keys/sign-jws/0.1` Trust Task that produces a compact JWS (a JWT) over
+  a caller-supplied JOSE header and claims set, signed by a stored key. Unlike
+  `keys/sign/0.1` it is not a general signing oracle: the VTA assembles the
+  `b64url(header).b64url(payload)` signing input itself and signs it under
+  `SigningDomain::ProtocolDefined`, so the result verifies as a JWS rather than
+  as a VTA opaque-signing payload.
+
+  The task is walled off so it can never be pointed at producing a credential or
+  issuer artifact:
+
+  - the finalized protected header's `typ` must be on a small allow-list of JWT
+    profiles (`JWT`, `at+jwt`, `oauth-id-jag+jwt`, `dpop+jwt`, `logout+jwt`);
+    anything else — e.g. a Verifiable Credential media type — is refused before
+    the key is touched;
+  - the VTA, not the caller, sets `alg` from the key, so a caller cannot request
+    a signature under an algorithm the key does not implement or mislabel one;
+  - the payload must be a JSON object (a JWT claims set); raw bytes still go
+    through the opaque oracle, not here.
+
+  Authorized exactly as `keys/sign` is — per the key's context — so the same
+  context separation that walls off a signer's identities applies. Added to the
+  dispatch table with the spec's (none / none / actsAsSubject) class, and
+  acknowledged in `UNSPECCED_DISPATCHED_URIS` pending an upstream spec in
+  trustoverip/dtgwg-trust-tasks-tf (dispatched unvalidated like any
+  unknown-schema task until then).
+
+  Enables the Agent Gateway to delegate JWT signing (STS access tokens, ID-JAG)
+  to the VTA while keeping the JWT-signing path structurally separate from
+  credential signing.
+
+
+
+### Documentation
+
+- **design-notes**: DID management, one question asked once whatever the method ([#2761](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2761))
+
+Records the split between method-neutral DID questions (vta/dids list,
+  get, methods/list; a context's DID through update-did 1.2) and the
+  per-method operations that stay in their families; the DidEngine seam in
+  vta-service; and the rules the webvh and webs paths had drifted on.
+
+  Also corrects three stale statements found in the review: the did:webs
+  note's section 1 table, which section 4 had overtaken (did:webs is a
+  service-DID method since dtgwg-vti-spec#121/#123); pnm's 'never a node's
+  own identity' help text; and the webvh handler header, which listed
+  retired URIs and wrong auth for domains and agent names.
+
+
+
+### Fixed
+
+- **vta-service**: A key-role did:webs signs with the key of the proof's purpose ([#2766](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2766))
+
+A key-role did:webs publishes a different key for each relationship
+  (VTI-KEY-072): its operational key under authentication, its attestation
+  key under assertionMethod, and the key event log's own key under neither.
+  Two places assumed one signing key per identity:
+
+  - vault/sign-trust-task signed every document with the entry's one stored
+    signingKeyId. A wallet sign-in signs auth/oob/identify for authentication
+    and auth/oob/grant for assertionMethod, so a community refused one of the
+    two whichever key the entry named (VTI-KEY-022). Where the principal is a
+    key-role did:webs this agent holds, the purpose now decides the key; every
+    other principal still signs with the entry's key. The key is still held to
+    the entry's context (custody rule 7).
+  - vta/dids/list reported the key event log's key as signingKeyId, which a
+    client then stored in the entry: a method the document lists nowhere. It
+    now reports the operational key for a key-role identity.
+
+  persona_key_for also answers for a key-role did:webs, with the role key of
+  the relationship, checked against the identity's own document and held to
+  the same record checks as a level-1 identity.
+
+- **vta-service**: Refuse to sign a document as the did:key of a did:w… ([#2765](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2765))
+
+* fix(vta-service): refuse to sign a document as the did:key of a did:webvh update key
+
+  A VTA-built did:webvh uses one key as its signing key and its log's update
+  key. keys/sign-document signed a caller's document as the did:key of any key in
+  the caller's scope, so a holder of sign-document in the context could have the
+  update key sign a forged log entry (a proof by did:key:<update key> is exactly a
+  log entry's) that adds its own key to the DID, and keep that key after its grant
+  is revoked.
+
+  sign-document now refuses to sign as a did:key whose key is an active update or
+  pre-rotation key of a did:webvh this VTA holds. The key still signs as the
+  did:webvh it serves, whose proofs name that DID's own method.
+
+- **vta-service**: Check a did:webs publication against the host's didId, not didUrl ([#2752](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2752))
+
+`did-management/did/register/0.1` defines a `DidRecord`'s `didUrl` as the URL
+  of the slot's log document and `didId` as the identifier the host derived from
+  it. Publishing a did:webs compared `didUrl` with the DID, so every real host's
+  answer was refused: a did:webs VTA's first boot published its identity, then
+  refused to record it ("the hosting server published https://…/did.jsonl for
+  slot …, not did:webs:…"), and `pnm webs create` would refuse the same way.
+  The test hosts put the DID in `didUrl`, so no test caught it.
+
+  `RequestUriResponse` carries the record's `didId` as `did_id`, and both the
+  own-identity publish and create check it. The test hosts answer as a host
+  does: `didUrl` the log's URL, `didId` the identifier.
+
+- **vta-service**: A TSP-only VTA boots (#937 follow-up) ([#2743](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2743))
+
+#937 let a VTA speak TSP without DIDComm: setup accepts TSP alone, and the
+  mediator connect supervisor opens for `services.didcomm || services.tsp`.
+  Two places in `server::run` were missed, so a TSP-only VTA set up that way
+  refused to start with "no services enabled — enable at least one of REST or
+  DIDComm":
+
+  - The pre-loop guard, and the restart loop's warning, counted only REST and
+    DIDComm. Both now ask `any_transport_enabled`, which counts REST, DIDComm
+    or TSP, each built and enabled. WebAuthn alone is still not a transport.
+  - `services.tsp` was migrated into the runtime state on first boot but never
+    mirrored back at boot or on a soft restart, unlike REST and DIDComm, so
+    `pnm services tsp {enable,disable}` did not survive a restart. It is now
+    mirrored in both places, before the unbuilt-TSP check reads it.
+
+
+
+### Performance
+
+- Use jemalloc in every service binary so freed memory returns to the OS ([#2758](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2758))
+
+The service binaries ran on the system allocator. glibc malloc keeps freed
+  pages in its arenas instead of returning them, so a service's RSS ratchets
+  up to its high-water mark and stays there; on a memory graph that is
+  indistinguishable from a leak (the VTC in particular has been climbing).
+
+  vtc, vta, vta-enclave, vti-witness, room-host and vti-voting-service now
+  set tikv-jemallocator as the global allocator behind a default-on
+  `jemalloc` feature (non-MSVC only), matching the mediator. jemalloc is
+  tuned through the exported `_rjem_malloc_conf` symbol:
+  background_thread:true (purge while idle) and 5s dirty/muzzy decay.
+  The symbol must carry the `_rjem_` prefix tikv-jemalloc-sys builds with;
+  an unprefixed `malloc_conf` is silently ignored.
+
+  Both Dockerfiles build with --no-default-features, so they append
+  `jemalloc` to FEATURES for every profile. Each crate now carries the
+  deny-not-forbid unsafe_code lint table for the one exported static, and
+  is listed in scripts/check-workspace-lints.py.
+
+
+
 ## [0.83.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.82.0...vta-service-v0.83.0) — 2026-11-15
 
 

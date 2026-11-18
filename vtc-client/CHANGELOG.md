@@ -2,6 +2,33 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.45.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.45.0...vtc-client-v0.45.1) — 2026-11-18
+
+
+### Fixed
+
+- **vtc-client**: Send_task keeps a refusal's document over a session ([#2768](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2768))
+
+send_task promised VtcError::Refused over a session, carrying the
+  trust-task-error document, but sent through the typed `document` helper,
+  which asks the session for the payload alone and turns a refusal into a
+  one-line VtcError::Session. A generic caller acts on what that drops: a
+  refusal's details carry the step-up the community asks the person for
+  (stepUpHandoff, VTI-LNK-125 - 131).
+
+  Seen through vtc-mcp: vtc/rooms/community/create answered "a passkey
+  gesture bound to this operation is required" as a transport error, with no
+  link for the person's wallet, so an administrator with an enrolled approver
+  could not answer the step-up at all.
+
+  Over a session send_task now asks for the reply document and reads it as
+  the HTTPS path reads one: a trust-task-error is NotFound where it carries
+  one of the task's declared codes saying the thing is absent, else Refused
+  with the document as received; a next-step is Parked; a response is its
+  payload. The typed methods are unchanged.
+
+
+
 ## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.44.0...vtc-client-v0.45.0) — 2026-11-15
 
 

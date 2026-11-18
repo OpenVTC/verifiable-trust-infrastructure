@@ -35,7 +35,7 @@ async-trait = { workspace = true }
 # (`run_phase1_init`, the `ballot-box` template), `tsp` for the binding
 # envelope, `didcomm` for `did_key::secrets_from_bundle`, and (through
 # `provision-client`) `trust_task_sign` and the proof verifier.
-vta-sdk = { path = "../vta-sdk", version = "0.90", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.91", features = [
   "didcomm",
   "provision-client",
   "tsp",
@@ -48,7 +48,7 @@ trust-tasks-rs = { workspace = true }
 vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.12" }
 # The pinned `voting/*` versions: the routing table names each by its generated payload type,
 # and the pipeline reads each task's policy from the index (CLAUDE.md, "Pinning a task version").
-vti-specs = { path = "../vti-specs", version = "0.15" }
+vti-specs = { path = "../vti-specs", version = "0.16" }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

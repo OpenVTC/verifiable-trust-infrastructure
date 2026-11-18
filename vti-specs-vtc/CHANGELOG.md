@@ -2,6 +2,75 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.7.0...vti-specs-vtc-v0.7.1) — 2026-11-18
+
+
+### Added
+
+- **vtc-service**: Serve vtc/storage/credentials/recipient/0.1 so the console seals for any DID method ([#2762](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2762))
+
+* feat(vtc-service): serve vtc/storage/credentials/recipient/0.1 so the console seals for any DID method
+
+  The console sealed a storage credential to the key it read from the
+  community's same-origin /.well-known/did.jsonl. A did:webs community
+  serves no log, so sealing always failed and the console fell back to
+  `cnm`. A did:webvh community on a DID host failed the same way.
+
+  The community now answers vtc/storage/credentials/recipient/0.1
+  (trustoverip/dtgwg-trust-tasks-tf#1329):
+  - It returns the Ed25519 key it opens sealed blocks with, as a did:key,
+    plus the verification method that publishes it (item 2).
+  - When its own DID resolves, the answer is checked against that
+    document. If the document publishes a different signing key, the
+    answer is `notPublished` (retryable) and carries no key, so nothing
+    is sealed to a key that has rotated away (item 3).
+  - It requires `vtc.rooms.admin`, the same authority as credentials/set
+    (item 1).
+
+  The console asks this task instead of reading did.jsonl. It accepts the
+  answer only when it names the community's own DID (item 4) and seals to
+  it as given (item 5).
+
+- **vtc-service**: Store and serve an uploaded community logo ([#2751](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2751))
+
+* feat(vtc-service): store and serve an uploaded community logo
+
+  A community can now upload its logo, and the VTC serves it from its own
+  origin, so it shows in the console, the member portal, both sign-in
+  pages and the default landing page wherever the VTC is hosted.
+
+  Before this, the logo was only the profile's `logoUrl`. Those pages are
+  served with `img-src 'self' data:`, so a logo at any other address was
+  never drawn, and a deployment with nowhere on the VTC's own origin to
+  put a file (a hosted VTC, say) had no logo at all: a filesystem website
+  must have its own host, and `admin_ui.members_dir` is a snapshot that
+  stops following the daemon on every upgrade.
+
+  What it adds:
+  - `vtc/community/logo/update/0.1` (pinned in `vti-specs-vtc`): an
+    administrator (`vtc.surface.admin`) sends a PNG, JPEG or WebP, or
+    `image: null` to remove the logo. The community re-encodes it as a PNG
+    of at most 512 px (`directory::images::reencode_logo`, sharing the
+    directory's decoding and its bounds), dropping all metadata and any
+    bytes after the image data, and stores it in the `community` keyspace,
+    which is backed up. 20 changes per administrator per hour, one
+    re-encoding at a time, audited as `CommunityLogoUpdated` by digest.
+  - `GET /v1/community/logo`: public, like `public-profile`. Served from
+    memory against a small record read, with a fixed `Content-Type`,
+    `nosniff`, `default-src 'none'; sandbox`, an `ETag` and `304`. Bytes
+    that do not match their record are never served.
+  - A `logo` member (`url`, `sha256`, `mediaType`, `width`, `height`) on
+    the public profile and on `/v1/member/me`'s `community`. Every page
+    draws it in preference to `logoUrl`, which is unchanged.
+  - Console: a Logo card on the Community profile page. It rasterizes an
+    SVG in the browser, from a `data:` URL inside an `<img>` where it runs
+    no script, so no SVG is ever sent or stored. The Logo URL field now
+    says when these pages will not draw the address it holds.
+
+  Design note: docs/05-design-notes/vtc-community-logo.md.
+
+
+
 ## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.6.4...vti-specs-vtc-v0.7.0) — 2026-11-15
 
 

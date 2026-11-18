@@ -2,6 +2,17 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.64.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.63.0...vta-cli-common-v0.64.0) — 2026-11-18
+
+
+### Added
+
+- **vta**: Every DID the VTA holds through one method-neutral surface (vta/dids/*) ([#2763](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2763))
+
+* feat(vta)!: every DID the VTA holds through one method-neutral surface (vta/dids/*)
+
+
+
 ## [0.63.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.62.0...vta-cli-common-v0.63.0) — 2026-11-15
 
 
