@@ -1,5 +1,5 @@
 // One room the community owns, `/rooms/community/<roomId>` — the owner's view
-// (`vtc/rooms/community/get/0.4`), its details (`…/update/0.3`), its state in its
+// (`vtc/rooms/community/get/0.5`), its details and signal delay (`…/update/0.4`), its state in its
 // owner's lifecycle (archive, unarchive, remove — `CommunityRoomLifecycle.tsx`)
 // and its members (`…/members/{list,add,remove}`).
 //
@@ -11,7 +11,9 @@
 // community's rooms apart, and the label and description are what a member
 // offered a place sees. Edit details changes them with no gesture (they reach
 // no key holder), audited with the earlier values and a reason; the page says
-// who last changed them and when.
+// who last changed them and when. The same form turns the room's **signal delay**
+// on or off — whether this community, as host, waits a few random seconds before
+// telling members' devices the room changed — saying what `none` gives up.
 //
 // **Admission is an offer.** Adding a member has the community's VTA issue the
 // room's invitation, membership and authority credentials to them, and the VTC
@@ -48,6 +50,7 @@ import {
   MEMBER_ACTIONS,
   addCommunityRoomMember,
   detailsUpdate,
+  signalDelayOfGet,
   parseTags,
   updateCommunityRoom,
   fetchCommunityRoom,
@@ -75,12 +78,22 @@ import type {
   CommunityRoomMember,
   CommunityRoomMemberAction,
   CommunityRoomMemberState,
+  SignalDelay,
 } from "@/lib/wire-types";
 
 import { RefusalCard } from "./CommunityRefusal";
 import { AuthorityExpiry, COMMUNITY_ROOMS_KEY, RenewalFailing, TagChips } from "./CommunityRooms";
 import { RoomLifecycle } from "./CommunityRoomLifecycle";
-import { COMMUNITY_PATH, LifecyclePill, TIER_BLURB, roomPath, type Tier } from "./shared";
+import {
+  COMMUNITY_PATH,
+  LifecyclePill,
+  SIGNAL_DELAY_NONE_TRADE_OFF,
+  SIGNAL_DELAY_RANDOMISED_MEANS,
+  SignalDelayChoice,
+  TIER_BLURB,
+  roomPath,
+  type Tier,
+} from "./shared";
 
 /** The Audit trail (`plugins/audit.tsx`). It has no per-room filter: a
  *  community room's audit row names the room in its event data, not its
@@ -145,7 +158,12 @@ export function CommunityRoomDetail() {
           "A room this community owns. Its VTA holds the room's keys; the community admits and removes its members."
         }
       />
-      <RoomFacts room={room} renewal={roomRenewalOf(q.data.ext)} profile={roomProfileStateOf(q.data.ext)} />
+      <RoomFacts
+        room={room}
+        signalDelay={signalDelayOfGet(q.data)}
+        renewal={roomRenewalOf(q.data.ext)}
+        profile={roomProfileStateOf(q.data.ext)}
+      />
       <RoomLifecycle room={room} lifecycle={roomLifecycleOf(q.data.ext)} openOffers={room.offered} />
       <Members room={room} />
     </section>
@@ -154,10 +172,12 @@ export function CommunityRoomDetail() {
 
 function RoomFacts({
   room,
+  signalDelay,
   renewal,
   profile,
 }: {
   room: CommunityRoom;
+  signalDelay: SignalDelay;
   renewal: ReturnType<typeof roomRenewalOf>;
   profile: RoomProfileState | null;
 }) {
@@ -178,7 +198,7 @@ function RoomFacts({
           </button>
         )}
       </div>
-      {editing && <EditDetails room={room} onDone={() => setEditing(false)} />}
+      {editing && <EditDetails room={room} signalDelay={signalDelay} onDone={() => setEditing(false)} />}
       <dl className="rooms-facts">
         <dt>Description</dt>
         <dd>
@@ -214,6 +234,16 @@ function RoomFacts({
         <dt>Lifecycle</dt>
         <dd>
           <LifecyclePill value={r.lifecycle} /> epoch {r.epoch}
+        </dd>
+        <dt>Watch signals</dt>
+        <dd>
+          {signalDelay === "none" ? "Sent at once" : "Sent after a short random wait"}
+          <div className="muted rooms-sub">
+            {signalDelay === "none"
+              ? `Turned off, as for a room members talk in. ${SIGNAL_DELAY_NONE_TRADE_OFF}`
+              : SIGNAL_DELAY_RANDOMISED_MEANS}{" "}
+            Change it with Edit details.
+          </div>
         </dd>
         <dt>Members</dt>
         <dd>
@@ -274,22 +304,31 @@ function RoomFacts({
   );
 }
 
-/** Change the room's label, description and tags. Only what differs is sent;
- *  each replaces what the room has. */
-function EditDetails({ room, onDone }: { room: CommunityRoom; onDone: () => void }) {
+/** Change the room's label, description, tags and signal delay. Only what differs is
+ *  sent; each replaces what the room has. */
+function EditDetails({
+  room,
+  signalDelay: currentDelay,
+  onDone,
+}: {
+  room: CommunityRoom;
+  signalDelay: SignalDelay;
+  onDone: () => void;
+}) {
   const confirm = useConfirm();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [label, setLabel] = useState(room.label);
   const [description, setDescription] = useState(room.description ?? "");
   const [tagText, setTagText] = useState((room.tags ?? []).join(", "));
+  const [signalDelay, setSignalDelay] = useState<SignalDelay>(currentDelay);
   const [reason, setReason] = useState("");
 
   const parsed = parseTags(tagText);
   const tagError = "error" in parsed ? parsed.error : undefined;
   const payload =
     "tags" in parsed && label.trim() !== ""
-      ? detailsUpdate(room, { label, description, tags: parsed.tags, reason })
+      ? detailsUpdate(room, { label, description, tags: parsed.tags, signalDelay, reason }, currentDelay)
       : null;
   const ready = payload !== null && reason.trim() !== "";
 
@@ -312,8 +351,8 @@ function EditDetails({ room, onDone }: { room: CommunityRoom; onDone: () => void
       <h3 id="edit-community-room-details">Edit details</h3>
       <p className="muted">
         What administrators keep track of this room by. The label and description are also what a
-        member offered a place sees. Nothing reaches the room, its keys or anyone&rsquo;s access, so
-        this takes no passkey; it is audited with the earlier values and your reason.
+        member offered a place sees. Nothing reaches the room&rsquo;s keys or anyone&rsquo;s access,
+        so this takes no passkey; it is audited with the earlier values and your reason.
       </p>
       <form
         className="form-stack"
@@ -343,6 +382,7 @@ function EditDetails({ room, onDone }: { room: CommunityRoom; onDone: () => void
         >
           <input placeholder="board, finance" value={tagText} onChange={(e) => setTagText(e.target.value)} />
         </Field>
+        <SignalDelayChoice name="edit-community-room-signal-delay" value={signalDelay} onChange={setSignalDelay} />
         <Field label="Reason" hint="Recorded in the audit trail.">
           <input required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>

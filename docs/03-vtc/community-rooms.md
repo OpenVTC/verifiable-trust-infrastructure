@@ -198,6 +198,34 @@ The community's authority credential in every room it owns already confers `admi
 and `curate` (create item 6), which is what the VTA requires to write and readers to accept
 the profile.
 
+## Watch signals: the room's signal delay
+
+When a room changes, this community — as its host — tells each member's device with a
+`rooms/changed` signal. By default it waits a few seconds, at random, first, so that a
+signal's time does not mark one write (`randomised`). A room members talk in can turn the
+wait off (`none`), so a message shows up as soon as it is sent. The setting is the room's,
+never a watcher's ([data rooms: the signal delay](../02-vta/data-rooms.md)).
+
+- **At creation**: `vtc/rooms/community/create/0.5` takes `signalDelay` (absent is
+  `randomised`), records it in the room's host record — which the watcher reads every time
+  it fires — and echoes it. A `none` create is audited with the create (a `signalDelay`
+  detail on its `created` row).
+- **Changing it**: `vtc/rooms/community/update/0.4` takes `signalDelay` beside the other
+  details, applied together or not at all. A change of the delay alone is a change:
+  `detailsUpdatedAt`/`By` move and the `detailsUpdated` row carries the delay replaced and
+  the one recorded; it needs no profile write (`roomProfile: "unchanged"`). It touches no
+  watch, and a signal already waiting is sent as scheduled.
+- **Reading it**: `vtc/rooms/community/get/0.5` always carries `signalDelay`.
+- **What `none` gives up**: little in a busy room, whose rhythm shows in its writes anyway;
+  most in a quiet one, where one write followed at once by one signal tells anyone who sees
+  both when the writer wrote. The console says so beside the choice, and `cnm` before it
+  sends `none`. Mediators and push gateways still take the time they take.
+- This community applies either setting (`rooms::community::SIGNAL_DELAY_POLICY`); one whose
+  governance kept the delay everywhere would refuse `none` with `signalDelayNotPermitted`.
+
+`create/0.4`, `update/0.3` and `get/0.4` are still served: a room created at 0.4 is
+`randomised`, and update 0.3 leaves the delay as it is.
+
 ## Run a room — the console
 
 **Data rooms → Community rooms** (`/admin/rooms/community`) is the same surface as
@@ -212,7 +240,7 @@ no REST route.
   it (`?tag=`), and so does clicking a room's tag. When `[rooms.community]` is absent the
   tab says so and shows the section to add, from the list's
   `ext["org.openvtc"].communityRooms`.
-- **New community room**: label, an optional description and tags, tier (`attributed` by default; `open`; `private` is
+- **New community room**: label, an optional description and tags, *Watch signals* (after a short random wait, the default, or at once — saying what that gives up), tier (`attributed` by default; `open`; `private` is
   shown but not offered — it is not served for community rooms yet and the shipped
   `rooms` policy refuses it), history (`chained` / `fromJoin`), retention days,
   storage location (listed only to a holder of `vtc.rooms.admin`; otherwise the

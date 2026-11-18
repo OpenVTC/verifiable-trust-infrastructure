@@ -320,6 +320,29 @@ describe("Community rooms tab", () => {
     ]);
   });
 
+  it("creates a room with its signal delay off, saying first what that gives up", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_CREATE_TASK, { room: communityRoom(), signalDelay: "none" }),
+    ]);
+    mount("/rooms/community?create=1");
+    fireEvent.change(await screen.findByLabelText(/^Label/), { target: { value: "Board chat" } });
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "the board talks here" } });
+    // The default is the randomised wait, and nothing is said about `none` until it is chosen.
+    expect((screen.getByRole("radio", { name: /After a short random wait/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    expect(screen.queryByText(/tells anyone who sees both/)).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /At once/ }));
+    expect(screen.getByText(/tells anyone who sees both/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create room" }));
+    expect(await screen.findByText("Created")).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_CREATE_TASK)).toEqual([
+      { label: "Board chat", visibility: "attributed", reason: "the board talks here", signalDelay: "none" },
+    ]);
+  });
+
   it("says what to configure when the community has no key holder", async () => {
     mockFetch([
       ...NAME_BOOK_ROUTES,
@@ -615,6 +638,34 @@ describe("a community room's page", () => {
     });
   });
 
+  it("shows the room's signal delay and turns it off on its own", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, { room: communityRoom(), signalDelay: "randomised" }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_UPDATE_TASK, {
+        room: communityRoom(),
+        changed: true,
+        roomProfile: "unchanged",
+        signalDelay: "none",
+      }),
+    ]);
+    mount(page);
+    expect(await screen.findByText("Sent after a short random wait")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    const form = screen.getByRole("region", { name: "Edit details" });
+    fireEvent.change(within(form).getByLabelText(/^Reason/), { target: { value: "the board talks here" } });
+    fireEvent.click(within(form).getByRole("radio", { name: /At once/ }));
+    expect(within(form).getByText(/tells anyone who sees both/)).toBeTruthy();
+    fireEvent.click(within(form).getByRole("button", { name: "Save details" }));
+    await waitFor(() => expect(sentPayloads(requests, COMMUNITY_ROOMS_UPDATE_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_UPDATE_TASK)[0]).toEqual({
+      roomId: ROOM,
+      reason: "the board talks here",
+      signalDelay: "none",
+    });
+  });
+
   it("names a room the community does not own", async () => {
     mockFetch([
       ...NAME_BOOK_ROUTES,
@@ -682,6 +733,14 @@ describe("community-rooms-api", () => {
     const form = { label: "Board pack", description: "Old words.", tags: ["board"], reason: " r " };
     expect(detailsUpdate(room, form)).toBeNull();
     expect(detailsUpdate(room, { ...form, tags: [] })).toEqual({ roomId: ROOM, reason: "r", tags: [] });
+    // The signal delay is sent only when it differs from the room's own.
+    expect(detailsUpdate(room, { ...form, signalDelay: "none" }, "none")).toBeNull();
+    expect(detailsUpdate(room, { ...form, signalDelay: "randomised" })).toBeNull();
+    expect(detailsUpdate(room, { ...form, signalDelay: "randomised" }, "none")).toEqual({
+      roomId: ROOM,
+      reason: "r",
+      signalDelay: "randomised",
+    });
     expect(detailsUpdate(room, { ...form, description: "  " })).toEqual({
       roomId: ROOM,
       reason: "r",

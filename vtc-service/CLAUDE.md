@@ -320,6 +320,12 @@ When adding a flow, add it here and a line to the root index.
   record, a credential or `register`. A write that did not land is `pending`, never a failed
   request; the profile sweeper is its one retry owner and always writes the room as it is
   then. Needs `room-open` on the community's VTA entry.
+- **The signal delay** (create 0.5 / update 0.4 / get 0.5): the one owner's term that lives
+  in the **host** record (`vti_rooms::Room::signal_delay`, which the watcher reads at fire
+  time), since the community is both admin and host — never a second copy in the owner's
+  record. Update writes the host record first and puts it back if the owner's record then
+  fails (together or not at all); a delay-only change is a `detailsUpdated` change with no
+  profile write. `SIGNAL_DELAY_POLICY` is `Either`, so `signalDelayNotPermitted` is baselined.
 - **Archive and remove** (`vtc/rooms/community/{archive,unarchive,remove}/0.1`,
   `removal/cancel/0.1`; `rooms::community_lifecycle`): the **owner's** lifecycle, stored on
   `OwnedRoom.status` — `active → archived(readOnly|noAccess) → removalScheduled → purging →

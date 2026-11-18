@@ -54,10 +54,10 @@ import { fetchStorageConfigs } from "@/lib/storage-api";
 import { useToast } from "@/lib/toast";
 import { useLivePollMs } from "@/lib/use-live-events";
 import { useCan } from "@/lib/viewer";
-import type { CommunityRoom, CommunityRoomCreatePayload } from "@/lib/wire-types";
+import type { CommunityRoom, CommunityRoomCreatePayload, SignalDelay } from "@/lib/wire-types";
 
 import { RefusalCard, VtaFixCommands } from "./CommunityRefusal";
-import { LifecyclePill, RoomStateChip, TIER_BLURB, communityRoomPath } from "./shared";
+import { LifecyclePill, RoomStateChip, SignalDelayChoice, TIER_BLURB, communityRoomPath } from "./shared";
 
 /** The query key of the owner's reads, which a live `communityRooms` hint
  *  invalidates. Under `["rooms"]`, which a live `rooms` hint invalidates. */
@@ -349,6 +349,7 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
   const [retentionPolicy, setRetentionPolicy] = useState<"chained" | "fromJoin">("chained");
   const [retentionDays, setRetentionDays] = useState("");
   const [storageConfig, setStorageConfig] = useState("");
+  const [signalDelay, setSignalDelay] = useState<SignalDelay>("randomised");
   const [reason, setReason] = useState("");
 
   // Where the room's files go: only a holder of the host's authority can list
@@ -376,6 +377,7 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
         ...(retentionPolicy !== "chained" ? { retentionPolicy } : {}),
         ...(days !== undefined ? { retentionDays: days } : {}),
         ...(storageConfig ? { storageConfig } : {}),
+        ...(signalDelay !== "randomised" ? { signalDelay } : {}),
       };
       return createCommunityRoom(payload, gestureFromConfirm(confirm));
     },
@@ -499,6 +501,7 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
             </select>
           </Field>
         )}
+        <SignalDelayChoice name="community-room-signal-delay" value={signalDelay} onChange={setSignalDelay} />
         <Field label="Reason" hint="Recorded in the audit trail.">
           <input required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>
