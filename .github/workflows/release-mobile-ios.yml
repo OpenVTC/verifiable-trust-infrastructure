@@ -29,7 +29,10 @@ jobs:
     # that could create a Release and move a tag.
     name: Package iOS xcframework
     runs-on: macos-latest
-    timeout-minutes: 60
+    # Three iOS targets built one after another from a cold cache (no
+    # actions/cache, see below). At 0.6.18 each target took 20-29 minutes,
+    # so 60 minutes cancelled the third; 120 leaves headroom.
+    timeout-minutes: 120
     steps:
       # Nothing in this job pushes, so the checkout keeps no credentials.
       # By default actions/checkout leaves the job's token in `.git/config`,
