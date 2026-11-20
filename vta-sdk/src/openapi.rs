@@ -18,6 +18,10 @@
 //!
 //! The task's slug and version, then the definition:
 //! `VtcVettingVettersListV0_1Payload`, `VtcVettingVettersListV0_1ListedVetter`.
+//!
+//! A wrapper outlives the version it documents: removing one is a breaking change to this
+//! crate, so a superseded version's wrapper stays (its generated type deprecated) until a
+//! breaking release drops it, and a service lists the current one.
 //! Two specifications that each define a `VetterEvent` cannot collide, and a
 //! reader can tell which specification a component came from.
 //!
@@ -36,6 +40,8 @@
 //! type, and — for a type that is a `$defs` entry of another type's schema rather
 //! than a payload or response itself — the carrier and the definition's name.
 
+// Superseded versions' wrappers are kept (see above); their types are deprecated.
+#![allow(deprecated)]
 use std::borrow::Cow;
 use std::ops::{Deref, DerefMut};
 
@@ -245,6 +251,12 @@ spec_types! {
     /// `vtc/rooms/community/create/0.4#response` — the room as the community owns
     /// it, with its details, and whether its profile was written (`roomProfile`).
     RoomsCommunityCreate04Response(rooms_community::create::v0_4::Response);
+    /// `vtc/rooms/community/create/0.5` payload — as 0.4, and the room's signal delay
+    /// (`randomised` when absent).
+    RoomsCommunityCreate05Payload(rooms_community::create::v0_5::Payload);
+    /// `vtc/rooms/community/create/0.5#response` — as 0.4, and the signal delay the room
+    /// was created with.
+    RoomsCommunityCreate05Response(rooms_community::create::v0_5::Response);
     /// `vtc/rooms/community/list/0.4` payload — a page, optionally only the rooms
     /// carrying one tag, or in the given states.
     RoomsCommunityList04Payload(rooms_community::list::v0_4::Payload);
@@ -254,6 +266,8 @@ spec_types! {
     /// `vtc/rooms/community/get/0.4#response` — one room the community owns, with
     /// its details and its state (`status`).
     RoomsCommunityGet04Response(rooms_community::get::v0_4::Response);
+    /// `vtc/rooms/community/get/0.5#response` — as 0.4, and the room's signal delay.
+    RoomsCommunityGet05Response(rooms_community::get::v0_5::Response);
     /// `vtc/rooms/community/archive/0.1` payload — archive a room read-only or with
     /// no access, and why.
     RoomsCommunityArchive01Payload(rooms_community::archive::v0_1::Payload);
@@ -282,6 +296,11 @@ spec_types! {
     /// `vtc/rooms/community/update/0.3#response` — the room, whether the request
     /// changed it, and its profile's state (`roomProfile`).
     RoomsCommunityUpdate03Response(rooms_community::update::v0_3::Response);
+    /// `vtc/rooms/community/update/0.4` payload — as 0.3, and the room's signal delay.
+    RoomsCommunityUpdate04Payload(rooms_community::update::v0_4::Payload);
+    /// `vtc/rooms/community/update/0.4#response` — as 0.3, and the room's signal delay
+    /// as it now stands.
+    RoomsCommunityUpdate04Response(rooms_community::update::v0_4::Response);
     /// `vtc/rooms/community/members/add/0.2` payload — admit an active member
     /// with actions, an expiry and a reason.
     RoomsCommunityMembersAdd02Payload(rooms_community::members::add::v0_2::Payload);

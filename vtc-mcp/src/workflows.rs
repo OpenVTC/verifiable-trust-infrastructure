@@ -47,7 +47,7 @@ pub(crate) mod wire {
         "https://trusttasks.org/spec/vtc/boards/facilitators/add/0.1";
     pub const ELECTIONS_CREATE: &str = "https://trusttasks.org/spec/vtc/elections/create/0.5";
     pub const ELECTIONS_SHOW: &str = "https://trusttasks.org/spec/vtc/elections/show/0.6";
-    pub const ROOMS_CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+    pub const ROOMS_CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5";
     pub const ROOMS_MEMBERS_ADD: &str =
         "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2";
     pub const ROOMS_MEMBERS_LIST: &str =

@@ -46,15 +46,23 @@ use super::community_lifecycle::OwnerStatus;
 use super::vta_storage::{PeerError, VtaChannel};
 use crate::server::AppState;
 
+/// Which signal delays the community applies, as host, to a room it owns
+/// (`vtc/rooms/community/create/0.5` item 10, `update/0.4` item 14). Either, as for the
+/// rooms it hosts for others (`rooms/signal-delay/set/0.1`): a community whose governance
+/// kept the delay everywhere would refuse `none` with `signalDelayNotPermitted`.
+pub(crate) const SIGNAL_DELAY_POLICY: vti_rooms::signal_delay::SignalDelayPolicy =
+    vti_rooms::signal_delay::SignalDelayPolicy::Either;
+
 /// The declared codes this module's tasks answer with, named once for the handlers and
 /// the error-code census.
 pub mod codes {
     use vti_specs::vtc::rooms::community::{
-        archive::v0_1 as archive, create::v0_4 as create, get::v0_3 as get, get::v0_4 as get_v4,
-        members::add::v0_2 as add, members::list::v0_1 as members_list,
-        members::list::v0_2 as members_list_v2, members::remove::v0_2 as remove,
-        removal::cancel::v0_1 as removal_cancel, remove::v0_1 as remove_room,
-        unarchive::v0_1 as unarchive, update::v0_3 as update,
+        archive::v0_1 as archive, create::v0_4 as create, create::v0_5 as create_v5,
+        get::v0_3 as get, get::v0_4 as get_v4, get::v0_5 as get_v5, members::add::v0_2 as add,
+        members::list::v0_1 as members_list, members::list::v0_2 as members_list_v2,
+        members::remove::v0_2 as remove, removal::cancel::v0_1 as removal_cancel,
+        remove::v0_1 as remove_room, unarchive::v0_1 as unarchive, update::v0_3 as update,
+        update::v0_4 as update_v4,
     };
     use vti_specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
     use vti_specs::vtc::rooms::memberships::list::v0_2 as memberships_list_v2;
@@ -78,6 +86,11 @@ pub mod codes {
     pub const ADD_KEY_HOLDER_REFUSED: &str = add::error_codes::KEY_HOLDER_REFUSED.code;
     pub const ADD_WRONG_STATE: &str = add::error_codes::WRONG_STATE.code;
     pub const GET_V4_NOT_FOUND: &str = get_v4::error_codes::NOT_FOUND.code;
+    pub const GET_V5_NOT_FOUND: &str = get_v5::error_codes::NOT_FOUND.code;
+    pub const CREATE_SIGNAL_DELAY_NOT_PERMITTED: &str =
+        create_v5::error_codes::SIGNAL_DELAY_NOT_PERMITTED.code;
+    pub const UPDATE_SIGNAL_DELAY_NOT_PERMITTED: &str =
+        update_v4::error_codes::SIGNAL_DELAY_NOT_PERMITTED.code;
     pub const MEMBERS_LIST_V2_NOT_FOUND: &str = members_list_v2::error_codes::NOT_FOUND.code;
     pub const MEMBERSHIPS_LIST_V2_NOT_A_MEMBER: &str =
         memberships_list_v2::error_codes::NOT_A_MEMBER.code;

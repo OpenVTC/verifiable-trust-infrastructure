@@ -4168,6 +4168,12 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // key holder is never unavailable or refusing here.
         s::badges::retire::v0_1::error_codes::KEY_HOLDER_UNAVAILABLE,
         s::badges::retire::v0_1::error_codes::KEY_HOLDER_REFUSED,
+        // `signalDelayNotPermitted` is for a community whose governance keeps the
+        // randomised delay for every room it hosts. This one applies either setting
+        // (`rooms::community::SIGNAL_DELAY_POLICY`, as `rooms/signal-delay/set` does), so
+        // the code cannot occur here.
+        s::rooms::community::create::v0_5::error_codes::SIGNAL_DELAY_NOT_PERMITTED,
+        s::rooms::community::update::v0_4::error_codes::SIGNAL_DELAY_NOT_PERMITTED,
         // BASELINE-END
     ]
 }

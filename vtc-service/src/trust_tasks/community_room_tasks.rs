@@ -47,6 +47,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vtc_audit::{AuditEvent, CommunityRoomChangedData, FieldChange};
 use vti_common::error::AppError;
+use vti_rooms::signal_delay::SignalDelay;
 use vti_specs::rooms::owner::{
     group::{add::v0_3 as owner_add, create::v0_1 as owner_group_create},
     invite::v0_1 as owner_invite,
@@ -55,11 +56,12 @@ use vti_specs::rooms::owner::{
 };
 use vti_specs::vault::credentials::receive::v0_1 as vault_receive;
 use vti_specs::vtc::rooms::community::{
-    archive::v0_1 as archive, create::v0_4 as create, get::v0_3 as get, get::v0_4 as get_v4,
-    list::v0_3 as list, list::v0_4 as list_v4, members::add::v0_2 as add,
-    members::list::v0_1 as members_list, members::list::v0_2 as members_list_v2,
-    members::remove::v0_2 as remove, removal::cancel::v0_1 as removal_cancel,
-    remove::v0_1 as remove_room, unarchive::v0_1 as unarchive, update::v0_3 as update,
+    archive::v0_1 as archive, create::v0_4 as create, create::v0_5 as create_v5, get::v0_3 as get,
+    get::v0_4 as get_v4, get::v0_5 as get_v5, list::v0_3 as list, list::v0_4 as list_v4,
+    members::add::v0_2 as add, members::list::v0_1 as members_list,
+    members::list::v0_2 as members_list_v2, members::remove::v0_2 as remove,
+    removal::cancel::v0_1 as removal_cancel, remove::v0_1 as remove_room,
+    unarchive::v0_1 as unarchive, update::v0_3 as update, update::v0_4 as update_v4,
 };
 use vti_specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
 use vti_specs::vtc::rooms::memberships::list::v0_2 as memberships_list_v2;
@@ -87,6 +89,9 @@ pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 
 #[cfg(test)]
 pub(crate) const GET_V4_TYPE: &str = <get_v4::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const GET_V5_TYPE: &str = <get_v5::Payload as Payload>::TYPE_URI;
 
 #[cfg(test)]
 pub(crate) const GET_TYPE: &str = <get::Payload as Payload>::TYPE_URI;
@@ -118,15 +123,21 @@ const MEMBERSHIPS_CURSOR: &str = "community-room-memberships:";
 
 /// Register every task this family serves (#2579).
 pub(super) fn register(routes: Routes) -> Routes {
-    let routes = on!(routes, create::Payload => |state, ctx, doc| handle_create(state, ctx, doc));
+    let routes =
+        on!(routes, create::Payload => |state, ctx, doc| handle_create(state, ctx, doc, false));
+    let routes =
+        on!(routes, create_v5::Payload => |state, ctx, doc| handle_create(state, ctx, doc, true));
     let routes =
         on!(routes, list::Payload => |state, ctx, doc| handle_list(state, ctx, doc, false));
     let routes =
         on!(routes, list_v4::Payload => |state, ctx, doc| handle_list(state, ctx, doc, true));
-    let routes = on!(routes, get::Payload => |state, ctx, doc| handle_get(state, ctx, doc, false));
+    let routes = on!(routes, get::Payload => |state, ctx, doc| handle_get(state, ctx, doc, 3));
+    let routes = on!(routes, get_v4::Payload => |state, ctx, doc| handle_get(state, ctx, doc, 4));
+    let routes = on!(routes, get_v5::Payload => |state, ctx, doc| handle_get(state, ctx, doc, 5));
     let routes =
-        on!(routes, get_v4::Payload => |state, ctx, doc| handle_get(state, ctx, doc, true));
-    let routes = on!(routes, update::Payload => |state, ctx, doc| handle_update(state, ctx, doc));
+        on!(routes, update::Payload => |state, ctx, doc| handle_update(state, ctx, doc, false));
+    let routes =
+        on!(routes, update_v4::Payload => |state, ctx, doc| handle_update(state, ctx, doc, true));
     let routes = on!(routes, add::Payload => |state, ctx, doc| handle_members_add(state, ctx, doc));
     let routes =
         on!(routes, remove::Payload => |state, ctx, doc| handle_members_remove(state, ctx, doc));
@@ -259,6 +270,25 @@ pub(crate) fn change(event: &str, room: &OwnedRoom) -> CommunityRoomChangedData 
 }
 
 /// A room's tags as a set: sorted, each once. `tags` compares as a set (update item 4).
+/// A generated `SignalDelay` (`rooms/_shared/0.2`, re-emitted in each task's module) as the
+/// one the room's host record keeps. The schema admits only the two values both name.
+fn signal_delay_of<T: Serialize>(wire: &T) -> Result<SignalDelay, String> {
+    let v = serde_json::to_value(wire).map_err(|e| e.to_string())?;
+    SignalDelay::from_wire(&v)
+}
+
+/// The signal delay a community room's host record holds now — `randomised` for a room that
+/// never set one, and for one purged, whose host record is gone and to which nothing applies
+/// (`vtc/rooms/community/get/0.5` item 5).
+async fn room_signal_delay(state: &AppState, room: &OwnedRoom) -> Result<SignalDelay, AppError> {
+    if room.status.state.purged_or_purging() {
+        return Ok(SignalDelay::default());
+    }
+    Ok(vti_rooms::storage::get_room(&state.rooms_ks, &room.room_id)
+        .await?
+        .signal_delay)
+}
+
 fn tag_set(tags: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut v: Vec<String> = tags.into_iter().collect();
     v.sort();
@@ -585,6 +615,8 @@ struct CreateRequest {
     from_join: bool,
     retention_days: Option<std::num::NonZeroU64>,
     storage_config: Option<String>,
+    /// `create/0.5` only; absent is `randomised`.
+    signal_delay: Option<SignalDelay>,
     reason: String,
 }
 
@@ -598,26 +630,72 @@ impl From<create::Payload> for CreateRequest {
             from_join: matches!(p.retention_policy, Some(create::RetentionPolicy::FromJoin)),
             retention_days: p.retention_days,
             storage_config: p.storage_config.map(|s| s.to_string()),
+            signal_delay: None,
             reason: p.reason.to_string(),
         }
     }
 }
 
-/// `vtc/rooms/community/create/0.4`.
+impl CreateRequest {
+    /// `create/0.5`: `create/0.4`'s members and the room's signal delay.
+    fn from_v5(p: create_v5::Payload) -> Result<Self, String> {
+        let signal_delay = p.signal_delay.as_ref().map(signal_delay_of).transpose()?;
+        Ok(Self {
+            label: p.label.to_string(),
+            description: p.description.map(|d| d.to_string()),
+            tags: tag_set(p.tags.into_iter().flat_map(|t| t.0).map(|t| t.to_string())),
+            visibility: p.visibility.to_string(),
+            from_join: matches!(
+                p.retention_policy,
+                Some(create_v5::RetentionPolicy::FromJoin)
+            ),
+            retention_days: p.retention_days,
+            storage_config: p.storage_config.map(|s| s.to_string()),
+            signal_delay,
+            reason: p.reason.to_string(),
+        })
+    }
+}
+
+/// `vtc/rooms/community/create` — `0.4`, and `0.5`, which also takes the room's signal delay.
 async fn handle_create(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v5: bool,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     let actor = match capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let checked = match parse_spec_payload::<create::Payload>(&doc).map(CreateRequest::from) {
-        Ok(p) => p,
-        Err(reject) => return reject,
+    let checked = if v5 {
+        match parse_spec_payload::<create_v5::Payload>(&doc) {
+            Ok(p) => match CreateRequest::from_v5(p) {
+                Ok(r) => r,
+                Err(why) => return malformed(&doc, format!("`signalDelay`: {why}")),
+            },
+            Err(reject) => return reject,
+        }
+    } else {
+        match parse_spec_payload::<create::Payload>(&doc).map(CreateRequest::from) {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        }
     };
+    let signal_delay = checked.signal_delay.unwrap_or_default();
+    // 0.5 item 10: a delay the community will not apply is refused before step 1, so
+    // nothing is minted for a room that will not be stored.
+    if !crate::rooms::community::SIGNAL_DELAY_POLICY.permits(signal_delay) {
+        return refuse(
+            &doc,
+            c::CREATE_SIGNAL_DELAY_NOT_PERMITTED,
+            format!(
+                "this community keeps the randomised signal delay for every room; `{signal_delay}` is not applied"
+            ),
+            None,
+        );
+    }
     let label = checked.label.clone();
     let visibility: vti_rooms::Visibility = match serde_json::from_value(json!(checked.visibility))
     {
@@ -727,7 +805,7 @@ async fn handle_create(
         mirror_of: None,
         record_retention: None,
         last_prune: None,
-        signal_delay: Default::default(),
+        signal_delay,
         epoch_floor: None,
         frozen_at: None,
     };
@@ -794,6 +872,14 @@ async fn handle_create(
     if let Some(t) = tags_value(&owned.tags) {
         row.details.push(detail_change("tags", None, Some(t)));
     }
+    // 0.5 item 11: a room created without the delay is attributable to who chose that.
+    if !signal_delay.is_randomised() {
+        row.details.push(detail_change(
+            "signalDelay",
+            None,
+            Some(json!(signal_delay.as_str())),
+        ));
+    }
     audit(state, &actor.did, row).await;
     tracing::info!(room = %room_id, by = %actor.did, "community room created");
 
@@ -805,6 +891,10 @@ async fn handle_create(
         .as_str();
 
     match community_room(state, &owned).await {
+        Ok(room) if v5 => respond::<create_v5::Response>(
+            &doc,
+            json!({ "room": room, "roomProfile": room_profile, "signalDelay": signal_delay.as_str() }),
+        ),
         Ok(room) => {
             respond::<create::Response>(&doc, json!({ "room": room, "roomProfile": room_profile }))
         }
@@ -1115,31 +1205,33 @@ async fn handle_list(
     }
 }
 
-/// `vtc/rooms/community/get` — `0.3` and `0.4`. `0.3` answers a purged room `notFound`: it
-/// has no way to say so.
+/// `vtc/rooms/community/get` — `0.3`, `0.4` and `0.5` (`ver`). `0.3` answers a purged room
+/// `notFound`: it has no way to say so. `0.5` adds the room's signal delay.
 async fn handle_get(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    v4: bool,
+    ver: u8,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RoomsManage, None).await {
         return reject;
     }
-    let room_id = if v4 {
-        parse_spec_payload::<get_v4::Payload>(&doc).map(|p| p.room_id.to_string())
-    } else {
-        parse_spec_payload::<get::Payload>(&doc).map(|p| p.room_id.to_string())
+    // 0.4 and 0.5 share the shape of the room; 0.5 adds `signalDelay` beside it.
+    let v4 = ver >= 4;
+    let room_id = match ver {
+        5 => parse_spec_payload::<get_v5::Payload>(&doc).map(|p| p.room_id.to_string()),
+        4 => parse_spec_payload::<get_v4::Payload>(&doc).map(|p| p.room_id.to_string()),
+        _ => parse_spec_payload::<get::Payload>(&doc).map(|p| p.room_id.to_string()),
     };
     let room_id = match room_id {
         Ok(r) => r,
         Err(reject) => return reject,
     };
-    let not_found = if v4 {
-        c::GET_V4_NOT_FOUND
-    } else {
-        c::GET_NOT_FOUND
+    let not_found = match ver {
+        5 => c::GET_V5_NOT_FOUND,
+        4 => c::GET_V4_NOT_FOUND,
+        _ => c::GET_NOT_FOUND,
     };
     let room = match owned(state, &doc, &room_id, not_found).await {
         Ok(r) if !v4 && r.status.state.purged_or_purging() => {
@@ -1178,17 +1270,23 @@ async fn handle_get(
         Ok(None) => {}
         Err(e) => return app_error_to_reject(&doc, &e),
     }
-    if v4 {
-        respond::<get_v4::Response>(&doc, body)
-    } else {
-        respond::<get::Response>(&doc, body)
+    match ver {
+        5 => {
+            match room_signal_delay(state, &room).await {
+                Ok(d) => body["signalDelay"] = json!(d.as_str()),
+                Err(e) => return app_error_to_reject(&doc, &e),
+            }
+            respond::<get_v5::Response>(&doc, body)
+        }
+        4 => respond::<get_v4::Response>(&doc, body),
+        _ => respond::<get::Response>(&doc, body),
     }
 }
 
 // ─── vtc/rooms/community/update ──────────────────────────────────────────
 
-/// `vtc/rooms/community/update/0.3` — an administrator renames a room the community owns,
-/// or changes its description or tags.
+/// `vtc/rooms/community/update` — `0.3`: an administrator renames a room the community owns,
+/// or changes its description or tags; `0.4`: or its signal delay.
 ///
 /// No operation-bound step-up and no parking: it reaches no key holder, confers nothing
 /// and is undone by the same task (the specification's *model this task is designed
@@ -1197,12 +1295,14 @@ async fn handle_get(
 ///
 /// The details are the community's own record as the room's owner: written beside the
 /// room in [`crate::rooms::community`], never to its host record, its records or its VTA
-/// (item 8). Its live hint is the `communityRooms` topic's (`vtc/admin/events/0.4`), not
+/// (item 8). The one exception is `0.4`'s `signalDelay`, a term of the room the community
+/// applies as host, which is written to the room's host record (item 13). Its live hint is the `communityRooms` topic's (`vtc/admin/events/0.4`), not
 /// `rooms`', which covers the host's view.
 async fn handle_update(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    v4: bool,
 ) -> TrustTaskOutcome {
     use crate::rooms::community::codes as c;
     // Item 1.
@@ -1210,21 +1310,55 @@ async fn handle_update(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let parsed = parse_spec_payload::<update::Payload>(&doc).map(|p| {
-        (
-            p.room_id.to_string(),
-            p.label.map(|l| l.to_string()),
-            p.description.map(|d| d.to_string()),
-            p.remove_description == Some(true),
-            p.tags
-                .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
-            p.reason.to_string(),
-        )
-    });
-    let (room_id, new_label, new_description, remove_description, new_tags, reason) = match parsed {
-        Ok(p) => p,
-        Err(reject) => return reject,
+    let parsed = if v4 {
+        match parse_spec_payload::<update_v4::Payload>(&doc) {
+            Ok(p) => match p.signal_delay.as_ref().map(signal_delay_of).transpose() {
+                Ok(delay) => Ok((
+                    p.room_id.to_string(),
+                    p.label.map(|l| l.to_string()),
+                    p.description.map(|d| d.to_string()),
+                    p.remove_description == Some(true),
+                    p.tags
+                        .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
+                    delay,
+                    p.reason.to_string(),
+                )),
+                Err(why) => return malformed(&doc, format!("`signalDelay`: {why}")),
+            },
+            Err(reject) => Err(reject),
+        }
+    } else {
+        parse_spec_payload::<update::Payload>(&doc).map(|p| {
+            (
+                p.room_id.to_string(),
+                p.label.map(|l| l.to_string()),
+                p.description.map(|d| d.to_string()),
+                p.remove_description == Some(true),
+                p.tags
+                    .map(|t| tag_set(t.0.into_iter().map(|t| t.to_string()))),
+                None,
+                p.reason.to_string(),
+            )
+        })
     };
+    let (room_id, new_label, new_description, remove_description, new_tags, new_delay, reason) =
+        match parsed {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
+    // Item 14: a delay the community will not apply refuses the whole request.
+    if let Some(d) = new_delay
+        && !crate::rooms::community::SIGNAL_DELAY_POLICY.permits(d)
+    {
+        return refuse(
+            &doc,
+            c::UPDATE_SIGNAL_DELAY_NOT_PERMITTED,
+            format!(
+                "this community keeps the randomised signal delay for every room; `{d}` is not applied"
+            ),
+            None,
+        );
+    }
 
     // Read, compare and write under the record's guard: a renewal moving the authority's
     // expiry at the same moment does not write this change back stale, nor this one its.
@@ -1243,6 +1377,12 @@ async fn handle_update(
         Err(reject) => return reject,
     };
     let before = room.clone();
+    // 0.4 item 13: the delay lives in the room's host record, as every room's does.
+    let delay_before = match room_signal_delay(state, &room).await {
+        Ok(d) => d,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    let delay_after = new_delay.unwrap_or(delay_before);
 
     // Item 3: each member given replaces the stored one; an absent one is unchanged.
     if let Some(l) = new_label {
@@ -1280,16 +1420,46 @@ async fn handle_update(
             tags_value(&room.tags),
         ));
     }
+    let delay_changed = delay_after != delay_before;
+    if delay_changed {
+        details.push(detail_change(
+            "signalDelay",
+            Some(json!(delay_before.as_str())),
+            Some(json!(delay_after.as_str())),
+        ));
+    }
     let changed = !details.is_empty();
     // Item 10: only a change to what the profile carries — the label and the description,
     // never the tags — asks for it to be written again.
     let profile_changed = room.label != before.label || room.description != before.description;
 
     if changed {
+        // Item 3, together or not at all: the host record first, put back if the owner's
+        // record then cannot be written. A watch is never touched; the next signal reads it.
+        let at = Utc::now().timestamp().max(0) as u64;
+        if delay_changed
+            && let Err(e) =
+                vti_rooms::storage::set_signal_delay(&state.rooms_ks, &room_id, delay_after, at)
+                    .await
+        {
+            return app_error_to_reject(&doc, &e);
+        }
         // Item 5.
         room.details_updated_at = Some(rfc3339(now()));
         room.details_updated_by = Some(actor.did.clone());
         if let Err(e) = state.community_rooms.put_room_details(&room).await {
+            if delay_changed
+                && let Err(undo) = vti_rooms::storage::set_signal_delay(
+                    &state.rooms_ks,
+                    &room_id,
+                    delay_before,
+                    at,
+                )
+                .await
+            {
+                tracing::error!(room = %room_id, error = %undo,
+                    "could not put back a community room's signal delay after a failed update");
+            }
             return app_error_to_reject(&doc, &e);
         }
     } else {
@@ -1326,7 +1496,17 @@ async fn handle_update(
             }
         };
 
+    let delay_now = if changed { delay_after } else { delay_before };
     match community_room(state, &room).await {
+        Ok(v) if v4 => respond::<update_v4::Response>(
+            &doc,
+            json!({
+                "room": v,
+                "changed": changed,
+                "roomProfile": room_profile,
+                "signalDelay": delay_now.as_str(),
+            }),
+        ),
         Ok(v) => respond::<update::Response>(
             &doc,
             json!({ "room": v, "changed": changed, "roomProfile": room_profile }),

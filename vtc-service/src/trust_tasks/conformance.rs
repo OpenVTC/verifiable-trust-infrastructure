@@ -1544,6 +1544,19 @@ fn table() -> Vec<Conformance> {
             }),
             json!({ "room": sample_community_room_v2(), "roomProfile": "pending" })
         ),
+        // 0.5: the room's signal delay, stated at creation and echoed.
+        checked!(
+            s::rooms::community::create::v0_5::Payload,
+            s::rooms::community::create::v0_5::Response,
+            json!({
+                "label": "Board chat", "visibility": "private", "reason": "the board talks here",
+                "signalDelay": "none",
+            }),
+            json!({
+                "room": sample_community_room_v2(), "roomProfile": "written",
+                "signalDelay": "none",
+            })
+        ),
         checked!(
             s::rooms::community::list::v0_3::Payload,
             s::rooms::community::list::v0_3::Response,
@@ -1567,6 +1580,19 @@ fn table() -> Vec<Conformance> {
                 "tags": [], "reason": "the 2027 cycle",
             }),
             json!({ "room": sample_community_room_v2(), "changed": true, "roomProfile": "written" })
+        ),
+        // 0.4: the signal delay alone is a change, and needs no profile write.
+        checked!(
+            s::rooms::community::update::v0_4::Payload,
+            s::rooms::community::update::v0_4::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "signalDelay": "none",
+                "reason": "the board talks here",
+            }),
+            json!({
+                "room": sample_community_room_v2(), "changed": true,
+                "roomProfile": "unchanged", "signalDelay": "none",
+            })
         ),
         checked!(
             s::rooms::community::members::add::v0_2::Payload,
@@ -1630,6 +1656,15 @@ fn table() -> Vec<Conformance> {
                     "nextAttemptAt": "2026-11-02T10:00:33Z",
                     "lastError": "1 of the room's files could not be deleted from storage yet" },
             })) })
+        ),
+        checked!(
+            s::rooms::community::get::v0_5::Payload,
+            s::rooms::community::get::v0_5::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({
+                "room": sample_community_room_v3(json!({ "state": "active" })),
+                "signalDelay": "randomised",
+            })
         ),
         checked!(
             s::rooms::community::archive::v0_1::Payload,

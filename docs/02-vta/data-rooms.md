@@ -2393,8 +2393,12 @@ pnm rooms owner register --room <room-did> --host-did <host-did> --owner <person
   whose governance kept the delay everywhere would refuse `signalDelayNotPermitted`,
   recording nothing.
 - **On a VTC's console** the room's page shows the setting the community applies
-  (`vtc/rooms/get/0.3` `ext["org.openvtc"].signalDelay`). The community, as host,
-  only shows it: the room's administrators change it.
+  (`vtc/rooms/get/0.3` `ext["org.openvtc"].signalDelay`). For a room a member owns, the
+  community, as host, only shows it: the room's administrators change it. For a room the
+  community owns, it is both host and administrator: the setting is chosen in the console's
+  *New community room* form and changed with *Edit details* on the room's page
+  (`vtc/rooms/community/create/0.5`, `update/0.4`; `cnm rooms create|update
+  --signal-delay`) — see `docs/03-vtc/community-rooms.md`.
 
 ---
 

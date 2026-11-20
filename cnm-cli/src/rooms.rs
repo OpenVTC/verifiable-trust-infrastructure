@@ -64,6 +64,12 @@ pub enum RoomsCommands {
         /// The storage config to receive the room's files. Default: the community's.
         #[arg(long)]
         storage_config: Option<String>,
+        /// Whether this community waits a few seconds, at random, before telling a member's
+        /// device the room changed. `none` sends at once, for a room members talk in — and
+        /// in a quiet room lets anyone who sees both a write and a signal tell when the
+        /// writer wrote. Default `randomised`.
+        #[arg(long, value_enum)]
+        signal_delay: Option<SignalDelayArg>,
         /// Why — recorded in the audit trail.
         #[arg(long)]
         reason: String,
@@ -89,9 +95,9 @@ pub enum RoomsCommands {
         /// The room's DID.
         room: String,
     },
-    /// Rename a room the community owns, or change its description or tags. Each one given
-    /// replaces what the room has; the rest are left as they are. Takes no passkey: it
-    /// reaches no key holder and changes nobody's access.
+    /// Rename a room the community owns, change its description or tags, or turn its
+    /// signal delay on or off. Each one given replaces what the room has; the rest are left
+    /// as they are. Takes no passkey: it changes nobody's access.
     Update {
         /// The room's DID.
         room: String,
@@ -110,6 +116,12 @@ pub enum RoomsCommands {
         /// Remove every tag.
         #[arg(long)]
         clear_tags: bool,
+        /// Whether this community waits a few seconds, at random, before telling a member's
+        /// device the room changed. `none` sends at once, for a room members talk in — and
+        /// in a quiet room lets anyone who sees both a write and a signal tell when the
+        /// writer wrote.
+        #[arg(long, value_enum)]
+        signal_delay: Option<SignalDelayArg>,
         /// Why — recorded in the audit trail with the earlier values.
         #[arg(long)]
         reason: String,
@@ -235,6 +247,26 @@ pub enum VisibilityArg {
     Attributed,
     Private,
 }
+
+/// A room's signal delay (`rooms/_shared/0.2` `SignalDelay`).
+#[derive(Clone, Copy, ValueEnum, PartialEq, Eq, Debug)]
+pub enum SignalDelayArg {
+    Randomised,
+    None,
+}
+
+impl SignalDelayArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Randomised => "randomised",
+            Self::None => "none",
+        }
+    }
+}
+
+/// What `none` gives up, said before it is sent (`create/0.5`, `update/0.4`: a surface
+/// offering it SHOULD say so).
+const SIGNAL_DELAY_NONE_NOTE: &str = "Signal delay off: members' devices hear of a change at      once. In a quiet room, anyone who sees both a write reach the community and a signal      leave it can tell when the writer wrote.";
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum RetentionArg {
@@ -759,6 +791,16 @@ fn valid_until(valid_for: Option<&str>, valid_until: Option<&str>) -> CliResult<
     }
 }
 
+/// The room's signal delay, from a response that carries it (`create/0.5`, `get/0.5`,
+/// `update/0.4`).
+fn print_signal_delay(v: &Value) {
+    match v["signalDelay"].as_str() {
+        Some("none") => println!("  {DIM}signals sent at once (signal delay off){RESET}"),
+        Some(_) => println!("  {DIM}signals sent after a short random wait{RESET}"),
+        None => {}
+    }
+}
+
 fn print_room(room: &Value) {
     let r = &room["room"];
     let tags = room_tags(room);
@@ -843,7 +885,7 @@ fn room_tags(room: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// `vtc/rooms/community/update/0.3`'s payload; an error when it would name no change.
+/// `vtc/rooms/community/update/0.4`'s payload; an error when it would name no change.
 #[allow(clippy::too_many_arguments)]
 fn update_payload(
     room: &str,
@@ -852,6 +894,7 @@ fn update_payload(
     remove_description: bool,
     tags: Vec<String>,
     clear_tags: bool,
+    signal_delay: Option<SignalDelayArg>,
     reason: String,
 ) -> CliResult<Value> {
     let mut payload = json!({ "roomId": room, "reason": reason });
@@ -868,14 +911,17 @@ fn update_payload(
     } else if !tags.is_empty() {
         payload["tags"] = json!(dedup(tags));
     }
+    if let Some(d) = signal_delay {
+        payload["signalDelay"] = json!(d.as_str());
+    }
     if payload.as_object().is_some_and(|o| o.len() < 3) {
         return Err(
             "name what to change: --label, --description, --remove-description, \
-             --tag or --clear-tags"
+             --tag, --clear-tags or --signal-delay"
                 .into(),
         );
     }
-    typed::<spec::update::v0_3::Payload>(payload)
+    typed::<spec::update::v0_4::Payload>(payload)
 }
 
 /// Tags as a set, in the order first given.
@@ -927,6 +973,7 @@ async fn run_task(
             retention_policy,
             retention_days,
             storage_config,
+            signal_delay,
             reason,
         } => {
             let mut payload = json!({
@@ -952,14 +999,22 @@ async fn run_task(
             if !tags.is_empty() {
                 payload["tags"] = json!(dedup(tags));
             }
-            // 0.4: the label and description are also written into the room as its profile.
-            let type_uri = <spec::create::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let payload = typed::<spec::create::v0_4::Payload>(payload)?;
+            if let Some(d) = signal_delay {
+                payload["signalDelay"] = json!(d.as_str());
+                if d == SignalDelayArg::None && !is_json_output() {
+                    eprintln!("{SIGNAL_DELAY_NONE_NOTE}");
+                }
+            }
+            // 0.4: the label and description are also written into the room as its profile;
+            // 0.5: and the room's signal delay.
+            let type_uri = <spec::create::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let payload = typed::<spec::create::v0_5::Payload>(payload)?;
             let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
+            print_signal_delay(&v);
             if let Some(said) = room_profile_said(&v) {
                 println!("{said}");
             }
@@ -1045,13 +1100,14 @@ async fn run_task(
             Ok(())
         }
         RoomsCommands::Get { room } => {
-            let payload = typed::<spec::get::v0_4::Payload>(json!({ "roomId": room }))?;
-            let type_uri = <spec::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let payload = typed::<spec::get::v0_5::Payload>(json!({ "roomId": room }))?;
+            let type_uri = <spec::get::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
             let v = read(client, type_uri, payload, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
+            print_signal_delay(&v);
             if let Some(state) = v.pointer("/ext/org.openvtc/roomProfile") {
                 println!("  {DIM}{}{RESET}", room_profile_state(state));
             }
@@ -1136,8 +1192,8 @@ async fn run_task(
         } => {
             // Which room, by the label administrators know it by — checked before anything
             // is signed (`remove/0.1` producer item).
-            let get = typed::<spec::get::v0_4::Payload>(json!({ "roomId": room }))?;
-            let get_uri = <spec::get::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let get = typed::<spec::get::v0_5::Payload>(json!({ "roomId": room }))?;
+            let get_uri = <spec::get::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
             let current = read(client, get_uri, get, &key).await?;
             let label = current["room"]["label"].as_str().unwrap_or_default();
             confirm_label(label, &confirm, &room)?;
@@ -1219,6 +1275,7 @@ async fn run_task(
             remove_description,
             tags,
             clear_tags,
+            signal_delay,
             reason,
         } => {
             let payload = update_payload(
@@ -1228,15 +1285,20 @@ async fn run_task(
                 remove_description,
                 tags,
                 clear_tags,
+                signal_delay,
                 reason,
             )?;
+            if signal_delay == Some(SignalDelayArg::None) && !is_json_output() {
+                eprintln!("{SIGNAL_DELAY_NONE_NOTE}");
+            }
             // A new label or description is written into the room as its profile too.
-            let type_uri = <spec::update::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let type_uri = <spec::update::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
             let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
+            print_signal_delay(&v);
             if v["changed"] == true {
                 println!("Changed. The earlier values are in the community's audit trail.");
             } else {
@@ -1484,6 +1546,7 @@ mod tests {
             true,
             vec!["board".into(), "finance".into(), "board".into()],
             false,
+            None,
             "the 2027 cycle".into(),
         )
         .unwrap();
@@ -1499,6 +1562,7 @@ mod tests {
             false,
             Vec::new(),
             true,
+            None,
             "r".into(),
         )
         .unwrap();
@@ -1516,6 +1580,7 @@ mod tests {
             false,
             Vec::new(),
             false,
+            None,
             "r".into(),
         );
         assert!(
@@ -1530,12 +1595,28 @@ mod tests {
             false,
             vec!["Board Pack".into()],
             false,
+            None,
             "r".into(),
         );
         assert!(
             bad_tag.is_err(),
             "a tag outside the specification is caught before signing"
         );
+
+        // update/0.4: the signal delay alone is a change.
+        let delay = update_payload(
+            "did:key:z6MkRoom",
+            None,
+            None,
+            false,
+            Vec::new(),
+            false,
+            Some(SignalDelayArg::None),
+            "the board talks here".into(),
+        )
+        .unwrap();
+        assert_eq!(delay["signalDelay"], "none");
+        assert!(delay.get("label").is_none());
     }
 
     #[test]

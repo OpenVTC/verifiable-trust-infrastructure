@@ -67,6 +67,9 @@ const ARCHIVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/archive/0
 const UNARCHIVE: &str = "https://trusttasks.org/spec/vtc/rooms/community/unarchive/0.1";
 const REMOVE_ROOM: &str = "https://trusttasks.org/spec/vtc/rooms/community/remove/0.1";
 const CANCEL_REMOVAL: &str = "https://trusttasks.org/spec/vtc/rooms/community/removal/cancel/0.1";
+const CREATE_V5: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5";
+const GET_V5: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.5";
+const UPDATE_V4: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.4";
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.
 fn tt_error_code(doc: &Value) -> Option<&str> {
@@ -2043,6 +2046,133 @@ fn row_details(row: &Value) -> Value {
         }
     }
     find(row).expect("a detailsUpdated event")
+}
+
+/// The room's host record's signal delay — what the watcher reads when it fires.
+async fn hosted_delay(fix: &Fixture, room: &str) -> vti_rooms::signal_delay::SignalDelay {
+    vti_rooms::storage::get_room(&fix.vtc.state.rooms_ks, room)
+        .await
+        .unwrap()
+        .signal_delay
+}
+
+/// `vtc/rooms/community/create/0.5` items 10–11, `get/0.5` item 5 and `update/0.4` items 13
+/// and 3–6: a community room states its signal delay at creation — recorded in the room's
+/// host record, which the watcher reads, echoed, and audited when it is `none` — reads it
+/// back, and changes it alone: a change audited with the delay replaced and the one
+/// recorded, no profile write, and an unchanged request that writes nothing. The earlier
+/// versions still create and change rooms, with the delay they always had.
+#[tokio::test]
+async fn vtc_rooms_community_signal_delay_is_set_at_create_read_and_changed() {
+    use vti_rooms::signal_delay::SignalDelay;
+    let mut fix = fixture().await;
+
+    // Create 0.5 with `none`.
+    let (status, reply) = admin_call(
+        &mut fix,
+        CREATE_V5,
+        json!({
+            "label": "Board chat", "visibility": "open", "signalDelay": "none",
+            "reason": "the board talks here",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["payload"]["signalDelay"], "none", "{reply}");
+    let chat = reply["payload"]["room"]["room"]["roomId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(hosted_delay(&fix, &chat).await, SignalDelay::None);
+    let created = audit_rows(&fix).await;
+    assert!(
+        created.contains("\"signalDelay\"") && created.contains("\"none\""),
+        "a `none` create is audited with the create: {created}"
+    );
+
+    // Create 0.5 without one, and create 0.4: both `randomised`.
+    let (_, reply) = admin_call(
+        &mut fix,
+        CREATE_V5,
+        json!({ "label": "Board pack", "visibility": "open", "reason": "the board's papers" }),
+    )
+    .await;
+    assert_eq!(reply["payload"]["signalDelay"], "randomised", "{reply}");
+    let older = create_room(&mut fix, "open").await;
+    assert_eq!(hosted_delay(&fix, &older).await, SignalDelay::Randomised);
+
+    // Get 0.5 reads it; get 0.4 still answers, without it.
+    let got = call_as(&fix, &fix.admin, GET_V5, json!({ "roomId": chat })).await;
+    assert_eq!(got["payload"]["signalDelay"], "none", "{got}");
+    let got = call_as(&fix, &fix.admin, GET_V4, json!({ "roomId": chat })).await;
+    assert!(got["payload"].get("signalDelay").is_none(), "{got}");
+
+    // Update 0.4: the delay alone is a change, needing no profile write and asking the VTA
+    // nothing.
+    fix.vta.clear_calls();
+    let before = details_rows(&fix).await.len();
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V4,
+        json!({ "roomId": older, "signalDelay": "none", "reason": "the board talks here too" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["signalDelay"], "none", "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "unchanged", "{r}");
+    assert_eq!(r["payload"]["room"]["detailsUpdatedBy"], fix.admin.did);
+    assert_eq!(hosted_delay(&fix, &older).await, SignalDelay::None);
+    assert!(
+        !fix.vta.types_called().iter().any(|t| t == PROFILE_WRITE),
+        "{:?}",
+        fix.vta.calls()
+    );
+    let rows = details_rows(&fix).await;
+    assert_eq!(rows.len(), before + 1, "{rows:?}");
+    let d = row_details(rows.last().unwrap());
+    assert_eq!(
+        d["details"],
+        json!([{ "field": "signalDelay", "old": "randomised", "new": "none" }])
+    );
+
+    // The same delay again changes nothing and audits nothing.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V4,
+        json!({ "roomId": older, "signalDelay": "none", "reason": "again" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], false, "{r}");
+    assert_eq!(r["payload"]["signalDelay"], "none", "{r}");
+    assert_eq!(details_rows(&fix).await.len(), before + 1);
+
+    // And back, with a rename in the same request: applied together.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V4,
+        json!({
+            "roomId": older, "label": "Board papers", "signalDelay": "randomised",
+            "reason": "papers again",
+        }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["room"]["label"], "Board papers");
+    assert_eq!(hosted_delay(&fix, &older).await, SignalDelay::Randomised);
+
+    // Update 0.3 leaves the delay where it is.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE,
+        json!({ "roomId": chat, "label": "Board talk", "reason": "rename" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(hosted_delay(&fix, &chat).await, SignalDelay::None);
 }
 
 /// `vtc/rooms/community/update/0.3` items 3–6: each detail given replaces the stored one

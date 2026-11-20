@@ -64,13 +64,14 @@ import type {
   CommunityRoomsListResponse,
   CommunityRoomUpdatePayload,
   CommunityRoomUpdateResponse,
+  SignalDelay,
 } from "./wire-types";
 import { messageOf } from "@/lib/messages";
 
-export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4";
+export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5";
 export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.4";
-export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.4";
-export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3";
+export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.5";
+export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.4";
 export const COMMUNITY_ROOMS_MEMBERS_ADD_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2";
 export const COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK =
@@ -394,9 +395,10 @@ export async function fetchCommunityRoomMembers(
   return { items, truncated: true, departures: departures ?? [] };
 }
 
-/** `vtc/rooms/community/create/0.4`, after the requester's bound gesture: the
+/** `vtc/rooms/community/create/0.5`, after the requester's bound gesture: the
  *  community's VTA also writes the label and description into the room as its
- *  profile (`roomProfile` says whether it did yet). */
+ *  profile (`roomProfile` says whether it did yet), and the room keeps the signal
+ *  delay asked for (`randomised` when none is). */
 export function createCommunityRoom(
   payload: CommunityRoomCreatePayload,
   confirmGesture: ConfirmGesture,
@@ -408,8 +410,8 @@ export function createCommunityRoom(
   );
 }
 
-/** `vtc/rooms/community/update/0.3` — and a new label or description is written
- *  into the room as its profile. It asks for no gesture; one is given only
+/** `vtc/rooms/community/update/0.4` — and a new label or description is written
+ *  into the room as its profile; a new signal delay goes to the room's host record. It asks for no gesture; one is given only
  *  if the community's policy asks for it all the same. */
 export function updateCommunityRoom(
   payload: CommunityRoomUpdatePayload,
@@ -661,7 +663,14 @@ export interface RoomDetailsForm {
   label: string;
   description: string;
   tags: string[];
+  /** Absent: the form does not change it. */
+  signalDelay?: SignalDelay;
   reason: string;
+}
+
+/** The signal delay a `get/0.5` answers — `randomised` from an answer without one. */
+export function signalDelayOfGet(body: { signalDelay?: SignalDelay }): SignalDelay {
+  return body.signalDelay === "none" ? "none" : "randomised";
 }
 
 const sameSet = (a: readonly string[], b: readonly string[]) =>
@@ -669,8 +678,13 @@ const sameSet = (a: readonly string[], b: readonly string[]) =>
 
 /** The `update` payload naming only what `form` changes on `room` — each member
  *  given replaces the stored one — or `null` when it changes nothing. An emptied
- *  description is `removeDescription`, emptied tags are `tags: []`. */
-export function detailsUpdate(room: CommunityRoom, form: RoomDetailsForm): CommunityRoomUpdatePayload | null {
+ *  description is `removeDescription`, emptied tags are `tags: []`; the signal
+ *  delay is sent only when it differs from `currentDelay`, the room's own. */
+export function detailsUpdate(
+  room: CommunityRoom,
+  form: RoomDetailsForm,
+  currentDelay: SignalDelay = "randomised",
+): CommunityRoomUpdatePayload | null {
   const payload: CommunityRoomUpdatePayload = { roomId: room.room.roomId, reason: form.reason.trim() };
   const label = form.label.trim();
   if (label !== room.label) payload.label = label;
@@ -678,6 +692,7 @@ export function detailsUpdate(room: CommunityRoom, form: RoomDetailsForm): Commu
   if (description === "" && room.description) payload.removeDescription = true;
   else if (description !== "" && description !== room.description) payload.description = description;
   if (!sameSet(form.tags, room.tags ?? [])) payload.tags = form.tags;
+  if (form.signalDelay && form.signalDelay !== currentDelay) payload.signalDelay = form.signalDelay;
   return Object.keys(payload).length > 2 ? payload : null;
 }
 

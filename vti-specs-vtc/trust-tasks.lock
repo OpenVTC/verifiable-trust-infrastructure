@@ -648,7 +648,7 @@ digest = "sha256:2cb5a29ecb320bdab7a3015ccb07aba3e34feede90631cd8be8f75c93b23e97
 slug = "vtc/elections/list"
 version = "0.5"
 type_uri = "https://trusttasks.org/spec/vtc/elections/list/0.5"
-digest = "sha256:0047bba7a0dc61cef68fdb5ebd9e13a7caf1edf40d53021f98d511591e5421b8"
+digest = "sha256:9823069839de52ff94e867dc2a96e816923f9cbd20dbd5531d588cf01288ae76"
 
 [[task]]
 slug = "vtc/elections/show"
@@ -672,7 +672,7 @@ digest = "sha256:658787336e859341ef1c4421dc36de5c35242dc0e27db402901df95d24c4e69
 slug = "vtc/elections/show"
 version = "0.6"
 type_uri = "https://trusttasks.org/spec/vtc/elections/show/0.6"
-digest = "sha256:e60b3bb716611cbf6ead1375b945bbe9714ae07a1394a6bb799003c329cdd7b6"
+digest = "sha256:27c7cada9abd68512f6657a0f58d94b2417ea4b37525f03007982404f511db7e"
 
 [[task]]
 slug = "vtc/elections/tickets/issue"
@@ -1326,19 +1326,31 @@ digest = "sha256:7472c9acc76d5096595c88118864e664f52c619b58158b3670423ba81fea33e
 slug = "vtc/rooms/community/create"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4"
-digest = "sha256:dc38f206b5b8b3c2178c16f9d280f9aed3b4fd75bc3adaea6129acac659a371e"
+digest = "sha256:3c463ddb72c71cd27d74a9029adde6b72123c268639275d332c7d77a93cc8f81"
+
+[[task]]
+slug = "vtc/rooms/community/create"
+version = "0.5"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5"
+digest = "sha256:5855583ac7e651c81924d25faa5b4df73cb4cbe70a5f1d9eb684f3429a80be4a"
 
 [[task]]
 slug = "vtc/rooms/community/get"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3"
-digest = "sha256:c39f7159237366edbd937fad12bd5379be99854f12477a34ae23afc74eca275f"
+digest = "sha256:9cc0e88071aa5c7c15805eac0da55dfa41deb6bbce8abaa56b0606a57bc2dba7"
 
 [[task]]
 slug = "vtc/rooms/community/get"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.4"
-digest = "sha256:f0c85aeb7b2ef0d4d3f60538636b94803090e30002e068c9f3d885a05b41d9a1"
+digest = "sha256:c8da26542e3cebf287eb990d0c34d43b54cffd40f503e62ec8078f4477245cff"
+
+[[task]]
+slug = "vtc/rooms/community/get"
+version = "0.5"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.5"
+digest = "sha256:a583c4fe9a5289d083eea54272e62a2a5d1215a5de16c4b34f0575d8cb31dbfc"
 
 [[task]]
 slug = "vtc/rooms/community/list"
@@ -1398,7 +1410,13 @@ digest = "sha256:c3d3c8a57401304aec38618cc17ce6494cb99d124114f5ebf00a60bde011c20
 slug = "vtc/rooms/community/update"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3"
-digest = "sha256:9e5bebf73ee898064aea2f4c4c50b172e982512c1d9eda2cb4faff19294e9a57"
+digest = "sha256:c0d87c4ccd15d8226db2de37ba4ac8447b564e20dd68da636402066d24da896b"
+
+[[task]]
+slug = "vtc/rooms/community/update"
+version = "0.4"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/update/0.4"
+digest = "sha256:46e812089fe09b05d14a25d99bef2bb3f32dd442c14701d8a06149a36a5e7735"
 
 [[task]]
 slug = "vtc/rooms/get"

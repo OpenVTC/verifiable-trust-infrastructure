@@ -3,7 +3,7 @@
 // header.
 
 import { roomStateLabel } from "@/lib/community-rooms-api";
-import type { CommunityRoomStatus } from "@/lib/wire-types";
+import type { CommunityRoomStatus, SignalDelay } from "@/lib/wire-types";
 
 export const TIERS = ["open", "attributed", "private"] as const;
 export type Tier = (typeof TIERS)[number];
@@ -96,4 +96,66 @@ export function communityRoomPath(roomId: string): string {
 /** Where one storage config's page is. */
 export function configPath(configId: string): string {
   return `${STORAGE_PATH}/${encodeURIComponent(configId)}`;
+}
+
+/** What `none` gives up, in the specification's words (`rooms/signal-delay/set/0.1`; a
+ *  surface offering it SHOULD say so — `vtc/rooms/community/create/0.5`, `update/0.4`). */
+export const SIGNAL_DELAY_NONE_TRADE_OFF =
+  "The wait keeps a signal's time from marking one write. In a busy room that costs little — " +
+  "the room's rhythm shows in its writes anyway. In a quiet room, one write followed by one " +
+  "signal at once tells anyone who sees both reach and leave this host when the writer wrote, " +
+  "and that writer and watcher share the room.";
+
+/** What the randomised delay is for, in a sentence. */
+export const SIGNAL_DELAY_RANDOMISED_MEANS =
+  "This host waits a few seconds, at random, before telling a member's device the room changed, " +
+  "so a signal's time does not mark one write.";
+
+/** Whether a room's watch signals wait: the room's signal delay, chosen at creation and
+ *  changed on its page. Says what `none` gives up whenever it is the choice. */
+export function SignalDelayChoice({
+  name,
+  value,
+  onChange,
+}: {
+  name: string;
+  value: SignalDelay;
+  onChange: (value: SignalDelay) => void;
+}) {
+  return (
+    <fieldset className="choice-group">
+      <legend className="field-label">Watch signals</legend>
+      <label className="checkbox">
+        <input
+          type="radio"
+          name={name}
+          value="randomised"
+          checked={value === "randomised"}
+          onChange={() => onChange("randomised")}
+        />
+        <span className="checkbox-text">
+          After a short random wait
+          <span className="choice-hint">{SIGNAL_DELAY_RANDOMISED_MEANS} The default.</span>
+        </span>
+      </label>
+      <label className="checkbox">
+        <input
+          type="radio"
+          name={name}
+          value="none"
+          checked={value === "none"}
+          onChange={() => onChange("none")}
+        />
+        <span className="checkbox-text">
+          At once
+          <span className="choice-hint">For a room members talk in, where a few seconds on every message is too slow.</span>
+        </span>
+      </label>
+      {value === "none" && (
+        <p className="muted rooms-sub" role="note">
+          {SIGNAL_DELAY_NONE_TRADE_OFF} Mediators and push services still take the time they take.
+        </p>
+      )}
+    </fieldset>
+  );
 }

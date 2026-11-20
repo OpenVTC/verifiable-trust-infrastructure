@@ -55,7 +55,15 @@ import type {
 import { RefusalCard } from "./CommunityRefusal";
 import { DayChart, type DayMetric } from "./DayChart";
 import { LimitsForm } from "./LimitsForm";
-import { LifecyclePill, TIER_BLURB, communityRoomPath, configPath, type Tier } from "./shared";
+import {
+  LifecyclePill,
+  SIGNAL_DELAY_NONE_TRADE_OFF,
+  SIGNAL_DELAY_RANDOMISED_MEANS,
+  TIER_BLURB,
+  communityRoomPath,
+  configPath,
+  type Tier,
+} from "./shared";
 import { CommunityRoomBadge, MEMBER_NAMED_NOTE, useRoomNames, type RoomName } from "./useRoomNames";
 
 /** How often a room with a migration under way is read again. */
@@ -187,7 +195,7 @@ function Identity({ data, name }: { data: RoomGetResponse; name: RoomName }) {
         </dd>
         <dt>Watch signals</dt>
         <dd>
-          <SignalDelayFact data={data} />
+          <SignalDelayFact data={data} communityOwned={name.kind === "community"} />
         </dd>
         <dt>Created</dt>
         <dd>{formatIso(r.createdAt)}</dd>
@@ -214,14 +222,7 @@ export function signalDelayOf(data: Pick<RoomGetResponse, "ext">): "randomised" 
   return ours.signalDelay === "none" ? "none" : "randomised";
 }
 
-/** What `none` gives up, in the specification's words (`rooms/signal-delay/set/0.1`). */
-export const SIGNAL_DELAY_NONE_TRADE_OFF =
-  "The wait keeps a signal's time from marking one write. In a busy room that costs little — " +
-  "the room's rhythm shows in its writes anyway. In a quiet room, one write followed by one " +
-  "signal at once tells anyone who sees both reach and leave this host when the writer wrote, " +
-  "and that writer and watcher share the room.";
-
-function SignalDelayFact({ data }: { data: RoomGetResponse }) {
+function SignalDelayFact({ data, communityOwned }: { data: RoomGetResponse; communityOwned: boolean }) {
   const delay = signalDelayOf(data);
   return (
     <>
@@ -229,9 +230,18 @@ function SignalDelayFact({ data }: { data: RoomGetResponse }) {
       <div className="muted rooms-sub">
         {delay === "none"
           ? `The room's administrators turned the delay off, as for a conversation. ${SIGNAL_DELAY_NONE_TRADE_OFF}`
-          : "This host waits a few seconds, at random, before telling a member's device the room changed, so a signal's time does not mark one write."}{" "}
-        The setting is the room's: a holder of its <code>admin</code> grant changes it
-        (<code>pnm rooms signal-delay set</code>), not this community.
+          : SIGNAL_DELAY_RANDOMISED_MEANS}{" "}
+        {communityOwned ? (
+          <>
+            The setting is the room&rsquo;s, and this community owns it: change it from{" "}
+            <Link to={communityRoomPath(data.room.roomId)}>the room&rsquo;s page in Community rooms</Link>.
+          </>
+        ) : (
+          <>
+            The setting is the room&rsquo;s: a holder of its <code>admin</code> grant changes it
+            (<code>pnm rooms signal-delay set</code>), not this community.
+          </>
+        )}
       </div>
     </>
   );
