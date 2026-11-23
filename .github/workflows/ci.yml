@@ -1590,6 +1590,11 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update \
             --target aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
           rustup default stable
+          # rust-toolchain.toml overrides `stable` inside the repo, so the
+          # cross targets must be on the pinned toolchain too.
+          pinned=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$pinned" --profile minimal --no-self-update \
+            --target aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
