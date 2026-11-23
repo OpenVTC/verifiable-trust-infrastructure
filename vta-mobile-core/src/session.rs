@@ -1,4 +1,4 @@
-//! VTA authentication, expressed as `auth/*` Trust Tasks.
+//! VTA authentication, expressed as `auth/<task>` Trust Tasks.
 //!
 //! The agent authenticates to its VTA the custody-correct way — composing the
 //! engine's own primitives rather than reusing `vta-sdk`'s session (which holds

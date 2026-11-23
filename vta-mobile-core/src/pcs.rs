@@ -1,4 +1,4 @@
-//! Hidden vetting through the holder's VTA (`vta/pcs/*`, the VTA as PCS engine).
+//! Hidden vetting through the holder's VTA (`vta/pcs/<task>`, the VTA as PCS engine).
 //!
 //! A community that runs hidden vetting admits an applicant on a zero-knowledge proof, built
 //! with a PCS key this device could not hold — there is no mobile PCS implementation. The VTA
@@ -40,7 +40,7 @@ use crate::keys::Signer;
 use crate::proof::attach_did_signed_proof;
 use crate::session::AuthEnvelope;
 
-/// The `vta/pcs/*` task a document is for.
+/// The `vta/pcs/<task>` task a document is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum PcsTask {
     ApplicationsCreate,
@@ -100,7 +100,7 @@ fn response<R: Serialize + DeserializeOwned>(json: &str) -> Result<String, FfiEr
     serde_json::to_string(&doc.payload).map_err(decode)
 }
 
-/// Build a holder-signed `vta/pcs/*` request to the holder's VTA.
+/// Build a holder-signed `vta/pcs/<task>` request to the holder's VTA.
 ///
 /// `payload_json` is the task's payload; it is checked against the task's generated type
 /// before anything is signed, so an `InvalidInput` here names the schema violation.
@@ -142,7 +142,7 @@ pub fn build_pcs_task(
     }
 }
 
-/// Check a `vta/pcs/*#response` against the task's generated response type and return its
+/// Check a `vta/pcs/<task>#response` against the task's generated response type and return its
 /// payload as JSON. A `trust-task-error` answer is not a response and fails here with `Decode`;
 /// the native layer reads its `payload.code` (`vta/pcs/prove:noUsableAttestation`, …) itself.
 #[uniffi::export]

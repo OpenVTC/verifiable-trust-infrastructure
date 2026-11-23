@@ -14,7 +14,7 @@
 //!
 //! This module builds the two Trust Task documents the **device** sends; transport
 //! (HTTPS for a URL gateway, or DIDComm authcrypt for a DID gateway / the VTA's
-//! mediator) is the native layer's job, exactly as for the `auth/*` documents:
+//! mediator) is the native layer's job, exactly as for the `auth/<task>` documents:
 //!
 //! 1. `build_push_register` → `push/register` to the **gateway**: register a
 //!    platform token, get back an opaque [`WakeHandle`]. **No proof** — register

@@ -22,7 +22,7 @@
 //!
 //! 1. **this slice** — skeleton + minimal sync surface; prove the crate builds and Kotlin/Swift bindings generate.
 //! 2. Trust Task build/verify (pure, sync) — see [`task`], [`stepup`].
-//! 3. VTA auth — `auth/*` Trust Task build/parse (pure, sync) — see [`session`];
+//! 3. VTA auth — `auth/<task>` Trust Task build/parse (pure, sync) — see [`session`];
 //!    DIDComm pack/unpack — see [`didcomm`]; async DID resolution — see
 //!    [`resolver`]; push registration — see [`push`].
 
