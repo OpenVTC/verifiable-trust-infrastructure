@@ -59,7 +59,12 @@ fn tt_error_code(body: &Value) -> &str {
 
 #[derive(Default, Clone, Copy)]
 struct Refuse {
+    /// The network holds no entry for the community: its own-entry read answers not-found,
+    /// and every other task is refused.
     session: bool,
+    /// The network refuses the community outright (`permissionDenied`), as one that cannot
+    /// verify its signature does.
+    deny: bool,
     groups: bool,
     repudiate: bool,
 }
@@ -120,8 +125,8 @@ async fn fake_network(community: &str, required: bool) -> (String, String, Share
         )
     }
     /// `vtn/*` Trust Tasks, answered as a network does: the request's proof must be its
-    /// issuer's, for `authentication`, addressed to this network. `refuse.session` refuses
-    /// the community outright, as a network that does not list it.
+    /// issuer's, for `authentication`, addressed to this network. `refuse.session` answers
+    /// as a network that does not list the community, `refuse.deny` as one that refuses it.
     /// Every answer signed by the network for `authentication`, as the spine signs it.
     async fn tasks(AxState(s): AxState<Shared>, doc: Json<Value>) -> (StatusCode, Json<Value>) {
         let identity = s.lock().await.identity.clone();
@@ -172,7 +177,25 @@ async fn fake_network(community: &str, required: bool) -> (String, String, Share
                 })),
             )
         };
+        if n.refuse.session && slug == "vtn/entries/show" {
+            // The framework's not-found, as a network answers a party it has no entry for.
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.6",
+                    "issuer": me,
+                    "threadId": doc["id"],
+                    "payload": {
+                        "code": "taskFailed",
+                        "message": format!("no entry for {issuer}"),
+                        "details": { "reason": "not_found" },
+                    },
+                })),
+            );
+        }
         if n.refuse.session
+            || n.refuse.deny
             || doc["recipient"].as_str() != Some(me.as_str())
             || verify_document(&doc, &issuer, AUTHENTICATION, &LocalDidKeyResolver)
                 .await
@@ -675,7 +698,34 @@ async fn a_preview_reads_the_network_and_where_the_community_stands() {
     assert_eq!(r["payload"]["listed"], false);
     assert!(r["payload"]["notListedReason"].as_str().is_some(), "{r}");
     assert!(r["payload"].get("entryState").is_none(), "{r}");
+    assert_eq!(
+        r["payload"]["ext"]["org.openvtc"]["listingProblem"], "notListed",
+        "{r}"
+    );
     net.lock().await.refuse.session = false;
+
+    // A network that refuses the community is not one that does not list it.
+    net.lock().await.refuse.deny = true;
+    let (status, r) = signed::call(
+        &f.vtc,
+        admin,
+        PREVIEW,
+        json!({ "url": url, "network": network }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{r}");
+    assert_eq!(r["payload"]["listed"], false);
+    assert_eq!(
+        r["payload"]["ext"]["org.openvtc"]["listingProblem"], "refused",
+        "{r}"
+    );
+    assert!(
+        r["payload"]["notListedReason"]
+            .as_str()
+            .is_some_and(|why| why.contains("permissionDenied")),
+        "{r}"
+    );
+    net.lock().await.refuse.deny = false;
 
     // Once joined, both sides say so.
     let (status, r) = f

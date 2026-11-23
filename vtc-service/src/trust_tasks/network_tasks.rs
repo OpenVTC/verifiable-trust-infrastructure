@@ -329,7 +329,13 @@ fn preview_json(found: &networks::Preview) -> Value {
             out["entryState"] = json!(entry_state);
         }
         Ok(_) => {}
-        Err(why) => out["notListedReason"] = json!(why.chars().take(1024).collect::<String>()),
+        Err((problem, why)) => {
+            out["notListedReason"] = json!(why.chars().take(1024).collect::<String>());
+            // The response schema has no member for why the listing is unconfirmed, so the
+            // console's distinction between "not listed" and "the network refused or did
+            // not answer" rides in `ext`.
+            out["ext"] = json!({ "org.openvtc": { "listingProblem": problem.as_str() } });
+        }
     }
     if let Some(m) = found.membership {
         out["membershipState"] = serde_json::to_value(m).unwrap_or(Value::Null);

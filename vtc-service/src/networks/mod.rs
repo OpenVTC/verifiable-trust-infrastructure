@@ -384,28 +384,134 @@ async fn own_entry(
     community: &Community,
     resolver: &VmKeyResolver,
 ) -> Result<Value, NetError> {
-    // A party always reads its own entry; any refusal means it has none there. An answer
-    // that is not the network's says nothing about the entry.
-    let answer =
-        ask::<entries_show::Payload>(client, community, network, json!({ "did": community.did }))
-            .await
-            .map_err(|e| match e {
-                NetError::Mismatch(_) => e,
-                e => NetError::NotListed(format!("{network} has no entry for this community: {e}")),
-            })?;
+    check_own_entry(client, network, community, resolver)
+        .await
+        .map_err(EntryCheck::into_net_error)
+}
+
+/// Why the community could not confirm a network lists it (`vtc/networks/preview`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListingProblem {
+    /// The network answered: it holds no entry for this community.
+    NotListed,
+    /// The network answered with an entry whose listing does not verify as the network's,
+    /// or does not list this community as a community.
+    InvalidListing,
+    /// The network refused the community's signed read of its own entry, so whether it
+    /// lists the community is unknown. A network that cannot verify the community's
+    /// signature (for one, a DID method it cannot resolve) refuses like this.
+    Refused,
+    /// The network did not answer the read.
+    Unreachable,
+}
+
+impl ListingProblem {
+    /// The wire value, under the preview's `ext."org.openvtc".listingProblem`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ListingProblem::NotListed => "notListed",
+            ListingProblem::InvalidListing => "invalidListing",
+            ListingProblem::Refused => "refused",
+            ListingProblem::Unreachable => "unreachable",
+        }
+    }
+}
+
+/// What reading the community's own entry at a network found, short of a verified listing.
+#[derive(Debug)]
+enum EntryCheck {
+    /// The answer is not provably the network's: its URL answers as another.
+    Mismatch(String),
+    Unconfirmed(ListingProblem, String),
+}
+
+impl EntryCheck {
+    fn into_net_error(self) -> NetError {
+        match self {
+            EntryCheck::Mismatch(m) => NetError::Mismatch(m),
+            EntryCheck::Unconfirmed(
+                ListingProblem::NotListed | ListingProblem::InvalidListing,
+                why,
+            ) => NetError::NotListed(why),
+            EntryCheck::Unconfirmed(ListingProblem::Refused, why) => NetError::Refused(why),
+            EntryCheck::Unconfirmed(ListingProblem::Unreachable, why) => NetError::Unavailable(why),
+        }
+    }
+}
+
+/// Whether a refusal of `vtn/entries/show` says the network has no entry for the reader:
+/// a declared `…:notListed`, or the framework's not-found (`taskFailed` with
+/// `details.reason: not_found`, or a bare `notFound`). Any other refusal says nothing
+/// about the entry.
+fn is_no_entry(e: &ClientError) -> bool {
+    let ClientError::Refused { code, details, .. } = e else {
+        return false;
+    };
+    code.ends_with(":notListed")
+        || code == "notFound"
+        || (code == "taskFailed"
+            && details
+                .as_ref()
+                .and_then(|d| d["reason"].as_str())
+                .is_some_and(|r| r == vta_sdk::protocols::trust_task_reject_reasons::NOT_FOUND))
+}
+
+/// Read the community's own entry at `network` and verify its listing, telling a network
+/// that answered "no entry" apart from one that refused or could not be reached.
+async fn check_own_entry(
+    client: &VtnClient,
+    network: &str,
+    community: &Community,
+    resolver: &VmKeyResolver,
+) -> Result<Value, EntryCheck> {
+    use ListingProblem::{InvalidListing, NotListed, Refused, Unreachable};
+    let payload: entries_show::Payload = serde_json::from_value(json!({ "did": community.did }))
+        .map_err(|e| {
+            let task = <entries_show::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            EntryCheck::Unconfirmed(Refused, format!("building {task}: {e}"))
+        })?;
+    // A party always reads its own entry, so a "no entry" answer means it is not listed.
+    // An answer that is not the network's says nothing about the entry.
+    let answer = match client.task(community, network, &payload).await {
+        Ok(answer) => serde_json::to_value(answer)
+            .map_err(|e| EntryCheck::Unconfirmed(Refused, e.to_string()))?,
+        Err(e @ ClientError::Unverified(_)) => return Err(EntryCheck::Mismatch(e.to_string())),
+        Err(e) if is_no_entry(&e) => {
+            return Err(EntryCheck::Unconfirmed(
+                NotListed,
+                format!("{network} has no entry for this community"),
+            ));
+        }
+        Err(e @ ClientError::Transport(_)) => {
+            return Err(EntryCheck::Unconfirmed(
+                Unreachable,
+                format!("{network} did not answer: {e}"),
+            ));
+        }
+        Err(e) => {
+            return Err(EntryCheck::Unconfirmed(
+                Refused,
+                format!("{network} refused this community's request: {e}"),
+            ));
+        }
+    };
     let listing = answer["entry"]["listing"].clone();
     let vsc = verify_signed_by(&listing, network, resolver, Utc::now())
         .await
-        .map_err(|e| NetError::NotListed(format!("the listing does not verify: {e}")))?;
+        .map_err(|e| {
+            EntryCheck::Unconfirmed(InvalidListing, format!("the listing does not verify: {e}"))
+        })?;
     if vsc.subject() != community.did || vsc.predicate() != Some(LISTS_V1) {
-        return Err(NetError::NotListed(
+        return Err(EntryCheck::Unconfirmed(
+            InvalidListing,
             "the network's listing does not list this community".into(),
         ));
     }
     if listing["credentialSubject"]["object"]["value"]["nodeType"].as_str()
         != Some(EntryKind::Community.node_type())
     {
-        return Err(NetError::NotListed(
+        return Err(EntryCheck::Unconfirmed(
+            InvalidListing,
             "the network's listing does not list this party as a community".into(),
         ));
     }
@@ -419,9 +525,9 @@ pub struct Preview {
     pub url: String,
     /// The network's `/.well-known/vtn` profile, as it answered.
     pub profile: Value,
-    /// `Ok(entry state)` when the network verifiably lists this community; `Err(why)` when
-    /// it does not.
-    pub listing: Result<String, String>,
+    /// `Ok(entry state)` when the network verifiably lists this community; `Err((problem,
+    /// why))` when that could not be confirmed, and why.
+    pub listing: Result<String, (ListingProblem, String)>,
     /// The community's own record of the membership, if it holds one.
     pub membership: Option<State>,
 }
@@ -453,11 +559,10 @@ pub async fn preview(
         )));
     }
     let community = community(state).await?;
-    let listing = match own_entry(&client, &network, &community, &resolver(state)).await {
+    let listing = match check_own_entry(&client, &network, &community, &resolver(state)).await {
         Ok(entry) => Ok(entry["state"].as_str().unwrap_or("listed").to_string()),
-        Err(NetError::NotListed(why)) => Err(why),
-        Err(NetError::Mismatch(m)) => return Err(NetError::Mismatch(m)),
-        Err(other) => Err(other.to_string()),
+        Err(EntryCheck::Unconfirmed(problem, why)) => Err((problem, why)),
+        Err(EntryCheck::Mismatch(m)) => return Err(NetError::Mismatch(m)),
     };
     let membership = load(state, &network).await?.map(|m| m.state);
     Ok(Preview {
