@@ -108,7 +108,6 @@ mod sign_characterization_tests;
 /// The byte strings `keys/sign-jws` and `keys/sign-csr` sign: a JWS signing
 /// input and a PKCS#10 `CertificationRequestInfo`, built here and nowhere else.
 pub mod sign_formats;
-pub mod step_up_approval;
 /// The guess limit behind a `vtaPin` user-verification key.
 pub mod uv_pin;
 pub mod vault;

@@ -2369,6 +2369,185 @@ mod tests {
         assert_eq!(elevated.acr, "aal2");
         assert!(elevated.amr.iter().any(|m| m == "passkey"));
     }
+
+    /// Step-up user verification (#2702): a passkey approval elevates only on
+    /// an assertion that is user-verified, made over the challenge this step-up
+    /// minted, and presented once. Each refusal leaves the session at `aal1`.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn webauthn_step_up_refuses_no_uv_wrong_challenge_and_replay() {
+        use crate::test_support::SoftAuthenticator;
+
+        const RP_ID: &str = "vta.test";
+        const ORIGIN: &str = "https://vta.test";
+
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        let sk = SigningKey::from_bytes(&[70u8; 32]);
+        let (subject_did, _mb) = did_key(&sk);
+        let session_id = "sess-uv";
+
+        // One enrolled passkey for the subject, as in
+        // `passkey_holder_did_signed_is_refused_and_webauthn_is_accepted`.
+        let authenticator = SoftAuthenticator::new(0x70);
+        let registration = authenticator.register(RP_ID, ORIGIN, "unused-registration-challenge");
+        let passkey_vm_id = format!("{subject_did}#passkey-uv");
+        let doc_json = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": subject_did,
+            "verificationMethod": [{
+                "id": passkey_vm_id,
+                "type": "Multikey",
+                "controller": subject_did,
+                "publicKeyMultibase": registration.public_key_multibase,
+                "webauthnCredentialId": registration.credential_id,
+            }],
+            "authentication": [passkey_vm_id],
+        });
+        let log_line = json!({
+            "versionId": "1-test",
+            "versionTime": "2026-05-06T00:00:00Z",
+            "parameters": {},
+            "state": doc_json,
+        });
+        crate::webvh_store::store_did_log(
+            &state.webvh_ks,
+            &subject_did,
+            &serde_json::to_string(&log_line).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut resolver = state.did_resolver.clone().expect("resolver configured");
+        resolver
+            .add_did_document(&subject_did, serde_json::from_value(doc_json).unwrap())
+            .await;
+        vti_common::auth::session::store_session(
+            &state.sessions_ks,
+            &fresh_session(session_id, &subject_did),
+        )
+        .await
+        .unwrap();
+        let auth = auth_claims_for(&subject_did, session_id);
+        assert!(subject_has_passkey(&state, &subject_did).await);
+
+        let vta_sk = SigningKey::from_bytes(&[71u8; 32]);
+        let (vta_did, vta_mb) = did_key(&vta_sk);
+        let vta_secret = issuer_secret(&vta_sk, &format!("{vta_did}#{vta_mb}"));
+        // A fresh step-up for the subject; its challenge.
+        async fn mint(
+            state: &AppState,
+            vta_did: &str,
+            vta_secret: &Secret,
+            subject: &str,
+            session_id: &str,
+        ) -> String {
+            let req = mint_pending_step_up(
+                &state.sessions_ks,
+                vta_did,
+                vta_secret,
+                subject,
+                subject,
+                false,
+                session_id,
+                "rotate keys",
+                None,
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+            req["payload"]["challenge"].as_str().unwrap().to_string()
+        }
+        async fn acr(state: &AppState, session_id: &str) -> String {
+            vti_common::auth::session::get_session(&state.sessions_ks, session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .acr
+        }
+        // An unsigned 0.7 approval whose evidence is the assertion alone.
+        let approval =
+            |challenge: &str, assertion: &crate::test_support::SoftAssertion| -> TrustTask<Value> {
+                serde_json::from_value(json!({
+                "id": format!("urn:uuid:{}", Uuid::new_v4()),
+                "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.7",
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "issuer": subject_did,
+                "recipient": "did:web:vta.example",
+                "payload": {
+                    "subject": subject_did,
+                    "sessionId": session_id,
+                    "challenge": challenge,
+                    "decision": "approved",
+                    "evidence": {
+                        "kind": "webauthn",
+                        "assertion": {
+                            "id": assertion.credential_id,
+                            "rawId": assertion.credential_id,
+                            "type": "public-key",
+                            "response": {
+                                "authenticatorData": assertion.authenticator_data,
+                                "clientDataJSON": assertion.client_data_json,
+                                "signature": assertion.signature,
+                            },
+                        },
+                    },
+                },
+            }))
+            .unwrap()
+            };
+        let b64 = |c: &str| general_purpose::URL_SAFE_NO_PAD.encode(c.as_bytes());
+
+        // -- 1. Presence without user verification (UV flag clear) is refused. --
+        let c1 = mint(&state, &vta_did, &vta_secret, &subject_did, session_id).await;
+        let no_uv = authenticator.assert(RP_ID, ORIGIN, &b64(&c1), false);
+        let out = handle_approve_response(&state, &auth, approval(&c1, &no_uv)).await;
+        assert!(
+            body_text(&out).contains("assertionInvalid"),
+            "an assertion without user verification: {}",
+            body_text(&out)
+        );
+        assert_eq!(acr(&state, session_id).await, "aal1");
+
+        // -- 2. A user-verified assertion over another challenge is refused. --
+        let c2 = mint(&state, &vta_did, &vta_secret, &subject_did, session_id).await;
+        let other = mint(&state, &vta_did, &vta_secret, &subject_did, session_id).await;
+        let wrong = authenticator.assert(RP_ID, ORIGIN, &b64(&other), true);
+        let out = handle_approve_response(&state, &auth, approval(&c2, &wrong)).await;
+        assert!(
+            body_text(&out).contains("assertionInvalid"),
+            "an assertion made over a different challenge: {}",
+            body_text(&out)
+        );
+        assert_eq!(acr(&state, session_id).await, "aal1");
+
+        // -- 3. A user-verified assertion over this step-up's challenge elevates. --
+        let c3 = mint(&state, &vta_did, &vta_secret, &subject_did, session_id).await;
+        let good = authenticator.assert(RP_ID, ORIGIN, &b64(&c3), true);
+        let accepted = approval(&c3, &good);
+        let out = handle_approve_response(&state, &auth, accepted.clone()).await;
+        assert!(
+            body_text(&out).contains("\"elevated\""),
+            "a user-verified assertion: {}",
+            body_text(&out)
+        );
+        assert_eq!(acr(&state, session_id).await, "aal2");
+
+        // -- 4. Presenting the accepted approval again is refused: the challenge is single-use. --
+        vti_common::auth::session::store_session(
+            &state.sessions_ks,
+            &fresh_session(session_id, &subject_did),
+        )
+        .await
+        .unwrap();
+        let out = handle_approve_response(&state, &auth, accepted).await;
+        assert!(
+            body_text(&out).contains("challengeUnknown"),
+            "a replayed approval: {}",
+            body_text(&out)
+        );
+        assert_eq!(acr(&state, session_id).await, "aal1");
+    }
 }
 
 #[cfg(all(test, feature = "didcomm", feature = "webvh"))]
