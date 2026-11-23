@@ -1,9 +1,7 @@
 //! Vault operations layer — primitives the vault trust-task handlers
 //! reach for when they need elevated authority (e.g. resolving the
 //! signing key referenced by a `did-self-issued` vault entry without
-//! re-running the caller-facing ACL gate). Mirrors the shape of
-//! [`crate::operations::step_up_approval`], which holds the same kind
-//! of internal-authority helpers for the step-up flow.
+//! re-running the caller-facing ACL gate).
 //!
 //! M2B.2b ships the SIOP id-token issuance path used by
 //! `vault/proxy-login/0.1` when the entry's secret is a
@@ -109,15 +107,13 @@ const PROXY_LOGIN_CHANNEL: &str = "vault-proxy-login-internal";
 const SIGN_TRUST_TASK_CHANNEL: &str = "vault-sign-trust-task-internal";
 
 /// Default SIOP id_token lifetime (seconds). The vault/proxy-login spec
-/// recommends a short window; 300 s matches the step-up token's TTL and
-/// is a sensible ceiling for a one-shot login token.
+/// recommends a short window; 300 s is a sensible ceiling for a one-shot
+/// login token.
 pub const PROXY_LOGIN_ID_TOKEN_TTL_SECS: u64 = 300;
 
 /// Load an Ed25519 signing key by its key-record id from the vault's
-/// keystore. Generalises [`crate::operations::step_up_approval::load_vta_key0_signing_key`]
-/// — that helper is hardcoded to `{vta_did}#key-0`; this one accepts any
-/// key id (which is exactly what a `did-self-issued` vault entry's
-/// `signing_key_id` field references).
+/// keystore. Accepts any key id (which is exactly what a
+/// `did-self-issued` vault entry's `signing_key_id` field references).
 ///
 /// Auth: gated by `InternalAuthority` per the operations-layer convention.
 /// The caller (vault proxy-login handler) has already validated the
@@ -220,9 +216,8 @@ pub async fn load_signing_secret_by_id(
 /// origin), `nonce` (caller-supplied verbatim if `Some`, else a fresh
 /// UUIDv4), server-issued `iat`/`exp`.
 ///
-/// Unlike `step_up_approval::build_vta_approval_token` which has
-/// `iss = vta_did, sub = holder_did` (VTA vouches for someone), SIOP
-/// has `iss == sub` (the holder self-asserts). The actual signing
+/// Unlike a token where the VTA vouches for someone (`iss = vta_did`,
+/// `sub = holder_did`), SIOP has `iss == sub` (the holder self-asserts). The actual signing
 /// authority is the VTA — it holds the key — but the wire shape
 /// presents the DID as both issuer and subject because the relying
 /// party only knows the DID, not who custodies its keys.
