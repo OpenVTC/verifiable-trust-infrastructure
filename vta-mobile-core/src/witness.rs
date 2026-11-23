@@ -1,4 +1,4 @@
-//! Witnessing through the holder's VTA (`vta/witness/*`, the VTA as the witnessed party).
+//! Witnessing through the holder's VTA (`vta/witness/<task>`, the VTA as the witnessed party).
 //!
 //! A witness observes a relationship exchange and attests to it in a Verifiable Witness
 //! Credential (VWC). The party opens a `witness/session` under its relationship DID, presents
@@ -55,7 +55,7 @@ use crate::keys::Signer;
 use crate::proof::attach_did_signed_proof;
 use crate::session::AuthEnvelope;
 
-/// The `vta/witness/*` task a document is for.
+/// The `vta/witness/<task>` task a document is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum WitnessTask {
     /// `vta/witness/open/0.2` — the `witness/session` document to carry.
@@ -185,7 +185,7 @@ fn response<R: Serialize + DeserializeOwned>(json: &str) -> Result<String, FfiEr
     serde_json::to_string(&doc.payload).map_err(decode)
 }
 
-/// Build a holder-signed `vta/witness/*` request to the holder's VTA.
+/// Build a holder-signed `vta/witness/<task>` request to the holder's VTA.
 ///
 /// `payload_json` is the task's payload, checked against the task's generated type before
 /// anything is signed. For [`WitnessTask::Present`] and [`WitnessTask::Accept`] it is
@@ -207,7 +207,7 @@ pub fn build_witness_task(
     }
 }
 
-/// Check a `vta/witness/*#response` against the task's generated response type and return its
+/// Check a `vta/witness/<task>#response` against the task's generated response type and return its
 /// payload as JSON. A `trust-task-error` from the VTA (`sessionUnknown`, `responseInvalid`,
 /// `vwcInvalid`, …) is not a response and fails here with `Decode`; the native layer reads its
 /// `payload.code` itself, as for every other VTA task.
