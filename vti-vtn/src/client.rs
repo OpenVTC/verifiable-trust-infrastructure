@@ -160,6 +160,11 @@ impl VtnClient {
     /// foreign-fetch client (no redirects, no proxy, every resolved address
     /// vetted at connect time, bounded timeouts) — never this client's own —
     /// and its body read under [`MAX_FETCHED_BODY`] rather than buffered whole.
+    ///
+    /// That client trusts the system roots only. A deployment serving its
+    /// status lists behind a private CA, with private endpoints allowed, gives
+    /// that CA to [`vta_sdk::http::set_private_extra_root_certificates`]; the
+    /// roots are never used under the public-only policy.
     pub async fn get_url(&self, url: &str) -> Result<Value> {
         use vta_sdk::http::{
             ForeignFetchError, foreign_fetch_client_for, guard_peer_endpoint, read_body_capped,
