@@ -565,6 +565,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-messaging-mediator-admin"
+version = "0.53.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de7a309dd72d632213f77839080f53aafc777685dadadd6b9b76a043a6b97cbd"
+dependencies = [
+ "affinidi-did-common",
+ "affinidi-messaging-core",
+ "affinidi-messaging-didcomm",
+ "affinidi-messaging-sdk",
+ "affinidi-secrets-resolver",
+ "affinidi-tdk-common",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha256",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "trust-tasks-rs",
+ "zeroize",
+]
+
+[[package]]
 name = "affinidi-messaging-mediator-common"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -627,7 +651,7 @@ version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3dcb6985dbef1e893576c030f04e492ed96ddf6dffa6a9e80c694c08a11f35f"
 dependencies = [
- "affinidi-messaging-mediator-admin",
+ "affinidi-messaging-mediator-admin 0.52.0",
  "chrono",
  "clap",
  "crossterm",
@@ -3612,7 +3636,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -8207,7 +8231,7 @@ version = "0.63.0"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-mediator-admin",
+ "affinidi-messaging-mediator-admin 0.53.0",
  "affinidi-messaging-mediator-tui",
  "affinidi-secrets-resolver",
  "async-trait",

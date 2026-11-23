@@ -46,7 +46,7 @@ dialoguer = { workspace = true }
 # (affinidi-messaging-mediator #18), moving in lockstep with this workspace.
 # 0.47 is on `affinidi-messaging-sdk` 0.43, so its types are the 0.2 ones.
 # 0.48 is on `affinidi-messaging-sdk` 0.44 / `trust-tasks-rs` 0.36.
-affinidi-messaging-mediator-admin = "0.52"
+affinidi-messaging-mediator-admin = "0.53"
 affinidi-messaging-mediator-tui = "0.52"
 affinidi-secrets-resolver = { workspace = true }
 async-trait = { workspace = true }
