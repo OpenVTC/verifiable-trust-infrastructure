@@ -9,6 +9,7 @@ import {
   invitationOf,
   joinDraftErrors,
   joinPayload,
+  listingProblemOf,
   unassignedRoleOf,
   withRequiredRoles,
 } from "@/lib/networks";
@@ -227,6 +228,73 @@ describe("Networks", () => {
       `/networks?join=${encodeURIComponent(NETWORK_URL)}&network=${encodeURIComponent(NETWORK_DID)}`,
     );
     expect(await screen.findByText(/does not list this community yet/)).toBeTruthy();
+    expect(screen.getByText("Not listed")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByRole("button", { name: "Join network" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows a network's refusal as an error, not as 'not listed'", async () => {
+    const reason =
+      "did:webvh:QmNet:vtn.example refused this community's request: permissionDenied: the verificationMethod's DID did not resolve: Unsupported DID method: no resolver registered for DID method 'webs'";
+    mockFetch([
+      taskRoute(NETWORKS_LIST_TASK, { items: [] }),
+      taskRoute(GROUPS_LIST, { items: [] }),
+      taskRoute(NETWORKS_PREVIEW_TASK, {
+        ...previewed,
+        roles: [],
+        listed: false,
+        entryState: undefined,
+        notListedReason: reason,
+        ext: { "org.openvtc": { listingProblem: "refused" } },
+      }),
+    ]);
+    mount(
+      `/networks?join=${encodeURIComponent(NETWORK_URL)}&network=${encodeURIComponent(NETWORK_DID)}`,
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/The network refused this community's request\./);
+    expect(alert.textContent).toContain(reason);
+    expect(alert.textContent).toMatch(/can't resolve this community's DID method/);
+    expect(screen.getByText("Network refused")).toBeTruthy();
+    expect(screen.queryByText(/does not list this community yet/)).toBeNull();
+    expect((screen.getByRole("button", { name: "Join network" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says the network did not answer, without the DID-method hint, when it is unreachable", async () => {
+    mockFetch([
+      taskRoute(NETWORKS_LIST_TASK, { items: [] }),
+      taskRoute(GROUPS_LIST, { items: [] }),
+      taskRoute(NETWORKS_PREVIEW_TASK, {
+        ...previewed,
+        roles: [],
+        listed: false,
+        entryState: undefined,
+        notListedReason: "did:webvh:QmNet:vtn.example did not answer: transport: timed out",
+        ext: { "org.openvtc": { listingProblem: "unreachable" } },
+      }),
+    ]);
+    mount(
+      `/networks?join=${encodeURIComponent(NETWORK_URL)}&network=${encodeURIComponent(NETWORK_DID)}`,
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/did not answer this community's request/);
+    expect(alert.textContent).not.toMatch(/DID method/);
+    expect(screen.getByText("Couldn't check")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Join network" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("listingProblemOf", () => {
+  const base = { network: NETWORK_DID, url: NETWORK_URL, name: "N", roles: [] };
+  it("reads the VTC's classification, and an older VTC's bare answer as not listed", () => {
+    expect(listingProblemOf({ ...base, listed: true })).toBeUndefined();
+    expect(listingProblemOf({ ...base, listed: false })).toBe("notListed");
+    expect(
+      listingProblemOf({
+        ...base,
+        listed: false,
+        ext: { "org.openvtc": { listingProblem: "refused" } },
+      }),
+    ).toBe("refused");
   });
 });

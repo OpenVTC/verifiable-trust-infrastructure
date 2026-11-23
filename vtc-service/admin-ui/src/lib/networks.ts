@@ -221,3 +221,14 @@ export const STATE_LABEL: Record<NetworkMembership["state"], string> = {
   repudiated: "Listing rejected",
   departed: "Left",
 };
+
+/** Why the preview could not confirm a listing, as the VTC classifies it in
+ *  `ext."org.openvtc".listingProblem`: `notListed` (the network answered that it has no
+ *  entry), `invalidListing`, `refused` or `unreachable`. A VTC that predates it sends no
+ *  `ext`, which reads as `notListed`, the page's old reading. */
+export function listingProblemOf(found: NetworkPreviewResponse): string | undefined {
+  if (found.listed) return undefined;
+  const ours = (found.ext as Record<string, unknown> | undefined)?.["org.openvtc"];
+  const problem = (ours as { listingProblem?: unknown } | undefined)?.listingProblem;
+  return typeof problem === "string" ? problem : "notListed";
+}

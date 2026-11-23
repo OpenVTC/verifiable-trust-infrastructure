@@ -31,6 +31,7 @@ import {
   joinDraftErrors,
   joinNetwork,
   joinPayload,
+  listingProblemOf,
   leaveNetwork,
   listNetworks,
   networkKeys,
@@ -68,10 +69,47 @@ const ENTRY_STATE_LABEL: Record<string, string> = {
   suspended: "Membership suspended by the network",
 };
 
+/** The network could not check this community's DID at all. */
+const UNSUPPORTED_DID_METHOD = /unsupported did method|no resolver registered for did method/i;
+
+/** What the page says when the network did not confirm a listing for a reason other than
+ *  "no entry": the network refused, did not answer, or answered with a listing that does
+ *  not hold. Whether it lists this community is then unknown. */
+function UnconfirmedListing({ problem, reason }: { problem: string; reason?: string }) {
+  const headline =
+    problem === "unreachable"
+      ? "The network did not answer this community's request."
+      : problem === "invalidListing"
+        ? "The network's listing of this community does not verify."
+        : "The network refused this community's request.";
+  return (
+    <div className="error" role="alert">
+      <p>
+        <strong>{headline}</strong> Whether it lists this community is unknown, so there is
+        nothing to accept yet.
+      </p>
+      {reason && <p className="mono">{reason}</p>}
+      {reason && UNSUPPORTED_DID_METHOD.test(reason) && (
+        <p>
+          The network can't resolve this community's DID method. It may need upgrading before
+          this community can join.
+        </p>
+      )}
+    </div>
+  );
+}
+
+const PROBLEM_CHIP: Record<string, string> = {
+  refused: "Network refused",
+  unreachable: "Couldn't check",
+  invalidListing: "Listing invalid",
+};
+
 /** What the network says about itself, and where this community stands with it, from
  *  `vtc/networks/preview`. */
 export function NetworkPreviewCard({ found }: { found: NetworkPreviewResponse }) {
   const required = found.roles.filter((r) => r.required);
+  const problem = listingProblemOf(found);
   return (
     <section className="card" aria-label="The network">
       <h3>{found.name || "Unnamed network"}</h3>
@@ -114,17 +152,22 @@ export function NetworkPreviewCard({ found }: { found: NetworkPreviewResponse })
             <span className={found.entryState === "acknowledged" ? "chip success" : "chip"}>
               {ENTRY_STATE_LABEL[found.entryState ?? "listed"] ?? found.entryState}
             </span>
+          ) : problem && problem !== "notListed" ? (
+            <span className="chip danger">{PROBLEM_CHIP[problem] ?? "Couldn't check"}</span>
           ) : (
             <span className="chip warning">Not listed</span>
           )}
         </dd>
       </dl>
-      {!found.listed && (
+      {problem === "notListed" && (
         <p className="warning" role="status">
           This network does not list this community yet, so there is nothing to accept. Ask its
           administrators to invite it first.
           {found.notListedReason ? ` (${found.notListedReason})` : ""}
         </p>
+      )}
+      {problem && problem !== "notListed" && (
+        <UnconfirmedListing problem={problem} reason={found.notListedReason} />
       )}
       {found.listed && required.length > 0 && found.entryState !== "acknowledged" && (
         <p className="muted">

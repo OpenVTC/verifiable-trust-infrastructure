@@ -37,6 +37,8 @@ struct Net {
     grant: Option<Value>,
     groups: HashMap<String, Value>,
     repudiations: Vec<(Repudiated, Value)>,
+    /// The `trust-task-error` payload `vtn/entries/show` answers with instead of the entry.
+    entries_refusal: Option<Value>,
 }
 
 type Shared = Arc<Mutex<Net>>;
@@ -75,6 +77,7 @@ async fn fake_network(community: &str, required: bool) -> (String, Identity, Sha
         grant: None,
         groups: HashMap::new(),
         repudiations: Vec::new(),
+        entries_refusal: None,
     }));
 
     async fn profile(AxState(s): AxState<Shared>) -> Json<Value> {
@@ -164,6 +167,20 @@ async fn fake_network(community: &str, required: bool) -> (String, Identity, Sha
             }
             e
         };
+        if slug == "vtn/entries/show"
+            && let Some(payload) = n.entries_refusal.clone()
+        {
+            return (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.6",
+                    "issuer": me,
+                    "threadId": doc["id"],
+                    "payload": payload,
+                })),
+            );
+        }
         match slug.as_str() {
             "vtn/entries/show" => (
                 ok,
@@ -653,4 +670,99 @@ async fn an_answer_not_signed_by_the_network_is_a_mismatch() {
         .unwrap_err();
     assert!(matches!(err, NetError::Mismatch(_)), "{err}");
     assert!(load(state, network.did()).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_preview_tells_not_listed_from_a_refusal() {
+    let (vtc, did) = community().await;
+    let state = &vtc.state;
+    let (url, network, net) = fake_network(&did, false).await;
+
+    // Listed: the entry's state.
+    let found = preview(state, &url, Some(network.did())).await.unwrap();
+    assert_eq!(found.listing, Ok("listed".to_string()));
+
+    // The network answered that it holds no entry (the framework's not-found).
+    net.lock().await.entries_refusal = Some(json!({
+        "code": "taskFailed",
+        "message": "no entry for the community",
+        "details": { "reason": "not_found" },
+    }));
+    let found = preview(state, &url, Some(network.did())).await.unwrap();
+    let (problem, _) = found.listing.unwrap_err();
+    assert_eq!(problem, ListingProblem::NotListed);
+
+    // A declared `…:notListed` is not listed too.
+    net.lock().await.entries_refusal =
+        Some(json!({ "code": "vtn/membership/offer:notListed", "message": "not listed" }));
+    let (problem, _) = preview(state, &url, Some(network.did()))
+        .await
+        .unwrap()
+        .listing
+        .unwrap_err();
+    assert_eq!(problem, ListingProblem::NotListed);
+
+    // The network refused the community's request: whether it lists the community is
+    // unknown, and the network's reason is kept.
+    net.lock().await.entries_refusal = Some(json!({
+        "code": "permissionDenied",
+        "message": "Unsupported DID method: no resolver registered for DID method 'webs'",
+    }));
+    let found = preview(state, &url, Some(network.did())).await.unwrap();
+    let (problem, why) = found.listing.unwrap_err();
+    assert_eq!(problem, ListingProblem::Refused);
+    assert!(
+        why.contains("no resolver registered for DID method 'webs'"),
+        "{why}"
+    );
+
+    // Joining meets the same refusal as the network's refusal, not as "not listed".
+    let err = join(state, "did:example:admin", &url, network.did(), &[])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, NetError::Refused(_)), "{err}");
+}
+
+#[test]
+fn only_a_no_entry_answer_reads_as_not_listed() {
+    let refused = |code: &str, details: Option<Value>| ClientError::Refused {
+        status: 422,
+        code: code.into(),
+        message: "m".into(),
+        details,
+    };
+    assert!(is_no_entry(&refused(
+        "taskFailed",
+        Some(json!({ "reason": "not_found" }))
+    )));
+    assert!(is_no_entry(&refused("notFound", None)));
+    assert!(is_no_entry(&refused(
+        "vtn/membership/offer:notListed",
+        None
+    )));
+    assert!(!is_no_entry(&refused(
+        "taskFailed",
+        Some(json!({ "reason": "conflict" }))
+    )));
+    assert!(!is_no_entry(&refused("taskFailed", None)));
+    assert!(!is_no_entry(&refused("permissionDenied", None)));
+    assert!(!is_no_entry(&ClientError::Transport(
+        "connection refused".into()
+    )));
+
+    // What join and the other writes report for each.
+    let net = |problem| EntryCheck::Unconfirmed(problem, "why".into()).into_net_error();
+    assert!(matches!(
+        net(ListingProblem::NotListed),
+        NetError::NotListed(_)
+    ));
+    assert!(matches!(
+        net(ListingProblem::InvalidListing),
+        NetError::NotListed(_)
+    ));
+    assert!(matches!(net(ListingProblem::Refused), NetError::Refused(_)));
+    assert!(matches!(
+        net(ListingProblem::Unreachable),
+        NetError::Unavailable(_)
+    ));
 }
