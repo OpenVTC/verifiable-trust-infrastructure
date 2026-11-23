@@ -175,7 +175,7 @@ uniffi = "0.32"
 # affinidi-data-integrity 0.8.7 and did-common 0.4.7 carry in their public
 # API), `affinidi-vc` to 0.3, `affinidi-sd-jwt` to 0.2 and `affinidi-mdoc` to
 # 0.6; every one of those moves with it.
-affinidi-tdk = "0.45"
+affinidi-tdk = "0.48"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
