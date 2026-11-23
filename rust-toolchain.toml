@@ -1,0 +1,20 @@
+# The compiler every CI job on this release branch builds with (backport of
+# main's pin, #2658 / #2709).
+#
+# Without it each job ran `rustup toolchain install stable` under
+# `-D warnings`, so a new stable release's lints could turn the branch red with
+# no code change (that happened in #2772). rustup honours this file over the
+# `rustup default stable` the workflows run.
+#
+# 1.100.0, the compiler the branch was made green with in #2772 (as main pins).
+# Under 1.95.0 clippy raises collapsible_match in vta-persona and vtc-service,
+# and vti_08_context_create_fits_half_a_default_worker_stack overflows: 1.95's
+# codegen needs more stack than that test allows, so the images move too.
+#
+# Kept equal to the `RUST_VERSION` both Dockerfiles build with, so CI builds
+# with the same compiler as the images this branch ships. The workspace
+# `rust-version` stays 1.95.0 (the MSRV, checked by its own job), as on main.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

@@ -27,7 +27,7 @@
 # crate needs no edit here.
 # =============================================================================
 
-ARG RUST_VERSION=1.95
+ARG RUST_VERSION=1.100.0
 # Pinned: cargo-chef's recipe format is tied to its version, and an unpinned
 # `cargo install` would silently change the cache key across builds.
 ARG CARGO_CHEF_VERSION=0.1.78
