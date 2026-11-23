@@ -133,8 +133,9 @@ plugin's, the community hands the step-up to your wallet instead. The bridge
 returns a *successful* call whose result says `"status": "stepUpRequired"` and
 carries a `step-up` link (VTI-LNK-125 – VTI-LNK-131):
 
-1. Open the link in your wallet, or scan it as a QR code. It expires within
-   five minutes.
+1. Paste the link into your wallet (the browser wallet's popup: **Open a
+   link from your assistant**), click it on a page, or scan it as a QR code.
+   It expires within five minutes.
 2. Your wallet reads the step-up from the community itself, signed by the
    community and addressed to you, together with the operation exactly as
    the bridge sent it. It checks that the two belong together, and shows you
@@ -220,11 +221,16 @@ Then, in the session:
 
 1. `vtc_sign_in` (with `audience: "admin"` for the operator console) opens a
    sign-in request signed by the bridge's key and returns the **trigger link**.
-2. Open the link in the browser that holds your wallet, or scan it from a
-   phone wallet. The wallet shows the community, the bridge as the starter
-   (`vtc-mcp/<version>`), and a match number.
-3. `vtc_sign_in_finish` answers with the same **match number**; approve in the
-   wallet only if the two agree, then call it again for the session.
+2. Paste the link into your wallet — in the browser wallet, the popup's
+   **Open a link from your assistant** box — or scan it with a phone wallet.
+   Don't click it in a browser tab: the bridge has no page on the community's
+   portal, and the wallet refuses a sign-in link clicked anywhere else
+   (`wrong-origin`, VTI-LNK-105). The wallet shows the community and the
+   bridge as the starter (`vtc-mcp/<version>`). The browser wallet takes a
+   pasted sign-in link only for a community it already holds an identity at.
+3. `vtc_sign_in_finish` answers with a **match number**. Type it into the
+   wallet when it asks; the community checks it against the one it gave the
+   bridge. Approve, then call `vtc_sign_in_finish` again for the session.
 
 What you then hold, and nothing more:
 

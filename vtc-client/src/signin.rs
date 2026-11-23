@@ -126,7 +126,8 @@ pub struct SignedIn {
 pub enum SignInPoll {
     /// Not approved yet. `state` is `pending`, `claimed`, `identified` or
     /// `approved`; once a wallet has claimed the request, `match_number` is
-    /// the number the person compares with the one their wallet shows.
+    /// the number the person types into their wallet, which the community
+    /// checks against its own (`auth/oob/prove`'s `enteredNumber`).
     Pending {
         state: String,
         match_number: Option<String>,

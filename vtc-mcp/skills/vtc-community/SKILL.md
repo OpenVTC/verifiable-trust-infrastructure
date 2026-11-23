@@ -15,10 +15,12 @@ ask the operator to confirm it. Nothing you do here grants access.
 
 0. If `vtc_status` shows no `signedInAs` and the person wants to act as
    themselves, `vtc_sign_in` (audience `member`, or `admin` for the console),
-   show them the trigger link, then `vtc_sign_in_finish`: it answers with a
-   match number for them to compare in their wallet, then with the session.
-   Never approve on their behalf, and never describe the number as anything
-   but theirs to compare. For administrative work, `vtc_enrol_signing_key`
+   show them the trigger link and tell them to paste it into their wallet
+   (the browser wallet's popup: *Open a link from your assistant*) or scan it
+   with a phone wallet — not to click it in a browser tab, which the wallet
+   refuses. Then `vtc_sign_in_finish`: it answers with a match number for
+   them to type into their wallet, then with the session. Never approve on
+   their behalf, and never type the number for them. For administrative work, `vtc_enrol_signing_key`
    with no arguments names the bridge's key; the person signs the
    authorization in the console (*Console signing keys → Authorize another
    key*, through their wallet) or with `cnm access authorize-key`. Called again
