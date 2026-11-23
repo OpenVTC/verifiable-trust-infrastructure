@@ -444,6 +444,13 @@ impl VsockKeyspaceHandle {
         self.put_stored(&key, &value).await
     }
 
+    /// One read round trip through the parent's proxy, for a readiness
+    /// probe (`KeyspaceHandle::probe`). The key is never written, and the
+    /// stored bytes, if any, are not decrypted.
+    pub async fn probe(&self) -> Result<(), AppError> {
+        self.get_stored(b"\0vti-readiness-probe").await.map(|_| ())
+    }
+
     pub async fn get_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
         let key = key.into();
         match self.get_stored(&key).await? {

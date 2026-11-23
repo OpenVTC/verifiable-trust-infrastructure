@@ -85,6 +85,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
     .await
     .unwrap();
     let state = AppState {
+        readiness: vti_common::health::ReadinessProbe::new(sessions_ks.clone()),
         publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter::new(
             [0x5a; 32],
         ),

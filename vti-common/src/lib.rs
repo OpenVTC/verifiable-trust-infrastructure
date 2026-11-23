@@ -13,6 +13,7 @@ pub mod consent;
 pub mod context_path;
 pub mod error;
 pub mod guards;
+pub mod health;
 #[cfg(feature = "host-session")]
 pub mod host_session;
 pub mod idempotency;

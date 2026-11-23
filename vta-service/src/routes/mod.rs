@@ -113,10 +113,17 @@ pub(super) const BACKUP_BLOB_BODY_SIZE: usize = 100 * 1024 * 1024;
 /// handshake/op-specific timeouts, which stay; this is the backstop.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Health-check route — served without the request/response trace layer.
-/// Minimal response only; detailed info requires authentication.
+/// Health-check routes — served without the request/response trace layer.
+/// Minimal responses only; detailed info requires authentication.
+///
+/// `/health` is unchanged for existing monitors. `/livez` and `/readyz` are
+/// the orchestrator probes (`vti_common::health`): liveness checks nothing
+/// but the server, readiness answers `503` while the store is unavailable.
 pub fn health_router() -> Router<AppState> {
-    Router::new().route("/health", get(health::health))
+    Router::new()
+        .route("/health", get(health::health))
+        .route("/livez", get(vti_common::health::livez))
+        .route("/readyz", get(health::readyz))
 }
 
 /// Health-check route with the same CORS policy as the API surface.
@@ -625,6 +632,8 @@ mod cors_tests {
     /// log model — security is cryptographic, not access-gated).
     fn is_public_health_or_webauthn(path: &str) -> bool {
         path.starts_with("/health")
+            || path == "/livez"
+            || path == "/readyz"
             || path.contains("passkey")
             || path == "/.well-known/did.jsonl"
             || path == "/did/{did}/log"

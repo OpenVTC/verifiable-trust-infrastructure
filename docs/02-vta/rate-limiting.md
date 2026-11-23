@@ -62,7 +62,9 @@ or proxy that revalidates spends a cheap request rather than a full transfer.
 - DIDComm and TSP traffic. It reaches the VTA through its mediator session, not
   through the REST router. The mediator applies its own limits (below), and the
   operation budgets cover it when set.
-- `/health`, `/auth/portal` and `/openapi.json`, which nothing limits.
+- `/health`, `/livez`, `/readyz`, `/auth/portal` and `/openapi.json`, which
+  nothing limits (`/readyz` checks the store at most once a second however
+  often it is called).
 
 ## Operation budgets: Trust Task work, per appliance and per client
 

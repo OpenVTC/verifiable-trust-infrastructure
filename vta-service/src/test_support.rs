@@ -1493,6 +1493,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
             store.keyspace(crate::keyspaces::AUDIT_KEY).unwrap(),
         ),
         internal_ks: store.keyspace(crate::keyspaces::INTERNAL_KEYS).unwrap(),
+        readiness: vti_common::health::ReadinessProbe::new(
+            store.keyspace(crate::keyspaces::KEYS).unwrap(),
+        ),
         idempotency_ks: store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap(),
         accepted_ids_ks: store.keyspace(crate::keyspaces::ACCEPTED_IDS).unwrap(),
         // Empty by default: a test VTA trusts no mdoc issuer until one is

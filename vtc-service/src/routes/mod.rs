@@ -1248,6 +1248,11 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
         // operator just curls `/health` on whichever host the
         // daemon is reachable on).
         .route("/health", get(health::health))
+        // Orchestrator probes (`vti_common::health`): liveness checks
+        // nothing but the server; readiness answers 503 while the store is
+        // unavailable. Parent root, like `/health`.
+        .route("/livez", get(vti_common::health::livez))
+        .route("/readyz", get(health::readyz))
         // Machine-readable API description for black-box conformance / fuzz
         // tooling. Unauthenticated (API shape, not secrets); served at the
         // parent root like `/health`.
@@ -1402,6 +1407,11 @@ pub fn assemble_with_website(
     let spec = openapi_spec();
     let mut app: Router<AppState> = Router::new()
         .route("/health", get(health::health))
+        // Orchestrator probes (`vti_common::health`): liveness checks
+        // nothing but the server; readiness answers 503 while the store is
+        // unavailable. Parent root, like `/health`.
+        .route("/livez", get(vti_common::health::livez))
+        .route("/readyz", get(health::readyz))
         // Machine-readable API description — see the matching comment in
         // `assemble`.
         .route("/openapi.json", get(move || serve_openapi(spec.clone())))

@@ -47,6 +47,13 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     })
 }
 
+/// `GET /readyz` — `200` while this VTC can serve requests, `503` while its
+/// store is unavailable. See `vti_common::health` for what it checks and why
+/// the mediator connection is not one of them.
+pub async fn readyz(State(state): State<AppState>) -> vti_common::health::ReadyResponse {
+    state.readiness.check().await
+}
+
 /// Phase 3 M3.8 — admin-gated diagnostics view.
 ///
 /// Surfaces enough of the trust-registry reconciler's internal
