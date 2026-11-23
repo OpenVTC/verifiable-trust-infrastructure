@@ -1573,13 +1573,15 @@ jobs:
     # the host jobs already build and test vta-mobile-core on every PR, and what
     # only this job sees arrives through a dependency, not through vta-sdk's code.
     #
-    # 60 minutes, not 45: a warm run on main takes ~40, and a PR run on a busy
-    # runner hit 45 and was cancelled (#1807), which reads as a failure.
+    # 120 minutes, not 60: a warm run on main takes ~40, but on this release
+    # branch the cache is cold and each of the five targets took ~9 minutes
+    # before bindings, so #2772 and #2775 were both cancelled at 60 on busy
+    # macOS runners (a cancel reads as a failure; #1807 raised 45 to 60).
     name: Mobile build
     needs: [clippy, affects]
     if: ${{ !cancelled() && !failure() && needs.affects.outputs.mobile != 'false' }}
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
