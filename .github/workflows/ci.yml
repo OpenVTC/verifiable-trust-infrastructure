@@ -151,7 +151,7 @@ jobs:
       # version deliberately; install-action knows the versions its own
       # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest@0.9.150
 
@@ -235,7 +235,7 @@ jobs:
       # version deliberately; install-action knows the versions its own
       # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest@0.9.150
 
@@ -335,7 +335,7 @@ jobs:
       # version deliberately; install-action knows the versions its own
       # release lists, so bump the action first when a newer one is wanted.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-nextest@0.9.150
 
@@ -590,7 +590,7 @@ jobs:
       # every other job (rust-toolchain.toml).
       - name: Install the Rust toolchain
         run: bash scripts/install-rust-toolchain.sh
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-machete
       - name: No unused dependencies
@@ -610,7 +610,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
         with:
           command: check advisories bans sources licenses
 
@@ -635,7 +635,7 @@ jobs:
       # `arguments` overrides the action's default, so `--all-features` has to
       # be restated — the root scan gets it from that default, and `deny.toml`
       # sets `all-features = true` for the same reason.
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
         with:
           manifest-path: deploy/nitro/enclave-proxy/Cargo.toml
           arguments: --all-features --config deny.toml
@@ -648,7 +648,7 @@ jobs:
       # duplicates are the root scan's answer already.
       - name: Resolve the fuzz harness from the root lockfile
         run: cp Cargo.lock fuzz/Cargo.lock
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: EmbarkStudios/cargo-deny-action@70f81531115945ba6eb6b941ec9d39d063438eb9 # v2.1.2
         with:
           manifest-path: fuzz/Cargo.toml
           arguments: --all-features --config deny.toml
@@ -712,7 +712,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-semver-checks
 
@@ -794,7 +794,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           echo "RUSTUP_TOOLCHAIN=stable" >> "$GITHUB_ENV"
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-semver-checks
 
@@ -1377,7 +1377,7 @@ jobs:
         run: |
           echo "version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)" \
             >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
       - name: vti-rooms-wasm artifact
@@ -1867,7 +1867,7 @@ jobs:
         run: bash scripts/install-rust-toolchain.sh --target "$TARGETS"
 
       - if: matrix.platform == 'android'
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-ndk
 
