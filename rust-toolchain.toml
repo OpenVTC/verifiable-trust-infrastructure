@@ -6,10 +6,12 @@
 # no code change (that happened in #2772). rustup honours this file over the
 # `rustup default stable` the workflows run.
 #
-# Kept equal to the workspace `rust-version` (Cargo.toml) and to the
-# `RUST_VERSION` the Dockerfiles build with (1.95), so CI builds with the same
-# compiler as the images this branch ships.
+# 1.100.0, the compiler the branch was made green with in #2772 (as main pins).
+# Under 1.95.0 clippy raises collapsible_match in vta-persona and vtc-service,
+# and vti_08_context_create_fits_half_a_default_worker_stack overflows: 1.95's
+# codegen needs more stack than that test allows. The Dockerfiles still default
+# `RUST_VERSION` to 1.95; see #2775 for that follow-up.
 [toolchain]
-channel = "1.95.0"
+channel = "1.100.0"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
