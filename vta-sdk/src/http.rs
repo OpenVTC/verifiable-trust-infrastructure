@@ -18,8 +18,8 @@
 //! names as shims.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 /// Default total-request timeout for a VTA REST call.
@@ -380,22 +380,66 @@ pub enum ForeignFetchError {
 ///
 /// Body size is capped per-fetch by [`read_body_capped`] (reqwest has none).
 static FOREIGN_FETCH_CLIENT: LazyLock<reqwest::Client> =
-    LazyLock::new(|| build_foreign_fetch_client(EndpointPolicy::public_only()));
+    LazyLock::new(|| build_foreign_fetch_client(EndpointPolicy::public_only(), &[]));
 
-/// The same client with private-network answers admitted by its resolver; see
-/// [`foreign_fetch_client_for`]. Built only if a process opts in.
-static FOREIGN_FETCH_CLIENT_PRIVATE: LazyLock<reqwest::Client> =
-    LazyLock::new(|| build_foreign_fetch_client(EndpointPolicy::private_allowed()));
+/// The same client with private-network answers admitted by its resolver, and
+/// trusting any [`set_private_extra_root_certificates`] roots; see
+/// [`foreign_fetch_client_for`]. Built on first use under the private policy,
+/// and again after the roots change.
+static FOREIGN_FETCH_PRIVATE: Mutex<PrivateForeignFetch> = Mutex::new(PrivateForeignFetch {
+    extra_roots: Vec::new(),
+    client: None,
+});
 
-fn build_foreign_fetch_client(policy: EndpointPolicy) -> reqwest::Client {
-    reqwest::Client::builder()
+/// The private-policy client and the extra roots it was (or will be) built with.
+struct PrivateForeignFetch {
+    extra_roots: Vec<reqwest::Certificate>,
+    client: Option<reqwest::Client>,
+}
+
+fn build_foreign_fetch_client(
+    policy: EndpointPolicy,
+    extra_roots: &[reqwest::Certificate],
+) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(GuardedResolver { policy })
         .no_proxy()
         .timeout(FOREIGN_FETCH_TIMEOUT)
-        .connect_timeout(FOREIGN_FETCH_TIMEOUT)
+        .connect_timeout(FOREIGN_FETCH_TIMEOUT);
+    for root in extra_roots {
+        builder = builder.add_root_certificate(root.clone());
+    }
+    builder
         .build()
         .expect("hardened foreign-fetch client builds from static config")
+}
+
+/// Trust `roots` as well as the system's when fetching under
+/// [`EndpointPolicy::private_allowed`], for the rest of this process.
+///
+/// For a deployment that serves what it fetches (status lists, a peer's
+/// endpoint) behind a **private certificate authority**: a closed network
+/// already needs the private-endpoint opt-in ([`set_allow_private_endpoints`] /
+/// [`ALLOW_PRIVATE_ENDPOINTS_ENV`]) to reach its hosts at all, and these are
+/// the roots it trusts there. Typically the same PEM files a service already
+/// loads for its own outbound calls (`extra_root_certificates`).
+///
+/// The public-only client never sees them: [`foreign_fetch_client`] and
+/// [`foreign_fetch_client_for`]`(`[`EndpointPolicy::public_only`]`)` trust the
+/// system roots alone, whatever is set here, so a process that has not opted
+/// in to private endpoints is unaffected.
+///
+/// Replaces any roots set before; an empty list returns to the system roots.
+/// Takes effect for every [`foreign_fetch_client_for`] call made afterwards.
+/// A caller that keeps a clone of the client from before keeps the old roots,
+/// so set them at startup, before the first fetch.
+pub fn set_private_extra_root_certificates(roots: Vec<reqwest::Certificate>) {
+    let mut private = FOREIGN_FETCH_PRIVATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    private.extra_roots = roots;
+    private.client = None;
 }
 
 /// A clone of the shared hardened foreign-fetch client. Use this — never
@@ -409,8 +453,9 @@ pub fn foreign_fetch_client() -> reqwest::Client {
 /// [`EndpointPolicy::public_only`] is exactly [`foreign_fetch_client`].
 /// [`EndpointPolicy::private_allowed`] is the same client — no redirects, no
 /// proxy, the same timeouts — whose resolver also admits private-network,
-/// carrier-grade NAT and loopback answers. Link-local, cloud-metadata and every
-/// other non-routable class stay refused under either policy.
+/// carrier-grade NAT and loopback answers, and which also trusts any roots
+/// given to [`set_private_extra_root_certificates`]. Link-local, cloud-metadata
+/// and every other non-routable class stay refused under either policy.
 ///
 /// For a target an administrator named (an object store's endpoint) rather
 /// than one a third party handed over, where reaching a LAN or loopback service
@@ -420,11 +465,19 @@ pub fn foreign_fetch_client() -> reqwest::Client {
 /// [`guard_foreign_url`] under the same policy first, because IP-literal hosts
 /// never reach the resolver.
 pub fn foreign_fetch_client_for(policy: EndpointPolicy) -> reqwest::Client {
-    if policy.allow_private {
-        FOREIGN_FETCH_CLIENT_PRIVATE.clone()
-    } else {
-        FOREIGN_FETCH_CLIENT.clone()
+    if !policy.allow_private {
+        return FOREIGN_FETCH_CLIENT.clone();
     }
+    let mut private = FOREIGN_FETCH_PRIVATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(client) = &private.client {
+        return client.clone();
+    }
+    let client =
+        build_foreign_fetch_client(EndpointPolicy::private_allowed(), &private.extra_roots);
+    private.client = Some(client.clone());
+    client
 }
 
 /// Whether a connection to an address of `class` is permitted under `policy`.
@@ -828,6 +881,55 @@ pub fn guard_peer_endpoint(url: &str, policy: EndpointPolicy) -> Result<(), Fore
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real self-signed CA certificate, as an operator's private CA would be.
+    fn private_ca() -> reqwest::Certificate {
+        let ca = rcgen::generate_simple_self_signed(vec!["ca.example.internal".into()]).unwrap();
+        reqwest::Certificate::from_pem(ca.cert.pem().as_bytes()).unwrap()
+    }
+
+    fn private_state() -> (usize, bool) {
+        let private = FOREIGN_FETCH_PRIVATE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (private.extra_roots.len(), private.client.is_some())
+    }
+
+    // One test, not several: the roots are process-wide, and the steps must run
+    // in order. Other tests may build the private client concurrently, which can
+    // only rebuild it from the roots set here, so every assertion still holds.
+    #[test]
+    fn private_extra_roots_are_set_replaced_and_cleared() {
+        // The hardened client builds with an extra root: the root is accepted.
+        let _ = build_foreign_fetch_client(EndpointPolicy::private_allowed(), &[private_ca()]);
+
+        set_private_extra_root_certificates(vec![private_ca(), private_ca()]);
+        let _ = foreign_fetch_client_for(EndpointPolicy::private_allowed());
+        assert_eq!(
+            private_state(),
+            (2, true),
+            "built with the two roots and cached"
+        );
+
+        // Replacing the roots drops the cached client; the next call rebuilds.
+        set_private_extra_root_certificates(vec![private_ca()]);
+        let _ = foreign_fetch_client_for(EndpointPolicy::private_allowed());
+        assert_eq!(private_state(), (1, true));
+
+        // The public-only client is the static one, whatever roots are set.
+        let _ = foreign_fetch_client_for(EndpointPolicy::public_only());
+        let _ = foreign_fetch_client();
+        assert_eq!(
+            private_state().0,
+            1,
+            "public-only fetches leave the roots alone"
+        );
+
+        // An empty list returns to the system roots.
+        set_private_extra_root_certificates(Vec::new());
+        let _ = foreign_fetch_client_for(EndpointPolicy::private_allowed());
+        assert_eq!(private_state(), (0, true));
+    }
 
     #[test]
     fn env_secs_uses_default_when_unset_or_junk() {
