@@ -865,9 +865,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-status-list"
-version = "0.1.7"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a211947cfdde2cfcdcade1bef2d2a0f4fb94b23b9bd53ee06328ed33c25d5da1"
+checksum = "3accfba16eea47b560d01dc939dfae38a516fbd8c2b0fd25fcd7c7c1420f9523"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -3612,7 +3612,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 3.0.10",
 ]
 
 [[package]]

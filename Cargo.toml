@@ -194,7 +194,7 @@ affinidi-vc = "0.3"
 # (the `=0.7.13` pin that held 0.7.14's patch-level bbs bump off is gone).
 # 0.8.7: its public `KeyType` is affinidi-crypto 0.3's.
 affinidi-data-integrity = { version = "0.8.7", features = ["ml-dsa"] }
-affinidi-status-list = "0.1.7"
+affinidi-status-list = "0.2.1"
 
 # Credential formats for the credential-centric VTI architecture
 # (docs/05-design-notes/vti-credential-architecture.md). All published on
