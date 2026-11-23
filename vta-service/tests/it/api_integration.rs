@@ -514,6 +514,19 @@ async fn health_returns_ok_without_auth() {
     assert_eq!(body["status"], "ok");
 }
 
+/// The orchestrator probes answer without auth: `/livez` always, `/readyz`
+/// over a working store. The store-gone case is `vti_common::health`'s.
+#[tokio::test]
+async fn livez_and_readyz_answer_without_auth() {
+    let (app, _ctx) = TestApp::new().await;
+    let (status, body) = app.request(get("/livez")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"status": "ok"}));
+    let (status, body) = app.request(get("/readyz")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"status": "ready", "storage": "ok"}));
+}
+
 /// `GET /health/details` is gone: the report is two Trust Tasks now.
 #[tokio::test]
 async fn the_health_details_route_is_gone() {

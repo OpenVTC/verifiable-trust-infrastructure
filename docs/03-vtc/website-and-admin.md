@@ -45,6 +45,7 @@ The default routing assignment:
 | Mount | Purpose | Body cap | CSP |
 |---|---|---|---|
 | `/health` | Health probe (Trust-Task exempt) | 1 MiB | — |
+| `/livez`, `/readyz` | Liveness and readiness probes ([Health probes](../04-reference/health-probes.md)) | 1 MiB | — |
 | `/v1/*` | JSON API | 1 MiB global, per-route override on website mgmt | — (JSON wire) |
 | `/admin/*` | Admin SPA + `/admin/build-info.json` | 1 MiB | default-src 'self' |
 | `/members/*` | Member portal (fixed mount; see [Member portal](#member-portal)) | 1 MiB | default-src 'self' |

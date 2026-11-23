@@ -50,7 +50,13 @@ use crate::config::RoutingConfig;
 
 /// Parent-root routes mounted outside any surface mount. They must
 /// answer on every recognised host, so the surface gate skips them.
-const INFRA_PATHS: &[&str] = &["/health", "/openapi.json", "/.well-known/did.jsonl"];
+const INFRA_PATHS: &[&str] = &[
+    "/health",
+    "/livez",
+    "/readyz",
+    "/openapi.json",
+    "/.well-known/did.jsonl",
+];
 
 /// One routable surface: the mount prefix it attaches under and the
 /// host it is bound to (`None` in path mode). `priority` breaks ties
@@ -355,6 +361,8 @@ mod tests {
         ));
         for host in ["api.example.com", "admin.example.com", "example.com"] {
             assert!(map.surface_allowed("/health", host), "host {host}");
+            assert!(map.surface_allowed("/livez", host), "host {host}");
+            assert!(map.surface_allowed("/readyz", host), "host {host}");
             assert!(map.surface_allowed("/.well-known/did.jsonl", host));
             assert!(map.surface_allowed("/openapi.json", host));
         }

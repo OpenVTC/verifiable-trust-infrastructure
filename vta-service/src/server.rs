@@ -194,6 +194,9 @@ pub struct AppState {
     /// because that keyspace wraps under a seed-derived KEK; these must have
     /// no path back to the mnemonic.
     pub internal_ks: KeyspaceHandle,
+    /// The store check behind `GET /readyz` (`vti_common::health`). Shared,
+    /// so its one-check-per-second cache holds across every request.
+    pub readiness: vti_common::health::ReadinessProbe,
     /// Vault — third-party credentials the holder has stored on this VTA.
     /// M1 reads only; upsert/delete/sync/release land in M2+. Encrypted at
     /// rest like every other secret-bearing keyspace.
@@ -780,7 +783,9 @@ pub async fn build_app_state(
         .audit_sink
         .unwrap_or_else(|| vta_audit::shared_chained_sink(audit_ks.clone(), audit_key_ks.clone()));
 
+    let readiness = vti_common::health::ReadinessProbe::new(keys_ks.clone());
     let state = AppState {
+        readiness,
         keys_ks,
         sessions_ks,
         acl_ks,

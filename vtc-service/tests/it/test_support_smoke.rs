@@ -28,6 +28,34 @@ async fn build_test_vtc_serves_health() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// The orchestrator probes answer at the parent root without auth: `/livez`
+/// always, `/readyz` over a working store (the store-gone case is
+/// `vti_common::health`'s).
+#[tokio::test]
+async fn build_test_vtc_serves_livez_and_readyz() {
+    let tv = build_test_vtc().await;
+    for (path, want) in [
+        ("/livez", serde_json::json!({"status": "ok"})),
+        (
+            "/readyz",
+            serde_json::json!({"status": "ready", "storage": "ok"}),
+        ),
+    ] {
+        let resp = tv
+            .router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, want, "{path}");
+    }
+}
+
 /// A minted admin token authenticates against a session-gated route (here
 /// the session row + JWT are both produced by `TestVtc::token`).
 #[tokio::test]

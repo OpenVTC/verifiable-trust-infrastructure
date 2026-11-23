@@ -48,6 +48,9 @@ const REST_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct AppState {
+    /// The store check behind `GET /readyz` (`vti_common::health`). Shared,
+    /// so its one-check-per-second cache holds across every request.
+    pub readiness: vti_common::health::ReadinessProbe,
     pub sessions_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
     pub community_ks: KeyspaceHandle,
@@ -1104,6 +1107,7 @@ pub async fn run(
 
     // Build AppState for the REST thread
     let state = AppState {
+        readiness: vti_common::health::ReadinessProbe::new(config_ks.clone()),
         sessions_ks,
         acl_ks,
         community_ks,

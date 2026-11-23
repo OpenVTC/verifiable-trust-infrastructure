@@ -320,6 +320,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     .await
     .unwrap();
     let state = AppState {
+        readiness: vti_common::health::ReadinessProbe::new(sessions_ks.clone()),
         publish_rate_limiter: vtc_service::relationships::rate_limit::PublishRateLimiter::new(
             [0x5a; 32],
         ),

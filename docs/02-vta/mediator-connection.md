@@ -128,9 +128,11 @@ reconnect_max_elapsed_secs  = 0      # 0 = retry forever
 
 ## Operating notes
 
-- **`/health` is never gated.** The REST listener starts before the supervisor,
-  so a VTA waiting on its DID is healthy from the LB's point of view — which is
-  what lets the DID become resolvable in the first place.
+- **`/health`, `/livez` and `/readyz` are never gated on the mediator.** The
+  REST listener starts before the supervisor, so a VTA waiting on its DID is
+  healthy and ready from the LB's point of view, which is what lets the DID
+  become resolvable in the first place. `/readyz` fails only on the store
+  ([Health probes](../04-reference/health-probes.md)).
 - **A gate timeout under `skip` is not an error state.** The VTA runs
   REST-only. If that is unacceptable for your deployment, use `fail`.
 - **`did:key` VTAs are unaffected** by every setting here.

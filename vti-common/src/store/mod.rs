@@ -581,6 +581,24 @@ impl KeyspaceHandle {
         }
     }
 
+    /// Can the store behind this handle still serve requests? A cheap
+    /// check for a readiness probe (`vti_common::health`), never an fsync
+    /// and never a write of its own.
+    ///
+    /// - **Local**: the database root still holds fjall's version marker
+    ///   (a deleted or unmounted data directory goes unnoticed by an open
+    ///   database until its next flush), and the journal accepts a flush to
+    ///   OS buffers, which fails once fjall has poisoned the database after
+    ///   an I/O error.
+    /// - **Vsock**: one read round trip through the parent's storage proxy.
+    pub async fn probe(&self) -> Result<(), AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.probe().await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.probe().await,
+        }
+    }
+
     pub async fn insert<V: Serialize>(
         &self,
         key: impl Into<Vec<u8>>,
@@ -1029,6 +1047,9 @@ type WriteLocks =
 #[derive(Clone)]
 pub struct LocalStore {
     db: fjall::Database,
+    /// The database root, kept so [`LocalKeyspaceHandle::probe`] can see
+    /// the directory disappear under an open database.
+    data_dir: std::sync::Arc<std::path::Path>,
     write_locks: WriteLocks,
     writes: generation::Generations,
     /// Keeps fjall's memtables flushed (see [`flusher`]). Shared with every
@@ -1061,6 +1082,8 @@ pub struct LocalKeyspaceHandle {
     /// journal ([`LocalKeyspaceHandle::persist`]) — fjall only exposes
     /// persistence at the database level.
     db: fjall::Database,
+    /// The database root — see `LocalStore`'s `data_dir`.
+    data_dir: std::sync::Arc<std::path::Path>,
     /// Shared with every other handle for the same keyspace name — see
     /// [`WriteLocks`].
     write_lock: std::sync::Arc<std::sync::Mutex<()>>,
@@ -1181,6 +1204,7 @@ impl LocalStore {
         .map_err(AppError::Io)?;
         Ok(Self {
             db,
+            data_dir: std::sync::Arc::from(config.data_dir.as_path()),
             write_locks: WriteLocks::default(),
             writes: generation::Generations::default(),
             _flusher: std::sync::Arc::new(flusher),
@@ -1203,6 +1227,7 @@ impl LocalStore {
             #[cfg(feature = "encryption")]
             name: name.to_string(),
             db: self.db.clone(),
+            data_dir: self.data_dir.clone(),
             write_lock,
             writes: self.writes.for_keyspace(name),
             #[cfg(feature = "encryption")]
@@ -1223,6 +1248,24 @@ impl LocalStore {
 }
 
 impl LocalKeyspaceHandle {
+    /// See [`KeyspaceHandle::probe`].
+    pub async fn probe(&self) -> Result<(), AppError> {
+        let db = self.db.clone();
+        let data_dir = self.data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            if !local_store_exists(&data_dir) {
+                return Err(AppError::Internal(format!(
+                    "store directory {} no longer holds the database",
+                    data_dir.display()
+                )));
+            }
+            db.persist(PersistMode::Buffer)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("blocking task panicked: {e}")))?
+    }
+
     #[cfg(feature = "encryption")]
     pub fn with_encryption(mut self, key: [u8; 32]) -> Self {
         self.encryption_key = Some(std::sync::Arc::new(zeroize::Zeroizing::new(key)));

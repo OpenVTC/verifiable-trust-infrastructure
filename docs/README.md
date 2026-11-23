@@ -77,6 +77,7 @@ VTA via the `vtc-host` DID template.
 | Who collects a persona DID's messages at its mediator: the VTA or a claiming client | [Collection](02-vta/collection.md) |
 | A community's received notifications and relay decisions | [Community notifications](03-vtc/notifications.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
+| Point Kubernetes liveness / readiness probes at a VTA or VTC | [Health probes](04-reference/health-probes.md) |
 | Read the threat model | [Security model](01-concepts/security-model.md) |
 
 ## Table of contents
@@ -273,6 +274,9 @@ How to operate and integrate against a VTC.
 
 - **[BIP-32 paths](04-reference/bip32-paths.md)** — the VTA's
   hierarchical-key derivation specification.
+- **[Health probes](04-reference/health-probes.md)** — `/livez`,
+  `/readyz` and `/health` on the VTA and VTC: what each checks and the
+  Kubernetes probe settings.
 - **[CLI style](04-reference/cli-style.md)** — conventions for
   flags, output, errors, and JSON modes across `vta`, `vtc`, `pnm`,
   `cnm`.

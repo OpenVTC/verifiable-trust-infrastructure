@@ -130,6 +130,8 @@ vta-service/src/
 | Method | Path | Purpose |
 |---|---|---|
 | GET | /health | Status |
+| GET | /livez | Liveness: the process serves ([Health probes](../04-reference/health-probes.md)) |
+| GET | /readyz | Readiness: `503` while the store is unavailable |
 
 The richer report is two Trust Tasks (over `POST /trust-tasks`, DIDComm or
 TSP): `vta/health/details/0.1` — public, the same non-identifying flags for

@@ -773,6 +773,7 @@ impl TestVtcBuilder {
             publish_rate_limiter: crate::relationships::rate_limit::PublishRateLimiter::new(
                 [0x5a; 32],
             ),
+            readiness: vti_common::health::ReadinessProbe::new(config_ks.clone()),
             sessions_ks,
             acl_ks,
             community_ks,
