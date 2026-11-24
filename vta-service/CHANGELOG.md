@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.87.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.86.0...vta-service-v0.87.0) — 2026-11-24
+
+
+### Added
+
+- Dtg-credentials 0.16 — a community may declare issuerScope directed ([#2802](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2802))
+
+Moves to dtg-credentials 0.16, after DTG Core Credentials (Correlation
+  Scope, VMC; trustoverip/dtgwg-cred-spec#86): a community's grant is
+  `directed` at minimum, `public` where the community is open to outsiders.
+  Only `pairwise` is refused. The library's `context-v3` (salting) feature is
+  not enabled.
+
+  Verifiers now accept a community credential declaring `directed` or
+  `public`, and keep refusing anything narrower:
+
+  - vta-sdk `vetting::eligibility` (a vetter's role VAC);
+  - vtc-service `members::inbound_vmc` (the grant an acknowledgement binds to).
+
+
+
 ## [0.86.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.85.0...vta-service-v0.86.0) — 2026-11-24
 
 
