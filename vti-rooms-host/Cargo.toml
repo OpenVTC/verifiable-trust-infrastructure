@@ -1,7 +1,7 @@
 [package]
 name = "vti-rooms-host"
 description = "The rooms/* Trust Task handlers a data-room host serves, shared by every host behind one RoomHost trait"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

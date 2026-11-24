@@ -35,7 +35,7 @@ async-trait = { workspace = true }
 # (`run_phase1_init`, the `ballot-box` template), `tsp` for the binding
 # envelope, `didcomm` for `did_key::secrets_from_bundle`, and (through
 # `provision-client`) `trust_task_sign` and the proof verifier.
-vta-sdk = { path = "../vta-sdk", version = "0.91", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.92", features = [
   "didcomm",
   "provision-client",
   "tsp",
