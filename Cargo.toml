@@ -825,7 +825,11 @@ trust-tasks-capability-client = "0.41"
 # index (`.index(true)`). 0.1.3 is the floor: the first with the index.
 # trust-tasks-rs 0.36.2 above is the runtime that index's entries need
 # (`trust_tasks_rs::type_index`).
-trust-tasks-build = "0.1.4"
+# 0.2.2: each PAYLOAD_SCHEMA keeps only the $defs it reaches (trust-tasks-tf
+# #1243), but still every definition a spec declares for clients and references
+# from nowhere (#1353), such as `vtc/storage/credentials/set`'s
+# SealedCredentialCleartext, which the console and `vta_sdk::openapi` read.
+trust-tasks-build = "0.2.2"
 trust-tasks-https = { version = "0.41", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —

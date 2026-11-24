@@ -9704,17 +9704,6 @@ export interface components {
             ext?: components["schemas"]["VtcEndorsementTypesDeleteV0_1Ext"];
             typeUri: string;
         };
-        VtcEndorsementTypesRegisterV0_1EndorsementType: {
-            /** @description Optional JSON Schema a statement's `credentialSubject.object.value` must satisfy (opaque here) — for a registry predicate, the object schema its profile publishes. */
-            claimSchema?: Record<string, never>;
-            /** Format: date-time */
-            createdAt?: string;
-            /** @description The member who registered this endorsement type. An endorsement vocabulary is community-defined and shapes what every later endorsement can claim, so who introduced a type is audit-relevant in a way its creation time alone is not. */
-            createdByDid?: string;
-            description?: string;
-            /** @description The predicate IRI the community accepts, compared as an exact string. Always an absolute IRI: a DTG VSC predicate registry IRI (e.g. `https://registry.trustoverip.org/dtg/vsc/vetted/1`) or a community-namespace IRI defined in the registry's predicate definition format. The four core predicates — endorses/1, witnessed/1, vetted/1 and presented/1 under `https://registry.trustoverip.org/dtg/vsc/` — are seeded when the community starts. The reserved value `role:vetter`, which names the vetter-role record vtc/endorsements/* keeps beside statements, is never registered. */
-            typeUri: string;
-        };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcEndorsementTypesRegisterV0_1Ext: {
             [key: string]: unknown;
@@ -9726,10 +9715,6 @@ export interface components {
             ext?: components["schemas"]["VtcEndorsementTypesRegisterV0_1Ext"];
             /** @description The predicate IRI to accept, an absolute IRI: a DTG VSC predicate registry IRI or a community-namespace IRI. The reserved value `role:vetter` is refused with `reserved`, and a value that is not an absolute IRI with `invalidUri`. */
             typeUri: string;
-        };
-        VtcEndorsementTypesRegisterV0_1Response: {
-            endorsementType: components["schemas"]["VtcEndorsementTypesRegisterV0_1EndorsementType"];
-            ext?: components["schemas"]["VtcEndorsementTypesRegisterV0_1Ext"];
         };
         VtcGroupsBindingsAddV0_1BindingId: string;
         VtcGroupsBindingsAddV0_1BindingSpec: components["schemas"]["VtcGroupsBindingsAddV0_1RoomBindingSpec"] | components["schemas"]["VtcGroupsBindingsAddV0_1GrantsBindingSpec"] | components["schemas"]["VtcGroupsBindingsAddV0_1RoleBindingSpec"];
@@ -13622,24 +13607,6 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** @description One way into the community: what an applicant must present, and how a submission that presents it is decided. Every requirement it states must be met; requirements it does not state are not requirements. A criterion stating none is met by every submission. A community's criteria are alternatives: a submission is decided under the one it names. What vtc/join-requests/manifest/0.3 publishes to applicants as a `Criterion` is derived from this. */
-        VtcSchemasAcceptsRegisterV0_2AcceptsCriterion: {
-            admission: components["schemas"]["VtcSchemasAcceptsRegisterV0_2Admission"];
-            /**
-             * Format: date-time
-             * @description When this criterion was last registered. Registering an existing id replaces it.
-             */
-            createdAt: string;
-            /** @description The administrator who last registered the criterion. */
-            createdByDid: string;
-            credentialIssuers?: components["schemas"]["VtcSchemasAcceptsRegisterV0_2CredentialIssuers"];
-            description?: components["schemas"]["VtcSchemasAcceptsRegisterV0_2CriterionDescription"];
-            id: components["schemas"]["VtcSchemasAcceptsRegisterV0_2AcceptsCriterionId"];
-            /** @description True: a submission meets the criterion only when it carries a valid, unconsumed invitation credential this community issued to the applicant. Absent or false: an invitation plays no part in meeting this criterion (another criterion may still require one). */
-            invitationRequired?: boolean;
-            query?: components["schemas"]["VtcSchemasAcceptsRegisterV0_2DcqlQuery"];
-            vetting?: components["schemas"]["VtcSchemasAcceptsRegisterV0_2VettingRequirements"];
-        };
         /** @description An Accepts criterion's identifier, chosen by the registering administrator — a ceremony purpose or a named manifest criterion, e.g. `membership`. Compared as an exact string after surrounding whitespace is trimmed. Bounded at 128 characters, the bound vtc/join-requests/manifest/0.2 places on the criterion `id` it publishes. */
         VtcSchemasAcceptsRegisterV0_2AcceptsCriterionId: string;
         /**
@@ -13691,10 +13658,6 @@ export interface components {
             invitationRequired?: boolean;
             query?: components["schemas"]["VtcSchemasAcceptsRegisterV0_2DcqlQuery"];
             vetting?: components["schemas"]["VtcSchemasAcceptsRegisterV0_2VettingRequirements"];
-        };
-        VtcSchemasAcceptsRegisterV0_2Response: {
-            criterion: components["schemas"]["VtcSchemasAcceptsRegisterV0_2AcceptsCriterion"];
-            ext?: components["schemas"]["VtcSchemasAcceptsRegisterV0_2Ext"];
         };
         /** @description A class of documentation, named in lowerCamelCase. Open rather than enumerated, because what documentation a vetter accepts is each vetter's own choice. Well-known values: `passport`, `nationalId`, `driverLicence`, and `none` — the vetter will attest without a document, which is the `priorAcquaintance` case. Only the class ever travels — never a document number, an image, an issuing authority or an expiry date. `none` states a policy (what a vetter accepts); a record of what was relied on expresses 'no document' as an empty list instead. */
         VtcSchemasAcceptsRegisterV0_2VettingDocumentation: string;
@@ -14245,11 +14208,6 @@ export interface components {
              */
             lastPutAt?: string;
         };
-        /**
-         * @description Which backend a config stores to. `local`: plain files in a directory on the community's own host. `s3`: an S3-compatible object store (AWS S3, Cloudflare R2, Backblaze B2, MinIO). `gcs`: native Google Cloud Storage. `walrus`: the Walrus decentralised store, where every blob is public ciphertext and deletion is a lapse, not an erasure.
-         * @enum {string}
-         */
-        VtcStorageConfigsListV0_2StorageKind: "local" | "s3" | "gcs" | "walrus";
         /** @description A config's backend settings, discriminated by `kind`. Never a secret: a credential is a StorageAuth, held elsewhere. */
         VtcStorageConfigsListV0_2StorageSettings: components["schemas"]["VtcStorageConfigsListV0_2LocalSettings"] | components["schemas"]["VtcStorageConfigsListV0_2S3Settings"] | components["schemas"]["VtcStorageConfigsListV0_2GcsSettings"] | components["schemas"]["VtcStorageConfigsListV0_2WalrusSettings"];
         VtcStorageConfigsListV0_2WalrusSettings: {
@@ -14674,16 +14632,6 @@ export interface components {
         VtcVettingVettersProfileV0_1LanguageTag: string;
         /** @description A region or city name as the vetter writes it. Compared case-insensitively and otherwise exactly. */
         VtcVettingVettersProfileV0_1PlaceName: string;
-        /** @description The community stored the profile. */
-        VtcVettingVettersProfileV0_1Response: {
-            /** @description The stored profile's `listed` value. */
-            listed: boolean;
-            /**
-             * Format: date-time
-             * @description When the community stored this profile. vtc/vetting/vetters/list returns the same value.
-             */
-            updatedAt: string;
-        };
         /** @description What documentation the vetter relies on, in the same tokens as vetting/request's `acceptsDocumentation` — `passport`, `nationalId`, `driverLicence`, `none`, or another lowerCamelCase class. The vetter's own choice; empty says nothing either way. */
         VtcVettingVettersProfileV0_1VetterAcceptsDocumentation: components["schemas"]["VtcVettingVettersProfileV0_1VettingDocumentation"][];
         /** @description Vetter-authored free text on when they are available to vet. Attributed to the vetter. */
@@ -14720,10 +14668,6 @@ export interface components {
          * @enum {string}
          */
         VtcVettingVettersProfileV0_1VettingMethod: "inPerson" | "video" | "priorAcquaintance";
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcVettingVettersResendV0_2Ext: {
-            [key: string]: unknown;
-        };
         /** @description The credential the community delivered again. */
         VtcVettingVettersResendV0_2Response: {
             /** @description The `id` of the vetter role credential delivered — the same `credentialId` vtc/vetting/vetters/grant returned. */
