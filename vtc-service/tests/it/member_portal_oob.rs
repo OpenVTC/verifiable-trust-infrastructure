@@ -1664,7 +1664,7 @@ async fn fixture_for_admission() -> Fixture {
     ] {
         vtc_service::status_list::ensure_initial(
             &vtc.state.status_lists_ks,
-            purpose,
+            purpose.clone(),
             format!("{PORTAL}/v1/status-lists/{purpose}"),
         )
         .await

@@ -1269,7 +1269,7 @@ mod p0_14_role_change_policy_tests {
         for purpose in [StatusPurpose::Revocation, StatusPurpose::Suspension] {
             crate::status_list::ensure_initial(
                 &vtc.state.status_lists_ks,
-                purpose,
+                purpose.clone(),
                 format!("{RP}/v1/status-lists/{purpose}"),
             )
             .await

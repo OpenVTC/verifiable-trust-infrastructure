@@ -387,23 +387,28 @@ skip = [
   { crate = "r-efi:<6", reason = "via getrandom" },
   { crate = "wit-bindgen:<0.57", reason = "via wasip3" },
 
-  # trust-tasks-rs 0.39 is on jsonschema 0.49 (the workspace is on 0.60), and
-  # trust-tasks-build / typify on schemars 0.8 and regress 0.11. Fixed upstream
-  # in trust-tasks-rs, not here. `vta_sdk::schema_cache` no longer names a
-  # jsonschema of its own (#2622): it wraps `trust_tasks_rs::validate::SchemaValidator`.
-  { crate = "jsonschema:<0.60", reason = "via trust-tasks-rs" },
-  { crate = "jsonschema-regex:<0.60", reason = "via jsonschema" },
-  { crate = "jsonschema-value:<0.60", reason = "via jsonschema" },
-  { crate = "referencing:<0.60", reason = "via jsonschema" },
-  { crate = "fraction:<0.17", reason = "via jsonschema" },
+  # regorus 0.15 (vti-common's policy engine) is on jsonschema 0.60; the
+  # workspace and trust-tasks-rs 0.41 are on 0.61. Drops when regorus moves.
+  # `vta_sdk::schema_cache` names no jsonschema of its own (#2622): it wraps
+  # `trust_tasks_rs::validate::SchemaValidator`. trust-tasks-build / typify are
+  # still on schemars 0.8 and regress 0.11.
+  { crate = "jsonschema:<0.61", reason = "via regorus" },
+  { crate = "jsonschema-regex:<0.61", reason = "via jsonschema" },
+  { crate = "jsonschema-value:<0.61", reason = "via jsonschema" },
+  { crate = "referencing:<0.61", reason = "via jsonschema" },
+  { crate = "fancy-regex:<0.20", reason = "via jsonschema" },
   { crate = "regress:<0.12", reason = "via trust-tasks-rs, typify-impl" },
   { crate = "schemars:<1", reason = "via trust-tasks-build, typify-impl, typify-macro" },
   { crate = "schemars_derive:<1", reason = "via schemars" },
   { crate = "serde_derive_internals:<0.30", reason = "via schemars_derive" },
 
-  # trust-tasks-https 0.39 is on jsonwebtoken 10 (the workspace is on 11).
-  # Fixed upstream in trust-tasks-https (a bump is in progress there).
-  { crate = "jsonwebtoken:<11", reason = "via trust-tasks-https" },
+  # trust-tasks-rs 0.40 beside 0.41. The affinidi-tdk 0.49 generation's
+  # messaging SDK (0.50) and mediator (0.55) implement trust-tasks-rs 0.40's
+  # traits, so the workspace stays on 0.40; but trust-tasks-didcomm and
+  # trust-tasks-tsp are only on that affinidi generation from 0.41 (0.40 pulls
+  # the previous affinidi-crypto / affinidi-tsp). Drops when the messaging SDK
+  # and mediator release on trust-tasks-rs 0.41 and the workspace follows.
+  { crate = "trust-tasks-rs:<0.41", reason = "via affinidi-messaging-sdk, affinidi-messaging-mediator, this workspace" },
 
   # webauthn-rs 0.5 (the VTA's and VTC's passkeys): base64 0.21,
   # x509-parser 0.16 and its asn1 / der stack, thiserror 1. Its 0.6 line is
@@ -458,6 +463,5 @@ skip = [
   { crate = "quick-xml:<0.42", reason = "via object_store" },
   { crate = "pem:<4", reason = "via jsonwebtoken, rcgen" },
   { crate = "untrusted:<0.9", reason = "via aws-lc-rs" },
-  { crate = "serde_json_canonicalizer:<0.4", reason = "via affinidi-data-integrity" },
 
 ]

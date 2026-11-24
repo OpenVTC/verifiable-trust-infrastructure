@@ -141,7 +141,7 @@ fn issue_and_verify_sd_jwt_vc_end_to_end() {
         "_sd": ["community", "member_handle", "joined_at", "tier"],
     });
 
-    let vc = affinidi_sd_jwt_vc::issue(
+    let vc = affinidi_vc::sd_jwt_vc::issue(
         "https://openvtc.org/credentials/MembershipCredential",
         "did:example:community",
         Some("did:example:alice"),
@@ -196,10 +196,10 @@ fn issue_and_verify_sd_jwt_vc_end_to_end() {
     );
 
     // Temporal validity holds inside the window and is rejected outside it.
-    affinidi_sd_jwt_vc::verify_temporal(&result.claims, 1_800_000_000)
+    affinidi_vc::sd_jwt_vc::verify_temporal(&result.claims, 1_800_000_000)
         .expect("inside validity window");
     assert!(
-        affinidi_sd_jwt_vc::verify_temporal(&result.claims, 2_000_000_000).is_err(),
+        affinidi_vc::sd_jwt_vc::verify_temporal(&result.claims, 2_000_000_000).is_err(),
         "expired credential must fail temporal verification"
     );
 }
@@ -212,7 +212,7 @@ fn tampered_issuer_signature_is_rejected() {
     let claims = json!({ "tier": "founding" });
     let frame = json!({ "_sd": ["tier"] });
 
-    let vc = affinidi_sd_jwt_vc::issue(
+    let vc = affinidi_vc::sd_jwt_vc::issue(
         "https://openvtc.org/credentials/MembershipCredential",
         "did:example:community",
         None,

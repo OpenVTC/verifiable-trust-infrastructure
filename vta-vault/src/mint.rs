@@ -37,7 +37,7 @@
 //!   later presentation can prove possession of the matching key (§14.4).
 //! - **Protected claims stay protected.** `vct`, `iss`, `iat`, `exp`, `nbf`,
 //!   and `cnf` must never be selectively disclosed; the underlying
-//!   `affinidi_sd_jwt_vc::issue` rejects any frame that tries to, and this
+//!   `affinidi_vc::sd_jwt_vc::issue` rejects any frame that tries to, and this
 //!   module never adds them to the disclosure frame.
 //!
 //! ## What this module does NOT do
@@ -169,7 +169,7 @@ pub fn mint_sd_jwt_vc(req: &MintRequest<'_>, signer: &dyn JwtSigner) -> Result<S
     });
 
     let hasher = Sha256Hasher;
-    let vc = affinidi_sd_jwt_vc::issue(
+    let vc = affinidi_vc::sd_jwt_vc::issue(
         req.vct,
         req.issuer_did,
         Some(req.subject_did),
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(result.claims["community"], "did:web:community.example");
         assert_eq!(result.claims["tier"], "founding");
         // Temporal validity holds at a time inside the window.
-        affinidi_sd_jwt_vc::verify_temporal(&result.claims, 1_800_000_000).expect("temporal");
+        affinidi_vc::sd_jwt_vc::verify_temporal(&result.claims, 1_800_000_000).expect("temporal");
     }
 
     #[test]

@@ -342,7 +342,7 @@ mod vetter_grant_console_key_tests {
         ] {
             crate::status_list::ensure_initial(
                 &vtc.state.status_lists_ks,
-                purpose,
+                purpose.clone(),
                 format!("https://vtc.example.com/v1/status-lists/{purpose}"),
             )
             .await

@@ -472,7 +472,7 @@ async fn joining_turns_an_application_entry_into_a_membership() {
     ] {
         crate::status_list::ensure_initial(
             &f.vtc.state.status_lists_ks,
-            purpose,
+            purpose.clone(),
             format!("https://vtc.example.com/v1/status-lists/{purpose}"),
         )
         .await

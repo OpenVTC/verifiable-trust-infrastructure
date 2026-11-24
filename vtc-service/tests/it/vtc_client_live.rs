@@ -89,7 +89,7 @@ async fn vetting_admin_verbs_round_trip() {
     let purpose = affinidi_status_list::StatusPurpose::Revocation;
     vtc_service::status_list::ensure_initial(
         &state.status_lists_ks,
-        purpose,
+        purpose.clone(),
         format!("http://vtc.test/v1/status-lists/{purpose}"),
     )
     .await
@@ -591,7 +591,7 @@ async fn signed_admin_verbs_do_not_ride_the_bearer_session() {
     ] {
         vtc_service::status_list::ensure_initial(
             &state.status_lists_ks,
-            purpose,
+            purpose.clone(),
             format!("http://vtc.test/v1/status-lists/{purpose}"),
         )
         .await

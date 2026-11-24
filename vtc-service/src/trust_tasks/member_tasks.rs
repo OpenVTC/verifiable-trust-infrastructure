@@ -906,7 +906,7 @@ mod tests {
         for purpose in [StatusPurpose::Revocation, StatusPurpose::Suspension] {
             crate::status_list::ensure_initial(
                 &vtc.state.status_lists_ks,
-                purpose,
+                purpose.clone(),
                 format!("{PUBLIC_URL}/v1/status-lists/{purpose}"),
             )
             .await

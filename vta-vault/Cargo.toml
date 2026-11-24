@@ -39,7 +39,7 @@ affinidi-crypto = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 affinidi-sd-jwt = { workspace = true }
-affinidi-sd-jwt-vc = { workspace = true }
+affinidi-vc = { workspace = true }
 # ISO 18013-5 mdoc — receive-side verification (issuerAuth COSE_Sign1, MSO
 # digests, validityInfo) and the CBOR codec that makes a stored body readable.
 affinidi-mdoc = { workspace = true }

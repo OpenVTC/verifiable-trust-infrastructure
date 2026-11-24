@@ -17,7 +17,7 @@
 //!    ES256K (secp256k1) are accepted, the algorithm fixed by the resolved key
 //!    (`vta_sdk::jws`, #1988). A tampered signature never produces verified
 //!    claims, so a forged credential cannot reach the store.
-//! 2. **Temporal validity.** `affinidi_sd_jwt_vc::verify_temporal` over the
+//! 2. **Temporal validity.** `affinidi_vc::sd_jwt_vc::verify_temporal` over the
 //!    *verified* claims — `iat` not in the future, `exp` not in the past,
 //!    `nbf` not in the future. An expired credential is rejected.
 //!
@@ -202,7 +202,7 @@ pub async fn receive_sd_jwt_vc(
 
     // Temporal validity over the *verified* claims. Expired / not-yet-valid /
     // missing-iat all reject without storing.
-    affinidi_sd_jwt_vc::verify_temporal(claims, now_unix)
+    affinidi_vc::sd_jwt_vc::verify_temporal(claims, now_unix)
         .map_err(|e| AppError::Validation(format!("temporal validity check failed: {e}")))?;
 
     // --- map verified claims → StoredCredential envelope (spec §5) ---
@@ -849,7 +849,7 @@ mod tests {
             "tier": "founding",
         });
         let frame = json!({ "_sd": ["community", "tier"] });
-        let vc = affinidi_sd_jwt_vc::issue(
+        let vc = affinidi_vc::sd_jwt_vc::issue(
             "https://openvtc.org/credentials/MembershipCredential",
             issuer_did,
             Some("did:example:alice"),
@@ -1710,7 +1710,7 @@ mod tests {
     }
 
     fn issue_with(signer: &dyn JwtSigner, issuer_did: &str) -> String {
-        affinidi_sd_jwt_vc::issue(
+        affinidi_vc::sd_jwt_vc::issue(
             "https://validant.ai/credentials/IterationSeal",
             issuer_did,
             None,
@@ -1769,7 +1769,7 @@ mod tests {
         let (_dir, _store, vault) = fresh_vault();
         let vm = format!("{DI_ISSUER}#assert-key-01");
         let (signer, key) = p256_issuer(Some(&vm));
-        let compact = affinidi_sd_jwt_vc::issue(
+        let compact = affinidi_vc::sd_jwt_vc::issue(
             "https://validant.ai/credentials/IterationSeal",
             DI_ISSUER,
             None,
