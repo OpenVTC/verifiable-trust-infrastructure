@@ -447,17 +447,23 @@ mod tests {
     #[tokio::test]
     async fn a_multibase_prefixed_list_is_read() {
         let community = secret(0xC0);
-        let prefixed = format!("u{}", encoded(&[3], StatusPurpose::Revocation));
-        let list = sign(
-            unsigned_list(&did(&community), "revocation", &prefixed),
-            &community,
-            "assertionMethod",
-        )
-        .await;
-        assert_eq!(
-            check(&entry("3", "revocation"), &did(&community), list).await,
-            StatusCheck::Revoked
-        );
+        // affinidi-status-list 0.2 encodes the multibase form (`u` + base64url).
+        let prefixed = encoded(&[3], StatusPurpose::Revocation);
+        assert!(prefixed.starts_with("uH4sI"));
+        // A pre-0.2 issuer publishes the bare base64url; both must read.
+        let legacy = prefixed.strip_prefix('u').unwrap().to_string();
+        for form in [prefixed, legacy] {
+            let list = sign(
+                unsigned_list(&did(&community), "revocation", &form),
+                &community,
+                "assertionMethod",
+            )
+            .await;
+            assert_eq!(
+                check(&entry("3", "revocation"), &did(&community), list).await,
+                StatusCheck::Revoked
+            );
+        }
     }
 
     #[tokio::test]

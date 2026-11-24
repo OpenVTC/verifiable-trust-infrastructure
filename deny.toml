@@ -410,6 +410,13 @@ skip = [
   # 0.40. Drops when they release on trust-tasks-rs 0.41.
   { crate = "trust-tasks-rs:<0.41", reason = "via affinidi-messaging-sdk, affinidi-messaging-mediator" },
   { crate = "jsonwebtoken:<12", reason = "via affinidi-messaging-mediator" },
+  # Build-time only. The vti-specs-* crates generate with trust-tasks-build 0.1:
+  # 0.2 (trust-tasks-tf #1243) keeps only the $defs each payload schema
+  # reaches, which drops definitions a spec declares for clients and the
+  # console reads out of PAYLOAD_SCHEMA (`vtc/storage/credentials/set/0.3`'s
+  # SealedStorageCredential, the OpenAPI components `vta_sdk::openapi` renders).
+  # The messaging SDK builds with 0.2.
+  { crate = "trust-tasks-build:<0.2", reason = "via vti-specs-core, vti-specs-rooms, vti-specs-vta, vti-specs-vtc, vti-specs-vtn" },
 
   # webauthn-rs 0.5 (the VTA's and VTC's passkeys): base64 0.21,
   # x509-parser 0.16 and its asn1 / der stack, thiserror 1. Its 0.6 line is

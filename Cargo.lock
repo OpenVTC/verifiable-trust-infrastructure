@@ -534,7 +534,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-build",
+ "trust-tasks-build 0.2.1",
  "trust-tasks-proof",
  "trust-tasks-rs 0.40.5",
  "url",
@@ -691,7 +691,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
- "trust-tasks-build",
+ "trust-tasks-build 0.2.1",
  "trust-tasks-proof",
  "trust-tasks-rs 0.40.5",
  "uuid",
@@ -11042,6 +11042,26 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-build"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4bc4ea9eed5eeee38822e3efa03da008fb0da38d15e49648d9b25862ac2fcdc"
+dependencies = [
+ "anyhow",
+ "heck",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "syn 2.0.119",
+ "toml",
+ "typify",
+]
+
+[[package]]
+name = "trust-tasks-build"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2ced855a337a2879300990d5316d2889dea8c885199252b8334c0bd8f4ea6ff"
@@ -12931,7 +12951,7 @@ dependencies = [
 name = "vti-specs-core"
 version = "0.6.0"
 dependencies = [
- "trust-tasks-build",
+ "trust-tasks-build 0.1.4",
  "trust-tasks-rs 0.41.0",
 ]
 
@@ -12939,7 +12959,7 @@ dependencies = [
 name = "vti-specs-rooms"
 version = "0.10.0"
 dependencies = [
- "trust-tasks-build",
+ "trust-tasks-build 0.1.4",
  "trust-tasks-rs 0.41.0",
 ]
 
@@ -12947,7 +12967,7 @@ dependencies = [
 name = "vti-specs-vta"
 version = "0.11.0"
 dependencies = [
- "trust-tasks-build",
+ "trust-tasks-build 0.1.4",
  "trust-tasks-rs 0.41.0",
 ]
 
@@ -12955,7 +12975,7 @@ dependencies = [
 name = "vti-specs-vtc"
 version = "0.7.1"
 dependencies = [
- "trust-tasks-build",
+ "trust-tasks-build 0.1.4",
  "trust-tasks-rs 0.41.0",
 ]
 
@@ -12963,7 +12983,7 @@ dependencies = [
 name = "vti-specs-vtn"
 version = "0.3.0"
 dependencies = [
- "trust-tasks-build",
+ "trust-tasks-build 0.1.4",
  "trust-tasks-rs 0.41.0",
 ]
 

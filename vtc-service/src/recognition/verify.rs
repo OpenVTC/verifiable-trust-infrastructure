@@ -983,8 +983,15 @@ mod status_bit_bounds_tests {
 
     #[test]
     fn a_multibase_prefixed_encoded_list_is_read() {
-        let body = list_body(&format!("u{}", encoded(MIN_STATUS_LIST_BITS, &[42])), None);
-        assert!(read_status_bit(&body, 42, URL).unwrap());
+        // affinidi-status-list 0.2 encodes the multibase form (`u` + base64url);
+        // a pre-0.2 issuer publishes the bare base64url. Both must read.
+        let prefixed = encoded(MIN_STATUS_LIST_BITS, &[42]);
+        assert!(prefixed.starts_with("uH4sI"));
+        let legacy = prefixed.strip_prefix('u').unwrap().to_string();
+        for form in [prefixed, legacy] {
+            let body = list_body(&form, None);
+            assert!(read_status_bit(&body, 42, URL).unwrap());
+        }
     }
 
     #[test]
