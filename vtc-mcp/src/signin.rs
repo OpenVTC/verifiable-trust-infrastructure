@@ -4,9 +4,17 @@
 //! page holds a fresh key, opens an `auth/oob` request, the person approves it
 //! in their wallet, and the page redeems a session bound to its key. This
 //! bridge is that page. Its own `did:key` — the one it runs with — opens the
-//! request, the operator opens the trigger link in the browser that has their
-//! wallet (or scans it), compares the match number, and approves; the bridge
-//! redeems.
+//! request; the operator pastes the trigger link into their wallet (the
+//! browser wallet's popup, *Open a link from your assistant*) or scans it with
+//! a phone wallet, types the match number this bridge shows them, and
+//! approves; the bridge redeems.
+//!
+//! The link is never to be *clicked* in a browser tab: the bridge has no page
+//! on the portal, and a wallet that sees the click holds it to the portal's
+//! origin and refuses it as `wrong-origin` (VTI-LNK-105). A pasted or scanned
+//! code has no page, so the number the person types is what ties the approval
+//! to them (VTI-LNK-107); the community checks it against the one it gave
+//! this bridge.
 //!
 //! What that yields (`vtc_client::signin`):
 //!
@@ -181,11 +189,14 @@ impl VtcMcp {
             "audience": audience.as_str(),
             "triggerLink": request.trigger_link,
             "claimClosesAt": request.claim_closes_at,
-            "next": "Show the person the trigger link. They open it in the browser that holds \
-                     their wallet, or scan it from a phone wallet; the wallet shows this \
-                     bridge as the starter. Then call vtc_sign_in_finish: it answers with the \
-                     match number the wallet also shows, which the person confirms there, and \
-                     once more when the session is theirs.",
+            "next": "Show the person the trigger link and tell them to paste it into their \
+                     wallet — in the browser wallet, the popup's 'Open a link from your \
+                     assistant' box — or scan it with a phone wallet. Clicking it in a \
+                     browser tab does not work: the wallet refuses a sign-in link clicked \
+                     anywhere but the community's portal. The wallet shows this bridge as \
+                     the starter. Then call vtc_sign_in_finish: it answers with the match \
+                     number for the person to type into their wallet, and once more when \
+                     the session is theirs.",
         }))
     }
 
@@ -247,9 +258,10 @@ impl VtcMcp {
                             "requestId": pending.request_id,
                             "state": state,
                             "matchNumber": number,
-                            "next": "Tell the person this match number. Their wallet shows a \
-                                     number too; they approve only if the two are the same. \
-                                     Then call vtc_sign_in_finish again.",
+                            "next": "Tell the person this match number. Their wallet asks \
+                                     them to type it; they type it themselves and approve \
+                                     only if they started this sign-in. Never type it or \
+                                     approve for them. Then call vtc_sign_in_finish again.",
                         }));
                     }
                 }
@@ -344,7 +356,8 @@ impl VtcMcp {
     #[tool(
         description = "Sign this bridge in as YOU, the way the member portal and the operator \
                        console sign in: it opens a wallet sign-in request with its own key and \
-                       returns the trigger link for your wallet to approve. No entry and no \
+                       returns the trigger link for you to paste into your wallet (or scan \
+                       with a phone wallet) and approve. No entry and no \
                        role are created: once approved, the bridge's key acts with your \
                        standing. audience 'member' (default) gives it the member portal's \
                        standing, delegated for the portal's task families; 'admin' gives it \
@@ -392,8 +405,8 @@ impl VtcMcp {
 
     #[tool(
         description = "Finish a wallet sign-in: waits for the person's wallet and answers as \
-                       soon as there is something for them to do — the match number to confirm \
-                       in the wallet (then call again) — or with the session once approved. \
+                       soon as there is something for them to do — the match number to type \
+                       into the wallet (then call again) — or with the session once approved. \
                        Also answers 'declined', 'expired', or 'waiting' after wait_seconds.",
         annotations(
             title = "Finish signing in",

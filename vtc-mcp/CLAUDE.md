@@ -57,9 +57,12 @@ MCP server bridging a Verifiable Trust Community to MCP tools over stdio (or, wi
   (`src/signin.rs` over `vtc_client::signin`) are the starter's half of
   `auth/oob/*`: the bridge's own key opens the request over the HTTPS door,
   presenting the portal's origin and naming itself as `vtc-mcp/<version>`,
-  and the person approves in their wallet after comparing the match number.
-  The bridge never approves, never shows a number as anything but the
-  person's to compare, and holds no session beyond what `redeem` armed for its
+  and the person pastes the trigger link into their wallet (or scans it),
+  types the match number, and approves. The link is never to be clicked in a
+  tab: the bridge has no page on the portal, so a wallet that sees the click
+  refuses it as `wrong-origin` (VTI-LNK-105). The bridge never approves,
+  never types or shows a number as anything but the person's to type, and
+  holds no session beyond what `redeem` armed for its
   key. A member sign-in delegates the portal families; an admin sign-in is a
   console session only.
 - **An administrator's standing is a signing-key delegation**
