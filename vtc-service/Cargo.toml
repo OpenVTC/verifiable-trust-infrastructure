@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.33.0"
+version = "0.34.0"
 edition.workspace = true
 # Published, so an operator can install the VTC with `cargo install
 # vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
@@ -180,16 +180,16 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.25", optional = true }
-vti-voting = { path = "../vti-voting", version = "0.21", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.26", optional = true }
+vti-voting = { path = "../vti-voting", version = "0.22", optional = true }
 predicate-credential-system = { workspace = true, optional = true }
 # The community's audit-event vocabulary, over vti-common's envelope and writer.
-vtc-audit = { path = "../vtc-audit", version = "0.4", features = ["openapi"] }
-vti-rooms = { path = "../vti-rooms", version = "0.39" }
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.41" }
+vtc-audit = { path = "../vtc-audit", version = "0.5", features = ["openapi"] }
+vti-rooms = { path = "../vti-rooms", version = "0.40" }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.42" }
 # The `rooms/*` handlers, shared with room-host behind one `RoomHost` trait (#2575).
-vti-rooms-host = { path = "../vti-rooms-host", version = "0.4" }
-vti-common = { path = "../vti-common", version = "0.68", features = [
+vti-rooms-host = { path = "../vti-rooms-host", version = "0.5" }
+vti-common = { path = "../vti-common", version = "0.69", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -248,8 +248,8 @@ png = "0.18"
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.41" }
-vta-sdk = { path = "../vta-sdk", version = "0.92", features = [
+vti-secrets = { path = "../vti-secrets", version = "0.42" }
+vta-sdk = { path = "../vta-sdk", version = "0.93", features = [
   "didcomm",
   "session",
   "config-session",
@@ -301,14 +301,14 @@ affinidi-secrets-resolver = { workspace = true }
 # credential's shape from this catalog rather than hand-rolling each VC.
 dtg-credentials = { workspace = true }
 # The Verifiable Trust Network protocol: the community as a network member (`crate::networks`).
-vti-vtn = { path = "../vti-vtn", version = "0.15", features = ["client", "resolve"] }
+vti-vtn = { path = "../vti-vtn", version = "0.16", features = ["client", "resolve"] }
 # The Trust Task receive pipeline (`crate::trust_tasks`'s spine): size,
 # freshness, recipient, spec policy, proof, sender binding, duplicate-id record,
 # dispatch and signed replies. Shared with the VTN service.
-vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.14" }
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.15" }
 # Wallet sign-in (`auth/oob/*`, `crate::trust_tasks::oob_tasks`): the request
 # store, clocks, long poll and check order. Shared with the VTN service.
-vti-oob-server = { path = "../vti-oob-server", version = "0.13" }
+vti-oob-server = { path = "../vti-oob-server", version = "0.14" }
 # JSON Schema validation of issued credentials against their credentialSchema.
 jsonschema = { workspace = true }
 # DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.
@@ -452,7 +452,7 @@ trust-tasks-rs = { workspace = true }
 # through `vta_sdk::jws`.
 k256 = {workspace = true, features = ["ecdsa"]}# Signed room fixtures. Cargo unifies this feature with the normal dependency
 # above, so the fixtures reach tests without shipping in the service binary.
-vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.41", features = ["test-support"] }
+vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.42", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
 vtc-service = { path = ".", features = ["test-support", "transport-harness"] }

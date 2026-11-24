@@ -2,6 +2,24 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.33.0...vtc-service-v0.34.0) — 2026-11-24
+
+
+### Build & CI
+
+- **deps**: Generate the vti-specs crates with trust-tasks-build 0.2.2 ([#2798](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2798))
+
+* build(deps): generate the vti-specs crates with trust-tasks-build 0.2.2
+
+  0.2 keeps only the $defs each PAYLOAD_SCHEMA reaches (trust-tasks-tf #1243),
+  which dropped SealedCredentialCleartext from vtc/storage/credentials/set and the
+  OpenAPI components vta_sdk::openapi renders. 0.2.2 (trust-tasks-tf #1353) keeps
+  every definition a specification declares for clients and references from
+  nowhere, so the pin moves off 0.1.4, the duplicate trust-tasks-build leaves the
+  lockfile, and its cargo-deny skip goes.
+
+
+
 ## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.32.0...vtc-service-v0.33.0) — 2026-11-24
 
 

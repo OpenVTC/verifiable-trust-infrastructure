@@ -2,7 +2,7 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.44.0...vta-tee-v0.45.0) — 2026-11-24
+## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.44.0...vta-tee-v0.46.0) — 2026-11-24
 
 
 ## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.42.0...vta-tee-v0.44.0) — 2026-11-15
