@@ -23031,37 +23031,6 @@
         },
         "additionalProperties": false
       },
-      "VtcEndorsementTypesRegisterV0_1EndorsementType": {
-        "type": "object",
-        "required": [
-          "typeUri"
-        ],
-        "properties": {
-          "claimSchema": {
-            "type": "object",
-            "description": "Optional JSON Schema a statement's `credentialSubject.object.value` must satisfy (opaque here) — for a registry predicate, the object schema its profile publishes."
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "createdByDid": {
-            "type": "string",
-            "description": "The member who registered this endorsement type. An endorsement vocabulary is community-defined and shapes what every later endorsement can claim, so who introduced a type is audit-relevant in a way its creation time alone is not."
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 1024
-          },
-          "typeUri": {
-            "type": "string",
-            "description": "The predicate IRI the community accepts, compared as an exact string. Always an absolute IRI: a DTG VSC predicate registry IRI (e.g. `https://registry.trustoverip.org/dtg/vsc/vetted/1`) or a community-namespace IRI defined in the registry's predicate definition format. The four core predicates — endorses/1, witnessed/1, vetted/1 and presented/1 under `https://registry.trustoverip.org/dtg/vsc/` — are seeded when the community starts. The reserved value `role:vetter`, which names the vetter-role record vtc/endorsements/* keeps beside statements, is never registered.",
-            "maxLength": 512,
-            "minLength": 1
-          }
-        },
-        "additionalProperties": false
-      },
       "VtcEndorsementTypesRegisterV0_1Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
@@ -23090,21 +23059,6 @@
             "description": "The predicate IRI to accept, an absolute IRI: a DTG VSC predicate registry IRI or a community-namespace IRI. The reserved value `role:vetter` is refused with `reserved`, and a value that is not an absolute IRI with `invalidUri`.",
             "maxLength": 512,
             "minLength": 1
-          }
-        },
-        "additionalProperties": false
-      },
-      "VtcEndorsementTypesRegisterV0_1Response": {
-        "type": "object",
-        "required": [
-          "endorsementType"
-        ],
-        "properties": {
-          "endorsementType": {
-            "$ref": "#/components/schemas/VtcEndorsementTypesRegisterV0_1EndorsementType"
-          },
-          "ext": {
-            "$ref": "#/components/schemas/VtcEndorsementTypesRegisterV0_1Ext"
           }
         },
         "additionalProperties": false
@@ -33358,52 +33312,6 @@
         },
         "additionalProperties": true
       },
-      "VtcSchemasAcceptsRegisterV0_2AcceptsCriterion": {
-        "type": "object",
-        "description": "One way into the community: what an applicant must present, and how a submission that presents it is decided. Every requirement it states must be met; requirements it does not state are not requirements. A criterion stating none is met by every submission. A community's criteria are alternatives: a submission is decided under the one it names. What vtc/join-requests/manifest/0.3 publishes to applicants as a `Criterion` is derived from this.",
-        "required": [
-          "id",
-          "admission",
-          "createdAt",
-          "createdByDid"
-        ],
-        "properties": {
-          "admission": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2Admission"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When this criterion was last registered. Registering an existing id replaces it."
-          },
-          "createdByDid": {
-            "type": "string",
-            "description": "The administrator who last registered the criterion.",
-            "maxLength": 2048,
-            "pattern": "^did:"
-          },
-          "credentialIssuers": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2CredentialIssuers"
-          },
-          "description": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2CriterionDescription"
-          },
-          "id": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2AcceptsCriterionId"
-          },
-          "invitationRequired": {
-            "type": "boolean",
-            "description": "True: a submission meets the criterion only when it carries a valid, unconsumed invitation credential this community issued to the applicant. Absent or false: an invitation plays no part in meeting this criterion (another criterion may still require one)."
-          },
-          "query": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2DcqlQuery"
-          },
-          "vetting": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2VettingRequirements"
-          }
-        },
-        "additionalProperties": false
-      },
       "VtcSchemasAcceptsRegisterV0_2AcceptsCriterionId": {
         "type": "string",
         "description": "An Accepts criterion's identifier, chosen by the registering administrator — a ceremony purpose or a named manifest criterion, e.g. `membership`. Compared as an exact string after surrounding whitespace is trimmed. Bounded at 128 characters, the bound vtc/join-requests/manifest/0.2 places on the criterion `id` it publishes.",
@@ -33498,21 +33406,6 @@
           },
           "vetting": {
             "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2VettingRequirements"
-          }
-        },
-        "additionalProperties": false
-      },
-      "VtcSchemasAcceptsRegisterV0_2Response": {
-        "type": "object",
-        "required": [
-          "criterion"
-        ],
-        "properties": {
-          "criterion": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2AcceptsCriterion"
-          },
-          "ext": {
-            "$ref": "#/components/schemas/VtcSchemasAcceptsRegisterV0_2Ext"
           }
         },
         "additionalProperties": false
@@ -34981,16 +34874,6 @@
         },
         "additionalProperties": false
       },
-      "VtcStorageConfigsListV0_2StorageKind": {
-        "type": "string",
-        "description": "Which backend a config stores to. `local`: plain files in a directory on the community's own host. `s3`: an S3-compatible object store (AWS S3, Cloudflare R2, Backblaze B2, MinIO). `gcs`: native Google Cloud Storage. `walrus`: the Walrus decentralised store, where every blob is public ciphertext and deletion is a lapse, not an erasure.",
-        "enum": [
-          "local",
-          "s3",
-          "gcs",
-          "walrus"
-        ]
-      },
       "VtcStorageConfigsListV0_2StorageSettings": {
         "oneOf": [
           {
@@ -36213,26 +36096,6 @@
         "maxLength": 128,
         "minLength": 1
       },
-      "VtcVettingVettersProfileV0_1Response": {
-        "type": "object",
-        "description": "The community stored the profile.",
-        "required": [
-          "listed",
-          "updatedAt"
-        ],
-        "properties": {
-          "listed": {
-            "type": "boolean",
-            "description": "The stored profile's `listed` value."
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "When the community stored this profile. vtc/vetting/vetters/list returns the same value."
-          }
-        },
-        "additionalProperties": false
-      },
       "VtcVettingVettersProfileV0_1VetterAcceptsDocumentation": {
         "type": "array",
         "items": {
@@ -36338,12 +36201,6 @@
           "video",
           "priorAcquaintance"
         ]
-      },
-      "VtcVettingVettersResendV0_2Ext": {
-        "type": "object",
-        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
-        "additionalProperties": true,
-        "minProperties": 1
       },
       "VtcVettingVettersResendV0_2Response": {
         "type": "object",
