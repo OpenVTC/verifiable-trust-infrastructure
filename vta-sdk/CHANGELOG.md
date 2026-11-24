@@ -2,6 +2,14 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.94.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.94.0...vta-sdk-v0.94.1) — 2026-11-24
+
+
+### Added
+
+- **vta-sdk**: Receive_health() counts DIDComm request/reply, not only TSP ([#2807](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2807))
+
+
 ## [0.94.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.93.0...vta-sdk-v0.94.0) — 2026-11-24
 
 
