@@ -299,10 +299,21 @@ pub struct VtaClient {
 /// reply was refused `limits.queue.peer` (2026-10-05). Two timeouts in a row is
 /// the first point at which "the peer dropped it" is no longer the likelier
 /// story: D4 has had its one attempt.
+///
+/// It is also the threshold of [`ReceiveLegHealth::replies_not_arriving`] on
+/// every transport: a DIDComm session counts its reply timeouts the same way
+/// (#2753), though with no D4 to stop it only reports them.
 pub const REPLY_TIMEOUT_BREAKER: u32 = 2;
 
 /// Whether replies are reaching this client — the receive leg, which a
 /// successful send says nothing about.
+///
+/// Counted on every transport whose replies come back through this client's
+/// mediator inbox: a Trust Task over TSP (either leg shape), and every DIDComm
+/// request/reply on the session's own socket
+/// ([`DIDCommSession::send_and_wait`](crate::didcomm_session::DIDCommSession::send_and_wait)
+/// and the Trust-Task envelope). A REST request is answered on its own HTTP
+/// connection, so it is not counted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ReceiveLegHealth {
@@ -332,9 +343,10 @@ pub(crate) struct ReceiveLeg {
     last_timeout: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
-// Only the TSP request path records into it today; without `tsp` the counters
-// stay at rest and `receive_health` reports no timeouts.
-#[cfg_attr(not(feature = "tsp"), allow(dead_code))]
+// Recorded into by the TSP request path (`tsp`) and by a DIDComm session's
+// request/reply (`session`); with neither, the counters stay at rest and
+// `receive_health` reports no timeouts.
+#[cfg_attr(not(any(feature = "tsp", feature = "session")), allow(dead_code))]
 impl ReceiveLeg {
     /// A reply arrived: the receive leg works.
     pub(crate) fn record_reply(&self) {
@@ -702,7 +714,10 @@ impl VtaClient {
             // Refusing an unsigned reply is the default because a reply that
             // attests to nothing is what this exists to stop being acceptable.
             require_signed_replies: true,
-            receive_leg: Default::default(),
+            // The session's own leg, so DIDComm request/reply (counted by the
+            // session) and a TSP leg attached later (counted here) feed one
+            // count — the receive leg is the session's inbox either way.
+            receive_leg: session.receive_leg.clone(),
             record_members: Default::default(),
             identity: identity.map(std::sync::Arc::new),
             transport: Transport::DIDComm {
@@ -1959,6 +1974,13 @@ impl VtaClient {
     /// how long since the last reply. A send that succeeds says nothing about
     /// this — the request reached the mediator; whether its answer comes back
     /// depends on this client's inbox being collected.
+    ///
+    /// Counted for every request whose reply comes back through the mediator:
+    /// TSP Trust Tasks and every DIDComm request/reply alike, so a DIDComm-only
+    /// session trips it too. Only TSP acts on it (by stopping the §7.2.2 D4
+    /// re-form and resend, and returning [`VtaError::RepliesNotArriving`]); a
+    /// DIDComm reply timeout is returned as the timeout it always was, because
+    /// there is no repair there to stop.
     ///
     /// A consumer showing connection state should show this beside it. A
     /// session with `replies_not_arriving()` is one to rebuild, not retry.
@@ -4680,6 +4702,24 @@ mod receive_leg_tests {
         let (sends, reforms) = (AtomicU32::new(0), AtomicU32::new(0));
         let _ = call(&client, READ, &sends, &reforms, |_| Err(timeout())).await;
         assert!(clone.receive_health().replies_not_arriving());
+    }
+
+    #[test]
+    fn is_reply_timeout_names_both_mediator_transports_and_nothing_else() {
+        assert!(timeout().is_reply_timeout());
+        assert!(
+            VtaError::DidcommTransport(crate::error::DIDCOMM_REPLY_TIMEOUT.into())
+                .is_reply_timeout()
+        );
+        for other in [
+            VtaError::TspTransport("TSP send failed: refused".into()),
+            VtaError::DidcommTransport("message pickup error: closed".into()),
+            VtaError::RepliesNotArriving {
+                consecutive_timeouts: 2,
+            },
+        ] {
+            assert!(!other.is_reply_timeout(), "{other:?}");
+        }
     }
 
     #[test]

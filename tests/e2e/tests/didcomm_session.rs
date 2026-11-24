@@ -108,6 +108,15 @@ async fn send_and_wait_times_out_when_no_responder() {
         elapsed < Duration::from_secs(timeout_secs * 2 + 5),
         "send_and_wait honored timeout poorly: {elapsed:?}"
     );
+    // The session counts it on its receive leg (#2753).
+    assert_eq!(session.receive_health().consecutive_reply_timeouts, 1);
+    assert!(
+        session
+            .clone()
+            .receive_health()
+            .since_last_timeout
+            .is_some()
+    );
 
     session.shutdown().await;
     mediator.shutdown();
@@ -204,6 +213,10 @@ async fn send_and_wait_problem_report_maps_to_typed_error() {
         .expect_err("problem report propagates");
 
     assert!(err.is_conflict(), "got {err:?}");
+    // A problem report is still a reply: the receive leg works (#2753).
+    let health = session.receive_health();
+    assert_eq!(health.consecutive_reply_timeouts, 0);
+    assert!(health.since_last_reply.is_some());
 
     session.shutdown().await;
     responder.shutdown().await;

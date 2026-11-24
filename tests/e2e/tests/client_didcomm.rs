@@ -1261,6 +1261,86 @@ async fn check_auth_via_didcomm_always_true() {
     shutdown_all(client, responder, mediator).await;
 }
 
+// ── Receive-leg health on a DIDComm-only session (#2753) ────────────
+
+/// A DIDComm session whose replies stop arriving trips the same breaker a TSP
+/// one does: `REPLY_TIMEOUT_BREAKER` reply timeouts in a row and
+/// `replies_not_arriving()` — on the client and every clone of it — and any
+/// reply, a refusal included, closes it again. The timeout itself stays the
+/// DIDComm timeout it always was (no D4 on DIDComm, so nothing to stop).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn didcomm_reply_timeouts_trip_receive_health_and_a_reply_resets_it() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    const DROP: u8 = 0;
+    const ANSWER: u8 = 1;
+    const REFUSE: u8 = 2;
+    let mode = Arc::new(AtomicU8::new(DROP));
+    let handler_mode = Arc::clone(&mode);
+    let (mediator, responder, client) = build_didcomm(move |msg_type, body| {
+        if !is_tt(msg_type, body, trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3) {
+            return no_handler();
+        }
+        match handler_mode.load(Ordering::SeqCst) {
+            // The VTA's reply never reaches the client: an inbox not collected.
+            DROP => ResponderReply::Drop,
+            ANSWER => tt_ok(
+                trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
+                json!({ "frameworkVersion": "0.6.0", "supportedTypes": [] }),
+            ),
+            _ => no_handler(),
+        }
+    })
+    .await;
+    let clone = client.clone();
+    let discover = || {
+        client.dispatch_trust_task(
+            trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
+            json!({ "patterns": ["acl/*"] }),
+            2,
+        )
+    };
+
+    assert_eq!(client.receive_health(), ReceiveLegHealth::default());
+    for n in 1..=REPLY_TIMEOUT_BREAKER {
+        assert!(!client.receive_health().replies_not_arriving());
+        let err = discover().await.expect_err("no reply arrives");
+        assert!(
+            matches!(err, VtaError::DidcommTransport(ref m) if m.contains("timeout waiting for DIDComm response")),
+            "the DIDComm timeout is returned unchanged: {err:?}"
+        );
+        assert!(err.is_reply_timeout(), "{err:?}");
+        assert_eq!(client.receive_health().consecutive_reply_timeouts, n);
+    }
+    let health = clone.receive_health();
+    assert!(
+        health.replies_not_arriving(),
+        "shared by clones: {health:?}"
+    );
+    assert!(health.since_last_timeout.is_some());
+    assert!(health.since_last_reply.is_none());
+
+    // A refusal is a reply: the leg works again.
+    mode.store(REFUSE, Ordering::SeqCst);
+    discover().await.expect_err("refused");
+    assert!(!clone.receive_health().replies_not_arriving());
+    assert_eq!(client.receive_health().consecutive_reply_timeouts, 0);
+
+    // One more timeout counts from zero; an answer resets it.
+    mode.store(DROP, Ordering::SeqCst);
+    discover().await.expect_err("no reply arrives");
+    assert_eq!(client.receive_health().consecutive_reply_timeouts, 1);
+    mode.store(ANSWER, Ordering::SeqCst);
+    discover().await.expect("answered");
+    let health = client.receive_health();
+    assert_eq!(health.consecutive_reply_timeouts, 0);
+    assert!(health.since_last_reply.is_some());
+
+    drop(clone);
+    shutdown_all(client, responder, mediator).await;
+}
+
 // ── Session lifecycle: sequential reuse must not duel (#290 / #296) ──
 
 /// Two sequential `connect → use → close` cycles for the **same** client DID
