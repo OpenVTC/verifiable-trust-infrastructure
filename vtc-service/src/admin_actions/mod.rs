@@ -1168,9 +1168,19 @@ async fn record_waived(state: &AppState) {
         now,
     );
     rec.closed_by = Some(waiver.requester);
-    let _guard = ACTION_LOCK.lock().await;
-    if let Err(e) = save(state, &rec).await {
-        warn!(error = %e, "could not enter a waived operation in the action history");
+    {
+        let _guard = ACTION_LOCK.lock().await;
+        if let Err(e) = save(state, &rec).await {
+            warn!(error = %e, "could not enter a waived operation in the action history");
+            return;
+        }
+    }
+    // An administrator made under a waiver is issued the same approver invite
+    // as one made by consent (§6c, §11.4): the requester's operation-bound
+    // gesture is the anchor VTI-APV-016 accepts, and without the invite the new
+    // administrator has no factor to answer a step-up with.
+    if makes_new_administrator(&rec) {
+        invite_new_administrator(state, &rec).await;
     }
 }
 
@@ -2662,13 +2672,18 @@ async fn run_and_close(
         approvers,
     )
     .await;
-    if completed
-        && rec.act == Act::GrantUnrestricted
-        && rec.type_uri != crate::trust_tasks::admin_tasks::INVITES_CREATE_TYPE
-    {
+    if completed && makes_new_administrator(&rec) {
         invite_new_administrator(state, &rec).await;
     }
     Ok((completed, message))
+}
+
+/// Whether `rec`, completed, made its subject an unrestricted administrator who
+/// is owed an approver invite: a grant, never an admin invitation (whose
+/// invitee has not claimed yet).
+fn makes_new_administrator(rec: &ActionRecord) -> bool {
+    rec.act == Act::GrantUnrestricted
+        && rec.type_uri != crate::trust_tasks::admin_tasks::INVITES_CREATE_TYPE
 }
 
 /// Mint a step-up approver enrolment invite for the administrator `rec` just
@@ -2676,8 +2691,10 @@ async fn run_and_close(
 /// (`vtc-approver-step-up.md` §6c, §11.4). The creation already passed the
 /// requester's step-up and another administrator's consent, so the invite
 /// costs nothing extra and closes the gap before the new administrator meets
-/// it. Best-effort: the administrator exists either way, and can be invited
-/// from Settings if this fails.
+/// it. Under a single-administrator waiver (VTI-APV-022) the requester's
+/// operation-bound gesture stands for that consent, and the invite is the same.
+/// Best-effort: the administrator exists either way, and can be invited from
+/// Settings if this fails.
 async fn invite_new_administrator(state: &AppState, rec: &ActionRecord) {
     match crate::step_up_approver::invite_new_administrator(state, &rec.requester, &rec.subject)
         .await
