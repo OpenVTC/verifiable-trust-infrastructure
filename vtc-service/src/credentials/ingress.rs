@@ -84,11 +84,16 @@ use dtg_credentials::{DTGCredentialError, DTGCredentialType, IssuerScope};
 use serde_json::Value as JsonValue;
 use vti_common::error::AppError;
 
-/// The two `@context` entries every DTG credential MUST carry, first and
-/// second, in this order.
-pub const DTG_CONTEXTS: [&str; 2] = [
-    dtg_credentials::W3C_VC_V2_CONTEXT,
+/// The `@context` entry every DTG credential MUST carry first.
+pub const W3C_CONTEXT: &str = dtg_credentials::W3C_VC_V2_CONTEXT;
+
+/// The DTG contexts a credential may carry second: `v1`, and `v2`, which is
+/// `v1` plus the VAC's `purposes` member. `dtg-credentials` ≥ 0.14 mints `v2`
+/// for any VAC that states `purposes`, so refusing it would refuse every such
+/// VAC. The constants are the catalog's own, so a new version is one edit.
+pub const DTG_CONTEXT_VERSIONS: [&str; 2] = [
     dtg_credentials::DTG_CONTEXT_V1,
+    dtg_credentials::DTG_CONTEXT_V2,
 ];
 
 /// The base `type` entries every DTG credential MUST carry, alongside exactly
@@ -150,13 +155,31 @@ pub fn classify_dtg(doc: &JsonValue) -> Result<DTGCredentialType, AppError> {
             AppError::Validation("credential `@context` missing or not an array".into())
         })?;
     // Exact positions, as the catalog's own parse compares them: the W3C
-    // context first, the DTG v1 context second, further contexts after.
-    for (position, required) in DTG_CONTEXTS.iter().enumerate() {
-        if ctx.get(position).map(String::as_str) != Some(*required) {
-            return Err(AppError::Validation(format!(
-                "credential `@context` must carry `{required}` at position {position}"
-            )));
-        }
+    // context first, a DTG context (v1 or v2) second, further contexts after.
+    if ctx.first().map(String::as_str) != Some(W3C_CONTEXT) {
+        return Err(AppError::Validation(format!(
+            "credential `@context` must carry `{W3C_CONTEXT}` at position 0"
+        )));
+    }
+    let dtg_context = ctx.get(1).map(String::as_str);
+    if !dtg_context.is_some_and(|c| DTG_CONTEXT_VERSIONS.contains(&c)) {
+        return Err(AppError::Validation(format!(
+            "credential `@context` must carry `{}` or `{}` at position 1",
+            DTG_CONTEXT_VERSIONS[0], DTG_CONTEXT_VERSIONS[1]
+        )));
+    }
+    // `v1` is frozen and defines no `purposes`; the catalog refuses a VAC
+    // stating them under `v1`, and so does ingress.
+    if dtg_context == Some(dtg_credentials::DTG_CONTEXT_V1)
+        && doc
+            .get("credentialSubject")
+            .and_then(|s| s.get("purposes"))
+            .is_some()
+    {
+        return Err(AppError::Validation(format!(
+            "a credential stating `purposes` must carry `{}` at position 1",
+            dtg_credentials::DTG_CONTEXT_V2
+        )));
     }
 
     let types: Vec<String> = doc
@@ -510,6 +533,63 @@ mod tests {
             dtg_credentials::W3C_VC_V2_CONTEXT
         ]);
         assert!(classify_dtg(&doc).is_err(), "order matters");
+    }
+
+    /// A VAC stating `purposes` is minted under the v2 context; ingress must
+    /// admit it, as it admits the v1 form of every other subtype.
+    fn vac_with_purposes() -> JsonValue {
+        dtg_json(
+            &DTGCredential::new_community_role_vac(
+                "did:web:community.example".into(),
+                "did:key:zMember".into(),
+                "moderator",
+                Utc::now(),
+                Utc::now() + Duration::days(30),
+            )
+            .unwrap()
+            .with_purposes(dtg_credentials::purposes::PurposeScope::listed([
+                "research",
+            ]))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn admits_a_v2_vac_with_purposes() {
+        let doc = vac_with_purposes();
+        assert_eq!(doc["@context"][1], dtg_credentials::DTG_CONTEXT_V2, "{doc}");
+        assert!(doc["credentialSubject"]["purposes"].is_object(), "{doc}");
+        let got = classify_dtg(&doc).expect("a catalog-minted v2 VAC must classify");
+        assert_eq!(
+            std::mem::discriminant(&got),
+            std::mem::discriminant(&DTGCredentialType::Authority)
+        );
+        require_dtg_type(
+            &doc,
+            DTGCredentialType::Authority,
+            Utc::now(),
+            "this endpoint takes authority credentials",
+        )
+        .expect("a v2 VAC passes the full ingress gate");
+    }
+
+    /// v2 is a superset of v1, so a VAC without `purposes` re-labelled v2 is
+    /// still a DTG credential.
+    #[test]
+    fn admits_the_v2_context_on_a_credential_without_purposes() {
+        let mut doc = vmc();
+        doc["@context"][1] = serde_json::json!(dtg_credentials::DTG_CONTEXT_V2);
+        classify_dtg(&doc).expect("v2 context admitted");
+    }
+
+    /// `purposes` under the frozen v1 context is refused, as the catalog
+    /// refuses it.
+    #[test]
+    fn refuses_purposes_under_the_v1_context() {
+        let mut doc = vac_with_purposes();
+        doc["@context"][1] = serde_json::json!(dtg_credentials::DTG_CONTEXT_V1);
+        let err = classify_dtg(&doc).expect_err("purposes under v1 must be refused");
+        assert!(format!("{err:?}").contains("purposes"), "{err:?}");
     }
 
     #[test]
