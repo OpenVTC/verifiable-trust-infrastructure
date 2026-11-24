@@ -1,0 +1,116 @@
+// A data room used for chat, as the portal shows it: who said what, when, and
+// in what order — the same reading of the room the member's other surfaces
+// show (the wallet's console, Keyring), because the wallet applies the reading
+// rules and this page only lays out what it was handed (`rooms.conversation`).
+//
+// Pure: nothing here asks the wallet anything.
+
+import type { Conversation, ConversationRecord } from "./wallet-rooms";
+
+/**
+ * Whether a room is being used for chat: it holds a message, or a message its
+ * author withdrew. A room of notes and files stays a list of records.
+ */
+export function isConversation(c: Pick<Conversation, "records">): boolean {
+  return c.records.some((r) => r.shown === "message" || r.shown === "withdrawn");
+}
+
+/** Who wrote something, for a message's header. */
+export interface Speaker {
+  label: string;
+  /** The member this page acts as. */
+  own: boolean;
+  /** `label` is the name the author gave themselves in this room: their claim, said as such. */
+  ownName: boolean;
+}
+
+/**
+ * The member themselves as "You"; another author by the name they gave
+ * themselves in this room, marked as their own; else by their DID's short form.
+ */
+export function speakerOf(
+  author: string | undefined,
+  me: string | undefined,
+  names: Record<string, string>,
+  /** How the page names a DID with no name in this room (`authorName`). */
+  byDid: (did: string) => string,
+): Speaker {
+  if (author === undefined) return { label: "Someone", own: false, ownName: false };
+  if (me !== undefined && author === me) return { label: "You", own: true, ownName: false };
+  const name = names[author]?.trim();
+  if (name) return { label: name, own: false, ownName: true };
+  return { label: byDid(author), own: false, ownName: false };
+}
+
+/** The instant to show for a record: the author's plausible claim, else when the room got it. None for an implausible claim. */
+export function shownTime(r: Pick<ConversationRecord, "written" | "orderAt">): string | undefined {
+  if (r.written.at !== undefined) return r.written.at;
+  if (r.written.implausible) return undefined;
+  return r.orderAt;
+}
+
+function localDay(d: Date): string {
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/** A day divider's words: "Today", "Yesterday", "Tue 17 Nov", or with its year when not this year's. */
+export function dayLabel(iso: string, now: Date = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  if (localDay(d) === localDay(now)) return "Today";
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (localDay(d) === localDay(yesterday)) return "Yesterday";
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    ...(d.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
+
+/** A message's time of day: "23:54" in the reader's locale. */
+export function clockTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/** The records in the wallet's order, under a divider wherever the day changes. */
+export function byDay(
+  records: readonly ConversationRecord[],
+  now: Date = new Date(),
+): { day: string; records: ConversationRecord[] }[] {
+  const out: { day: string; key: string; records: ConversationRecord[] }[] = [];
+  for (const r of records) {
+    const d = new Date(r.orderAt);
+    const key = Number.isNaN(d.getTime()) ? "" : localDay(d);
+    const last = out[out.length - 1];
+    if (last && last.key === key) last.records.push(r);
+    else out.push({ day: key ? dayLabel(r.orderAt, now) : "", key, records: [r] });
+  }
+  return out.map(({ day, records: rs }) => ({ day, records: rs }));
+}
+
+/** A line of another record, for a reply's quote: its title, else the start of its text. */
+export function excerpt(r: Pick<ConversationRecord, "title" | "body" | "file">, max = 80): string {
+  const text = (r.title || r.body || r.file?.name || "").replace(/\s+/g, " ").trim();
+  return [...text].length > max ? `${[...text].slice(0, max - 1).join("")}…` : text;
+}
+
+/** What stands in for a record that has nothing to show. */
+export function absentWords(r: Pick<ConversationRecord, "shown">): string {
+  switch (r.shown) {
+    case "withdrawn":
+      return "Message withdrawn by its author";
+    case "retracted":
+      return "Removed";
+    case "placeholder":
+      return "Its author could not be verified, so it is not shown";
+    case "refused":
+      return "Not shown: it did not verify";
+    case "unreadable":
+      return "Could not be opened";
+    default:
+      return "";
+  }
+}

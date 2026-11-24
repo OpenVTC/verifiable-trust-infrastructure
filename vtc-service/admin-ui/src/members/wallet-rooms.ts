@@ -90,6 +90,49 @@ export interface RecordSummary {
   description?: string;
 }
 
+/**
+ * One record of a room as the reading rules show it (`rooms.conversation`):
+ * the wallet lists, reads and verifies every record and applies
+ * `SealedRecordBody`'s reading rules — notes and messages by `kind`, replies,
+ * reactions, withdrawals, `writtenAt` ordering, edits — before the page sees
+ * it. Only a `note` and a `message` carry content. Every text member is
+ * another member's words: rendered as text, never as markup.
+ */
+export interface ConversationRecord {
+  key: string;
+  version: number;
+  status?: string;
+  shown: "note" | "message" | "withdrawn" | "retracted" | "placeholder" | "refused" | "unreadable";
+  author?: string;
+  title?: string;
+  description?: string;
+  body?: string;
+  tags?: string[];
+  file?: { name: string; mediaType?: string; size: number };
+  /** `at`: the author's claim of when, where plausible. `implausible`: no time
+   *  is shown. `arrivedLate`: claimed more than 24 hours before the room got it. */
+  written: { at?: string; implausible?: true; arrivedLate?: { claimed: string; received: string } };
+  /** The instant it is ordered by. */
+  orderAt: string;
+  orderedBy: "writtenAt" | "createdAt" | "updatedAt" | "readAt";
+  edited?: { at?: string };
+  replyTo?: { key: string; version?: number; available: boolean; changed?: "edited" };
+  reactions: { value: string; count: number; authors: string[] }[];
+  /** Rewritten by someone other than its earlier author: never shown as theirs. */
+  rewrite?: { by: string; original: string };
+  /** Why it is refused, unreadable or a placeholder. */
+  reason?: string;
+}
+
+/** `rooms.conversation`: the room's records oldest first, and each author's own name in it. */
+export interface Conversation {
+  records: ConversationRecord[];
+  /** By author DID: the name they gave themselves in this room (`memberProfile`) — their claim. */
+  names: Record<string, string>;
+  complete: boolean;
+  verification: Record<string, unknown> | undefined;
+}
+
 export interface Listing {
   records: RecordSummary[];
   complete: boolean;
@@ -243,6 +286,8 @@ export interface WalletRooms {
   info(p: { hostDid: string; roomId: string }): Promise<RoomInfo>;
   browse(p: { hostDid: string; roomId: string; prefix?: string; sinceVersion?: number }): Promise<Listing>;
   read(p: { hostDid: string; roomId: string; key: string }): Promise<RoomRecord>;
+  /** The room as the reading rules show it. Never prompts. Absent from a wallet older than conversations. */
+  conversation?(p: { hostDid: string; roomId: string }): Promise<Conversation>;
   putNote(p: {
     hostDid: string;
     roomId: string;

@@ -2325,3 +2325,95 @@ textarea {
   border-color: var(--danger);
   color: #fff;
 }
+
+/* A data room used for chat (Rooms.tsx `ConversationCard`): the room's
+   messages in order, each under its author, the member's own on the right. */
+.chat,
+.chat-day-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chat {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.chat-day-items {
+  display: grid;
+  gap: 0.5rem;
+}
+.chat-divider {
+  justify-self: center;
+  width: fit-content;
+  margin: 0 auto 0.5rem;
+  padding: 0.15rem 0.75rem;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+.chat-msg {
+  justify-self: start;
+  max-width: min(85%, 36rem);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  min-width: 0;
+}
+.chat-msg.own {
+  justify-self: end;
+  background: color-mix(in srgb, var(--brand) 18%, var(--bg-subtle));
+}
+.chat-msg p {
+  margin: 0;
+}
+.chat-from {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--brand);
+}
+.chat-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-reply {
+  border-left: 2px solid var(--brand);
+  padding-left: 0.4rem;
+  margin: 0.15rem 0 0.25rem !important;
+}
+.chat-meta {
+  text-align: right;
+}
+.chat-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem !important;
+}
+.chat-reaction {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--border, currentColor);
+  font-size: 0.85rem;
+}
+.chat-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+}
+.chat-note.selected {
+  outline: 2px solid var(--brand);
+}
+.chat-note-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-absent {
+  justify-self: center;
+  font-style: italic;
+}
