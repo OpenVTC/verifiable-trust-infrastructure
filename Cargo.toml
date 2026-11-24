@@ -1086,7 +1086,7 @@ affinidi-rate-limit = "0.1.4"
 # against (ECDH-ES+A256KW + A256CBC-HS512 JWEs from `vta-sdk`'s light client).
 affinidi-messaging-didcomm = "0.16.0"
 # The in-process mediator for end-to-end tests; always with its TSP arm.
-affinidi-messaging-test-mediator = { version = "0.55", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.56", features = ["tsp"] }
 openmls_rust_crypto = "0.6"
 # Hidden vetting and community voting (`vti-vetting-pcs`, `vti-voting`, and
 # their hosts).

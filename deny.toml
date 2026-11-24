@@ -402,19 +402,6 @@ skip = [
   { crate = "schemars_derive:<1", reason = "via schemars" },
   { crate = "serde_derive_internals:<0.30", reason = "via schemars_derive" },
 
-  # The mediator crates 0.55 (test-mediator, mediator-admin, mediator-tui) are
-  # the last of the previous generation in the graph: they are built on
-  # affinidi-tdk 0.49 / affinidi-messaging-sdk 0.50, whose trust-tasks-rs and
-  # trust-tasks-proof are 0.40, and the mediator on jsonwebtoken 11. The
-  # workspace is on affinidi-tdk 0.50 / affinidi-messaging-sdk 0.51, which share
-  # its trust-tasks-rs 0.41 (affinidi-tdk-rs #1189). All five drop together
-  # when the mediator releases 0.56 on that generation.
-  { crate = "affinidi-tdk:<0.50", reason = "via affinidi-messaging-test-mediator" },
-  { crate = "affinidi-messaging-sdk:<0.51", reason = "via affinidi-messaging-mediator" },
-  { crate = "trust-tasks-rs:<0.41", reason = "via affinidi-messaging-mediator, affinidi-messaging-mediator-admin, affinidi-messaging-sdk 0.50" },
-  { crate = "trust-tasks-proof:<0.41", reason = "via affinidi-messaging-mediator, affinidi-messaging-sdk 0.50" },
-  { crate = "jsonwebtoken:<12", reason = "via affinidi-messaging-mediator" },
-
   # webauthn-rs 0.5 (the VTA's and VTC's passkeys): base64 0.21,
   # x509-parser 0.16 and its asn1 / der stack, thiserror 1. Its 0.6 line is
   # blocked (Cargo.toml has the detail); drops with it.
@@ -466,7 +453,6 @@ skip = [
   { crate = "ordered-float:<5", reason = "via serde-value" },
   { crate = "half:<2", reason = "via serde_cbor" },
   { crate = "quick-xml:<0.42", reason = "via object_store" },
-  { crate = "pem:<4", reason = "via jsonwebtoken, rcgen" },
   { crate = "untrusted:<0.9", reason = "via aws-lc-rs" },
 
 ]
