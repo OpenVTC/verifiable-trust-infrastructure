@@ -2,6 +2,30 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.47.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.46.0...vtc-client-v0.47.0) — 2026-11-24
+
+
+### Fixed
+
+- **vtc-mcp**: Tell the person to paste a sign-in link and type the number (VTI-LNK-105, VTI-LNK-107) ([#2794](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2794))
+
+`vtc_sign_in` told the person to open the trigger link "in the browser that
+  holds their wallet". The bridge has no page on the community's portal, so a
+  wallet that sees the click holds it to the portal's origin and refuses it as
+  `wrong-origin` (VTI-LNK-105); with the browser wallet, neither the member nor
+  the admin audience could be completed that way. The link is now to be
+  pasted into the wallet (the browser wallet's popup, "Open a link from your
+  assistant", vta-browser-plugin#450) or scanned with a phone wallet.
+
+  It also said the wallet "shows a number too" for the person to compare. It
+  does not: the wallet asks the person to type the number the starter shows,
+  and the community checks it (`auth/oob/prove`'s `enteredNumber` against the
+  request's match number, VTI-LNK-107). The tool results, descriptions, the
+  operator guide (served as vtc://guide/vtc-mcp), the skill and the
+  `SignInPoll::Pending` doc now say "type", and never to type it for them.
+
+
+
 ## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.45.0...vtc-client-v0.46.0) — 2026-11-18
 
 

@@ -2,6 +2,30 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.44.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.43.0...vta-vault-v0.44.0) — 2026-11-24
+
+
+### Build & CI
+
+- **deps**: Move to the affinidi-tdk 0.49 generation, mediator 0.55 and trust-tasks 0.41 ([#2796](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2796))
+
+* build(deps)!: move to the affinidi-tdk 0.49 generation, mediator 0.55 and trust-tasks 0.41
+
+  The whole workspace moves together, as the generations do not mix:
+  affinidi-tdk 0.49 with affinidi-crypto 0.4, affinidi-encoding 0.2,
+  affinidi-data-integrity 0.9, affinidi-secrets-resolver 0.6,
+  affinidi-did-common 0.5, affinidi-did-resolver-cache-sdk 0.9,
+  affinidi-did-resolver-traits 0.2, affinidi-did-webs 0.14, affinidi-tdk-common
+  0.8, affinidi-messaging-sdk 0.50, affinidi-messaging-didcomm 0.16,
+  affinidi-messaging-delivery 0.3, affinidi-status-list 0.2, affinidi-bbs 0.5;
+  the mediator crates 0.55 (test-mediator, mediator-admin, mediator-tui);
+  trust-tasks-rs and its bindings 0.41 with jsonwebtoken 12; dtg-credentials
+  0.15; agent-names 0.2; didwebvh-rs 0.8.3; jsonschema 0.61; heapless 0.9.4;
+  plus the minor/patch bumps of the dependabot group (pgp, kube, rmcp,
+  google-cloud-auth, …). The enclave proxy's resolver moves to 0.9 with it.
+
+
+
 ## [0.43.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.42.0...vta-vault-v0.43.0) — 2026-11-18
 
 
