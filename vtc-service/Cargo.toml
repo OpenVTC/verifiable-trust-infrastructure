@@ -180,16 +180,16 @@ path = "tests/it/main.rs"
 
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
-vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.26", optional = true }
-vti-voting = { path = "../vti-voting", version = "0.22", optional = true }
+vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.27", optional = true }
+vti-voting = { path = "../vti-voting", version = "0.23", optional = true }
 predicate-credential-system = { workspace = true, optional = true }
 # The community's audit-event vocabulary, over vti-common's envelope and writer.
-vtc-audit = { path = "../vtc-audit", version = "0.5", features = ["openapi"] }
-vti-rooms = { path = "../vti-rooms", version = "0.40" }
+vtc-audit = { path = "../vtc-audit", version = "0.6", features = ["openapi"] }
+vti-rooms = { path = "../vti-rooms", version = "0.41" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.43" }
 # The `rooms/*` handlers, shared with room-host behind one `RoomHost` trait (#2575).
-vti-rooms-host = { path = "../vti-rooms-host", version = "0.5" }
-vti-common = { path = "../vti-common", version = "0.69", features = [
+vti-rooms-host = { path = "../vti-rooms-host", version = "0.6" }
+vti-common = { path = "../vti-common", version = "0.70", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -248,7 +248,7 @@ png = "0.18"
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.42" }
+vti-secrets = { path = "../vti-secrets", version = "0.43" }
 vta-sdk = { path = "../vta-sdk", version = "0.94", features = [
   "didcomm",
   "session",
@@ -305,10 +305,10 @@ vti-vtn = { path = "../vti-vtn", version = "0.17", features = ["client", "resolv
 # The Trust Task receive pipeline (`crate::trust_tasks`'s spine): size,
 # freshness, recipient, spec policy, proof, sender binding, duplicate-id record,
 # dispatch and signed replies. Shared with the VTN service.
-vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.15" }
+vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.16" }
 # Wallet sign-in (`auth/oob/*`, `crate::trust_tasks::oob_tasks`): the request
 # store, clocks, long poll and check order. Shared with the VTN service.
-vti-oob-server = { path = "../vti-oob-server", version = "0.14" }
+vti-oob-server = { path = "../vti-oob-server", version = "0.15" }
 # JSON Schema validation of issued credentials against their credentialSchema.
 jsonschema = { workspace = true }
 # DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.

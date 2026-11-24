@@ -14,7 +14,7 @@ publish = false
 [dependencies]
 # The community client: every tool call is one signed Trust Task it sends,
 # over the session it opened (`tsp` for the TSP leg) or signed over HTTPS.
-vtc-client = { path = "../vtc-client", version = "0.48", features = ["tsp"] }
+vtc-client = { path = "../vtc-client", version = "0.49", features = ["tsp"] }
 # `TransportChoice`, the secrets bundle, the DID resolver. `acl-setup` makes a
 # session set this bridge's mediator ACL on connect, as `cnm` and `vta-mcp` do:
 # a freshly minted `did:key` (`--mint-did-key`) has no mediator ACL, and
