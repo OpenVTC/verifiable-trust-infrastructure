@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.35.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.35.0...vtc-service-v0.35.1) — 2026-11-24
+
+
+### Added
+
+- **vtc**: Show a data room used for chat as its conversation in the member portal ([#2804](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2804))
+
+A room holding messages is shown as its conversation, read from the wallet's
+  rooms.conversation: day dividers, each message under the name its author
+  gave themselves in the room (said as their own name) or "You", the time,
+  replies quoting what they answer, reaction counts, edited / arrived-late
+  marks, and placeholders for withdrawn or unverifiable records. Notes and
+  files are one line each with a See button that opens the record pane.
+
+  The wallet applies the reading rules; the portal only lays out what it is
+  handed. A room of only notes and files, a wallet without the method, or a
+  failed read keeps the records list.
+
+  Needs OpenVTC/vta-browser-plugin#451.
+
+
+
 ## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.34.0...vtc-service-v0.35.0) — 2026-11-24
 
 
