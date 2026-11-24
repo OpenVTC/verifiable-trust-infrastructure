@@ -175,7 +175,10 @@ uniffi = "0.32"
 # affinidi-data-integrity 0.8.7 and did-common 0.4.7 carry in their public
 # API), `affinidi-vc` to 0.3, `affinidi-sd-jwt` to 0.2 and `affinidi-mdoc` to
 # 0.6; every one of those moves with it.
-affinidi-tdk = "0.49"
+# 0.50 goes with `affinidi-messaging-sdk` 0.51, the messaging SDK's move to
+# `trust-tasks-rs` 0.41 (affinidi-tdk-rs #1189): one `trust-tasks-rs` across
+# the SDK boundary again.
+affinidi-tdk = "0.50"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -340,7 +343,8 @@ affinidi-messaging-core = "0.1.12"
 # 0.47 is on `trust-tasks-rs` 0.39 and delivery 0.2: application receipts,
 # the per-entry status scope and the `messaging/wake/*` client (#2553, #2663).
 # 0.47.2 is the release mediator 0.52 is built on.
-affinidi-messaging-sdk = { version = "0.50.0", default-features = false }
+# 0.51 is on `trust-tasks-rs` 0.41, the workspace's copy (affinidi-tdk-rs #1189).
+affinidi-messaging-sdk = { version = "0.51.0", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.

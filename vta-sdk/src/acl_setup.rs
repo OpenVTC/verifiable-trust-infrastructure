@@ -78,11 +78,6 @@ use tracing::{debug, info, warn};
 // its `account_update` takes those, not `vti_specs`.
 use affinidi_tdk::messaging::tasks::messaging::account;
 
-/// The Trust Task type of [`account::update::v0_2::Payload`] (see
-/// `build_account_update_document`).
-#[cfg(feature = "tsp")]
-const ACCOUNT_UPDATE_TYPE_URI: &str = "https://trusttasks.org/spec/messaging/account/update/0.2";
-
 /// Set a client's own ACL on the mediator to accept all messages.
 ///
 /// Call this immediately after a connection to the mediator succeeds. The client
@@ -349,19 +344,7 @@ fn build_account_update_document(
     // `validate_basic` checks the document is addressed to it, and the TSP
     // envelope's sender is what authorises the change, so both have to be on
     // the document rather than inferred.
-    //
-    // The type URI is named here rather than read off the payload: the
-    // messaging SDK's generated payload implements an earlier trust-tasks-rs's
-    // `Payload` trait than this workspace's (the SDK is still on 0.40), so
-    // `TrustTask::for_payload` cannot see it. The payload serialises the same.
-    let type_uri: trust_tasks_rs::TypeUri = ACCOUNT_UPDATE_TYPE_URI
-        .parse()
-        .map_err(|e| format!("account/update type URI: {e:?}"))?;
-    let mut doc = TrustTask::new(
-        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        type_uri,
-        serde_json::to_value(&payload)?,
-    );
+    let mut doc = TrustTask::for_payload(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload);
     doc.issuer = Some(client_did.to_string());
     doc.recipient = Some(mediator_did.to_string());
     Ok(serde_json::to_vec(&doc)?)
