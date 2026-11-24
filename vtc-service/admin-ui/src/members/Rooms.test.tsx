@@ -412,6 +412,78 @@ describe("data rooms in the portal", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  // A room used for chat is shown as the conversation the wallet assembled by
+  // the reading rules — the same reading Keyring and the wallet's console show.
+  const ALBERTO = "did:webvh:QmAlberto:people.example:alberto";
+  const CHAT = {
+    records: [
+      {
+        key: "m1", version: 1, shown: "message" as const, author: ALBERTO, body: "Hi",
+        written: { at: "2026-11-17T22:54:00Z" }, orderAt: "2026-11-17T22:54:00Z", orderedBy: "writtenAt" as const,
+        reactions: [{ value: "👍", count: 1, authors: [MEMBER] }],
+      },
+      {
+        key: "m2", version: 2, shown: "message" as const, author: MEMBER, body: "<b>Test</b> message",
+        replyTo: { key: "m1", available: true },
+        written: { at: "2026-11-24T17:18:00Z" }, orderAt: "2026-11-24T17:18:00Z", orderedBy: "writtenAt" as const,
+        reactions: [],
+      },
+      {
+        key: "k1", version: 3, shown: "note" as const, author: MEMBER, title: "test1", body: "a note",
+        written: { at: "2026-11-24T17:19:00Z" }, orderAt: "2026-11-24T17:19:00Z", orderedBy: "writtenAt" as const,
+        reactions: [],
+      },
+      {
+        key: "gone", version: 4, shown: "withdrawn" as const,
+        written: {}, orderAt: "2026-11-24T17:20:00Z", orderedBy: "createdAt" as const, reactions: [],
+      },
+    ],
+    names: { [ALBERTO]: "Alberto Leon" },
+    complete: true,
+    verification: { count: "match" },
+  };
+
+  it("a room used for chat is its conversation: who said what, under their own names, notes as one line", async () => {
+    const wallet = fakeWallet({ conversation: vi.fn(async () => CHAT) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("heading", { name: "Conversation" });
+    expect(screen.queryByRole("heading", { name: "Records" })).toBeNull();
+    // Another member by the name they gave themselves, said to be theirs; the member as You.
+    expect(screen.getAllByText("Alberto Leon").length).toBeGreaterThan(0);
+    expect(screen.getByText("(their own name)")).toBeTruthy();
+    expect(screen.getByText("You")).toBeTruthy();
+    expect(screen.getByText("Hi")).toBeTruthy();
+    expect(screen.getByText("👍 1")).toBeTruthy();
+    expect(screen.getByText("Alberto Leon: Hi")).toBeTruthy();
+    // A member's words are text, never markup.
+    expect(screen.getByText("<b>Test</b> message")).toBeTruthy();
+    expect(screen.getByText("Message withdrawn by its author")).toBeTruthy();
+    // No message is read one by one: the wallet assembled the room.
+    expect(wallet.calls.map((c) => c.method)).not.toContain("browse");
+    // A note opens beside the conversation, read through the wallet.
+    fireEvent.click(screen.getByRole("button", { name: "See" }));
+    await screen.findByRole("heading", { name: "Term sheet" });
+    expect(wallet.calls.some((c) => c.method === "read" && (c.args as { key: string }).key === "k1")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("a room of notes and files stays a list of records, even from a wallet that assembles conversations", async () => {
+    const notesOnly = { ...CHAT, records: [CHAT.records[2]!] };
+    const wallet = fakeWallet({ conversation: vi.fn(async () => notesOnly) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("heading", { name: "Records" });
+    expect(screen.queryByRole("heading", { name: "Conversation" })).toBeNull();
+  });
+
+  it("a conversation that does not assemble leaves the room's records", async () => {
+    const wallet = fakeWallet({ conversation: vi.fn(async () => { throw new Error("no"); }) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("Term sheet");
+  });
+
   it("a listing the host contradicts is a banner, not a quietly shorter list", async () => {
     const wallet = fakeWallet({
       browse: vi.fn(async () => ({ records: [], complete: true, verification: { count: "short" } })),

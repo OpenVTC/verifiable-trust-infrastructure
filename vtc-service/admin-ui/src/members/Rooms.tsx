@@ -10,7 +10,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Boxes, Download, Eye, FileText, FilePlus2, Gift, NotebookPen, Plus, RefreshCw, Share2, X } from "lucide-react";
+import { ArrowLeft, Boxes, CornerDownRight, Download, Eye, FileText, FilePlus2, Gift, MessagesSquare, NotebookPen, Plus, RefreshCw, Share2, X } from "lucide-react";
+
+import { absentWords, byDay, clockTime, excerpt, isConversation, shownTime, speakerOf } from "./conversation";
 
 import { blobBytes, createLimiter, mayPreview, showBytes, worthAutoPreview, type Shown } from "./file-preview";
 import { InstallWallet } from "./InstallWallet";
@@ -32,6 +34,8 @@ import {
   type RecordSummary,
   type RoomInfo,
   type RoomRecord,
+  type Conversation as ConversationView,
+  type ConversationRecord,
   type TransferProgress,
   type WalletRooms,
 } from "./wallet-rooms";
@@ -493,6 +497,14 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
     queryKey: ["member-room-info", roomId],
     queryFn: () => wallet.info({ hostDid, roomId }),
   });
+  // The room as the reading rules show it, from a wallet that can assemble one.
+  // A room used for chat is shown as its conversation; any other room — or an
+  // older wallet, or a conversation that did not assemble — as its records.
+  const conversation = useQuery({
+    queryKey: ["member-room-conversation", roomId],
+    queryFn: () => wallet.conversation!({ hostDid, roomId }),
+    enabled: typeof wallet.conversation === "function",
+  });
   const [open, setOpenKey] = useState<string | null>(null);
   const pane = useRef<HTMLDivElement>(null);
   useTopbarHeight();
@@ -504,7 +516,9 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
     }
   };
 
-  if (info.isPending) return <p className="muted">Asking your wallet…</p>;
+  if (info.isPending || (typeof wallet.conversation === "function" && conversation.isPending)) {
+    return <p className="muted">Asking your wallet…</p>;
+  }
   if (info.isError) {
     return (
       <div className="alert" role="alert">
@@ -522,14 +536,24 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
     <>
       <RoomFacts info={info.data} />
       <div className={open ? "room-layout has-open" : "room-layout"}>
-        <Records
-          wallet={wallet}
-          hostDid={hostDid}
-          roomId={roomId}
-          me={info.data.member}
-          open={open}
-          setOpen={setOpen}
-        />
+        {conversation.data && isConversation(conversation.data) ? (
+          <ConversationCard
+            view={conversation.data}
+            me={info.data.member}
+            open={open}
+            setOpen={setOpen}
+            onRefresh={() => void conversation.refetch()}
+          />
+        ) : (
+          <Records
+            wallet={wallet}
+            hostDid={hostDid}
+            roomId={roomId}
+            me={info.data.member}
+            open={open}
+            setOpen={setOpen}
+          />
+        )}
         <div className="room-pane" ref={pane}>
           {open ? (
             <RecordView
@@ -651,6 +675,156 @@ function Records({
         <p className="muted small">The listing stopped at a page bound; older records are not shown.</p>
       )}
     </section>
+  );
+}
+
+// ── A room used for chat ────────────────────────────────────────────────────
+
+/**
+ * The room as a conversation, oldest first under a divider for each day: each
+ * message under the name its author gave themselves in this room (or "You"),
+ * replies quoting what they answer, reactions counted beneath; notes and files
+ * as one line each, opened in the pane beside. The wallet decided all of it by
+ * the reading rules; this lays it out.
+ */
+function ConversationCard({
+  view,
+  me,
+  open,
+  setOpen,
+  onRefresh,
+}: {
+  view: ConversationView;
+  me?: string;
+  open: string | null;
+  setOpen: (k: string | null) => void;
+  onRefresh: () => void;
+}) {
+  const byKey = new Map(view.records.map((r) => [r.key, r]));
+  const speaker = (did: string | undefined) => speakerOf(did, me, view.names, (d) => authorName(d));
+  const warning = adverseVerification(view.verification);
+  return (
+    <section className="card" aria-labelledby="conversation-heading">
+      <div className="card-head">
+        <MessagesSquare size={18} aria-hidden="true" />
+        <h2 id="conversation-heading">Conversation</h2>
+        <span className="push" />
+        {open && (
+          <button type="button" className="btn btn-sm" onClick={() => setOpen(null)}>
+            <Plus size={14} aria-hidden="true" /> Add
+          </button>
+        )}
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onRefresh} aria-label="Refresh">
+          <RefreshCw size={14} aria-hidden="true" />
+        </button>
+      </div>
+      {warning && (
+        <div className="alert" role="alert">
+          <p className="alert-title">The host's listing does not add up.</p>
+          <p>{warning} Your wallet still shows what it was given.</p>
+        </div>
+      )}
+      {!view.complete && (
+        <p className="muted small">The listing stopped at a page bound; older messages are not shown.</p>
+      )}
+      <ol className="chat" aria-label="Messages">
+        {byDay(view.records).map(({ day, records }, i) => (
+          <li key={`${day}-${i}`} className="chat-day">
+            {day && <p className="chat-divider">{day}</p>}
+            <ol className="chat-day-items">
+              {records.map((r) => (
+                <ChatItem
+                  key={r.key}
+                  r={r}
+                  target={r.replyTo ? byKey.get(r.replyTo.key) : undefined}
+                  speaker={speaker}
+                  selected={open === r.key}
+                  onOpen={() => setOpen(open === r.key ? null : r.key)}
+                />
+              ))}
+            </ol>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function ChatItem({
+  r,
+  target,
+  speaker,
+  selected,
+  onOpen,
+}: {
+  r: ConversationRecord;
+  target?: ConversationRecord;
+  speaker: (did: string | undefined) => ReturnType<typeof speakerOf>;
+  selected: boolean;
+  onOpen: () => void;
+}) {
+  const time = shownTime(r);
+  if (r.shown === "note") {
+    // A note or a file is one line in the conversation; its content opens beside it.
+    return (
+      <li className={selected ? "chat-note selected" : "chat-note"}>
+        {r.file ? <FileText size={14} aria-hidden="true" /> : <NotebookPen size={14} aria-hidden="true" />}
+        <span className="chat-note-title">
+          {r.file && !r.title ? "File" : "Note"}: <b>{r.title || r.file?.name || "(untitled)"}</b>
+          <span className="muted small"> · {speaker(r.author).label}{time ? ` · ${clockTime(time)}` : ""}</span>
+        </span>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onOpen} aria-current={selected ? "true" : undefined}>
+          See
+        </button>
+      </li>
+    );
+  }
+  if (r.shown !== "message") {
+    return (
+      <li className="chat-absent muted small" title={r.reason}>
+        {absentWords(r)}
+      </li>
+    );
+  }
+  const who = speaker(r.author);
+  const rewriter = r.rewrite ? speaker(r.rewrite.by) : undefined;
+  return (
+    <li className={who.own ? "chat-msg own" : "chat-msg"}>
+      <p className="chat-from" title={r.author}>
+        {who.label}
+        {who.ownName && <span className="muted"> (their own name)</span>}
+      </p>
+      {r.replyTo && (
+        <p className="chat-reply muted small">
+          <CornerDownRight size={12} aria-hidden="true" />{" "}
+          {r.replyTo.available && target
+            ? `${speaker(target.author).label}: ${excerpt(target)}`
+            : "a message that is not available"}
+        </p>
+      )}
+      {/* Another member's words: rendered as text, never as markup. */}
+      <p className="chat-body">{r.body}</p>
+      {r.file && (
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onOpen}>
+          <FileText size={14} aria-hidden="true" /> {r.file.name}
+        </button>
+      )}
+      <p className="chat-meta muted small">
+        {rewriter && <span>rewritten by {rewriter.label} · </span>}
+        {r.edited && <span>edited · </span>}
+        {r.written.arrivedLate && <span title={`claims ${r.written.arrivedLate.claimed}`}>arrived later than it says · </span>}
+        {time && <time dateTime={time} title={formatDateTime(time)}>{clockTime(time)}</time>}
+      </p>
+      {r.reactions.length > 0 && (
+        <p className="chat-reactions">
+          {r.reactions.map((x) => (
+            <span key={x.value} className="chat-reaction" title={x.authors.map((a) => speaker(a).label).join(", ")}>
+              {x.value} {x.count}
+            </span>
+          ))}
+        </p>
+      )}
+    </li>
   );
 }
 
@@ -1153,6 +1327,7 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["member-room-records", roomId] });
+    void qc.invalidateQueries({ queryKey: ["member-room-conversation", roomId] });
     void qc.invalidateQueries({ queryKey: ["member-room-info", roomId] });
   };
   const note = useMutation({

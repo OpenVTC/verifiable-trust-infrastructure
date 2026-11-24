@@ -620,6 +620,11 @@ When adding a flow, add it here and a line to the root index.
   presentation or a key, and never import the extension's code: the wallet's
   gates (the page is the `SignInPortal` origin, rooms the member shared, each
   write confirmed) are the authorization (`data-rooms-files.md` §8.5).
+  A room holding messages is shown as its conversation (`conversation.ts`),
+  laid out from `rooms.conversation` — the wallet's `assembleRoomRecords` view.
+  Never re-derive kinds, ordering, reactions or members' names here: the
+  reading rules have one implementation, so the portal, the wallet's console
+  and Keyring show one room alike.
 - **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
   the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
   ballot is filled in the wallet's own window and the cast goes from the wallet to
