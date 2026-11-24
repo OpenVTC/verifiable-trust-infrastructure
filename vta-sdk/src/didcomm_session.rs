@@ -88,6 +88,12 @@ pub struct DIDCommSession {
     /// marks the whole session closed. The [`LeakGuard`] reads it on the last
     /// drop.
     shutdown: Arc<AtomicBool>,
+    /// Whether replies are reaching this session: every request/reply on it
+    /// records a reply or a reply timeout here. Shared by clones — the receive
+    /// leg is this session's mediator inbox, whichever clone sent — and by the
+    /// [`crate::client::VtaClient`] built on it, whose TSP leg counts into the
+    /// same leg. See [`receive_health`](Self::receive_health).
+    pub(crate) receive_leg: Arc<crate::client::ReceiveLeg>,
     /// Fires a warning iff the last owner drops without `shutdown()`. `Arc`, so
     /// its [`Drop`] runs exactly once — when the truly-last session clone is
     /// dropped, which is when the live connection actually goes away.
@@ -561,6 +567,7 @@ impl DIDCommSession {
             client_did: client_did.to_string(),
             vta_did: vta_did.to_string(),
             shutdown,
+            receive_leg: Arc::default(),
             _leak_guard: leak_guard,
         })
     }
@@ -705,6 +712,15 @@ impl DIDCommSession {
         Ok(())
     }
 
+    /// Whether replies are reaching this session — see
+    /// [`ReceiveLegHealth`](crate::client::ReceiveLegHealth). Counts every
+    /// request/reply on this session (and its clones); a
+    /// [`VtaClient`](crate::client::VtaClient) built on it reports the same
+    /// leg from [`receive_health`](crate::client::VtaClient::receive_health).
+    pub fn receive_health(&self) -> crate::client::ReceiveLegHealth {
+        self.receive_leg.snapshot()
+    }
+
     /// Send a DIDComm message and wait for a matching response.
     ///
     /// Packs the message, sends it to the mediator, then uses the WebSocket
@@ -785,7 +801,7 @@ impl DIDCommSession {
             .pack_message(&self.vta_did, &msg_id, msg_type, body)
             .await?;
 
-        let received = self
+        let received = match self
             .service
             .request(
                 &self.vta_did,
@@ -794,14 +810,38 @@ impl DIDCommSession {
                 Duration::from_secs(timeout_secs),
             )
             .await
-            .map_err(|e| {
-                // Preserve the exact timeout message callers/tests match on today.
-                if e.to_string().contains("timed out") {
-                    VtaError::DidcommTransport("timeout waiting for DIDComm response".into())
-                } else {
-                    VtaError::DidcommTransport(format!("message pickup error: {e}"))
+        {
+            // Any reply — a result, a problem report, even one of the wrong
+            // type — came back through the inbox: the receive leg works.
+            Ok(received) => {
+                self.receive_leg.record_reply();
+                received
+            }
+            // Sent, and nothing came back in time. Counted, not acted on:
+            // DIDComm has no re-form/resend to stop, so the error stays the
+            // timeout it was.
+            Err(e) if e.to_string().contains("timed out") => {
+                let consecutive_timeouts = self.receive_leg.record_timeout();
+                if consecutive_timeouts == crate::client::REPLY_TIMEOUT_BREAKER {
+                    warn!(
+                        consecutive_timeouts,
+                        vta_did = %self.vta_did,
+                        "replies from the VTA are not reaching this DIDComm session; its \
+                         mediator inbox is not being collected — rebuild the session"
+                    );
                 }
-            })?;
+                // Preserve the exact timeout message callers/tests match on today.
+                return Err(VtaError::DidcommTransport(
+                    crate::error::DIDCOMM_REPLY_TIMEOUT.into(),
+                ));
+            }
+            // A send or pickup failure says nothing about the receive leg.
+            Err(e) => {
+                return Err(VtaError::DidcommTransport(format!(
+                    "message pickup error: {e}"
+                )));
+            }
+        };
 
         // `payload` is the full plaintext DIDComm `Message` JSON.
         let response_msg: Message =

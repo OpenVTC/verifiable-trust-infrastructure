@@ -404,6 +404,11 @@ pub enum TypedErrorPayload {
 #[cfg(all(feature = "tsp", feature = "client"))]
 pub(crate) const TSP_REPLY_TIMEOUT_PREFIX: &str = "timed out waiting for the TSP reply";
 
+/// The text of a DIDComm reply timeout (`DIDCommSession::send_and_wait`). Kept
+/// verbatim because callers have matched on it.
+#[cfg(feature = "client")]
+pub(crate) const DIDCOMM_REPLY_TIMEOUT: &str = "timeout waiting for DIDComm response";
+
 impl VtaError {
     /// [`Self::NoMatchingProtocol`] from the members a VTA puts beside
     /// `no_matching_protocol` — a Trust Task rejection's `details`, or a REST
@@ -454,6 +459,23 @@ impl VtaError {
     #[cfg(all(feature = "tsp", feature = "client"))]
     pub(crate) fn is_tsp_reply_timeout(&self) -> bool {
         matches!(self, VtaError::TspTransport(msg) if msg.starts_with(TSP_REPLY_TIMEOUT_PREFIX))
+    }
+
+    /// True for a request that was sent and whose reply did not arrive in time,
+    /// on a mediator transport: a TSP or a DIDComm reply timeout. These are what
+    /// [`crate::client::VtaClient::receive_health`] counts.
+    ///
+    /// Not [`Self::RepliesNotArriving`], which is the breaker's verdict over
+    /// several of them, and not a REST timeout ([`Self::Network`]), which is
+    /// answered on its own connection and says nothing about the inbox.
+    #[cfg(feature = "client")]
+    pub fn is_reply_timeout(&self) -> bool {
+        match self {
+            #[cfg(feature = "tsp")]
+            VtaError::TspTransport(msg) => msg.starts_with(TSP_REPLY_TIMEOUT_PREFIX),
+            VtaError::DidcommTransport(msg) => msg == DIDCOMM_REPLY_TIMEOUT,
+            _ => false,
+        }
     }
 
     /// Create from an HTTP response status and error body.
