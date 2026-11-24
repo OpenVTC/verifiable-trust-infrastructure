@@ -2,7 +2,7 @@
 name = "vtc-audit"
 description = "The Verifiable Trust Community's audit-event vocabulary, over the shared vti-common audit envelope, hash chain and writer"
 readme = "README.md"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 # Published, because `vtc-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -22,7 +22,7 @@ openapi = ["dep:utoipa"]
 [dependencies]
 # The envelope, the hash chain, the HMAC actor hashing, the key store and the
 # writer — generic over the event vocabulary this crate supplies.
-vti-common = { path = "../vti-common", version = "0.69" }
+vti-common = { path = "../vti-common", version = "0.70" }
 chrono = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

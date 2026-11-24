@@ -2,6 +2,45 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.35.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.34.0...vtc-service-v0.35.0) — 2026-11-24
+
+
+### Added
+
+- Dtg-credentials 0.16 — a community may declare issuerScope directed ([#2802](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2802))
+
+Moves to dtg-credentials 0.16, after DTG Core Credentials (Correlation
+  Scope, VMC; trustoverip/dtgwg-cred-spec#86): a community's grant is
+  `directed` at minimum, `public` where the community is open to outsiders.
+  Only `pairwise` is refused. The library's `context-v3` (salting) feature is
+  not enabled.
+
+  Verifiers now accept a community credential declaring `directed` or
+  `public`, and keep refusing anything narrower:
+
+  - vta-sdk `vetting::eligibility` (a vetter's role VAC);
+  - vtc-service `members::inbound_vmc` (the grant an acknowledgement binds to).
+
+
+
+### Fixed
+
+- **vtc**: Admit v2 DTG credentials at ingress ([#2801](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2801))
+
+Credential ingress (`credentials::ingress::classify_dtg`) required
+  `DTG_CONTEXT_V1` at `@context[1]`, so it refused every v2 DTG credential.
+  dtg-credentials >= 0.14 lists `DTG_CONTEXT_V2` second on any VAC that
+  states `purposes`, so a VAC carrying purposes could not be submitted to a
+  VTC at all.
+
+  Ingress now admits either DTG context second (`DTG_CONTEXT_VERSIONS`,
+  built from the catalog's own constants), keeps the W3C v2 context first,
+  and — as the catalog itself does — refuses `purposes` under the frozen v1
+  context. `DTG_CONTEXTS` is replaced by `W3C_CONTEXT` and
+  `DTG_CONTEXT_VERSIONS`.
+
+
+
 ## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.33.0...vtc-service-v0.34.0) — 2026-11-24
 
 
