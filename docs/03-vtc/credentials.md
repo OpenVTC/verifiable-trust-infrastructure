@@ -6,9 +6,23 @@ The VTC issues W3C Verifiable Credentials, all using the
 DTG Credentials Core Specification's v1 context — `@context`
 `["https://www.w3.org/ns/credentials/v2", "https://registry.trustoverip.org/dtg/context/v1"]`,
 `type` `["VerifiableCredential", "DTGCredential", <exactly one subtype>]` and a
-top-level `issuerScope`, which is always `public`: the community issues as
-itself, under the DID every verifier recognises
-(`vtc-service/src/credentials/dtg.rs`). The retired
+top-level `issuerScope`: the community issues as itself, under its own DID,
+declaring the scope configured as `[credentials] issuer_scope`
+(`vtc-service/src/credentials/dtg.rs`). The default is `public`, for a
+community open to outsiders; `directed` is the minimum DTG Core allows a
+community, for one whose identifier is shown only to the parties it deals
+with. `pairwise` is refused — a community is never pairwise:
+
+```toml
+[credentials]
+issuer_scope = "directed"   # or "public", the default
+```
+
+A verifier on this release accepts a community credential (VMC, role VAC)
+declaring either. One on an earlier release accepts only `public`, so a
+community configured `directed` needs its counterparties on this release or
+later. Ingress admits the DTG v1 and v2 contexts second
+(`DTG_CONTEXT_V2` is v1 plus a VAC's `purposes`). The retired
 `firstperson.network` context, and the retired endorsement and witness types,
 are refused on ingress with no alias (`credentials/ingress.rs`).
 

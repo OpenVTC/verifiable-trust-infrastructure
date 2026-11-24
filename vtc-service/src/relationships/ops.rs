@@ -1450,6 +1450,7 @@ mod tests {
         // rules.
         let vmc = DTGCredential::new_vmc(
             "did:web:community.example".into(),
+            dtg_credentials::IssuerScope::Public,
             "did:key:zMember".into(),
             now,
             None,
@@ -1557,6 +1558,7 @@ mod tests {
 
         let grant = dtg_credentials::DTGCredential::new_vmc(
             COMMUNITY.to_string(),
+            dtg_credentials::IssuerScope::Public,
             did.to_string(),
             m.joined_at,
             None,

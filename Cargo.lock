@@ -4057,9 +4057,9 @@ dependencies = [
 
 [[package]]
 name = "dtg-credentials"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50313b3315aa6a02d1356c387abddf36b66187f32afef94f8a20916ca4634833"
+checksum = "fd17b38124bc44edb7f48cc46c3048e88bc939e03ed4314ed2e3ca365a8134f3"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-common",

@@ -207,6 +207,7 @@ async fn vta(room: &Party, host: &Host, key_path: &str, actions: &[&str]) -> Vta
     vac.sign(&room.secret, None).await.unwrap();
     let mut vmc = DTGCredential::new_vmc(
         room.did.clone(),
+        dtg_credentials::IssuerScope::Public,
         persona.clone(),
         now - Span::minutes(1),
         Some(now + Span::days(30)),

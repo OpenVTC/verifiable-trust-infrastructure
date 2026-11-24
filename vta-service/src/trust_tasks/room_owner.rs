@@ -159,6 +159,7 @@ pub(super) async fn handle_issue_membership(
     // here. See the spec's "One half of an edge, and the half that is checked".
     let vmc = dtg_credentials::DTGCredential::new_vmc(
         req.room_id.clone(),
+        dtg_credentials::IssuerScope::Public,
         req.subject.clone(),
         chrono::Utc::now(),
         req.valid_until,

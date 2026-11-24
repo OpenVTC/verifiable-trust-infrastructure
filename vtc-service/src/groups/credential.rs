@@ -75,6 +75,7 @@ pub async fn issue(state: &AppState, group: &Group, member_did: &str) -> Result<
     let valid_until = valid_from + Duration::days(i64::from(days));
     let dtg = dtg_credentials::DTGCredential::new_vmc(
         group.group_did.clone(),
+        dtg_credentials::IssuerScope::Public,
         member_did.to_string(),
         valid_from,
         Some(valid_until),

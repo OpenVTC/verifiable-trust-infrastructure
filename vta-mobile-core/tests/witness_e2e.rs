@@ -244,6 +244,7 @@ impl World {
     async fn vmc(&self, community: &Key) -> Value {
         let vc = DTGCredential::new_vmc(
             community.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             self.relationship.clone(),
             Utc::now() - TimeDelta::days(1),
             None,

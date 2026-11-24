@@ -83,6 +83,9 @@ pub struct LocalSigner {
     /// What the community's long-lived derived keys come from, when it is not
     /// the primary key's seed ([`Self::derivation_root`]).
     derivation_root: Option<DerivationRoot>,
+    /// The `issuerScope` the community declares for its own identifier on the
+    /// DTG credentials it issues as itself ([`Self::issuer_scope`]).
+    issuer_scope: dtg_credentials::IssuerScope,
 }
 
 /// The 32-byte secret the community's long-lived keys derive from
@@ -121,7 +124,23 @@ impl LocalSigner {
             authentication: None,
             key_role_ids: None,
             derivation_root: None,
+            issuer_scope: dtg_credentials::IssuerScope::Public,
         }
+    }
+
+    /// Declare `scope` for the community's identifier on every DTG credential
+    /// it issues as itself — `credentials.issuer_scope` in the configuration.
+    /// Without it, `public`.
+    pub fn with_issuer_scope(mut self, scope: crate::config::CommunityIssuerScope) -> Self {
+        self.issuer_scope = scope.into();
+        self
+    }
+
+    /// The `issuerScope` the community declares on the DTG credentials it
+    /// issues as itself: `directed` or `public`, never `pairwise` — a community
+    /// is never pairwise (DTG Core, *Correlation Scope*).
+    pub fn issuer_scope(&self) -> dtg_credentials::IssuerScope {
+        self.issuer_scope
     }
 
     /// Add a second signing key, so every credential this signer issues carries
@@ -229,6 +248,7 @@ impl LocalSigner {
             authentication: None,
             key_role_ids: None,
             derivation_root: None,
+            issuer_scope: dtg_credentials::IssuerScope::Public,
         }
     }
 

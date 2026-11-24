@@ -598,6 +598,7 @@ mod tests {
 
         let mut vmc = DTGCredential::new_vmc(
             room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             member_did.clone(),
             now - Span::minutes(1),
             Some(now + Span::days(30)),
@@ -689,6 +690,7 @@ mod tests {
 
         let mut vmc = DTGCredential::new_vmc(
             room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             member_did.clone(),
             now - Span::minutes(1),
             Some(now + Span::days(30)),
@@ -873,6 +875,7 @@ mod tests {
         vac.sign(&room.secret, None).await.expect("sign the VAC");
         let mut vmc = DTGCredential::new_vmc(
             room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             subject.to_string(),
             now,
             Some(now + Span::days(30)),
@@ -1142,6 +1145,7 @@ mod tests {
         let now = Utc::now();
         let mut other = DTGCredential::new_vmc(
             room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             Party::new().did,
             now - Span::minutes(1),
             Some(now + Span::days(30)),

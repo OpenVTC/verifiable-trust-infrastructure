@@ -318,11 +318,12 @@ async fn verify_role_credential(
         });
     }
     // vetting/request/0.1: the community issued it directly — declaring
-    // `public`, the only scope a community can truthfully declare — rather
-    // than someone attenuating theirs.
-    if vac.issuer_scope() != IssuerScope::Public {
+    // `directed` or `public` for its own identifier, since a community is
+    // `directed` at minimum (DTG Core, *Correlation Scope*) — rather than
+    // someone attenuating theirs.
+    if !vac.issuer_scope().satisfies(IssuerScope::Directed) {
         return Err(malformed(
-            "a community role credential declares issuerScope public".into(),
+            "a community role credential declares issuerScope directed or public".into(),
         ));
     }
     let authority = vac
@@ -690,29 +691,79 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn a_role_credential_declaring_a_narrower_scope_is_refused() {
-        let (community, vetter) = (secret(0xC0), secret(0x11));
+    /// A role VAC signed by `community`, conferring `role:vetter` on `vetter`
+    /// in its own scope, declaring `scope` for the community.
+    async fn scoped_vac(community: &Secret, vetter: &Secret, scope: IssuerScope) -> Value {
         let now = Utc::now();
         let mut vac = DTGCredential::new_vac(
-            did(&community),
-            IssuerScope::Directed,
-            did(&vetter),
-            did(&community),
+            did(community),
+            scope,
+            did(vetter),
+            did(community),
             vec!["role:vetter".into()],
             now - Duration::days(1),
             now + Duration::days(30),
         )
         .unwrap();
-        vac.sign(&community, None).await.unwrap();
-        let vp = build_eligibility_vp(
-            &vetter,
-            vec![serde_json::to_value(&vac).unwrap()],
-            CHALLENGE,
-            DOMAIN,
-        )
-        .await
-        .unwrap();
+        vac.sign(community, None).await.unwrap();
+        serde_json::to_value(&vac).unwrap()
+    }
+
+    /// A community is `directed` at minimum, `public` where it is open to
+    /// outsiders: a role credential declaring either is accepted.
+    #[tokio::test]
+    async fn a_role_credential_declaring_directed_or_public_verifies() {
+        let (community, vetter) = (secret(0xC0), secret(0x11));
+        for scope in [IssuerScope::Directed, IssuerScope::Public] {
+            let vac = scoped_vac(&community, &vetter, scope).await;
+            assert_eq!(vac["issuerScope"], scope.as_str());
+            let vp = build_eligibility_vp(&vetter, vec![vac], CHALLENGE, DOMAIN)
+                .await
+                .unwrap();
+            verify(&vp, &did(&vetter), &did(&community), "vetter")
+                .await
+                .unwrap_or_else(|e| panic!("{scope}: {e:?}"));
+        }
+    }
+
+    /// The catalog's own community-role constructor, under either scope, is
+    /// what this verifies.
+    #[tokio::test]
+    async fn a_catalog_community_role_vac_verifies_under_either_scope() {
+        let (community, vetter) = (secret(0xC0), secret(0x11));
+        let now = Utc::now();
+        for scope in [IssuerScope::Directed, IssuerScope::Public] {
+            let mut vac = DTGCredential::new_community_role_vac(
+                did(&community),
+                scope,
+                did(&vetter),
+                "vetter",
+                now - Duration::days(1),
+                now + Duration::days(30),
+            )
+            .unwrap();
+            vac.sign(&community, None).await.unwrap();
+            let vac = serde_json::to_value(&vac).unwrap();
+            assert_eq!(
+                community_roles(&vac),
+                Some((did(&community), vec!["vetter".to_string()]))
+            );
+            let vp = build_eligibility_vp(&vetter, vec![vac], CHALLENGE, DOMAIN)
+                .await
+                .unwrap();
+            verify(&vp, &did(&vetter), &did(&community), "vetter")
+                .await
+                .unwrap_or_else(|e| panic!("{scope}: {e:?}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_role_credential_declaring_a_narrower_scope_is_refused() {
+        let (community, vetter) = (secret(0xC0), secret(0x11));
+        let vac = scoped_vac(&community, &vetter, IssuerScope::Pairwise).await;
+        let vp = build_eligibility_vp(&vetter, vec![vac], CHALLENGE, DOMAIN)
+            .await
+            .unwrap();
         assert!(matches!(
             verify(&vp, &did(&vetter), &did(&community), "vetter").await,
             Err(VettingError::Malformed { .. })

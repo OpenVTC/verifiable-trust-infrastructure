@@ -246,6 +246,7 @@ async fn vrc(issuer: &Key, subject: &str) -> Value {
 async fn vmc(community: &Key, member: &str, valid_until: Option<DateTime<Utc>>) -> Value {
     let vc = DTGCredential::new_vmc(
         community.did.clone(),
+        dtg_credentials::IssuerScope::Public,
         member.to_string(),
         Utc::now() - TimeDelta::days(1),
         valid_until,

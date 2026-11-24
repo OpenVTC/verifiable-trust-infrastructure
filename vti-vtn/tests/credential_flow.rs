@@ -202,3 +202,81 @@ fn listing_matches_the_registered_lists_profile() {
         assert_eq!(EntryKind::from_node_type(node_type), Some(kind));
     }
 }
+
+/// A member that declares `directed` for its DID, as a community configured so does.
+struct DirectedMember(Identity);
+
+impl vti_vtn::identity::Party for DirectedMember {
+    fn did(&self) -> &str {
+        self.0.did()
+    }
+
+    fn sign_for<'a>(
+        &'a self,
+        document: serde_json::Value,
+        purpose: &'a str,
+    ) -> vti_vtn::identity::SignFuture<'a> {
+        vti_vtn::identity::Party::sign_for(&self.0, document, purpose)
+    }
+
+    fn issuer_scope(&self) -> dtg_credentials::IssuerScope {
+        dtg_credentials::IssuerScope::Directed
+    }
+}
+
+/// A community is `directed` at minimum: one declaring `directed` acknowledges and
+/// departs exactly as a `public` one does, and its credentials say `directed`.
+#[tokio::test]
+async fn a_directed_member_acknowledges_and_departs() {
+    let network = Identity::generate();
+    let vtc = DirectedMember(Identity::generate());
+    let did = vti_vtn::identity::Party::did(&vtc).to_string();
+    let now = Utc::now() - Duration::seconds(5);
+    let base = "http://vtn.example";
+
+    let mut listing = listing_vsc(
+        network.did(),
+        &did,
+        EntryKind::Community,
+        &framework(),
+        now,
+        credential_status(base, 0),
+    )
+    .unwrap();
+    network.sign_credential(&mut listing).await.unwrap();
+    let listing_json = serde_json::to_value(&listing).unwrap();
+
+    let mut offer = membership_offer(
+        network.did(),
+        &did,
+        now,
+        Some(now + Duration::days(365)),
+        credential_status(base, 1),
+    );
+    let offer_json = serde_json::to_value(&offer).unwrap();
+
+    let ack = member::acknowledge_as(&offer_json, &vtc, now, None)
+        .await
+        .unwrap();
+    assert_eq!(ack["issuerScope"], "directed");
+    verify_acknowledgement(&ack, &offer, &did, &LocalDidKeyResolver, Utc::now())
+        .await
+        .unwrap();
+
+    network.sign_credential(&mut offer).await.unwrap();
+    let grant_json = serde_json::to_value(&offer).unwrap();
+    let departure = member::repudiate_as(&grant_json, &vtc, now).await.unwrap();
+    assert_eq!(departure["issuerScope"], "directed");
+    let target = verify_repudiation(
+        &departure,
+        &did,
+        network.did(),
+        &listing_json,
+        Some(&grant_json),
+        &LocalDidKeyResolver,
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(target, Repudiated::Grant);
+}

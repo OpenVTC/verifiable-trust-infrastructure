@@ -422,6 +422,7 @@ mod tests {
     fn vmc() -> JsonValue {
         dtg_json(&DTGCredential::new_vmc(
             "did:web:community.example".into(),
+            dtg_credentials::IssuerScope::Public,
             "did:key:zMember".into(),
             Utc::now(),
             None,
@@ -447,6 +448,7 @@ mod tests {
         dtg_json(
             &DTGCredential::new_community_role_vac(
                 "did:web:community.example".into(),
+                dtg_credentials::IssuerScope::Public,
                 "did:key:zMember".into(),
                 "moderator",
                 Utc::now(),
@@ -541,6 +543,7 @@ mod tests {
         dtg_json(
             &DTGCredential::new_community_role_vac(
                 "did:web:community.example".into(),
+                dtg_credentials::IssuerScope::Public,
                 "did:key:zMember".into(),
                 "moderator",
                 Utc::now(),

@@ -826,6 +826,7 @@ mod signed {
 
         let mut vmc = DTGCredential::new_vmc(
             room_did.clone(),
+            dtg_credentials::IssuerScope::Public,
             owner_did.clone(),
             now - Duration::minutes(1),
             Some(now + Duration::days(30)),
@@ -1096,7 +1097,14 @@ mod issuer_binding {
         from: chrono::DateTime<Utc>,
         until: Option<chrono::DateTime<Utc>>,
     ) -> String {
-        let mut vmc = DTGCredential::new_vmc(issuer.into(), subject.into(), from, until, false);
+        let mut vmc = DTGCredential::new_vmc(
+            issuer.into(),
+            dtg_credentials::IssuerScope::Public,
+            subject.into(),
+            from,
+            until,
+            false,
+        );
         vmc.sign(&signer.secret, None).await.expect("sign the VMC");
         enc(&vmc)
     }
@@ -1508,6 +1516,7 @@ pub mod test_support {
 
             let mut vmc = DTGCredential::new_vmc(
                 room_key.did.clone(),
+                dtg_credentials::IssuerScope::Public,
                 owner.did.clone(),
                 now - Duration::minutes(1),
                 Some(now + Duration::days(30)),
@@ -1535,6 +1544,7 @@ pub mod test_support {
 
             let mut successor_vmc = DTGCredential::new_vmc(
                 room_key.did.clone(),
+                dtg_credentials::IssuerScope::Public,
                 successor.did.clone(),
                 now - Duration::minutes(1),
                 Some(now + Duration::days(30)),

@@ -174,6 +174,7 @@ impl FakeVta {
         let mut c = match kind {
             "membership" => DTGCredential::new_vmc(
                 room.did.clone(),
+                dtg_credentials::IssuerScope::Public,
                 subject.to_string(),
                 from,
                 Some(until),

@@ -263,18 +263,22 @@ fn check_acknowledgement_binding(
     };
 
     // The grant half of the edge must be a conformant community-issued VMC: one
-    // that declares `issuerScope` `public`, the only scope a community can
-    // truthfully declare for itself. A grant stored before the v1 context
-    // declares none, and no acknowledgement can complete an edge against it —
-    // the member needs a renewed grant first. (The member's own
+    // that declares `issuerScope` `directed` or `public` — a community's grant is
+    // `directed` at minimum (DTG Core, *VMC*), and which of the two is the
+    // community's `[credentials] issuer_scope`. A grant stored before the v1
+    // context declares none, and no acknowledgement can complete an edge against
+    // it — the member needs a renewed grant first. (The member's own
     // acknowledgement may declare any scope; that was checked at ingress.)
     let grant_scope = grant.get("issuerScope").and_then(JsonValue::as_str);
-    if grant_scope != Some(dtg_credentials::IssuerScope::Public.as_str()) {
+    let community_scope = grant_scope
+        .and_then(|s| s.parse::<dtg_credentials::IssuerScope>().ok())
+        .filter(|s| s.satisfies(dtg_credentials::IssuerScope::Directed));
+    if community_scope.is_none() {
         return Err(AppError::Validation(format!(
             "the membership credential this community holds for {member_did} does not \
-             declare issuerScope `public` (found {grant_scope:?}), so no acknowledgement can \
-             complete an edge against it. Renew the membership, then re-issue the \
-             acknowledgement against the new grant."
+             declare issuerScope `directed` or `public` (found {grant_scope:?}), so no \
+             acknowledgement can complete an edge against it. Renew the membership, then \
+             re-issue the acknowledgement against the new grant."
         )));
     }
 
@@ -415,11 +419,17 @@ mod binding_tests {
     /// hand-rolled, so the fixture is what the catalog mints — a literal here
     /// could agree with this module while disagreeing with every real client.
     fn pair() -> (JsonValue, JsonValue) {
+        pair_scoped(dtg_credentials::IssuerScope::Public)
+    }
+
+    /// [`pair`], with the grant declaring `scope`.
+    fn pair_scoped(scope: dtg_credentials::IssuerScope) -> (JsonValue, JsonValue) {
         use chrono::TimeZone;
         let valid_from = chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
         let grant = dtg_credentials::DTGCredential::new_vmc(
             "did:web:community.example".to_string(),
+            scope,
             "did:key:zMember".to_string(),
             valid_from,
             None,
@@ -464,20 +474,30 @@ mod binding_tests {
         );
     }
 
-    /// A grant that does not declare `issuerScope` `public` — one stored
-    /// before the v1 context — cannot anchor an edge, whatever digest the
-    /// acknowledgement carries.
+    /// A community configured `directed` issues a `directed` grant, and an
+    /// acknowledgement of it completes the edge as one of a `public` grant does.
     #[test]
-    fn a_grant_that_is_not_public_completes_no_edge() {
+    fn an_acknowledgement_of_a_directed_grant_binds() {
+        let (grant, ack) = pair_scoped(dtg_credentials::IssuerScope::Directed);
+        assert_eq!(grant["issuerScope"], "directed");
+        assert!(check_acknowledgement_binding(&ack, Some(&grant), "did:key:zMember").unwrap());
+    }
+
+    /// A grant that declares no `issuerScope` — one stored before the v1
+    /// context — or one narrower than `directed` cannot anchor an edge,
+    /// whatever digest the acknowledgement carries.
+    #[test]
+    fn a_grant_narrower_than_directed_completes_no_edge() {
         let (mut grant, ack) = pair();
         grant.as_object_mut().unwrap().remove("issuerScope");
         let err = check_acknowledgement_binding(&ack, Some(&grant), "did:key:zMember")
             .expect_err("a pre-v1 grant cannot be acknowledged");
         assert!(format!("{err:?}").contains("issuerScope"), "{err:?}");
 
-        grant["issuerScope"] = serde_json::json!("directed");
-        check_acknowledgement_binding(&ack, Some(&grant), "did:key:zMember")
-            .expect_err("a community grant is always public");
+        grant["issuerScope"] = serde_json::json!("pairwise");
+        let err = check_acknowledgement_binding(&ack, Some(&grant), "did:key:zMember")
+            .expect_err("a community grant is never pairwise");
+        assert!(format!("{err:?}").contains("issuerScope"), "{err:?}");
     }
 
     /// The Working Draft 01 `digest` spelling is not read: an acknowledgement
@@ -524,6 +544,7 @@ mod binding_tests {
         // Same parties, different grant — a renewal, say.
         let renewed = dtg_credentials::DTGCredential::new_vmc(
             "did:web:community.example".to_string(),
+            dtg_credentials::IssuerScope::Public,
             "did:key:zMember".to_string(),
             chrono::Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap(),
             None,

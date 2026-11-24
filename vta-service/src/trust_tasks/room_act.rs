@@ -1078,6 +1078,7 @@ mod tests {
         vac.sign(&room.secret, None).await.expect("sign the VAC");
         let mut vmc = DTGCredential::new_vmc(
             room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             subject.to_string(),
             now - Span::minutes(1),
             Some(now + Span::days(30)),

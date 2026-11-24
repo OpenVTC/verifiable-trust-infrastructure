@@ -726,6 +726,7 @@ mod classify_tests {
         let now = chrono::Utc::now();
         let vac = DTGCredential::new_community_role_vac(
             "did:web:issuer.example".into(),
+            dtg_credentials::IssuerScope::Public,
             "did:key:zSubject".into(),
             "moderator",
             now,
@@ -740,6 +741,7 @@ mod classify_tests {
 
         let vmc = DTGCredential::new_vmc(
             "did:web:community.example".into(),
+            dtg_credentials::IssuerScope::Public,
             "did:key:zMember".into(),
             now,
             None,

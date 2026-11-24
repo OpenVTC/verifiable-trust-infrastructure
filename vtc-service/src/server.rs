@@ -2569,7 +2569,8 @@ async fn init_auth(
     // the `attestation` method its bundle names and authenticates with its
     // distinct `operational` key; a did:webvh VTC signs both as `#key-0`.
     let signer = additional_secrets.into_iter().fold(
-        crate::credentials::LocalSigner::for_own_keys(vtc_did.clone(), &own),
+        crate::credentials::LocalSigner::for_own_keys(vtc_did.clone(), &own)
+            .with_issuer_scope(config.credentials.issuer_scope),
         |signer, secret| signer.with_additional_key(secret),
     );
     let crate::setup::bundle::OwnKeyMaterial {
