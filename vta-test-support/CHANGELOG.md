@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-test-support-v0.4.0...vta-test-support-v0.5.0) — 2026-11-24
+
+
+### Build & CI
+
+- **deps**: Affinidi-tdk 0.50 and affinidi-messaging-sdk 0.51 (trust-tasks-rs 0.41 across the SDK boundary) ([#2797](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2797))
+
+* build(deps)!: affinidi-tdk 0.50 and affinidi-messaging-sdk 0.51 (trust-tasks-rs 0.41 across the SDK boundary)
+
+  affinidi-messaging-sdk 0.51 and affinidi-tdk 0.50 move the messaging SDK onto
+  trust-tasks-rs / trust-tasks-proof 0.41 (affinidi-tdk-rs #1189), the
+  workspace's copy. Its generated Trust Task types are in the public API of
+  vta-sdk and the crates that re-export it, so a consumer moves with it.
+
+  - vta-sdk's TSP account/update document is built with
+    `TrustTask::for_payload` again: the SDK's generated payload now implements
+    the workspace's trust-tasks-rs `Payload` trait, so the named type URI the
+    0.49 generation needed ([#2796](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2796)) is gone.
+  - deny.toml: the mediator crates 0.55 (test-mediator, mediator-admin,
+    mediator-tui) are now the only previous-generation crates in the graph.
+    affinidi-tdk 0.49, affinidi-messaging-sdk 0.50, trust-tasks-rs and
+    trust-tasks-proof 0.40 and jsonwebtoken 11 are listed only through them,
+    and all drop together with mediator 0.56.
+
+
+
 ## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-test-support-v0.3.0...vta-test-support-v0.4.0) — 2026-11-24
 
 
