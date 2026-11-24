@@ -2,7 +2,7 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.33.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.33.0...vtc-service-v0.33.1) — 2026-11-24
+## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.33.0...vtc-service-v0.34.0) — 2026-11-24
 
 
 ## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.32.0...vtc-service-v0.33.0) — 2026-11-24
