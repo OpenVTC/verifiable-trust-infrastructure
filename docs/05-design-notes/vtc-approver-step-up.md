@@ -316,7 +316,10 @@ sibling family; the mechanism is the same either way.
 Issuing an invite for a new administrator should be the default when the
 administrator is created: the creation already passed the creator's step-up and,
 for unrestricted scope, another administrator's consent (APV-014), so the
-invite costs nothing extra and closes the gap before it is felt.
+invite costs nothing extra and closes the gap before it is felt. In
+single-administrator mode (VTI-APV-022) the creator's operation-bound step-up
+stands for that consent, and the waived operation's history entry carries the
+same invite.
 
 ### 6d. R3 — self-service, from a factor already held
 

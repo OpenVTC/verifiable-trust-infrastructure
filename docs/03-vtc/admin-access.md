@@ -525,9 +525,10 @@ persona per community does that for the identity itself.
 
 Every administrator made by a completed action (§3.2: an `acl/grant`,
 `acl/update`, `acl/change-role` or `vtc/members/role/set` to community-admin) is issued an approver
-enrolment invite automatically. The requester sees it once, on the completed
-action (the URL and a claim code), and delivers the claim code to the new
-administrator by a separate channel.
+enrolment invite automatically — including one made in single-administrator
+mode, where the waived operation's history entry carries it. The requester sees
+it once, on the completed action (the URL and a claim code), and delivers the
+claim code to the new administrator by a separate channel.
 
 ### 3.2 Second-party consent: the action list
 

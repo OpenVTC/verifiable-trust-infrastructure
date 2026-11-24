@@ -16,7 +16,7 @@ use vti_rooms_dtg::test_support::Party;
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::test_support::TestVtc;
 
-use crate::common::second_party::{Gesturer, parked_action, step_up_request};
+use crate::common::second_party::{Gesturer, parked_action, show_action, step_up_request};
 use crate::common::signed::{post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
@@ -26,6 +26,7 @@ const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.3";
 const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.2";
 const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.3";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.3";
 const THRESHOLD_KEY: &str = "acl.unrestricted_admin_consent_threshold";
 
 struct Fixture {
@@ -109,6 +110,14 @@ async fn list(fix: &Fixture, who: &Party, view: &str) -> Value {
     assert_eq!(status, StatusCode::OK, "{reply}");
     crate::common::signed::assert_conforms(LIST, &reply);
     reply["payload"].clone()
+}
+
+/// `vtc/admin/actions/show` as `who`: the action.
+async fn shown(fix: &Fixture, who: &Party, id: &str) -> Value {
+    let (status, reply) = show_action(&fix.vtc, who, id).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    crate::common::signed::assert_conforms(SHOW, &reply);
+    reply["payload"]["action"].clone()
 }
 
 /// Every `SingleAdminMode` audit row's `event`, and its severity.
@@ -207,6 +216,64 @@ async fn vti_apv_022_a_sole_admin_grants_on_their_own_gesture() {
         done.get("threshold").is_none(),
         "nobody's threshold: {done}"
     );
+}
+
+/// §6c, §11.4 under VTI-APV-022: an administrator made under a waiver is
+/// issued the same step-up approver invite as one made by consent, shown once
+/// to the requester on the history entry — otherwise the new administrator has
+/// no factor to answer a step-up with.
+#[tokio::test]
+async fn vti_apv_022_a_waived_new_administrator_is_issued_an_approver_invite() {
+    let mut fix = fixture(true).await;
+    let a = requester(&mut fix).await;
+    let subject = Party::new();
+    let (status, reply) = submit(
+        &mut fix,
+        &a,
+        &signed(
+            &a,
+            GRANT,
+            crate::common::signed::grant_payload(&subject.did, "admin"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    let history = list(&fix, &a, "history").await;
+    let id = history["actions"][0]["actionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let first = shown(&fix, &a, &id).await;
+    let invite = &first["ext"]["org.openvtc"]["approverInvite"];
+    assert!(
+        invite["url"].as_str().unwrap().starts_with(RP_ORIGIN),
+        "{first}"
+    );
+    assert!(invite["claimCode"].is_string(), "{first}");
+    assert!(
+        shown(&fix, &a, &id).await["ext"]["org.openvtc"]
+            .get("approverInvite")
+            .is_none(),
+        "shown once"
+    );
+    let invited = fix
+        .vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<vtc_audit::AuditEnvelope>(&v).ok())
+        .any(|env| match env.event {
+            AuditEvent::StepUpApproverChanged(d) => {
+                d.stage == "invited" && d.subject == subject.did
+            }
+            _ => false,
+        });
+    assert!(invited, "the invite is audited");
 }
 
 /// VTI-APV-022 / VTI-APV-018: an administrator invite, likewise.
