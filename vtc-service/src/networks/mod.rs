@@ -200,6 +200,12 @@ impl Party for Community {
         &self.did
     }
 
+    /// The scope the community declares for itself everywhere: `[credentials]
+    /// issuer_scope`.
+    fn issuer_scope(&self) -> dtg_credentials::IssuerScope {
+        self.signer.issuer_scope()
+    }
+
     fn sign_for<'a>(&'a self, mut document: Value, purpose: &'a str) -> SignFuture<'a> {
         Box::pin(async move {
             let signed = if purpose == "authentication" {

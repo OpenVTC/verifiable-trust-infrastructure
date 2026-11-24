@@ -2226,6 +2226,7 @@ pub async fn seed_room_membership(
         .expect("the room signs the authority credential");
     let mut vmc = DTGCredential::new_vmc(
         room_did.to_string(),
+        dtg_credentials::IssuerScope::Public,
         member.to_string(),
         now - Duration::minutes(1),
         Some(now + Duration::days(30)),

@@ -9,7 +9,8 @@ member:
   for the role admission granted.
 
 Both are DTG credentials under the v1 context, issued by the community with
-`issuerScope` `public`.
+the `issuerScope` it is configured to declare (`[credentials] issuer_scope`:
+`public` by default, or `directed`).
 
 It then **delivers each one as its own Trust Task**. A client that waits only
 for the answer to its submit can miss them. This page covers what arrives, where,

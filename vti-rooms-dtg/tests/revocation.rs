@@ -126,6 +126,7 @@ async fn fresh_credentials(
     vac.sign(&f.room_key.secret, None).await.expect("sign");
     let mut vmc = DTGCredential::new_vmc(
         f.room_key.did.clone(),
+        dtg_credentials::IssuerScope::Public,
         member.did.clone(),
         from,
         Some(Utc::now() + Duration::days(1)),

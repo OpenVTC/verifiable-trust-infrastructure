@@ -11,10 +11,11 @@
 //!
 //! ## `issuerScope`
 //!
-//! Every credential here is issued by the community under its own DID, which
-//! every verifier — members, applicants, foreign communities — must be able to
-//! recognise. That is `public` in the DTG Credentials Core Specification, and
-//! it is the only scope the VTC declares.
+//! Every credential here is issued by the community under its own DID, and
+//! declares the scope the community configured for that identifier
+//! (`[credentials] issuer_scope`, [`LocalSigner::issuer_scope`]): `public`
+//! (the default) where the community is open to outsiders, or `directed` —
+//! the minimum DTG Core Credentials allows a community. Never `pairwise`.
 //!
 //! The community's own identity check is a DTG credential too: a statement
 //! under the registry predicate `vetted/1` ([`issue_vetted_statement`]),
@@ -39,7 +40,7 @@
 
 use affinidi_vc::VerifiableCredential;
 use chrono::{DateTime, Duration, Utc};
-use dtg_credentials::{DTGCredential, IssuerScope, StatementObject};
+use dtg_credentials::{DTGCredential, StatementObject};
 use serde_json::Value;
 use vti_common::error::AppError;
 
@@ -136,6 +137,7 @@ pub async fn issue_membership(
     let (valid_from, valid_until) = window(validity);
     let dtg = DTGCredential::new_vmc(
         signer.issuer_did().to_string(),
+        signer.issuer_scope(),
         member_did.to_string(),
         valid_from,
         Some(valid_until),
@@ -145,7 +147,7 @@ pub async fn issue_membership(
 }
 
 /// Issue a signed community **role** credential as JSON: a VAC conferring
-/// `role:<role>` at the community's DID, `issuerScope` `public`,
+/// `role:<role>` at the community's DID, `issuerScope` the community's own,
 /// `maxAttenuation` [`ROLE_VAC_MAX_ATTENUATION`].
 ///
 /// The action is [`role_action_for`]`(role)` — `role:admin`, `role:moderator`,
@@ -205,6 +207,7 @@ pub async fn issue_role_action_in(
 ) -> Result<Value, AppError> {
     let dtg = DTGCredential::new_community_role_vac(
         signer.issuer_did().to_string(),
+        signer.issuer_scope(),
         member_did.to_string(),
         role,
         valid_from,
@@ -221,7 +224,7 @@ pub fn role_action_for(role: &VtcRole) -> String {
 }
 
 /// Issue a signed community **statement** (VSC) as JSON: the community, as
-/// itself (`issuerScope` `public`), asserts `value` about `subject_did` under
+/// itself (`issuerScope` the community's own), asserts `value` about `subject_did` under
 /// `predicate`, carried as `credentialSubject.object.value`.
 ///
 /// What `vtc/endorsements/issue/0.1` mints. Under
@@ -240,7 +243,7 @@ pub async fn issue_statement(
     let (valid_from, valid_until) = window(validity);
     let dtg = DTGCredential::new_vsc(
         signer.issuer_did().to_string(),
-        IssuerScope::Public,
+        signer.issuer_scope(),
         subject_did.to_string(),
         predicate,
         StatementObject::Value(value),
@@ -254,7 +257,7 @@ pub async fn issue_statement(
 /// Issue the community's own **identity check** as a signed `vetted/1`
 /// statement (registry `https://registry.trustoverip.org/dtg/vsc/vetted/1`).
 ///
-/// The community is the issuer, under its own DID (`issuerScope` `public`),
+/// The community is the issuer, under its own DID (its own `issuerScope`),
 /// recording that it checked `subject_did`'s identity. `value` is the
 /// statement's `object.value`, already checked by the caller as a
 /// `VettedObjectValue` naming this community. The profile REQUIRES a task
@@ -276,7 +279,7 @@ pub async fn issue_vetted_statement(
     let (valid_from, valid_until) = window(validity);
     let dtg = DTGCredential::new_vetted_vsc(
         signer.issuer_did().to_string(),
-        IssuerScope::Public,
+        signer.issuer_scope(),
         subject_did.to_string(),
         value,
         request,
@@ -300,10 +303,10 @@ pub async fn issue_invitation(
     subject_scopes: &[String],
 ) -> Result<Value, AppError> {
     let (valid_from, valid_until) = window(validity);
-    // A community inviting as itself: `public`, like every credential here.
+    // A community inviting as itself, under its own scope like every credential here.
     let dtg = DTGCredential::new_vic(
         signer.issuer_did().to_string(),
-        IssuerScope::Public,
+        signer.issuer_scope(),
         subject_did.to_string(),
         valid_from,
         Some(valid_until),
@@ -396,6 +399,105 @@ mod tests {
             types.iter().any(|t| t == "PersonhoodCredential"),
             "{types:?}"
         );
+    }
+
+    /// The catalog's own strict parse of a signed document — what a counterparty
+    /// on dtg-credentials 0.16 runs before anything else.
+    fn catalog_parse(doc: &Value) -> Result<DTGCredential, String> {
+        let mut unsigned = doc.clone();
+        unsigned.as_object_mut().unwrap().remove("proof");
+        unsigned.as_object_mut().unwrap().remove("id");
+        unsigned.as_object_mut().unwrap().remove("credentialStatus");
+        serde_json::from_value(unsigned).map_err(|e| e.to_string())
+    }
+
+    /// `[credentials] issuer_scope`: every credential the community issues as
+    /// itself declares the configured scope, `public` by default and
+    /// `directed` when chosen, and each is one the catalog accepts.
+    #[tokio::test]
+    async fn every_community_credential_declares_the_configured_scope() {
+        use crate::config::CommunityIssuerScope;
+        for (scope, wire) in [
+            (None, "public"),
+            (Some(CommunityIssuerScope::Public), "public"),
+            (Some(CommunityIssuerScope::Directed), "directed"),
+        ] {
+            let s = match scope {
+                Some(scope) => signer().with_issuer_scope(scope),
+                None => signer(),
+            };
+            let docs = [
+                (
+                    "VMC",
+                    issue_membership(&s, "did:key:zM", None, None, Duration::days(30), false)
+                        .await
+                        .unwrap(),
+                ),
+                (
+                    "role VAC",
+                    issue_role(
+                        &s,
+                        "did:key:zM",
+                        &VtcRole::Admin,
+                        None,
+                        None,
+                        Duration::days(30),
+                    )
+                    .await
+                    .unwrap(),
+                ),
+                (
+                    "VSC",
+                    issue_statement(
+                        &s,
+                        "did:key:zM",
+                        dtg_credentials::ENDORSES_V1,
+                        serde_json::json!({ "skill": "moderation" }),
+                        None,
+                        None,
+                        Duration::days(30),
+                    )
+                    .await
+                    .unwrap(),
+                ),
+                (
+                    "VIC",
+                    issue_invitation(&s, "did:key:zI", None, None, Duration::days(7), &[])
+                        .await
+                        .unwrap(),
+                ),
+            ];
+            for (kind, doc) in docs {
+                assert_eq!(doc["issuerScope"], wire, "{kind} under {scope:?}");
+                verify(&doc, &s).unwrap_or_else(|e| panic!("{kind}: {e}"));
+                let parsed =
+                    catalog_parse(&doc).unwrap_or_else(|e| panic!("{kind} under {scope:?}: {e}"));
+                assert_eq!(parsed.issuer_scope().as_str(), wire, "{kind}");
+            }
+        }
+    }
+
+    /// The configuration key, as an operator writes it: absent is `public`,
+    /// `directed` and `public` parse, and `pairwise` is refused — a community
+    /// is never pairwise.
+    #[test]
+    fn credentials_issuer_scope_config_key() {
+        use crate::config::{CommunityIssuerScope, CredentialsConfig};
+        assert_eq!(
+            CredentialsConfig::default().issuer_scope,
+            CommunityIssuerScope::Public
+        );
+        let parse = |s: &str| toml::from_str::<CredentialsConfig>(s);
+        assert_eq!(
+            parse("issuer_scope = \"directed\"").unwrap().issuer_scope,
+            CommunityIssuerScope::Directed
+        );
+        assert_eq!(
+            parse("issuer_scope = \"public\"").unwrap().issuer_scope,
+            CommunityIssuerScope::Public
+        );
+        assert!(parse("issuer_scope = \"pairwise\"").is_err());
+        assert!(parse("issuer_scope = \"Public\"").is_err());
     }
 
     #[tokio::test]
@@ -681,7 +783,7 @@ mod catalog_wire_shape {
         let (valid_from, valid_until) = super::window(Duration::days(30));
         let dtg = dtg_credentials::DTGCredential::new_vpc(
             "did:key:zPersona".into(),
-            IssuerScope::Directed,
+            dtg_credentials::IssuerScope::Directed,
             "did:key:zCounterparty".into(),
             valid_from,
             Some(valid_until),

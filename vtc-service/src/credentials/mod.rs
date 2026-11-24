@@ -30,7 +30,8 @@
 //! step both reach for one canonical module.
 //!
 //! Every DTG credential here carries the v1 context
-//! (`dtg_credentials::DTG_CONTEXT_V1`) and `issuerScope` `public` — see
+//! (`dtg_credentials::DTG_CONTEXT_V1`) and the community's configured
+//! `issuerScope` (`public` by default, or `directed`) — see
 //! [`dtg`].
 //!
 //! ## Shape parity with `vta-sdk::provision_integration::credential`

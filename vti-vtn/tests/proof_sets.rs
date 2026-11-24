@@ -29,6 +29,7 @@ impl KeyResolver for Keys {
 async fn signed_with(secrets: &[&Secret], purpose: &str) -> serde_json::Value {
     let vmc = DTGCredential::new_vmc(
         DID.into(),
+        dtg_credentials::IssuerScope::Public,
         "did:example:member".into(),
         Utc::now() - Duration::seconds(5),
         None,

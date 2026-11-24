@@ -70,8 +70,10 @@ pub fn membership_offer(
     valid_until: Option<DateTime<Utc>>,
     credential_status: Value,
 ) -> DTGCredential {
+    // The network is open to outsiders: it lists parties publicly.
     DTGCredential::new_vmc(
         network.to_string(),
+        IssuerScope::Public,
         subject.to_string(),
         valid_from,
         valid_until,
@@ -86,14 +88,29 @@ pub mod member {
     use super::*;
     use crate::identity::{Party, sign_credential_as};
 
-    /// The (unsigned) acknowledgement of a membership offer, as `member`.
-    ///
-    /// A community's identifier is `public` (DTG Core, VMC), so the acknowledgement
-    /// declares `public` too. `valid_until` must fall within the offer's; `None` takes the
-    /// offer's own, so the acknowledgement lapses with the grant it answers.
+    /// The (unsigned) acknowledgement of a membership offer, as `member`, declaring
+    /// `public`. See [`acknowledgement_scoped`].
     pub fn acknowledgement(
         offer: &Value,
         member: &str,
+        valid_from: DateTime<Utc>,
+        valid_until: Option<DateTime<Utc>>,
+    ) -> Result<DTGCredential> {
+        acknowledgement_scoped(offer, member, IssuerScope::Public, valid_from, valid_until)
+    }
+
+    /// The (unsigned) acknowledgement of a membership offer, as `member`, declaring
+    /// `issuer_scope` for it.
+    ///
+    /// A community's identifier is `directed` at minimum, `public` where the community is
+    /// open to outsiders (DTG Core, *Correlation Scope*), and the acknowledgement declares
+    /// the scope the member declares for itself. `valid_until` must fall within the
+    /// offer's; `None` takes the offer's own, so the acknowledgement lapses with the grant
+    /// it answers.
+    pub fn acknowledgement_scoped(
+        offer: &Value,
+        member: &str,
+        issuer_scope: IssuerScope,
         valid_from: DateTime<Utc>,
         valid_until: Option<DateTime<Utc>>,
     ) -> Result<DTGCredential> {
@@ -109,14 +126,16 @@ pub mod member {
                 })
                 .transpose()?,
         };
-        Ok(DTGCredential::new_member_vmc_for(
-            offer,
-            member,
-            IssuerScope::Public,
-            valid_from,
-            valid_until,
-        )?
-        .with_id(new_credential_id()))
+        Ok(
+            DTGCredential::new_member_vmc_for(
+                offer,
+                member,
+                issuer_scope,
+                valid_from,
+                valid_until,
+            )?
+            .with_id(new_credential_id()),
+        )
     }
 
     /// The (unsigned) repudiation of `target` (a listing VSC, or a membership grant to
@@ -126,6 +145,16 @@ pub mod member {
         member: &str,
         valid_from: DateTime<Utc>,
     ) -> Result<DTGCredential> {
+        repudiation_scoped(target, member, IssuerScope::Public, valid_from)
+    }
+
+    /// [`repudiation`], declaring `issuer_scope` for `member`.
+    pub fn repudiation_scoped(
+        target: &Value,
+        member: &str,
+        issuer_scope: IssuerScope,
+        valid_from: DateTime<Utc>,
+    ) -> Result<DTGCredential> {
         let network = target
             .get("issuer")
             .and_then(Value::as_str)
@@ -133,7 +162,7 @@ pub mod member {
         let digest = dtg_credentials::digest_multibase_json(target)?;
         Ok(DTGCredential::new_vsc(
             member.to_string(),
-            IssuerScope::Public,
+            issuer_scope,
             network.to_string(),
             REPUDIATES_V1,
             StatementObject::DigestMultibase(digest),
@@ -163,7 +192,13 @@ pub mod member {
         valid_from: DateTime<Utc>,
         valid_until: Option<DateTime<Utc>>,
     ) -> Result<Value> {
-        let ack = acknowledgement(offer, member.did(), valid_from, valid_until)?;
+        let ack = acknowledgement_scoped(
+            offer,
+            member.did(),
+            member.issuer_scope(),
+            valid_from,
+            valid_until,
+        )?;
         sign_credential_as(member, &ack).await
     }
 
@@ -184,7 +219,7 @@ pub mod member {
         member: &dyn Party,
         valid_from: DateTime<Utc>,
     ) -> Result<Value> {
-        let vsc = repudiation(target, member.did(), valid_from)?;
+        let vsc = repudiation_scoped(target, member.did(), member.issuer_scope(), valid_from)?;
         sign_credential_as(member, &vsc).await
     }
 }

@@ -24,6 +24,13 @@ pub type SignFuture<'a> =
 /// and may answer with a proof set.
 pub trait Party: Send + Sync {
     fn did(&self) -> &str;
+    /// The `issuerScope` this party declares for its DID on the credentials it issues as
+    /// a network member (acknowledgements, repudiations). A community is `directed` at
+    /// minimum, `public` where it is open to outsiders (DTG Core, *Correlation Scope*).
+    /// Default `public`, what every earlier release declared.
+    fn issuer_scope(&self) -> dtg_credentials::IssuerScope {
+        dtg_credentials::IssuerScope::Public
+    }
     /// Return `document` signed for `purpose` (`assertionMethod`, `authentication`): with a
     /// `proof`, which may be a proof set.
     fn sign_for<'a>(&'a self, document: Value, purpose: &'a str) -> SignFuture<'a>;

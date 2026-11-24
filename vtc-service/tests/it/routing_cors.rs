@@ -62,6 +62,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         boards: Default::default(),
         groups: None,
         dids: Default::default(),
+        credentials: Default::default(),
         config_path: std::path::PathBuf::new(),
     }
 }

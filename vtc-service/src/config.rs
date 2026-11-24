@@ -163,8 +163,64 @@ pub struct AppConfig {
         skip_serializing_if = "crate::did_hosting::DidsConfig::is_empty"
     )]
     pub dids: crate::did_hosting::DidsConfig,
+    /// The DTG credentials this community issues as itself (`[credentials]`):
+    /// the `issuerScope` it declares. **Absent means `public`**, what every
+    /// release before this one declared. See [`CredentialsConfig`].
+    #[serde(default, skip_serializing_if = "CredentialsConfig::is_default")]
+    pub credentials: CredentialsConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+}
+
+/// The DTG credentials the community issues as itself (`[credentials]`).
+///
+/// A host setting, written by the operator, and not runtime-patchable: it
+/// changes what every credential the community issues says about its
+/// identifier, and so who can recognise them.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CredentialsConfig {
+    /// The `issuerScope` the community declares on the VMCs, role VACs, VSCs
+    /// and VICs it issues as itself: `public` (the default) or `directed`.
+    ///
+    /// DTG Core Credentials (*Correlation Scope*, *VMC*): a community's grant
+    /// is `directed` at minimum, `public` where the community is open to
+    /// outsiders. Choose `directed` for a community whose identifier is shown
+    /// only to the parties it deals with.
+    ///
+    /// **`directed` needs counterparties whose verifiers accept it** (built on
+    /// dtg-credentials 0.16 or later): earlier ones refuse a community
+    /// credential that does not declare `public`. `pairwise` is not accepted
+    /// here — a community is never pairwise.
+    #[serde(default)]
+    pub issuer_scope: CommunityIssuerScope,
+}
+
+impl CredentialsConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// The `issuerScope` a community may declare for itself: `directed` or
+/// `public`. `pairwise` is deliberately unrepresentable.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CommunityIssuerScope {
+    /// Shown to the parties the community deals with, not published.
+    Directed,
+    /// Open to outsiders. The default: what every earlier release declared.
+    #[default]
+    Public,
+}
+
+impl From<CommunityIssuerScope> for dtg_credentials::IssuerScope {
+    fn from(scope: CommunityIssuerScope) -> Self {
+        match scope {
+            CommunityIssuerScope::Directed => Self::Directed,
+            CommunityIssuerScope::Public => Self::Public,
+        }
+    }
 }
 
 /// Where the community's groups get their identities (`[groups]`).
