@@ -24,13 +24,13 @@ transport-harness = [
 
 [dependencies]
 # The VTA itself, with its in-crate fixtures (`test_support`) on.
-vta-service = { path = "../vta-service", version = "0.85", default-features = false, features = [
+vta-service = { path = "../vta-service", version = "0.86", default-features = false, features = [
     "test-support",
     "rest",
     "didcomm",
 ] }
 vta-sdk = { path = "../vta-sdk", version = "0.93" }
-vti-common = { path = "../vti-common", version = "0.68" }
+vti-common = { path = "../vti-common", version = "0.69" }
 vti-specs = { path = "../vti-specs", version = "0.17" }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 affinidi-messaging-core = { workspace = true }
