@@ -2948,7 +2948,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.60.0"
+version = "0.60.1"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "base64 0.23.1",
@@ -8205,7 +8205,7 @@ dependencies = [
 
 [[package]]
 name = "pnm-cli"
-version = "0.66.0"
+version = "0.66.1"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -12152,7 +12152,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.87.0"
+version = "0.87.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-bbs",
@@ -12364,7 +12364,7 @@ dependencies = [
 
 [[package]]
 name = "vta-test-support"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-core",
@@ -12507,7 +12507,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.35.0"
+version = "0.35.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-bbs",

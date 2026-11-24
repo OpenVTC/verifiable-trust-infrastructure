@@ -1,7 +1,7 @@
 [package]
 name = "vta-test-support"
 description = "A mock Verifiable Trust Agent for tests: a real VTA on a loopback port, an optional stub DID hosting service, and DIDComm/TSP through an embedded mediator"
-version = "0.6.0"
+version = "0.6.1"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
