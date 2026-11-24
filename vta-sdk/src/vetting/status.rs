@@ -275,7 +275,7 @@ async fn read_bit(
         .and_then(Value::as_object)
         .ok_or_else(|| "the status list has no credentialSubject".to_string())?;
     let subject_purpose = subject.get("statusPurpose").and_then(Value::as_str);
-    if subject_purpose != Some(purpose_str(entry.purpose)) {
+    if subject_purpose != Some(entry.purpose.as_str()) {
         return Err("the status list's purpose is not the entry's".into());
     }
     let encoded = subject
@@ -292,7 +292,7 @@ async fn read_bit(
     // `size / 8 + 1` bytes, so a GZIP bomb cannot cost more than the index
     // allows, and a list too short to hold the index fails here.
     let size = entry.index.saturating_add(1);
-    let decoded = BitstringStatusList::decode(encoded, size, entry.purpose)
+    let decoded = BitstringStatusList::decode(encoded, size, entry.purpose.clone())
         .map_err(|e| format!("the status list does not decode as far as the entry: {e}"))?;
     decoded
         .get(entry.index)
@@ -316,13 +316,6 @@ fn check_window(obj: &serde_json::Map<String, Value>, now: DateTime<Utc>) -> Res
         return Err("the status list has expired".into());
     }
     Ok(())
-}
-
-fn purpose_str(purpose: StatusPurpose) -> &'static str {
-    match purpose {
-        StatusPurpose::Revocation => "revocation",
-        StatusPurpose::Suspension => "suspension",
-    }
 }
 
 // Keeps the public signature's future `Send` when the caller's fetch is:
@@ -454,17 +447,23 @@ mod tests {
     #[tokio::test]
     async fn a_multibase_prefixed_list_is_read() {
         let community = secret(0xC0);
-        let prefixed = format!("u{}", encoded(&[3], StatusPurpose::Revocation));
-        let list = sign(
-            unsigned_list(&did(&community), "revocation", &prefixed),
-            &community,
-            "assertionMethod",
-        )
-        .await;
-        assert_eq!(
-            check(&entry("3", "revocation"), &did(&community), list).await,
-            StatusCheck::Revoked
-        );
+        // affinidi-status-list 0.2 encodes the multibase form (`u` + base64url).
+        let prefixed = encoded(&[3], StatusPurpose::Revocation);
+        assert!(prefixed.starts_with("uH4sI"));
+        // A pre-0.2 issuer publishes the bare base64url; both must read.
+        let legacy = prefixed.strip_prefix('u').unwrap().to_string();
+        for form in [prefixed, legacy] {
+            let list = sign(
+                unsigned_list(&did(&community), "revocation", &form),
+                &community,
+                "assertionMethod",
+            )
+            .await;
+            assert_eq!(
+                check(&entry("3", "revocation"), &did(&community), list).await,
+                StatusCheck::Revoked
+            );
+        }
     }
 
     #[tokio::test]

@@ -98,7 +98,7 @@ pub async fn build_status_list_credential(
 /// bits into it via `set` calls so the encode output matches
 /// what verifiers expect from the upstream crate.
 fn encode_bits(state: &StatusListState) -> Result<String, affinidi_status_list::StatusListError> {
-    let mut bsl = BitstringStatusList::new(state.capacity, state.purpose);
+    let mut bsl = BitstringStatusList::new(state.capacity, state.purpose.clone());
     // Apply each `1` bit in the source. Iterating once over the
     // raw bytes is cheap; this is the steady-state path for the
     // M2.11 publish handler and the M2.14 flip-on-removal path.
@@ -217,7 +217,8 @@ mod tests {
             SubjectValue::Multiple(v) => v[0].clone(),
         };
         let encoded = subject["encodedList"].as_str().unwrap();
-        let decoded = BitstringStatusList::decode(encoded, state.capacity, state.purpose).unwrap();
+        let decoded =
+            BitstringStatusList::decode(encoded, state.capacity, state.purpose.clone()).unwrap();
         assert!(
             decoded.get(a as usize).unwrap(),
             "slot {a} should round-trip as set"

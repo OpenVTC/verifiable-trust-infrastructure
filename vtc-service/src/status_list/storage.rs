@@ -115,7 +115,7 @@ pub async fn get_state(
 /// Persist a state row (create or overwrite).
 pub async fn store_state(ks: &KeyspaceHandle, state: &StatusListState) -> Result<(), AppError> {
     ks.insert(
-        String::from_utf8(purpose_key(state.purpose)).expect("status-list key is ASCII"),
+        String::from_utf8(purpose_key(state.purpose.clone())).expect("status-list key is ASCII"),
         state,
     )
     .await
@@ -154,7 +154,7 @@ pub async fn ensure_initial(
     purpose: StatusPurpose,
     list_credential_id: String,
 ) -> Result<StatusListState, AppError> {
-    if let Some(existing) = get_state(ks, purpose).await? {
+    if let Some(existing) = get_state(ks, purpose.clone()).await? {
         if existing.list_credential_id == list_credential_id {
             return Ok(existing);
         }
@@ -232,7 +232,7 @@ where
     F: FnOnce(&mut StatusListState) -> Result<T, AppError>,
 {
     let _guard = lock().await;
-    let mut state = get_state(ks, purpose)
+    let mut state = get_state(ks, purpose.clone())
         .await?
         .ok_or_else(|| AppError::Internal(format!("status list for {purpose} not initialised")))?;
     let out = f(&mut state)?;

@@ -55,7 +55,7 @@ async fn fixture() -> Fixture {
     for purpose in [StatusPurpose::Revocation, StatusPurpose::Suspension] {
         vtc_service::status_list::ensure_initial(
             &vtc.state.status_lists_ks,
-            purpose,
+            purpose.clone(),
             format!("{RP_ORIGIN}/v1/status-lists/{purpose}"),
         )
         .await

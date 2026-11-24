@@ -298,7 +298,7 @@ affinidi-data-integrity = { workspace = true }
 # it. Promoted from a vta-sdk dev-dep (task 0.2) to a normal vta-service dep
 # for this verify path. SD-JWT-VC only — BBS (`affinidi-bbs`) is audit-gated
 # and not pulled in here.
-affinidi-sd-jwt-vc = { workspace = true }
+affinidi-vc = { workspace = true }
 affinidi-sd-jwt = { workspace = true }
 # BBS+ primitives + G2 issuer keys — only under the `bbs` feature.
 affinidi-bbs = { workspace = true, optional = true }
@@ -335,7 +335,7 @@ async-trait = { workspace = true }
 # the release built against that resolver, so a floor below it can resolve a
 # second, pre-host-policy resolver-cache copy into the graph through
 # `TDKSharedState`.
-affinidi-tdk-common = "0.7"
+affinidi-tdk-common = "0.8"
 affinidi-did-resolver-cache-sdk = { workspace = true }
 # A `did:peer` persona's document, derived from the identifier with no I/O
 # (`operations::persona`) — the shape of a pairwise relationship DID.

@@ -525,7 +525,7 @@ async fn a_resend_delivers_the_live_grant_credential_again() {
     let purpose = affinidi_status_list::StatusPurpose::Revocation;
     vtc_service::status_list::ensure_initial(
         &state.status_lists_ks,
-        purpose,
+        purpose.clone(),
         format!("https://vtc.test/v1/status-lists/{purpose}"),
     )
     .await
@@ -630,9 +630,13 @@ async fn a_resend_reissues_a_grant_that_names_a_retired_status_list_url() {
     let purpose = affinidi_status_list::StatusPurpose::Revocation;
     let old_url = format!("https://old.vtc.test/v1/status-lists/{purpose}");
     let new_url = format!("https://vtc.test/v1/status-lists/{purpose}");
-    vtc_service::status_list::ensure_initial(&state.status_lists_ks, purpose, old_url.clone())
-        .await
-        .expect("status list");
+    vtc_service::status_list::ensure_initial(
+        &state.status_lists_ks,
+        purpose.clone(),
+        old_url.clone(),
+    )
+    .await
+    .expect("status list");
     seed_member_row(&mock.vtc, &vetter_did, 60).await;
     store_acl_entry(
         &mock.vtc.state.acl_ks,
@@ -673,9 +677,13 @@ async fn a_resend_reissues_a_grant_that_names_a_retired_status_list_url() {
     );
 
     // The community moves: boot re-points the list at the new URL (#2087).
-    vtc_service::status_list::ensure_initial(&state.status_lists_ks, purpose, new_url.clone())
-        .await
-        .expect("re-point the status list");
+    vtc_service::status_list::ensure_initial(
+        &state.status_lists_ks,
+        purpose.clone(),
+        new_url.clone(),
+    )
+    .await
+    .expect("re-point the status list");
 
     let (status, resent) = admin_document(
         router,
@@ -791,7 +799,7 @@ async fn kernel_community() -> Community {
     ] {
         vtc_service::status_list::ensure_initial(
             &vtc.state.status_lists_ks,
-            purpose,
+            purpose.clone(),
             format!("{RP_ORIGIN}/v1/status-lists/{purpose}"),
         )
         .await

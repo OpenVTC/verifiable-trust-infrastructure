@@ -239,11 +239,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::select! {
             result = rx.recv() => {
                 match result {
-                    Ok(WebSocketResponses::MessageReceived(msg, _)) => {
+                    Some(WebSocketResponses::MessageReceived(msg, _)) => {
                         received += 1;
                         log_message("plaintext", &msg);
                     }
-                    Ok(WebSocketResponses::PackedMessageReceived(packed)) => {
+                    Some(WebSocketResponses::PackedMessageReceived(packed)) => {
                         match atm.unpack(&packed).await {
                             Ok((msg, _metadata)) => {
                                 received += 1;
@@ -254,17 +254,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
-                    Ok(WebSocketResponses::Disconnected) => {
+                    Some(WebSocketResponses::Disconnected) => {
                         // New in messaging-sdk 0.18.5: the transport signals a
                         // lost socket instead of silently blocking. Stop
                         // listening — the connection is gone.
                         warn!("websocket disconnected");
                         break;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("channel lagged, missed {n} messages");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    None => {
                         info!("inbound channel closed");
                         break;
                     }

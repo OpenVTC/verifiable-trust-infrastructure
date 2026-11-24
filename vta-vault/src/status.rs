@@ -663,8 +663,8 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
     // would become un-revocable on a later clear read. Reject it. The SD-JWT-VC
     // shape carries no per-entry purpose (`None`); there the resolved list's
     // purpose legitimately stands alone.
-    if let Some(entry_purpose) = status_ref.status_purpose
-        && entry_purpose != resolved.status_purpose
+    if let Some(entry_purpose) = &status_ref.status_purpose
+        && *entry_purpose != resolved.status_purpose
     {
         return Err(AppError::Validation(format!(
             "status entry purpose {entry_purpose:?} does not match the resolved status \
@@ -681,7 +681,7 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
     let list = BitstringStatusList::decode(
         &resolved.encoded_list,
         resolved.size,
-        resolved.status_purpose,
+        resolved.status_purpose.clone(),
     )
     .map_err(|e| AppError::Validation(format!("status list failed to decode: {e}")))?;
 
@@ -858,7 +858,7 @@ mod tests {
         fn new(set_index: Option<usize>, purpose: StatusPurpose) -> Self {
             MockResolver {
                 list: ResolvedStatusList {
-                    encoded_list: encoded_list_with(set_index, purpose),
+                    encoded_list: encoded_list_with(set_index, purpose.clone()),
                     size: LIST_SIZE,
                     status_purpose: purpose,
                 },

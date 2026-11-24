@@ -686,7 +686,7 @@ pub async fn run(
             affinidi_status_list::StatusPurpose::Suspension,
         ] {
             let url = format!("{public_url}/v1/status-lists/{purpose}");
-            match crate::status_list::ensure_initial(&status_lists_ks, purpose, url).await {
+            match crate::status_list::ensure_initial(&status_lists_ks, purpose.clone(), url).await {
                 Ok(_) => debug!(?purpose, "status list initialised"),
                 Err(e) => warn!(?purpose, "failed to initialise status list: {e}"),
             }

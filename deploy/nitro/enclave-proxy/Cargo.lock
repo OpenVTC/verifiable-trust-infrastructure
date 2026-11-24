@@ -14,9 +14,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-crypto"
-version = "0.3.4"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e3b81ce7f53f57e07d3b655e9a32818fea2c0227c4352014e0cd2848cd1cba"
+checksum = "91d2344bf88ad78be6dc792f8250612e5f11dcce56c5f42863d8752798ecce98"
 dependencies = [
  "affinidi-encoding",
  "base64 0.23.1",
@@ -37,9 +37,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-data-integrity"
-version = "0.8.11"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f29766b34770b40c9898ef8a5defa96344095ec9f9598254249da651d9e62025"
+checksum = "fcdc474937c2cd17e1c67cfdfb6d81c8d31532bef05f06a96a385834d7ccfbe0"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-common",
@@ -52,7 +52,7 @@ dependencies = [
  "multibase",
  "serde",
  "serde_json",
- "serde_json_canonicalizer 0.3.2",
+ "serde_json_canonicalizer",
  "sha2",
  "thiserror",
  "tracing",
@@ -61,9 +61,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-common"
-version = "0.4.10"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32678e8a0c49dd3bfe35b29ae2c0d51cb631fc2f7f2f4b9bff323ead0c804270"
+checksum = "d107edbe0ceda41910f90abbd44d1aaa7f05c7e6d36537cb26c8670bd2bfa73e"
 dependencies = [
  "affinidi-crypto",
  "affinidi-encoding",
@@ -78,9 +78,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-resolver-cache-sdk"
-version = "0.8.57"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9515937c589df50343ee5111e68227ff62353757d8e002a0f65a5eaf5fa9ea9"
+checksum = "7b019414f15e3bcc9c5eb598ef2eb55bed7683a8663bb37f461e2d16c3e8c5b6"
 dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-traits",
@@ -104,9 +104,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-resolver-traits"
-version = "0.1.6"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd385992f60d94244cae280480cf6cd44b9fc4e085bc7c1f9589c3238261dac1"
+checksum = "ced2e8f17cff3d59ca22b0460484bac9d759ab37b68ccfd6782fccae0e518dc9"
 dependencies = [
  "affinidi-did-common",
  "thiserror",
@@ -114,9 +114,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-web"
-version = "0.1.11"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da4486b8037fa736cba6b6ac3d8bc450a9e6fa1bde9418cdc81a22f3b01b6aef"
+checksum = "b38e51d6b6a4851f78fc6eea15bda8043a40d79e475f1bc62fae6307537c39a0"
 dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-traits",
@@ -130,9 +130,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-did-webs"
-version = "0.13.9"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a127c5150391846a622572de66b21506ea4544195e8e7395477f19d702670e5"
+checksum = "655c90b81e46b8a7ae0139b8bc9ea5f94aff0d59c60e2ab1dd1a68e894583257"
 dependencies = [
  "affinidi-cesr",
  "affinidi-crypto",
@@ -153,9 +153,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-encoding"
-version = "0.1.8"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee248d49b1920788a52a3a658bf60fb3172041b6471a856f3cf82e0668a493"
+checksum = "508445ae5a01caf7b056abd40db7557b770b4277bb02ab82e443218e767775ba"
 dependencies = [
  "bs58",
  "serde",
@@ -231,9 +231,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-secrets-resolver"
-version = "0.5.21"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "130a769815cbc50d10d5a4699259f50e94f155e91d89a761e541cf5f1ab04cb4"
+checksum = "e5fe1b7d05beb444e4019e7d4d227642cd0ef3958e8351d9aadda7e754202190"
 dependencies = [
  "affinidi-crypto",
  "affinidi-encoding",
@@ -983,9 +983,9 @@ dependencies = [
 
 [[package]]
 name = "did-scid"
-version = "0.4.11"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "496cb0618cfebf2309280dcece6fdfd35fd0707152d3e9bd4fe2d02e68ecc218"
+checksum = "421d5b4ebd8413acac0e1658d7251681415448edc58729f4f86756cbf957a9c5"
 dependencies = [
  "affinidi-did-common",
  "didwebvh-rs",
@@ -996,9 +996,9 @@ dependencies = [
 
 [[package]]
 name = "didwebvh-rs"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8481753f464a668a8bddf0347477872b899324b6ec9b8ba1974123971ab3e7e0"
+checksum = "54a7236de7726e2fdab65b06bfa3e4406f668ffe376b91498066197da9faf1f7"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-common",
@@ -1012,7 +1012,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "serde_json_canonicalizer 0.4.1",
+ "serde_json_canonicalizer",
  "serde_with",
  "sha2",
  "thiserror",
@@ -1181,9 +1181,9 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "errno"
-version = "0.3.14"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -1966,9 +1966,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.186"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linux-raw-sys"
@@ -2077,9 +2077,9 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "mio"
-version = "1.2.0"
+version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
  "wasi",
@@ -2652,9 +2652,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags",
  "errno",
@@ -2703,9 +2703,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-platform-verifier"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"
+checksum = "1167586491e2b18b8bfbb293e8180ec17c201c4f076d7cb3070ca964e7598f98"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
@@ -2724,9 +2724,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-platform-verifier-android"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
+checksum = "eec689c0bc40ff2458a5977b6619cb718087084a18e02a131c599b62d05e1a5f"
 
 [[package]]
 name = "rustls-webpki"
@@ -2763,9 +2763,9 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.29"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+checksum = "9cb23c424d8ee841bb4d813677ca237e2a610067d594fec130f87d6093495ab5"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -2901,17 +2901,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "serde_json_canonicalizer"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
-dependencies = [
- "ryu-js",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -3074,9 +3063,9 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "socket2"
-version = "0.6.3"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",

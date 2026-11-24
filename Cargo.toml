@@ -175,15 +175,15 @@ uniffi = "0.32"
 # affinidi-data-integrity 0.8.7 and did-common 0.4.7 carry in their public
 # API), `affinidi-vc` to 0.3, `affinidi-sd-jwt` to 0.2 and `affinidi-mdoc` to
 # 0.6; every one of those moves with it.
-affinidi-tdk = "0.45"
+affinidi-tdk = "0.49"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
-affinidi-crypto = "0.3"
+affinidi-crypto = "0.4"
 # W3C VC Data Model 2.0 + Data Integrity proofs. Used by the
 # provision-integration flow (VP-framed bootstrap request, VC-issued
 # admin authorization). See CLAUDE.md "Authorization claims" principle.
-affinidi-vc = "0.3"
+affinidi-vc = "0.3.3"
 # `ml-dsa` compiles the ML-DSA-44 cryptosuites (mldsa44-jcs-2024 /
 # -rdfc-2024). Without it `CryptoSuite::default_for_key_type` has no arm for
 # an ML-DSA key, returns `None`, and the signer falls back to Ed25519 — so a
@@ -193,14 +193,15 @@ affinidi-vc = "0.3"
 # 0.8 carries `affinidi-bbs` 0.4 in its public API, so the two move together
 # (the `=0.7.13` pin that held 0.7.14's patch-level bbs bump off is gone).
 # 0.8.7: its public `KeyType` is affinidi-crypto 0.3's.
-affinidi-data-integrity = { version = "0.8.7", features = ["ml-dsa"] }
-affinidi-status-list = "0.1.7"
+affinidi-data-integrity = { version = "0.9.2", features = ["ml-dsa"] }
+affinidi-status-list = "0.2.1"
 
 # Credential formats for the credential-centric VTI architecture
 # (docs/05-design-notes/vti-credential-architecture.md). All published on
 # crates.io and validated upstream in the TDK:
-#   - affinidi-sd-jwt-vc  — SD-JWT-VC issue/verify (IETF draft-ietf-oauth-sd-jwt-vc).
-#     Near-term credential path; runs on existing Ed25519/JOSE, no new curve.
+#   - affinidi-vc's `sd_jwt_vc` module — SD-JWT-VC issue/verify (IETF
+#     draft-ietf-oauth-sd-jwt-vc); folded in from the retired affinidi-sd-jwt-vc
+#     crate (affinidi-tdk-rs #1156). Runs on existing Ed25519/JOSE, no new curve.
 #   - affinidi-bbs        — BBS+ signatures over bls12_381_plus (IETF
 #     draft-irtf-cfrg-bbs-signatures). The unlinkable, selective-disclosure
 #     track. Gated on an independent security audit before signing real
@@ -218,9 +219,8 @@ affinidi-status-list = "0.1.7"
 # BBS proof path is wired. If you path-override these to the local TDK for an
 # unreleased change (e.g. DCQL), override the whole interdependent set together
 # to avoid a duplicate-version split.
-affinidi-sd-jwt-vc = "0.3"
 affinidi-sd-jwt = "0.2"
-affinidi-bbs = "0.4"
+affinidi-bbs = "0.5"
 affinidi-openid4vp = "0.1.5"
 # The JOSE core under openid4vp: ECDH-ES response decryption (`jwe`) for the
 # VTC's OpenID4VP verifier (#1988).
@@ -247,7 +247,7 @@ time = "0.3"
 # production tree.
 x509-parser = { version = "0.18", features = ["verify-aws"] }
 affinidi-openid4vci = "0.2"
-affinidi-secrets-resolver = { version = "0.5.18", features = ["ml-dsa"] }
+affinidi-secrets-resolver = { version = "0.6.0", features = ["ml-dsa"] }
 # Reliable messaging delivery layer (durable outbox + drain + §5a confirmation)
 # over the MessageTransport contract — the D1 delivery layer the VTI cut-over
 # (D2) wires in. `VtiOutboxStore` (vti-common) backs its OutboxStore with fjall.
@@ -261,7 +261,7 @@ affinidi-secrets-resolver = { version = "0.5.18", features = ["ml-dsa"] }
 # `Relayed`), a relayed entry with no receipt settles `NoEvidencePath`, and the
 # receipt packer (`AtmReceiptPacker`) emits receipts on request (#2553,
 # VTI-TRN-060 - 064).
-affinidi-messaging-delivery = "0.2.0"
+affinidi-messaging-delivery = "0.3.4"
 # Transport-agnostic messaging contract (`MessageTransport`, `Inbound`,
 # `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
 # directly by services that demux `MessagingService::subscribe()` inbound.
@@ -340,14 +340,14 @@ affinidi-messaging-core = "0.1.12"
 # 0.47 is on `trust-tasks-rs` 0.39 and delivery 0.2: application receipts,
 # the per-entry status scope and the `messaging/wake/*` client (#2553, #2663).
 # 0.47.2 is the release mediator 0.52 is built on.
-affinidi-messaging-sdk = { version = "0.47.2", default-features = false }
+affinidi-messaging-sdk = { version = "0.50.0", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
 futures-util = "0.3"
 
 # Decentralized Trust Graph Credentials
-dtg-credentials = "0.14"
+dtg-credentials = "0.15"
 
 # JSON Schema validation (issue-time credentialSchema checks).
 #
@@ -365,7 +365,7 @@ dtg-credentials = "0.14"
 # `idna` is kept: it is the `hostname`/`idn-hostname` format check, pure
 # computation and no I/O. `tls-aws-lc-rs` goes with `resolve-http` — it exists
 # only to fetch over HTTPS.
-jsonschema = { version = "0.60", default-features = false, features = ["idna"] }
+jsonschema = { version = "0.61", default-features = false, features = ["idna"] }
 
 # Async runtime. 1.49 stabilised `runtime::Id`, which
 # `vta_sdk::resolver::shared_did_resolver` keys on.
@@ -432,7 +432,7 @@ pgp = { version = "0.21", default-features = false }
 # it moves with `affinidi-did-resolver-cache-sdk` 0.8.41, which resolves on it.
 # 0.8.1: `convert_scid_id_to_webvh_id` and `did_web::to_scid_did_document`, the
 # did:scid form of a log (VTI-KEY-160, VTI-KEY-161).
-didwebvh-rs = "0.8.1"
+didwebvh-rs = "0.8.3"
 
 # URL parsing
 url = "2"
@@ -473,7 +473,7 @@ multibase = "0.9"
 # `CryptoProvider` for every algorithm and is already in our dep tree
 # via `aws-sdk-kms`, so we don't add a new transitive. The backend is
 # the AWS-vetted libcrypto fork; same primitives, no `rsa` crate.
-jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+jsonwebtoken = { version = "12.0.0", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 
 # AWS-LC backend used directly by `vti-webauthn` for ECDSA P-256 WebAuthn
 # assertion verification. Already in our dep tree via `jsonwebtoken`'s
@@ -812,17 +812,17 @@ aws-smithy-types = ">=1.6.1, <1.10"
 # PINNED IN THE `vti-specs-*` CRATES" above).
 # 0.39: one copy with `affinidi-messaging-sdk` 0.47 across the boundary, and
 # `validate::SchemaValidator`, a compiled schema the caller keeps (#2622).
-trust-tasks-rs = { version = "0.39.0", default-features = false, features = [
+trust-tasks-rs = { version = "0.41.0", default-features = false, features = [
   "validate",
 ] }
-trust-tasks-capability-client = "0.39"
+trust-tasks-capability-client = "0.41"
 # The build-time generator behind the `vti-specs-*` crates: each one's build.rs
 # turns the versions its `trust-tasks.lock` pins into Rust types and a Type URI
 # index (`.index(true)`). 0.1.3 is the floor: the first with the index.
 # trust-tasks-rs 0.36.2 above is the runtime that index's entries need
 # (`trust_tasks_rs::type_index`).
-trust-tasks-build = "0.1.3"
-trust-tasks-https = { version = "0.39", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-build = "0.1.4"
+trust-tasks-https = { version = "0.41", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -833,7 +833,7 @@ trust-tasks-https = { version = "0.39", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.39", default-features = false }
+trust-tasks-didcomm = { version = "0.41", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -852,9 +852,9 @@ trust-tasks-didcomm = { version = "0.39", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.39", default-features = false }
+trust-tasks-tsp = { version = "0.41", default-features = false }
 # 0.33.2: a did:scid key named with its `?src=` locator verifies (trust-tasks-tf #863).
-trust-tasks-proof = { version = "0.39.0", default-features = false, features = ["affinidi"] }
+trust-tasks-proof = { version = "0.41.0", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
@@ -983,16 +983,16 @@ k8s-openapi = { version = "0.29", features = ["latest"] }
 # designation, a revocation, a delegation) stops counting as the identifier's.
 # 0.8.52 resolves with did-webs 0.13; did-webs 0.13.3 resolves a deactivated
 # identifier without keys and bounds verification work per stream.
-affinidi-did-resolver-cache-sdk = { version = "0.8.53", features = ["network", "did-webs"] }
+affinidi-did-resolver-cache-sdk = { version = "0.9.0", features = ["network", "did-webs"] }
 # The local-only resolvers, for methods that carry their keys in the identifier. Not a
 # second resolver: the cache SDK already depends on this and uses the same types, but does
 # not re-export them, and a verifier promising "no I/O" needs to reach them directly.
-affinidi-did-resolver-traits = { version = "0.1" }
+affinidi-did-resolver-traits = { version = "0.2" }
 # Creating and continuing a did:webs (docs/05-design-notes/did-webs-in-the-vta.md):
 # the controller side of affinidi-did-webs, the same release the resolver above
 # reads with. `create` pulls `affinidi-keri` without its LMDB store (did-webs
 # 0.13.1, affinidi-keri 0.8.1): the controller keeps the log in `keri.cesr`.
-affinidi-did-webs = { version = "0.13.4", features = ["create"] }
+affinidi-did-webs = { version = "0.14.0", features = ["create"] }
 affinidi-keri = { version = "0.8.1", default-features = false }
 affinidi-keri-core = "0.8"
 affinidi-keri-crypto = "0.8"
@@ -1005,12 +1005,12 @@ affinidi-keri-crypto = "0.8"
 # yet, so today this resolves nothing — it is wired so that minting names
 # (a separate piece of work, in `affinidi-webvh-service`) lights up every
 # operator surface without touching a display site.
-agent-names = "0.1.3"
+agent-names = "0.2.0"
 # The `Document` type `agent-names` and the resolver cache both speak. Only
 # needed where we hand a resolved document to `extract_agent_names`.
 # 0.4.4: the `scid` module, and lookups that match a did:scid key reference
 # by DID and fragment (VTI-KEY-163).
-affinidi-did-common = "0.4.7"
+affinidi-did-common = "0.5.0"
 
 # WebAuthn / passkey infrastructure. Used by vti-common's `passkey` feature
 # for shared enrolment + login ceremonies — both VTA (admin auth, later) and
@@ -1076,9 +1076,9 @@ webauthn-rs-proto = "0.5"
 affinidi-rate-limit = "0.1.4"
 # Pinned to the patch every DIDComm decrypt path in the workspace was built
 # against (ECDH-ES+A256KW + A256CBC-HS512 JWEs from `vta-sdk`'s light client).
-affinidi-messaging-didcomm = "0.15.14"
+affinidi-messaging-didcomm = "0.16.0"
 # The in-process mediator for end-to-end tests; always with its TSP arm.
-affinidi-messaging-test-mediator = { version = "0.52", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.55", features = ["tsp"] }
 openmls_rust_crypto = "0.6"
 # Hidden vetting and community voting (`vti-vetting-pcs`, `vti-voting`, and
 # their hosts).

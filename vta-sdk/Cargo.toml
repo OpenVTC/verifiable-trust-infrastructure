@@ -437,7 +437,7 @@ base64 = { workspace = true }
 # adopted TDK SD-JWT-VC issue/verify path end-to-end as part of wiring the
 # credential crates into the workspace (vti-credential-architecture §0.2).
 # Dev-only — the published SDK does not depend on these yet.
-affinidi-sd-jwt-vc = { workspace = true }
+affinidi-vc = { workspace = true }
 affinidi-sd-jwt = { workspace = true }
 # The remaining adopted credential crates. Referenced from
 # tests/cred_formats_build.rs purely so `cargo test -p vta-sdk` compiles and

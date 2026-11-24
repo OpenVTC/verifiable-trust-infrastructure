@@ -58,7 +58,7 @@ async fn vtc_with_signer(signer: &LocalSigner) -> TestVtc {
     for purpose in [StatusPurpose::Revocation, StatusPurpose::Suspension] {
         ensure_initial(
             &tv.state.status_lists_ks,
-            purpose,
+            purpose.clone(),
             format!("https://vtc.test/v1/status-lists/{purpose}"),
         )
         .await

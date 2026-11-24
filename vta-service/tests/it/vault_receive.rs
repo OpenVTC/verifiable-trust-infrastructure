@@ -86,7 +86,7 @@ fn issue_invitation(signer: &EddsaSigner, issuer_did: &str, iat: u64, exp: Optio
     let hasher = Sha256Hasher;
     let claims = json!({ "community": "did:web:acme.example", "seat": "founding" });
     let frame = json!({ "_sd": ["community", "seat"] });
-    affinidi_sd_jwt_vc::issue(
+    affinidi_vc::sd_jwt_vc::issue(
         "https://openvtc.org/credentials/InvitationCredential",
         issuer_did,
         Some("did:example:alice"),

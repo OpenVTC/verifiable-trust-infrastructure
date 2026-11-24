@@ -72,7 +72,7 @@ pub async fn show(
         ))
     })?;
 
-    let row = status_list::get_state(&state.status_lists_ks, purpose).await?;
+    let row = status_list::get_state(&state.status_lists_ks, purpose.clone()).await?;
     let row = row.ok_or_else(|| {
         AppError::NotFound(format!(
             "status list for {purpose} not provisioned — \

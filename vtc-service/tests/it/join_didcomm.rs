@@ -130,7 +130,7 @@ async fn seed_join_ceremony(mock: &MockVtcTransport) -> String {
     ] {
         vtc_service::status_list::ensure_initial(
             &state.status_lists_ks,
-            purpose,
+            purpose.clone(),
             format!("https://vtc.test/v1/status-lists/{purpose}"),
         )
         .await

@@ -116,7 +116,7 @@ async fn build_fixture() -> Fixture {
         affinidi_status_list::StatusPurpose::Suspension,
     ] {
         let url = format!("{RP_ORIGIN}/v1/status-lists/{purpose}");
-        vtc_service::status_list::ensure_initial(&vtc.state.status_lists_ks, purpose, url)
+        vtc_service::status_list::ensure_initial(&vtc.state.status_lists_ks, purpose.clone(), url)
             .await
             .expect("ensure_initial status list");
     }
@@ -2683,7 +2683,7 @@ async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant()
     let purpose = affinidi_status_list::StatusPurpose::Revocation;
     vtc_service::status_list::ensure_initial(
         &vtc.state.status_lists_ks,
-        purpose,
+        purpose.clone(),
         format!("{RP_ORIGIN}/v1/status-lists/{purpose}"),
     )
     .await
