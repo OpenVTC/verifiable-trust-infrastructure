@@ -9697,6 +9697,26 @@ export interface components {
             nextCursor?: string;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryQueryV0_1Ext: {
+            [key: string]: unknown;
+        };
+        VtcDirectoryQueryV0_1Payload: {
+            ext?: components["schemas"]["VtcDirectoryQueryV0_1Ext"];
+            /** @description Comma-separated narrowing hint. A hint only — never an authorisation. */
+            fields?: string;
+            /** @description DID of the member whose directory projection is requested. */
+            subject: string;
+        };
+        VtcDirectoryQueryV0_1Response: {
+            ext?: components["schemas"]["VtcDirectoryQueryV0_1Ext"];
+            /** @description The permitted projection. A withheld field is ABSENT, never present-and-null. */
+            fields: {
+                [key: string]: unknown;
+            };
+            /** @description The projected member's DID. */
+            subject: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcEndorsementTypesDeleteV0_1Ext: {
             [key: string]: unknown;
         };

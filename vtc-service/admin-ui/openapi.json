@@ -23009,6 +23009,57 @@
         },
         "additionalProperties": false
       },
+      "VtcDirectoryQueryV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryQueryV0_1Payload": {
+        "type": "object",
+        "required": [
+          "subject"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryQueryV0_1Ext"
+          },
+          "fields": {
+            "type": "string",
+            "description": "Comma-separated narrowing hint. A hint only — never an authorisation.",
+            "minLength": 1
+          },
+          "subject": {
+            "type": "string",
+            "description": "DID of the member whose directory projection is requested.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryQueryV0_1Response": {
+        "type": "object",
+        "required": [
+          "subject",
+          "fields"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryQueryV0_1Ext"
+          },
+          "fields": {
+            "type": "object",
+            "description": "The permitted projection. A withheld field is ABSENT, never present-and-null.",
+            "additionalProperties": true
+          },
+          "subject": {
+            "type": "string",
+            "description": "The projected member's DID.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcEndorsementTypesDeleteV0_1Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",

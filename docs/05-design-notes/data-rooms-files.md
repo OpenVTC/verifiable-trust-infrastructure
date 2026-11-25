@@ -1060,6 +1060,15 @@ member's VTA and to the room's host as any member's client does. The portal's
 session is still re-checked on every `/v1/member/*` request, and the room pages
 render only for an active member.
 
+**Naming authors.** The wallet's reading names an author by the name they gave
+themselves in the room. For an author with no such name, the page asks the
+community's directory about their DID (`vtc/directory/query/0.1`, signed with
+the portal's delegated key) and shows the name the directory shows this member,
+with a card on hover; where the directory shows nothing, the author is their
+DID, marked as one. Only the DID is sent, never the room, and only for an
+`open` or `attributed` room, whose host already sees who wrote what: asking
+about a `private` room's authors would tell the community who writes there.
+
 **The page asks the wallet, through methods that are the wallet's, not
 through the generic relay.** `window.vtaWallet.rooms.{list, choose, info,
 browse, read, conversation, putNote, putMessage, getFile, putFile, forget}`

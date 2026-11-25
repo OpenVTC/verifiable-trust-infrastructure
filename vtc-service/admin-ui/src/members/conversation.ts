@@ -22,11 +22,17 @@ export interface Speaker {
   own: boolean;
   /** `label` is the name the author gave themselves in this room: their claim, said as such. */
   ownName: boolean;
+  /** `label` is the name the community's directory shows this member for the author. */
+  directory: boolean;
+  /** `label` is the author's DID, shortened: there is no name to go by. */
+  did: boolean;
 }
 
 /**
  * The member themselves as "You"; another author by the name they gave
- * themselves in this room, marked as their own; else by their DID's short form.
+ * themselves in this room, marked as their own — the wallet's reading, which
+ * every surface shows alike; else by the name the community's directory shows
+ * this member for their DID; else by their DID's short form, marked as a DID.
  */
 export function speakerOf(
   author: string | undefined,
@@ -34,12 +40,17 @@ export function speakerOf(
   names: Record<string, string>,
   /** How the page names a DID with no name in this room (`authorName`). */
   byDid: (did: string) => string,
+  /** The directory's name for a DID, where it shows one to this member (`room-authors.ts`). */
+  directory: (did: string) => string | null | undefined = () => undefined,
 ): Speaker {
-  if (author === undefined) return { label: "Someone", own: false, ownName: false };
-  if (me !== undefined && author === me) return { label: "You", own: true, ownName: false };
+  const none = { own: false, ownName: false, directory: false, did: false };
+  if (author === undefined) return { ...none, label: "Someone" };
+  if (me !== undefined && author === me) return { ...none, label: "You", own: true };
   const name = names[author]?.trim();
-  if (name) return { label: name, own: false, ownName: true };
-  return { label: byDid(author), own: false, ownName: false };
+  if (name) return { ...none, label: name, ownName: true };
+  const listed = directory(author)?.trim();
+  if (listed) return { ...none, label: listed, directory: true };
+  return { ...none, label: byDid(author), did: true };
 }
 
 /** The instant to show for a record: the author's plausible claim, else when the room got it. None for an implausible claim. */

@@ -2396,6 +2396,80 @@ textarea {
   font-weight: 600;
   color: var(--brand);
 }
+/* An author's name: opens what the directory shows of them. */
+.author {
+  position: relative;
+  display: inline-flex;
+}
+.author-name {
+  all: unset;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border-radius: var(--radius-md);
+}
+.author-name:hover,
+.author-name[aria-expanded="true"] {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.author-name:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+/* A DID standing in for a name: never mistaken for one. */
+.author-did {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 0.95em;
+}
+.did-tag {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  padding: 0 0.3rem;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  opacity: 0.75;
+}
+.author-card {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: max-content;
+  max-width: min(20rem, calc(100vw - 2rem));
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+.author-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.author-card-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.author-card-did {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
 .chat-body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

@@ -12,6 +12,15 @@ import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The directory, asked who a room's authors are: by default it shows nobody
+// (no portal key), as in a session that never signed in with the wallet.
+const directory = vi.hoisted(() => ({ send: vi.fn() }));
+vi.mock("./directory-api", async (actual) => {
+  const real = await actual<typeof import("./directory-api")>();
+  return { ...real, send: directory.send };
+});
+
+import { DirectoryError } from "./directory-api";
 import { RoomPage, RoomsPage, downloadName } from "./Rooms";
 import { routeOf } from "./Portal";
 import { fileWontFit, type RoomInfo, type WalletRooms } from "./wallet-rooms";
@@ -81,6 +90,8 @@ describe("data rooms in the portal", () => {
   beforeEach(() => {
     fetchSpy = vi.fn(async () => new Response("{}", { status: 404 }));
     vi.stubGlobal("fetch", fetchSpy);
+    directory.send.mockReset();
+    directory.send.mockRejectedValue(new DirectoryError("noKey", "no key"));
   });
   afterEach(() => {
     delete (window as { vtaWallet?: unknown }).vtaWallet;
@@ -466,6 +477,64 @@ describe("data rooms in the portal", () => {
     await screen.findByRole("heading", { name: "Term sheet" });
     expect(wallet.calls.some((c) => c.method === "read" && (c.args as { key: string }).key === "k1")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Authors the room gives no name: the directory's name where it shows one, else the DID, marked.
+  const CAROL = "did:webvh:QmCarol:people.example:airport-electric";
+  const DAVE = "did:webvh:QmDave:people.example:tiger-phrase";
+  const UNNAMED = {
+    ...CHAT,
+    records: [
+      { ...CHAT.records[0]!, key: "c1", author: CAROL, body: "Hey", reactions: [{ value: "👍", count: 1, authors: [DAVE] }] },
+      { ...CHAT.records[0]!, key: "d1", author: DAVE, body: "Hello", reactions: [] },
+      { ...CHAT.records[0]!, key: "a1", author: ALBERTO, body: "Hi all", reactions: [] },
+    ],
+  };
+  const QUERY = "https://trusttasks.org/spec/vtc/directory/query/0.1";
+
+  it("an author the room gives no name is named as the directory shows them, else by a DID marked as one", async () => {
+    directory.send.mockImplementation(async (type: string, p: { subject: string }) => {
+      if (type === QUERY && p.subject === CAROL) {
+        return { subject: CAROL, fields: { displayName: "Carol Chen", pronouns: "she/her", role: "member" } };
+      }
+      throw new DirectoryError("notFound", "no directory entry for that DID is visible to this caller");
+    });
+    const wallet = fakeWallet({ conversation: vi.fn(async () => UNNAMED) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    const carol = await screen.findByRole("button", { name: "Carol Chen" });
+    // The DID the directory shows no name for stays a DID, and says so.
+    const dave = screen.getByRole("button", { name: /tiger-phrase/ });
+    expect(within(dave).getByText("DID")).toBeTruthy();
+    // The room's own name comes first: the directory is not asked about Alberto.
+    expect(screen.getByRole("button", { name: "Alberto Leon" })).toBeTruthy();
+    const asked = directory.send.mock.calls.map((c) => (c[1] as { subject: string }).subject).sort();
+    expect(asked).toEqual([CAROL, DAVE].sort());
+    expect(directory.send.mock.calls.every((c) => c[0] === QUERY)).toBe(true);
+    // Hovering opens the member's card.
+    fireEvent.mouseEnter(carol.parentElement!);
+    const card = screen.getByRole("group", { name: "About Carol Chen" });
+    expect(within(card).getByText("she/her")).toBeTruthy();
+    expect(within(card).getByText("Role: member")).toBeTruthy();
+    expect(within(card).getByText(CAROL)).toBeTruthy();
+    fireEvent.mouseLeave(carol.parentElement!);
+    expect(screen.queryByRole("group", { name: "About Carol Chen" })).toBeNull();
+    // A DID's card says the directory showed nothing, and gives the whole DID.
+    fireEvent.click(dave);
+    const daveCard = screen.getByRole("group", { name: /About/ });
+    expect(within(daveCard).getByText(/shows you no card/)).toBeTruthy();
+    expect(within(daveCard).getByText(DAVE)).toBeTruthy();
+  });
+
+  it("a private room's authors are never looked up: that would tell the community who writes there", async () => {
+    const wallet = fakeWallet({
+      info: vi.fn(async () => ({ ...INFO, visibility: "private" })),
+      conversation: vi.fn(async () => UNNAMED),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("button", { name: /airport-electric/ });
+    expect(directory.send).not.toHaveBeenCalled();
   });
 
   it("the conversation scrolls in its own window, opened at the newest, in the wallet's order", async () => {
