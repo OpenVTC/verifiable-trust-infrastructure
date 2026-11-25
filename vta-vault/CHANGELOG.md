@@ -2,6 +2,42 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.46.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.46.0...vta-vault-v0.46.1) — 2026-11-25
+
+
+### Fixed
+
+- **credential-exchange**: Bind a Data Integrity VP's nonce and audience in the proof or the body ([#2814](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2814))
+
+trustoverip/dtgwg-trust-tasks-tf#1358 settled where a Data Integrity
+  presentation carries the verifier's nonce and audience
+  (`credential-exchange/present/0.2`, `vtc/directory/card/present/0.1`): a
+  consumer accepts the holder proof's `challenge`/`domain` (OID4VP §14.1.2) or
+  the presentation's own signed `nonce`/`domain`; values stated in both places
+  must agree; a presentation stating neither is refused. Producers should use
+  the proof's members.
+
+  Verifier (`vtc-service`): `verify_di_vp` checked only the body's
+  `nonce`/`domain`. The new `check_di_binding` accepts either placement per
+  value, refuses any proof `challenge`/`domain` (verified or not) or body member
+  that names another value, and refuses a presentation that binds the nonce or
+  audience nowhere. A proof's `challenge`/`domain` counts only from a proof that
+  was verified: affinidi-data-integrity 0.9 hashes them as proof options, so
+  they are signed (a test re-points a captured challenge and the proof fails).
+  Card present now relies on it rather than its own pre-check, which stays for
+  the elections tasks that still require the body members.
+
+  Join present: a keyed `vp_token` whose key names no credential query of the
+  criterion's DCQL query is refused (present/0.2). A bare SD-JWT-VC string is
+  still accepted.
+
+  Holders (`vta-sdk::vp::build_vp_token`, `vta-vault::present_di_vc`): the
+  holder proof now also carries `challenge` = nonce and `domain` = audience. The
+  body `nonce`/`domain` stay, so verifiers that read only those keep working.
+  The keyed DCQL map the VTA produces is unchanged.
+
+
+
 ## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.45.0...vta-vault-v0.46.0) — 2026-11-24
 
 

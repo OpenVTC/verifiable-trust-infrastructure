@@ -2,6 +2,31 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.8.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.8.1...vti-specs-vtc-v0.8.2) — 2026-11-25
+
+
+### Added
+
+- **vtc**: Serve credential-exchange/present 0.2 beside 0.1 ([#2816](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2816))
+
+* feat(vtc): serve credential-exchange/present 0.2 beside 0.1
+
+  Pins `credential-exchange/present` 0.2 (trustoverip/dtgwg-trust-tasks-tf#1358:
+  OID4VP keyed `vp_token`, either Data Integrity nonce/audience placement) in
+  `vti-specs-core` alongside 0.1, and routes both to the one present handler —
+  the verifier already accepts the keyed map, the bare SD-JWT-VC string, and
+  both placements.
+
+  0.1 stays pinned and served while Eucalyptus is supported; the VTA keeps
+  sending 0.1, since Eucalyptus VTCs route only 0.1 and its single-presentation
+  map values are not yet arrays as 0.2 requires.
+
+  The in-place registry edits to `credential-exchange/present/0.1` and
+  `vtc/directory/card/present/0.1` (description text only) are refreshed in
+  their bundles.
+
+
+
 ## [0.8.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.8.0...vti-specs-vtc-v0.8.1) — 2026-11-24
 
 
