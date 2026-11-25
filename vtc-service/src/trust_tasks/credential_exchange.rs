@@ -34,7 +34,14 @@ use crate::server::AppState;
 pub(super) fn register(routes: Routes) -> Routes {
     let routes =
         on!(routes, vti_specs::credential_exchange::request::v0_1::Payload => handle_request);
-    on!(routes, vti_specs::credential_exchange::present::v0_1::Payload => handle_present)
+    // present/0.2 (OID4VP keyed `vp_token`, either Data Integrity nonce placement;
+    // trustoverip/dtgwg-trust-tasks-tf#1358) is served beside 0.1, which VTAs
+    // still send and is served while Eucalyptus is supported. One handler: the
+    // verifier accepts both shapes and both placements.
+    #[allow(deprecated)] // 0.1 is superseded by 0.2, and still served
+    let routes =
+        on!(routes, vti_specs::credential_exchange::present::v0_1::Payload => handle_present);
+    on!(routes, vti_specs::credential_exchange::present::v0_2::Payload => handle_present)
 }
 
 /// The thread a step belongs to: its `threadId`, or — for a step that opens a
@@ -106,7 +113,7 @@ pub(super) async fn handle_request(
     acknowledge(&doc)
 }
 
-/// `credential-exchange/present/0.1` — the holder's answer to a join query:
+/// `credential-exchange/present` 0.1 and 0.2 — the holder's answer to a join query:
 /// verify the presentation against the single-use challenge the query opened,
 /// decide the join, deliver any credentials an auto-admit earned to the proven
 /// holder, and push the `join-requests/submit-receipt` on the query's thread to

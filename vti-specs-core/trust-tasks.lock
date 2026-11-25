@@ -468,7 +468,13 @@ digest = "sha256:d2d37d70adfa46a6cedaa16f6eaf1e51ad1f411670e786cb27e95b5070df5a5
 slug = "credential-exchange/present"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/credential-exchange/present/0.1"
-digest = "sha256:bff1968640f0ac0bb091e4c618f57e37c2e610a1a55ec0fc0d186c0b2053f8aa"
+digest = "sha256:0efaa47dabe31cb938d86dfb0ea074439d99744167d72dc21a0887967d8cc2db"
+
+[[task]]
+slug = "credential-exchange/present"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/credential-exchange/present/0.2"
+digest = "sha256:38e46cc5c0384fe066dc8cd50cf1e2ca1ce422fdeadddad0edc9ea48a4f850e9"
 
 [[task]]
 slug = "credential-exchange/query"

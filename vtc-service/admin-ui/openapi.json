@@ -19359,7 +19359,7 @@
             "anyOf": [
               {
                 "type": "object",
-                "description": "A W3C Verifiable Presentation whose `nonce` is this document's `id` and whose `domain` is the community's DID, both signed by its holder's Data Integrity proof."
+                "description": "A W3C Verifiable Presentation secured by its holder's Data Integrity proof, bound to this document's `id` (the nonce) and the community's DID (the audience) as the proof's `challenge` and `domain` (preferred) or as the presentation's own signed `nonce` and `domain`; where both are stated they agree."
               },
               {
                 "type": "string",
