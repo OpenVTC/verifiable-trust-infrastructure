@@ -539,12 +539,98 @@ pub async fn verify_vp_token_with_anchors(
     })
 }
 
+/// The verifier's nonce and audience, bound into a Data Integrity VP
+/// (`credential-exchange/present/0.2`, `vtc/directory/card/present/0.1`; #1358).
+///
+/// Two signed placements are accepted, for each value independently:
+/// - the holder proof's `challenge` (nonce) and `domain` (audience) — OID4VP
+///   §14.1.2. They are proof options, so the `eddsa-jcs-2022` proof hash covers
+///   them; only `proofs` (the proofs that were verified) can supply them.
+/// - the presentation's own `nonce` and `domain`, covered as part of the signed
+///   document.
+///
+/// Every placement that states a value must state the expected one — so two that
+/// disagree are refused, whichever is right — and at least one must state it. A
+/// proof that is in the set but was not verified (an unsupported suite) supplies
+/// nothing, but one stating another value is still refused: the set is
+/// ambiguous about what was bound.
+pub(crate) fn check_di_binding(
+    vp: &Value,
+    proofs: &[affinidi_data_integrity::DataIntegrityProof],
+    expected_nonce: &str,
+    expected_aud: &str,
+) -> Result<(), AppError> {
+    let refuse = |why: String| Err(AppError::Validation(why));
+
+    // Every proof as sent, verified or not: a stated value must be ours.
+    let raw: Vec<&Value> = match vp.get("proof") {
+        Some(Value::Array(a)) => a.iter().collect(),
+        Some(p) => vec![p],
+        None => Vec::new(),
+    };
+    for p in &raw {
+        if let Some(c) = p.get("challenge")
+            && c.as_str() != Some(expected_nonce)
+        {
+            return refuse("DI VP proof `challenge` does not match the verifier's nonce".into());
+        }
+        if let Some(d) = p.get("domain") {
+            let ours = match d {
+                Value::String(s) => s == expected_aud,
+                Value::Array(a) => a.iter().any(|v| v.as_str() == Some(expected_aud)),
+                _ => false,
+            };
+            if !ours {
+                return refuse("DI VP proof `domain` does not name this verifier".into());
+            }
+        }
+    }
+
+    let body_nonce = vp.get("nonce");
+    if let Some(n) = body_nonce
+        && n.as_str() != Some(expected_nonce)
+    {
+        return refuse("DI VP `nonce` does not match the verifier's nonce".into());
+    }
+    let body_domain = vp.get("domain");
+    if let Some(d) = body_domain
+        && d.as_str() != Some(expected_aud)
+    {
+        return refuse("DI VP `domain` does not name this verifier".into());
+    }
+
+    // At least one signed placement states each value.
+    let nonce_bound = body_nonce.is_some()
+        || proofs
+            .iter()
+            .any(|p| p.challenge.as_deref() == Some(expected_nonce));
+    if !nonce_bound {
+        return refuse(
+            "DI VP binds no nonce: neither the holder proof's `challenge` nor the \
+             presentation's `nonce` states it"
+                .into(),
+        );
+    }
+    let aud_bound = body_domain.is_some()
+        || proofs
+            .iter()
+            .any(|p| p.domain.as_ref().is_some_and(|d| d.contains(expected_aud)));
+    if !aud_bound {
+        return refuse(
+            "DI VP binds no audience: neither the holder proof's `domain` nor the \
+             presentation's `domain` states it"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Verify a **W3C Data-Integrity VP** (the JSON object the VTA's `present_di_vc`
 /// produces) and project each contained VC into a [`VerifiedPresentation`].
 ///
 /// Checks, in order: the holder `eddsa-jcs-2022` proof over the VP (minus its
-/// proof), with `proofPurpose` `authentication`; the `nonce` + `domain` bind
-/// `expected_nonce` + `expected_aud`; then, for each `verifiableCredential`, the
+/// proof), with `proofPurpose` `authentication`; the nonce + audience bind
+/// `expected_nonce` + `expected_aud` ([`check_di_binding`]); then, for each `verifiableCredential`, the
 /// issuer's `eddsa-jcs-2022` proof (verification method **bound to the VC
 /// `issuer`**) and W3C temporal validity (`validFrom` / `validUntil`). Issuer
 /// and holder keys resolve through `did_resolver` (`did:key` locally).
@@ -606,17 +692,8 @@ async fn verify_di_vp(
     let holder_did = crate::credentials::proof_set::accept_all(&outcomes)
         .map_err(|e| AppError::Validation(format!("DI VP holder proof did not verify: {e}")))?;
 
-    // 2. Freshness + audience binding (both are top-level VP fields, signed).
-    if vp.get("nonce").and_then(Value::as_str) != Some(expected_nonce) {
-        return Err(AppError::Validation(
-            "DI VP `nonce` does not match the verifier's challenge".into(),
-        ));
-    }
-    if vp.get("domain").and_then(Value::as_str) != Some(expected_aud) {
-        return Err(AppError::Validation(
-            "DI VP `domain` does not name this verifier".into(),
-        ));
-    }
+    // 2. Freshness + audience binding, in either signed placement.
+    check_di_binding(vp, &proofs, expected_nonce, expected_aud)?;
 
     // 3. Each contained credential: issuer proof (bound to `issuer`) + temporal.
     let vcs = vp

@@ -85,6 +85,21 @@ pub async fn present_and_decide_join(
     transport: JoinTransport,
     now: DateTime<Utc>,
 ) -> Result<JoinSubmitOutcome, AppError> {
+    // 0. A keyed vp_token answers the query's credential queries by `id`: a key
+    //    naming none of them is refused (`credential-exchange/present/0.2`,
+    //    #1358). A bare SD-JWT-VC string answers the only one.
+    if let (Some(id), JsonValue::Object(map)) = (criterion, vp_token)
+        && let Some(accepts) = get_accepts(&state.schemas_ks, id).await?
+        && let Some(dcql) = accepts.dcql()?
+        && let Some(unknown) = map
+            .keys()
+            .find(|k| !dcql.credentials.iter().any(|c| &c.id == *k))
+    {
+        return Err(AppError::Validation(format!(
+            "vp_token key `{unknown}` names no credential query of the query it answers"
+        )));
+    }
+
     // 1. Cryptographically verify every presentation in the vp_token. The holder
     //    is proven (kb-jwt / DI holder proof) and consistent across the set.
     //    did:webvh / did:web issuers + holders resolve through the DID cache.

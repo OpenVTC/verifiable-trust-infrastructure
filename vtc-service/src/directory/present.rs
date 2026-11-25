@@ -150,11 +150,12 @@ fn base_did(did: &str) -> &str {
     did.split('#').next().unwrap_or(did)
 }
 
-/// The presentation's members a Data Integrity holder proof may also carry:
-/// `challenge` and `domain`. The proof library does not sign them, so the
-/// binding rests on the presentation's own `nonce` and `domain`, which the
-/// holder proof covers; a proof that names others is refused rather than read
-/// past.
+/// Whether every holder proof that states `challenge` or `domain` states this
+/// document's `id` and this community. Used where a task still requires the
+/// presentation's own `nonce` and `domain` (`vtc/elections/*`). Card present
+/// accepts either placement, which the presentation verifier's
+/// `check_di_binding` enforces.
+#[cfg(feature = "voting")]
 pub(crate) fn proof_options_agree(vp: &Value, document_id: &str, community: &str) -> bool {
     let proofs: Vec<&Value> = match vp.get("proof") {
         Some(Value::Array(a)) => a.iter().collect(),
@@ -183,14 +184,10 @@ pub async fn verify(
     // `verify_vp_token` reads an object as a map of presentations, so a DI
     // presentation goes in under a name of its own.
     let (token, kb_kid) = match presentation {
-        Value::Object(_) => {
-            if !proof_options_agree(presentation, document_id, community) {
-                return Err(invalid(
-                    "a proof's challenge or domain is not this one".into(),
-                ));
-            }
-            (json!({ "card": presentation }), None)
-        }
+        // The binding — the proof's `challenge`/`domain` or the presentation's
+        // `nonce`/`domain`, agreeing where both are stated — is checked by the
+        // presentation verifier.
+        Value::Object(_) => (json!({ "card": presentation }), None),
         Value::String(s) => (presentation.clone(), kb_jwt_kid(s)),
         _ => return Err(invalid("not a presentation".into())),
     };
@@ -384,6 +381,7 @@ mod tests {
         assert_eq!(kb_jwt_kid("issuer.jwt.sig~disc~"), None);
     }
 
+    #[cfg(feature = "voting")]
     #[test]
     fn a_proof_naming_another_challenge_is_refused() {
         let vp = json!({ "proof": { "challenge": "urn:uuid:1", "domain": "did:example:c" } });
