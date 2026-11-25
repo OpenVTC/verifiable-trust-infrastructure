@@ -293,8 +293,9 @@ export type SealedStorageCredential = Schemas["VtcStorageCredentialsSetV0_3Seale
 // answered from `vtc.rooms.manage` — the owner's authority, not the host's.
 // Signed documents only; no REST route.
 // The console reads at `list`/`get` 0.4 — `CommunityRoomV3`, each room's details
-// and its `status` in its owner's lifecycle; `get` at 0.5 for the room's signal delay —
-// creates at `create/0.5`, changes details and the signal delay with `update/0.4`, admits and lists members at 0.2 (the `suspended`
+// and its `status` in its owner's lifecycle; `get` at 0.6 for the room's signal delay and
+// record members — creates at `create/0.6`, changes details, the signal delay and the record
+// members with `update/0.5`, admits and lists members at 0.2 (the `suspended`
 // state), and archives and removes rooms with `archive`, `unarchive`, `remove`
 // and `removal/cancel` 0.1.
 export type CommunityRoom = Schemas["VtcRoomsCommunityListV0_4CommunityRoomV3"];
@@ -303,13 +304,15 @@ export type CommunityRoomState = Schemas["VtcRoomsCommunityListV0_4RoomState"];
 export type CommunityRoomArchiveAccess = Schemas["VtcRoomsCommunityListV0_4ArchiveAccess"];
 export type CommunityRoomsListPayload = Schemas["VtcRoomsCommunityListV0_4Payload"];
 export type CommunityRoomsListResponse = Schemas["VtcRoomsCommunityListV0_4Response"];
-export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_5Response"];
-export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_5Payload"];
-export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_5Response"];
-export type CommunityRoomUpdatePayload = Schemas["VtcRoomsCommunityUpdateV0_4Payload"];
-export type CommunityRoomUpdateResponse = Schemas["VtcRoomsCommunityUpdateV0_4Response"];
+export type CommunityRoomGetResponse = Schemas["VtcRoomsCommunityGetV0_6Response"];
+export type CommunityRoomCreatePayload = Schemas["VtcRoomsCommunityCreateV0_6Payload"];
+export type CommunityRoomCreateResponse = Schemas["VtcRoomsCommunityCreateV0_6Response"];
+export type CommunityRoomUpdatePayload = Schemas["VtcRoomsCommunityUpdateV0_5Payload"];
+export type CommunityRoomUpdateResponse = Schemas["VtcRoomsCommunityUpdateV0_5Response"];
 /** A room's signal delay (`rooms/_shared/0.2` `SignalDelay`). */
-export type SignalDelay = Schemas["VtcRoomsCommunityGetV0_5SignalDelay"];
+export type SignalDelay = Schemas["VtcRoomsCommunityGetV0_6SignalDelay"];
+/** The record members a community room's profile lists (`vtc/_shared/0.5` `RoomRecordMembers`). */
+export type RoomRecordMembers = Schemas["VtcRoomsCommunityGetV0_6RoomRecordMembers"];
 export type CommunityRoomMember = Schemas["VtcRoomsCommunityMembersListV0_2RoomMemberV2"];
 export type CommunityRoomMemberState = Schemas["VtcRoomsCommunityMembersListV0_2MemberStateV2"];
 export type CommunityRoomMemberAction = Schemas["VtcRoomsCommunityMembersAddV0_2MemberAction"];

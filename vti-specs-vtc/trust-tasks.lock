@@ -1,6 +1,6 @@
 # Written by `trust-tasks`. Do not edit by hand.
 version = 1
-registry = "https://trusttasks.org"
+registry = "/Users/glenngore/devel/dtgwg-trust-tasks-tf-worktrees/community-room-record-members/website"
 
 [[task]]
 slug = "vtc/admin/actions/acknowledge"
@@ -1326,31 +1326,43 @@ digest = "sha256:7472c9acc76d5096595c88118864e664f52c619b58158b3670423ba81fea33e
 slug = "vtc/rooms/community/create"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/create/0.4"
-digest = "sha256:3c463ddb72c71cd27d74a9029adde6b72123c268639275d332c7d77a93cc8f81"
+digest = "sha256:5ed4e486dddf06828828b268a6ddb341a88994f4c31377749d81dc4f3963e3ce"
 
 [[task]]
 slug = "vtc/rooms/community/create"
 version = "0.5"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5"
-digest = "sha256:5855583ac7e651c81924d25faa5b4df73cb4cbe70a5f1d9eb684f3429a80be4a"
+digest = "sha256:9c825e553f2eacc38a947814b9c865dc04e298f2deec4e069084e003ecbd8d5c"
+
+[[task]]
+slug = "vtc/rooms/community/create"
+version = "0.6"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/create/0.6"
+digest = "sha256:59ec172a93cec88cea4334206d4223070e1f1829c121ecfd90a3d1e31214033f"
 
 [[task]]
 slug = "vtc/rooms/community/get"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.3"
-digest = "sha256:9cc0e88071aa5c7c15805eac0da55dfa41deb6bbce8abaa56b0606a57bc2dba7"
+digest = "sha256:6a23a6b7efcb4b11624f10318f9d4da7d21e4c487c620b1b211dd4f423568560"
 
 [[task]]
 slug = "vtc/rooms/community/get"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.4"
-digest = "sha256:c8da26542e3cebf287eb990d0c34d43b54cffd40f503e62ec8078f4477245cff"
+digest = "sha256:3f49faa84746cecd2cc3b99b5a692f7ff17993face0b284728e0091944ada6dc"
 
 [[task]]
 slug = "vtc/rooms/community/get"
 version = "0.5"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.5"
-digest = "sha256:a583c4fe9a5289d083eea54272e62a2a5d1215a5de16c4b34f0575d8cb31dbfc"
+digest = "sha256:168e2790244a26b4bc67801fb70051850ef0bd3380c22a5cabdf0a8be791dbb5"
+
+[[task]]
+slug = "vtc/rooms/community/get"
+version = "0.6"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/get/0.6"
+digest = "sha256:bbcdf789ec2c770b636ca8053e65c2b451c3592e59f0b84adcb7dfe26a48b689"
 
 [[task]]
 slug = "vtc/rooms/community/list"
@@ -1410,13 +1422,19 @@ digest = "sha256:c3d3c8a57401304aec38618cc17ce6494cb99d124114f5ebf00a60bde011c20
 slug = "vtc/rooms/community/update"
 version = "0.3"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/update/0.3"
-digest = "sha256:c0d87c4ccd15d8226db2de37ba4ac8447b564e20dd68da636402066d24da896b"
+digest = "sha256:d31b6718c645f4d02023a5132bb3b00d22e72c537105d7d01128e3772aa553a4"
 
 [[task]]
 slug = "vtc/rooms/community/update"
 version = "0.4"
 type_uri = "https://trusttasks.org/spec/vtc/rooms/community/update/0.4"
-digest = "sha256:46e812089fe09b05d14a25d99bef2bb3f32dd442c14701d8a06149a36a5e7735"
+digest = "sha256:4d2b9e168b683ba6173bd86ec804fbb97f04ca6ef78b6c4a011603ec2944bfe2"
+
+[[task]]
+slug = "vtc/rooms/community/update"
+version = "0.5"
+type_uri = "https://trusttasks.org/spec/vtc/rooms/community/update/0.5"
+digest = "sha256:cbbfe2692c82868ce208bf1871ffebcb0feb7cdb18da0c611f7b2ec408b1ea89"
 
 [[task]]
 slug = "vtc/rooms/get"

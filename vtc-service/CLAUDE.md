@@ -326,6 +326,13 @@ When adding a flow, add it here and a line to the root index.
   record. Update writes the host record first and puts it back if the owner's record then
   fails (together or not at all); a delay-only change is a `detailsUpdated` change with no
   profile write. `SIGNAL_DELAY_POLICY` is `Either`, so `signalDelayNotPermitted` is baselined.
+- **Record members** (create 0.6 / update 0.5 / get 0.6): the profile's `recordMembers`
+  (replies and reactions) an administrator sets — kept on `room-profile:<room>` as
+  *requested* until a profile write carries it, then as *written*; a request that set them
+  replaces the read-back's, otherwise the read-back's are carried over. `get/0.6` answers
+  only the written set, never a pending request's; a request arriving while a write is in
+  flight keeps the room pending. Never refuse an unknown value. The console's box starts
+  ticked on create and sends the set on edit only when it changed.
 - **Archive and remove** (`vtc/rooms/community/{archive,unarchive,remove}/0.1`,
   `removal/cancel/0.1`; `rooms::community_lifecycle`): the **owner's** lifecycle, stored on
   `OwnedRoom.status` — `active → archived(readOnly|noAccess) → removalScheduled → purging →

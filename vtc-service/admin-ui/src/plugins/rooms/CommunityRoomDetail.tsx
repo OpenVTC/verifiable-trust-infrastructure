@@ -1,5 +1,5 @@
 // One room the community owns, `/rooms/community/<roomId>` — the owner's view
-// (`vtc/rooms/community/get/0.5`), its details and signal delay (`…/update/0.4`), its state in its
+// (`vtc/rooms/community/get/0.6`), its details, signal delay and record members (`…/update/0.5`), its state in its
 // owner's lifecycle (archive, unarchive, remove — `CommunityRoomLifecycle.tsx`)
 // and its members (`…/members/{list,add,remove}`).
 //
@@ -50,6 +50,8 @@ import {
   MEMBER_ACTIONS,
   addCommunityRoomMember,
   detailsUpdate,
+  recordMembersOfGet,
+  repliesOn,
   signalDelayOfGet,
   parseTags,
   updateCommunityRoom,
@@ -89,6 +91,7 @@ import {
   LifecyclePill,
   SIGNAL_DELAY_NONE_TRADE_OFF,
   SIGNAL_DELAY_RANDOMISED_MEANS,
+  RepliesChoice,
   SignalDelayChoice,
   TIER_BLURB,
   roomPath,
@@ -161,6 +164,7 @@ export function CommunityRoomDetail() {
       <RoomFacts
         room={room}
         signalDelay={signalDelayOfGet(q.data)}
+        recordMembers={recordMembersOfGet(q.data)}
         renewal={roomRenewalOf(q.data.ext)}
         profile={roomProfileStateOf(q.data.ext)}
       />
@@ -173,11 +177,13 @@ export function CommunityRoomDetail() {
 function RoomFacts({
   room,
   signalDelay,
+  recordMembers,
   renewal,
   profile,
 }: {
   room: CommunityRoom;
   signalDelay: SignalDelay;
+  recordMembers: string[];
   renewal: ReturnType<typeof roomRenewalOf>;
   profile: RoomProfileState | null;
 }) {
@@ -198,7 +204,14 @@ function RoomFacts({
           </button>
         )}
       </div>
-      {editing && <EditDetails room={room} signalDelay={signalDelay} onDone={() => setEditing(false)} />}
+      {editing && (
+        <EditDetails
+          room={room}
+          signalDelay={signalDelay}
+          recordMembers={recordMembers}
+          onDone={() => setEditing(false)}
+        />
+      )}
       <dl className="rooms-facts">
         <dt>Description</dt>
         <dd>
@@ -243,6 +256,17 @@ function RoomFacts({
               ? `Turned off, as for a room members talk in. ${SIGNAL_DELAY_NONE_TRADE_OFF}`
               : SIGNAL_DELAY_RANDOMISED_MEANS}{" "}
             Change it with Edit details.
+          </div>
+        </dd>
+        <dt>Replies and reactions</dt>
+        <dd>
+          {repliesOn(recordMembers) ? "On" : "Off"}
+          <div className="muted rooms-sub">
+            {repliesOn(recordMembers)
+              ? "Members can reply to and react to messages."
+              : "Members' messages carry no replies or reactions."}{" "}
+            As the room&rsquo;s profile listed them when this community last wrote it. Change it with
+            Edit details.
           </div>
         </dd>
         <dt>Members</dt>
@@ -304,15 +328,17 @@ function RoomFacts({
   );
 }
 
-/** Change the room's label, description, tags and signal delay. Only what differs is
- *  sent; each replaces what the room has. */
+/** Change the room's label, description, tags, signal delay and whether its members may
+ *  reply and react. Only what differs is sent; each replaces what the room has. */
 function EditDetails({
   room,
   signalDelay: currentDelay,
+  recordMembers: currentMembers,
   onDone,
 }: {
   room: CommunityRoom;
   signalDelay: SignalDelay;
+  recordMembers: string[];
   onDone: () => void;
 }) {
   const confirm = useConfirm();
@@ -322,13 +348,19 @@ function EditDetails({
   const [description, setDescription] = useState(room.description ?? "");
   const [tagText, setTagText] = useState((room.tags ?? []).join(", "));
   const [signalDelay, setSignalDelay] = useState<SignalDelay>(currentDelay);
+  const [replies, setReplies] = useState(repliesOn(currentMembers));
   const [reason, setReason] = useState("");
 
   const parsed = parseTags(tagText);
   const tagError = "error" in parsed ? parsed.error : undefined;
   const payload =
     "tags" in parsed && label.trim() !== ""
-      ? detailsUpdate(room, { label, description, tags: parsed.tags, signalDelay, reason }, currentDelay)
+      ? detailsUpdate(
+          room,
+          { label, description, tags: parsed.tags, signalDelay, repliesAndReactions: replies, reason },
+          currentDelay,
+          currentMembers,
+        )
       : null;
   const ready = payload !== null && reason.trim() !== "";
 
@@ -383,6 +415,7 @@ function EditDetails({
           <input placeholder="board, finance" value={tagText} onChange={(e) => setTagText(e.target.value)} />
         </Field>
         <SignalDelayChoice name="edit-community-room-signal-delay" value={signalDelay} onChange={setSignalDelay} />
+        <RepliesChoice checked={replies} onChange={setReplies} />
         <Field label="Reason" hint="Recorded in the audit trail.">
           <input required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>

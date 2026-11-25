@@ -1557,6 +1557,19 @@ fn table() -> Vec<Conformance> {
                 "signalDelay": "none",
             })
         ),
+        // 0.6: the record members the room's profile is to list, echoed.
+        checked!(
+            s::rooms::community::create::v0_6::Payload,
+            s::rooms::community::create::v0_6::Response,
+            json!({
+                "label": "Board chat", "visibility": "private", "reason": "the board talks here",
+                "signalDelay": "none", "recordMembers": ["kind", "inReplyTo", "writtenAt"],
+            }),
+            json!({
+                "room": sample_community_room_v2(), "roomProfile": "written",
+                "signalDelay": "none", "recordMembers": ["kind", "inReplyTo", "writtenAt"],
+            })
+        ),
         checked!(
             s::rooms::community::list::v0_3::Payload,
             s::rooms::community::list::v0_3::Response,
@@ -1592,6 +1605,19 @@ fn table() -> Vec<Conformance> {
             json!({
                 "room": sample_community_room_v2(), "changed": true,
                 "roomProfile": "unchanged", "signalDelay": "none",
+            })
+        ),
+        // 0.5: the record members alone are a change, and need a profile write.
+        checked!(
+            s::rooms::community::update::v0_5::Payload,
+            s::rooms::community::update::v0_5::Response,
+            json!({
+                "roomId": "did:key:z6MkRoom", "recordMembers": ["kind", "inReplyTo", "writtenAt"],
+                "reason": "the board wants to reply",
+            }),
+            json!({
+                "room": sample_community_room_v2(), "changed": true,
+                "roomProfile": "written", "signalDelay": "randomised",
             })
         ),
         checked!(
@@ -1664,6 +1690,16 @@ fn table() -> Vec<Conformance> {
             json!({
                 "room": sample_community_room_v3(json!({ "state": "active" })),
                 "signalDelay": "randomised",
+            })
+        ),
+        checked!(
+            s::rooms::community::get::v0_6::Payload,
+            s::rooms::community::get::v0_6::Response,
+            json!({ "roomId": "did:key:z6MkRoom" }),
+            json!({
+                "room": sample_community_room_v3(json!({ "state": "active" })),
+                "signalDelay": "randomised",
+                "recordMembers": ["kind", "inReplyTo", "writtenAt"],
             })
         ),
         checked!(

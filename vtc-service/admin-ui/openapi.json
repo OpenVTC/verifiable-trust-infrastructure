@@ -29106,7 +29106,7 @@
           "private"
         ]
       },
-      "VtcRoomsCommunityCreateV0_5CommunityRoomV2": {
+      "VtcRoomsCommunityCreateV0_6CommunityRoomV2": {
         "type": "object",
         "description": "What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`.",
         "required": [
@@ -29128,7 +29128,7 @@
             "pattern": "^did:"
           },
           "description": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RoomDescription"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomDescription"
           },
           "detailsUpdatedAt": {
             "type": "string",
@@ -29142,7 +29142,7 @@
             "pattern": "^did:"
           },
           "label": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RoomLabel"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomLabel"
           },
           "offered": {
             "type": "integer",
@@ -29155,24 +29155,24 @@
             "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5HostedRoom"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6HostedRoom"
           },
           "storageConfig": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5StorageConfigId"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6StorageConfigId"
           },
           "tags": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RoomTags"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomTags"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityCreateV0_5Ext": {
+      "VtcRoomsCommunityCreateV0_6Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRoomsCommunityCreateV0_5HostedRoom": {
+      "VtcRoomsCommunityCreateV0_6HostedRoom": {
         "type": "object",
         "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
         "required": [
@@ -29223,7 +29223,7 @@
             "minimum": 0
           },
           "retentionPolicy": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RetentionPolicy"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RetentionPolicy"
           },
           "roomId": {
             "type": "string",
@@ -29235,12 +29235,12 @@
             "format": "date-time"
           },
           "visibility": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5Visibility"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6Visibility"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityCreateV0_5Payload": {
+      "VtcRoomsCommunityCreateV0_6Payload": {
         "type": "object",
         "required": [
           "label",
@@ -29249,16 +29249,19 @@
         ],
         "properties": {
           "description": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RoomDescription"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomDescription"
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6Ext"
           },
           "label": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RoomLabel"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomLabel"
           },
           "reason": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5Reason"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6Reason"
+          },
+          "recordMembers": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomRecordMembers"
           },
           "retentionDays": {
             "type": "integer",
@@ -29267,32 +29270,32 @@
             "minimum": 1
           },
           "retentionPolicy": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RetentionPolicy"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RetentionPolicy"
           },
           "signalDelay": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5SignalDelay"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6SignalDelay"
           },
           "storageConfig": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5StorageConfigId"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6StorageConfigId"
           },
           "tags": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RoomTags"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomTags"
           },
           "visibility": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5Visibility"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6Visibility"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityCreateV0_5Reason": {
+      "VtcRoomsCommunityCreateV0_6Reason": {
         "type": "string",
         "description": "Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 500,
         "minLength": 1
       },
-      "VtcRoomsCommunityCreateV0_5Response": {
+      "VtcRoomsCommunityCreateV0_6Response": {
         "type": "object",
-        "description": "Success response to vtc/rooms/community/create. Type https://trusttasks.org/spec/vtc/rooms/community/create/0.5#response. The room as created, owned by the community, and the signal delay it was created with.",
+        "description": "Success response to vtc/rooms/community/create. Type https://trusttasks.org/spec/vtc/rooms/community/create/0.6#response. The room as created, owned by the community, the signal delay it was created with, and the record members its profile is to list.",
         "required": [
           "room",
           "roomProfile",
@@ -29300,10 +29303,13 @@
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6Ext"
+          },
+          "recordMembers": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomRecordMembers"
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5CommunityRoomV2"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6CommunityRoomV2"
           },
           "roomProfile": {
             "type": "string",
@@ -29314,12 +29320,12 @@
             ]
           },
           "signalDelay": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5SignalDelay"
+            "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6SignalDelay"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityCreateV0_5RetentionPolicy": {
+      "VtcRoomsCommunityCreateV0_6RetentionPolicy": {
         "type": "string",
         "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
         "enum": [
@@ -29327,35 +29333,48 @@
           "fromJoin"
         ]
       },
-      "VtcRoomsCommunityCreateV0_5RoomDescription": {
+      "VtcRoomsCommunityCreateV0_6RoomDescription": {
         "type": "string",
         "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 1000,
         "minLength": 1
       },
-      "VtcRoomsCommunityCreateV0_5RoomLabel": {
+      "VtcRoomsCommunityCreateV0_6RoomLabel": {
         "type": "string",
         "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
         "maxLength": 128,
         "minLength": 1
       },
-      "VtcRoomsCommunityCreateV0_5RoomTag": {
+      "VtcRoomsCommunityCreateV0_6RoomRecordMembers": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][A-Za-z0-9]*$"
+        },
+        "description": "The record members a community-owned room's profile lists: the optional `SealedRecordBody` members its writers may use beyond the base set, as a set (`RoomProfile.recordMembers`, rooms/_shared/0.2). Defined values there: `kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`. `kind`, `inReplyTo` and `writtenAt` are what a room used as a conversation needs for replies, reactions and the order of its messages. The community writes them into the room's profile through its VTA, as the room's owner; a value a writer does not know grants it nothing.",
+        "maxItems": 32,
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "VtcRoomsCommunityCreateV0_6RoomTag": {
         "type": "string",
         "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
         "maxLength": 32,
         "minLength": 1,
         "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
       },
-      "VtcRoomsCommunityCreateV0_5RoomTags": {
+      "VtcRoomsCommunityCreateV0_6RoomTags": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_5RoomTag"
+          "$ref": "#/components/schemas/VtcRoomsCommunityCreateV0_6RoomTag"
         },
         "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
         "maxItems": 8,
         "uniqueItems": true
       },
-      "VtcRoomsCommunityCreateV0_5SignalDelay": {
+      "VtcRoomsCommunityCreateV0_6SignalDelay": {
         "type": "string",
         "description": "Whether a room's host waits a randomised interval before sending a `rooms/changed` signal: the room's **signal delay**.\n\n`randomised` is the default and what a room without one has: the host waits a few seconds after the change that fires a watch, so that the signal's time does not mark one write exactly (`rooms/changed`, producer item 4). `none` is for a room where members expect to see a write as soon as it is made, such as a conversation: the host sends the signal as soon as the change that fires it is stored, with no wait of its own.\n\n**A room's setting, not a member's.** The delay protects the room's writers as much as its watchers. A watcher whose signal is sent at once marks, to anyone who sees both the writer's request reach the host and the signal leave it, the moment of the write and that the two parties share the room. So one watcher cannot opt out for itself without giving away something about everyone who writes, and the setting is the room's: changed by a holder of `admin` (`rooms/signal-delay/set`) and served to every member (`rooms/info`).\n\n**What `none` gives up.** Little in a busy room, where writes are frequent enough that their rhythm is visible anyway; most in a quiet one, where a single write and a single signal line up. A surface that offers the setting SHOULD say so.\n\nAbsent means `randomised`.",
         "enum": [
@@ -29363,14 +29382,14 @@
           "none"
         ]
       },
-      "VtcRoomsCommunityCreateV0_5StorageConfigId": {
+      "VtcRoomsCommunityCreateV0_6StorageConfigId": {
         "type": "string",
         "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
         "maxLength": 64,
         "minLength": 1,
         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
       },
-      "VtcRoomsCommunityCreateV0_5Visibility": {
+      "VtcRoomsCommunityCreateV0_6Visibility": {
         "type": "string",
         "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
         "enum": [
@@ -29379,7 +29398,7 @@
           "private"
         ]
       },
-      "VtcRoomsCommunityGetV0_5ArchiveAccess": {
+      "VtcRoomsCommunityGetV0_6ArchiveAccess": {
         "type": "string",
         "description": "What an archived room's members may still do. `readOnly`: their credentials stand and they keep reading what the room holds; the room's host refuses every write, upload and curation from a member. `noAccess`: every credential the room issued before the archival is withdrawn at its host — a room reset — so the host refuses every member's every task; the content is kept intact, and each withdrawn admission is `suspended`, restored when the room is unarchived or made `readOnly`. Neither recalls what a member already read or saved, and on a sealed tier neither removes anyone from the room's group.",
         "enum": [
@@ -29387,7 +29406,7 @@
           "noAccess"
         ]
       },
-      "VtcRoomsCommunityGetV0_5CommunityRoomV3": {
+      "VtcRoomsCommunityGetV0_6CommunityRoomV3": {
         "type": "object",
         "description": "What vtc/rooms/community/{get,list}/0.4 and vtc/rooms/community/{archive,unarchive,remove,removal/cancel}/0.1 return: `CommunityRoomV2` plus the room's `status` in its owner's lifecycle and the count of `suspended` admissions. A separate definition, not a change to `CommunityRoomV2`, so that the versions returning that keep the exact shape they published. For a room in state `purging` or `removed`, whose host record a purge deletes, `room` is the host record as it last stood before the purge began — the community keeps that snapshot with the room's record when the purge starts — and its `lifecycle` is what was computed then.",
         "required": [
@@ -29410,7 +29429,7 @@
             "pattern": "^did:"
           },
           "description": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RoomDescription"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomDescription"
           },
           "detailsUpdatedAt": {
             "type": "string",
@@ -29424,7 +29443,7 @@
             "pattern": "^did:"
           },
           "label": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RoomLabel"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomLabel"
           },
           "offered": {
             "type": "integer",
@@ -29437,13 +29456,13 @@
             "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5HostedRoom"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6HostedRoom"
           },
           "status": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RoomStatus"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomStatus"
           },
           "storageConfig": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5StorageConfigId"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6StorageConfigId"
           },
           "suspended": {
             "type": "integer",
@@ -29451,18 +29470,18 @@
             "minimum": 0
           },
           "tags": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RoomTags"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomTags"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_5Ext": {
+      "VtcRoomsCommunityGetV0_6Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRoomsCommunityGetV0_5HostedRoom": {
+      "VtcRoomsCommunityGetV0_6HostedRoom": {
         "type": "object",
         "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
         "required": [
@@ -29513,7 +29532,7 @@
             "minimum": 0
           },
           "retentionPolicy": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RetentionPolicy"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RetentionPolicy"
           },
           "roomId": {
             "type": "string",
@@ -29525,12 +29544,12 @@
             "format": "date-time"
           },
           "visibility": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5Visibility"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6Visibility"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_5PendingChange": {
+      "VtcRoomsCommunityGetV0_6PendingChange": {
         "type": "object",
         "description": "A change of state the community began and has not finished, because a step at its VTA did not complete — most often a room reset the host accepted, after which the community's own credentials must be re-issued before it can act on the room again. `RoomStatus.state` stays what it was until the change finishes, but what the room's host enforces may already be the new state's: a pending move to `noAccess` means members' credentials may already be refused. The community finishes it by itself, retrying with backoff, and repeating the request that began it finishes it too; nothing else changes the room until it is finished.",
         "required": [
@@ -29539,7 +29558,7 @@
         ],
         "properties": {
           "access": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5ArchiveAccess"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6ArchiveAccess"
           },
           "beganAt": {
             "type": "string",
@@ -29552,12 +29571,12 @@
             "minLength": 1
           },
           "state": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RoomState"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomState"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_5PurgeProgress": {
+      "VtcRoomsCommunityGetV0_6PurgeProgress": {
         "type": "object",
         "description": "How a purge is going. A purge deletes at the room's host and at each storage config holding its files, and some of those are remote; a step that fails is retried with backoff until it succeeds, and nothing is reported removed until every step has.",
         "required": [
@@ -29587,27 +29606,30 @@
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_5Response": {
+      "VtcRoomsCommunityGetV0_6Response": {
         "type": "object",
-        "description": "Success response to vtc/rooms/community/get. Type https://trusttasks.org/spec/vtc/rooms/community/get/0.5#response. One room the community owns, in any state of its owner's lifecycle, with its counts and its signal delay. Its members are vtc/rooms/community/members/list's.",
+        "description": "Success response to vtc/rooms/community/get. Type https://trusttasks.org/spec/vtc/rooms/community/get/0.6#response. One room the community owns, in any state of its owner's lifecycle, with its counts, its signal delay and the record members its profile lists. Its members are vtc/rooms/community/members/list's.",
         "required": [
           "room",
           "signalDelay"
         ],
         "properties": {
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6Ext"
+          },
+          "recordMembers": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomRecordMembers"
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5CommunityRoomV3"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6CommunityRoomV3"
           },
           "signalDelay": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5SignalDelay"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6SignalDelay"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_5RetentionPolicy": {
+      "VtcRoomsCommunityGetV0_6RetentionPolicy": {
         "type": "string",
         "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
         "enum": [
@@ -29615,19 +29637,32 @@
           "fromJoin"
         ]
       },
-      "VtcRoomsCommunityGetV0_5RoomDescription": {
+      "VtcRoomsCommunityGetV0_6RoomDescription": {
         "type": "string",
         "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 1000,
         "minLength": 1
       },
-      "VtcRoomsCommunityGetV0_5RoomLabel": {
+      "VtcRoomsCommunityGetV0_6RoomLabel": {
         "type": "string",
         "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
         "maxLength": 128,
         "minLength": 1
       },
-      "VtcRoomsCommunityGetV0_5RoomState": {
+      "VtcRoomsCommunityGetV0_6RoomRecordMembers": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][A-Za-z0-9]*$"
+        },
+        "description": "The record members a community-owned room's profile lists: the optional `SealedRecordBody` members its writers may use beyond the base set, as a set (`RoomProfile.recordMembers`, rooms/_shared/0.2). Defined values there: `kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`. `kind`, `inReplyTo` and `writtenAt` are what a room used as a conversation needs for replies, reactions and the order of its messages. The community writes them into the room's profile through its VTA, as the room's owner; a value a writer does not know grants it nothing.",
+        "maxItems": 32,
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "VtcRoomsCommunityGetV0_6RoomState": {
         "type": "string",
         "description": "Where a room the community owns stands in its owner's lifecycle — distinct from `HostedRoom.lifecycle`, which is the host's clock (`live`, `lapsed`, `dormant`, `reclaimable`) and is computed from the room's epoch, never set. `active`: open to change. `archived`: closed to change by an administrator — no admissions, and the room's host accepts no writes from its members; what members may still do is `ArchiveAccess`. Reversible with vtc/rooms/community/unarchive. `removalScheduled`: an administrator removed the room with a grace period; it admits nobody and its content is kept until `purgeAt`, and vtc/rooms/community/removal/cancel returns it to `archived`. `purging`: the grace period ended (or there was none) and the community is deleting the room's content from its host and storage; not reversible. `removed`: the content is gone; the community keeps only this record of the room, for its history.",
         "enum": [
@@ -29638,7 +29673,7 @@
           "removed"
         ]
       },
-      "VtcRoomsCommunityGetV0_5RoomStatus": {
+      "VtcRoomsCommunityGetV0_6RoomStatus": {
         "type": "object",
         "description": "A room's state in its owner's lifecycle, and what that state needs to be understood.",
         "required": [
@@ -29646,7 +29681,7 @@
         ],
         "properties": {
           "access": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5ArchiveAccess"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6ArchiveAccess"
           },
           "changedAt": {
             "type": "string",
@@ -29660,10 +29695,10 @@
             "pattern": "^did:"
           },
           "pendingChange": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5PendingChange"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6PendingChange"
           },
           "purge": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5PurgeProgress"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6PurgeProgress"
           },
           "purgeAt": {
             "type": "string",
@@ -29681,28 +29716,28 @@
             "minimum": 1
           },
           "state": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RoomState"
+            "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomState"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityGetV0_5RoomTag": {
+      "VtcRoomsCommunityGetV0_6RoomTag": {
         "type": "string",
         "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
         "maxLength": 32,
         "minLength": 1,
         "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
       },
-      "VtcRoomsCommunityGetV0_5RoomTags": {
+      "VtcRoomsCommunityGetV0_6RoomTags": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_5RoomTag"
+          "$ref": "#/components/schemas/VtcRoomsCommunityGetV0_6RoomTag"
         },
         "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
         "maxItems": 8,
         "uniqueItems": true
       },
-      "VtcRoomsCommunityGetV0_5SignalDelay": {
+      "VtcRoomsCommunityGetV0_6SignalDelay": {
         "type": "string",
         "description": "Whether a room's host waits a randomised interval before sending a `rooms/changed` signal: the room's **signal delay**.\n\n`randomised` is the default and what a room without one has: the host waits a few seconds after the change that fires a watch, so that the signal's time does not mark one write exactly (`rooms/changed`, producer item 4). `none` is for a room where members expect to see a write as soon as it is made, such as a conversation: the host sends the signal as soon as the change that fires it is stored, with no wait of its own.\n\n**A room's setting, not a member's.** The delay protects the room's writers as much as its watchers. A watcher whose signal is sent at once marks, to anyone who sees both the writer's request reach the host and the signal leave it, the moment of the write and that the two parties share the room. So one watcher cannot opt out for itself without giving away something about everyone who writes, and the setting is the room's: changed by a holder of `admin` (`rooms/signal-delay/set`) and served to every member (`rooms/info`).\n\n**What `none` gives up.** Little in a busy room, where writes are frequent enough that their rhythm is visible anyway; most in a quiet one, where a single write and a single signal line up. A surface that offers the setting SHOULD say so.\n\nAbsent means `randomised`.",
         "enum": [
@@ -29710,14 +29745,14 @@
           "none"
         ]
       },
-      "VtcRoomsCommunityGetV0_5StorageConfigId": {
+      "VtcRoomsCommunityGetV0_6StorageConfigId": {
         "type": "string",
         "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
         "maxLength": 64,
         "minLength": 1,
         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
       },
-      "VtcRoomsCommunityGetV0_5Visibility": {
+      "VtcRoomsCommunityGetV0_6Visibility": {
         "type": "string",
         "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
         "enum": [
@@ -31686,7 +31721,7 @@
           "private"
         ]
       },
-      "VtcRoomsCommunityUpdateV0_4CommunityRoomV2": {
+      "VtcRoomsCommunityUpdateV0_5CommunityRoomV2": {
         "type": "object",
         "description": "What vtc/rooms/community/{create,get,list}/0.2 and vtc/rooms/community/update/0.1 return: `CommunityRoom` plus the details an administrator keeps track of a room by — `description`, `tags`, and who last changed them and when. A separate definition, not a change to `CommunityRoom`, so that the 0.1 versions of those tasks keep the exact shape they published. The room's creation is `room.createdAt` and `createdBy`.",
         "required": [
@@ -31708,7 +31743,7 @@
             "pattern": "^did:"
           },
           "description": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RoomDescription"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomDescription"
           },
           "detailsUpdatedAt": {
             "type": "string",
@@ -31722,7 +31757,7 @@
             "pattern": "^did:"
           },
           "label": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RoomLabel"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomLabel"
           },
           "offered": {
             "type": "integer",
@@ -31735,24 +31770,24 @@
             "description": "When the community's own `admin` authority over the room expires. A room whose owner's authority lapses can no longer advance its epoch, admit or remove; a community SHOULD renew it well before."
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4HostedRoom"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5HostedRoom"
           },
           "storageConfig": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4StorageConfigId"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5StorageConfigId"
           },
           "tags": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RoomTags"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomTags"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityUpdateV0_4Ext": {
+      "VtcRoomsCommunityUpdateV0_5Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcRoomsCommunityUpdateV0_4HostedRoom": {
+      "VtcRoomsCommunityUpdateV0_5HostedRoom": {
         "type": "object",
         "description": "One room, as its host holds it — member for member the `HostedRoom` of vtc/rooms/list/0.2, which defines it inside its own payload schema. Nothing derived from the room's contents, and no member list: the host has none.",
         "required": [
@@ -31803,7 +31838,7 @@
             "minimum": 0
           },
           "retentionPolicy": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RetentionPolicy"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RetentionPolicy"
           },
           "roomId": {
             "type": "string",
@@ -31815,34 +31850,44 @@
             "format": "date-time"
           },
           "visibility": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4Visibility"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5Visibility"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityUpdateV0_4Payload": {
+      "VtcRoomsCommunityUpdateV0_5Payload": {
         "type": "object",
-        "description": "Change the details an administrator keeps track of a community-owned room by — its label, its description, its tags — or the room's signal delay. Each member given replaces the stored one; a member absent is unchanged. At least one detail is required (`minProperties` counts `roomId` and `reason`), and `description` and `removeDescription` are mutually exclusive. A changed label or description is also re-written into the room's own profile, sealed inside the room for its members, through the community's VTA; tags never are. Only `signalDelay` reaches the room's host record; nothing here reaches any credential. The outer document members are owned by the framework — SPEC §6.3.",
+        "description": "Change the details an administrator keeps track of a community-owned room by — its label, its description, its tags — the room's signal delay, or the record members its profile lists. Each member given replaces the stored one; a member absent is unchanged. At least one detail is required (`minProperties` counts `roomId` and `reason`), `description` and `removeDescription` are mutually exclusive, as are `recordMembers` and `removeRecordMembers`. A changed label, description or record members is also re-written into the room's own profile, sealed inside the room for its members, through the community's VTA; tags never are. Only `signalDelay` reaches the room's host record; nothing here reaches any credential. The outer document members are owned by the framework — SPEC §6.3.",
         "required": [
           "roomId",
           "reason"
         ],
         "properties": {
           "description": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RoomDescription"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomDescription"
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5Ext"
           },
           "label": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RoomLabel"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomLabel"
           },
           "reason": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4Reason"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5Reason"
+          },
+          "recordMembers": {
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomRecordMembers"
           },
           "removeDescription": {
             "type": "boolean",
             "description": "Remove the room's description. Only `true` is meaningful, so only `true` is accepted. A separate member rather than `description: null`, because a nullable optional member makes \"unchanged\" and \"remove\" the same value in libraries that map both to one absent option.",
+            "enum": [
+              true
+            ]
+          },
+          "removeRecordMembers": {
+            "type": "boolean",
+            "description": "Have the room's profile list no record members, so its writers stop using them by the room's next epoch at the latest; records already written keep them. Only `true` is meaningful. A separate member rather than an empty `recordMembers`, as `removeDescription` is, so \"unchanged\" and \"remove\" are never one value.",
             "enum": [
               true
             ]
@@ -31854,24 +31899,24 @@
             "minLength": 1
           },
           "signalDelay": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4SignalDelay"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5SignalDelay"
           },
           "tags": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RoomTags"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomTags"
           }
         },
         "additionalProperties": false,
         "minProperties": 3
       },
-      "VtcRoomsCommunityUpdateV0_4Reason": {
+      "VtcRoomsCommunityUpdateV0_5Reason": {
         "type": "string",
         "description": "Why the administrator is making this change. Recorded with it in the audit trail. Attributed to its author on every surface and untrusted: it MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 500,
         "minLength": 1
       },
-      "VtcRoomsCommunityUpdateV0_4Response": {
+      "VtcRoomsCommunityUpdateV0_5Response": {
         "type": "object",
-        "description": "Success response to vtc/rooms/community/update. Type https://trusttasks.org/spec/vtc/rooms/community/update/0.4#response. The room as it now stands, its signal delay, and whether this request changed either.",
+        "description": "Success response to vtc/rooms/community/update. Type https://trusttasks.org/spec/vtc/rooms/community/update/0.5#response. The room as it now stands, its signal delay, and whether this request changed either.",
         "required": [
           "room",
           "changed",
@@ -31884,14 +31929,14 @@
             "description": "`false` when every value given already matched what the room had, its signal delay included: nothing was written, `detailsUpdatedAt` and `detailsUpdatedBy` did not move, and no change was audited."
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4Ext"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5Ext"
           },
           "room": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4CommunityRoomV2"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5CommunityRoomV2"
           },
           "roomProfile": {
             "type": "string",
-            "description": "Whether the room's own profile — sealed inside the room for its members — now carries the new label and description. `written`: it does. `pending`: the details changed and the profile has not yet been re-written — the room is lapsed, or its VTA or host did not answer, or refused — and the community will keep trying. `unchanged`: nothing the profile carries changed (only tags, or `changed: false`), so nothing was written.",
+            "description": "Whether the room's own profile — sealed inside the room for its members — now carries the new label, description and record members. `written`: it does. `pending`: the details changed and the profile has not yet been re-written — the room is lapsed, or its VTA or host did not answer, or refused — and the community will keep trying. `unchanged`: nothing the profile carries changed (only tags or the signal delay, or `changed: false`), so nothing was written.",
             "enum": [
               "written",
               "pending",
@@ -31899,12 +31944,12 @@
             ]
           },
           "signalDelay": {
-            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4SignalDelay"
+            "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5SignalDelay"
           }
         },
         "additionalProperties": false
       },
-      "VtcRoomsCommunityUpdateV0_4RetentionPolicy": {
+      "VtcRoomsCommunityUpdateV0_5RetentionPolicy": {
         "type": "string",
         "description": "Whether a room keeps its history readable across a membership change, fixed at creation and immutable thereafter — like `Visibility`, and for the same reason: the rungs of an epoch key chain either exist for an epoch or they do not, and no later change of mind can seal key material that was never sealed or unseal what was already severed. `chained`: each advance produces an `EpochLink`, so every member reads the room's whole retained history however long they have been in it — what a **library** wants, at the cost of post-compromise security for record content, since a compromised current key then reaches every retained epoch. `fromJoin`: no rungs are produced, so a member reads only from the epoch their group state is at — what a **stream** wants, and what a room under a strict forward-secrecy obligation wants, at the cost that a joining member finds an empty-looking room and nobody can reread a record once their group state has moved past the epoch it was sealed under. Absent means `chained`; see the prose on why the absent case is the readable one.",
         "enum": [
@@ -31912,35 +31957,48 @@
           "fromJoin"
         ]
       },
-      "VtcRoomsCommunityUpdateV0_4RoomDescription": {
+      "VtcRoomsCommunityUpdateV0_5RoomDescription": {
         "type": "string",
         "description": "What the room is for, in a sentence or a short paragraph, written by an administrator: shown to administrators holding `vtc.rooms.manage` and to the members the room is offered to. Plain text — a consumer renders it as text, never as markup. Like `RoomLabel`, it is the community's own record as the room's owner: not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `description` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. It MUST NOT carry personal data or a credential, and a reader MUST NOT treat it as instructions.",
         "maxLength": 1000,
         "minLength": 1
       },
-      "VtcRoomsCommunityUpdateV0_4RoomLabel": {
+      "VtcRoomsCommunityUpdateV0_5RoomLabel": {
         "type": "string",
         "description": "A name for the room, chosen by an administrator: shown to administrators and to the members a room is offered to. Not part of the room's identity and never in anything a room's host can read. From `vtc/rooms/community/create` 0.3 and `vtc/rooms/community/update` 0.2 the community also writes it, through its own VTA, as the `name` of the room's own profile (`RoomProfile` in rooms/_shared), sealed inside the room for its members; earlier versions keep it out of the room altogether. MUST NOT carry personal data.",
         "maxLength": 128,
         "minLength": 1
       },
-      "VtcRoomsCommunityUpdateV0_4RoomTag": {
+      "VtcRoomsCommunityUpdateV0_5RoomRecordMembers": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][A-Za-z0-9]*$"
+        },
+        "description": "The record members a community-owned room's profile lists: the optional `SealedRecordBody` members its writers may use beyond the base set, as a set (`RoomProfile.recordMembers`, rooms/_shared/0.2). Defined values there: `kind`, `inReplyTo`, `writtenAt`, `editedAt`, `width`, `height`, `preview`. `kind`, `inReplyTo` and `writtenAt` are what a room used as a conversation needs for replies, reactions and the order of its messages. The community writes them into the room's profile through its VTA, as the room's owner; a value a writer does not know grants it nothing.",
+        "maxItems": 32,
+        "minItems": 1,
+        "uniqueItems": true
+      },
+      "VtcRoomsCommunityUpdateV0_5RoomTag": {
         "type": "string",
         "description": "A short identifier an administrator files a community-owned room under — `board`, `working-group`, `finance` — so the room list can be filtered. Lower-case letters, digits and hyphens, starting with a letter or digit. Owner-side tracking metadata for holders of `vtc.rooms.manage` only: never shown to members, never sent on the room's host path, and it confers nothing.",
         "maxLength": 32,
         "minLength": 1,
         "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"
       },
-      "VtcRoomsCommunityUpdateV0_4RoomTags": {
+      "VtcRoomsCommunityUpdateV0_5RoomTags": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_4RoomTag"
+          "$ref": "#/components/schemas/VtcRoomsCommunityUpdateV0_5RoomTag"
         },
         "description": "The room's tags, at most eight, as a set: order carries no meaning. An empty list means the room has none — a tag grants nothing, so empty has no more dangerous reading.",
         "maxItems": 8,
         "uniqueItems": true
       },
-      "VtcRoomsCommunityUpdateV0_4SignalDelay": {
+      "VtcRoomsCommunityUpdateV0_5SignalDelay": {
         "type": "string",
         "description": "Whether a room's host waits a randomised interval before sending a `rooms/changed` signal: the room's **signal delay**.\n\n`randomised` is the default and what a room without one has: the host waits a few seconds after the change that fires a watch, so that the signal's time does not mark one write exactly (`rooms/changed`, producer item 4). `none` is for a room where members expect to see a write as soon as it is made, such as a conversation: the host sends the signal as soon as the change that fires it is stored, with no wait of its own.\n\n**A room's setting, not a member's.** The delay protects the room's writers as much as its watchers. A watcher whose signal is sent at once marks, to anyone who sees both the writer's request reach the host and the signal leave it, the moment of the write and that the two parties share the room. So one watcher cannot opt out for itself without giving away something about everyone who writes, and the setting is the room's: changed by a holder of `admin` (`rooms/signal-delay/set`) and served to every member (`rooms/info`).\n\n**What `none` gives up.** Little in a busy room, where writes are frequent enough that their rhythm is visible anyway; most in a quiet one, where a single write and a single signal line up. A surface that offers the setting SHOULD say so.\n\nAbsent means `randomised`.",
         "enum": [
@@ -31948,14 +32006,14 @@
           "none"
         ]
       },
-      "VtcRoomsCommunityUpdateV0_4StorageConfigId": {
+      "VtcRoomsCommunityUpdateV0_5StorageConfigId": {
         "type": "string",
         "description": "A storage config's identifier, chosen by the administrator who creates it and immutable thereafter: lowercase letters, digits and inner hyphens, at most 64 characters (`eu-s3-primary`, `walrus-main`). Unique within the community. Never reused after a config is retired, because blobs name their config by this value.",
         "maxLength": 64,
         "minLength": 1,
         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
       },
-      "VtcRoomsCommunityUpdateV0_4Visibility": {
+      "VtcRoomsCommunityUpdateV0_5Visibility": {
         "type": "string",
         "description": "How much of a room its host can see, fixed at creation and immutable thereafter. `open`: records are cleartext, searchable and fully audited. `attributed`: record content is sealed, and the host still learns which member acted. `private`: content is sealed and membership is presented in zero knowledge, so the host verifies that a member acted without learning which. Immutable because a downgrade cannot un-see cleartext and an upgrade would protect only what came after while presenting as though it protected everything.",
         "enum": [

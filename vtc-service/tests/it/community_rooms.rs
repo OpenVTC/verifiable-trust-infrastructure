@@ -70,6 +70,9 @@ const CANCEL_REMOVAL: &str = "https://trusttasks.org/spec/vtc/rooms/community/re
 const CREATE_V5: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5";
 const GET_V5: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.5";
 const UPDATE_V4: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.4";
+const CREATE_V6: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.6";
+const GET_V6: &str = "https://trusttasks.org/spec/vtc/rooms/community/get/0.6";
+const UPDATE_V5: &str = "https://trusttasks.org/spec/vtc/rooms/community/update/0.5";
 
 /// A `trust-task-error` reply's code — the census reads witnesses by this name.
 fn tt_error_code(doc: &Value) -> Option<&str> {
@@ -4127,4 +4130,204 @@ async fn vtc_rooms_community_lifecycle_tasks_refuse_with_their_declared_codes() 
         Some(ARCHIVE_KEY_HOLDER_UNAVAILABLE),
         "{r}"
     );
+}
+
+/// `vtc/rooms/community/create/0.6` item 12, `update/0.5` items 3, 4, 10 and 15 and
+/// `get/0.6` item 6: an administrator sets the record members a community room's profile
+/// lists — at creation and later — and they replace the read-back's only when a request
+/// sets them; a set compares as a set; `removeRecordMembers` lists none; a value the
+/// community does not know is kept; and `get/0.6` answers what the last write listed,
+/// never a pending request's set.
+#[tokio::test]
+async fn vtc_rooms_community_record_members_are_set_at_create_read_and_changed() {
+    let mut fix = fixture().await;
+    let chat_set = json!(["kind", "inReplyTo", "writtenAt"]);
+
+    // Create 0.6 with record members: written into the profile, echoed, audited.
+    let (status, reply) = admin_call(
+        &mut fix,
+        CREATE_V6,
+        json!({
+            "label": "Board chat", "visibility": "attributed",
+            "recordMembers": ["kind", "inReplyTo", "writtenAt"],
+            "reason": "the board talks here",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["payload"]["recordMembers"], chat_set, "{reply}");
+    assert_eq!(reply["payload"]["roomProfile"], "written", "{reply}");
+    let chat = reply["payload"]["room"]["room"]["roomId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(fix.vta.profile(&chat).unwrap()["recordMembers"], chat_set);
+    let created = audit_rows(&fix).await;
+    assert!(
+        created.contains("\"recordMembers\"") && created.contains("inReplyTo"),
+        "the record members are audited with the create: {created}"
+    );
+
+    // Get 0.6 reads them; get 0.5 does not carry them.
+    let got = call_as(&fix, &fix.admin, GET_V6, json!({ "roomId": chat })).await;
+    assert_eq!(got["payload"]["recordMembers"], chat_set, "{got}");
+    let got = call_as(&fix, &fix.admin, GET_V5, json!({ "roomId": chat })).await;
+    assert!(got["payload"].get("recordMembers").is_none(), "{got}");
+
+    // Create 0.6 without them: none, as 0.5.
+    let (_, reply) = admin_call(
+        &mut fix,
+        CREATE_V6,
+        json!({ "label": "Board pack", "visibility": "attributed", "reason": "the papers" }),
+    )
+    .await;
+    assert!(reply["payload"].get("recordMembers").is_none(), "{reply}");
+    let pack = reply["payload"]["room"]["room"]["roomId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        fix.vta
+            .profile(&pack)
+            .unwrap()
+            .get("recordMembers")
+            .is_none()
+    );
+    let got = call_as(&fix, &fix.admin, GET_V6, json!({ "roomId": pack })).await;
+    assert!(got["payload"].get("recordMembers").is_none(), "{got}");
+
+    // Update 0.5: the record members alone are a change that writes the profile, keeps
+    // what else a curator set, and is audited. A value this community does not know is
+    // kept (item 15).
+    fix.vta.set_profile(
+        &pack,
+        json!({ "name": "Board pack", "emoji": "📋", "recordMembers": ["editedAt"] }),
+    );
+    let before = details_rows(&fix).await.len();
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({
+            "roomId": pack, "recordMembers": ["kind", "inReplyTo", "writtenAt", "mood"],
+            "reason": "the board wants to reply",
+        }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    assert_eq!(
+        fix.vta.profile(&pack).unwrap(),
+        json!({ "name": "Board pack", "emoji": "📋",
+                "recordMembers": ["kind", "inReplyTo", "writtenAt", "mood"] })
+    );
+    let rows = details_rows(&fix).await;
+    assert_eq!(rows.len(), before + 1, "{rows:?}");
+    assert_eq!(
+        row_details(rows.last().unwrap())["details"][0]["field"],
+        "recordMembers"
+    );
+
+    // The same set in another order changes nothing and writes nothing.
+    fix.vta.clear_calls();
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({
+            "roomId": pack, "recordMembers": ["mood", "writtenAt", "inReplyTo", "kind"],
+            "reason": "again",
+        }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], false, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "unchanged", "{r}");
+    assert!(profile_writes(&fix).is_empty());
+
+    // A rename carries the record members over, as every version does.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({ "roomId": pack, "label": "Board papers", "reason": "renamed" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    assert_eq!(
+        fix.vta.profile(&pack).unwrap()["recordMembers"],
+        json!(["kind", "inReplyTo", "writtenAt", "mood"])
+    );
+
+    // A set the VTA has not written yet is pending, and get answers the profile's: the
+    // last write's set, never the request's. The next write carries the request's.
+    fix.vta.script(
+        PROFILE_WRITE,
+        Script::Refuse("rooms/keys/profile/write:contended"),
+    );
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({ "roomId": pack, "recordMembers": ["kind"], "reason": "fewer" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "pending", "{r}");
+    let got = call_as(&fix, &fix.admin, GET_V6, json!({ "roomId": pack })).await;
+    assert_eq!(
+        got["payload"]["recordMembers"],
+        json!(["kind", "inReplyTo", "writtenAt", "mood"]),
+        "{got}"
+    );
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({ "roomId": pack, "tags": ["papers"], "reason": "filed" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    assert_eq!(
+        fix.vta.profile(&pack).unwrap()["recordMembers"],
+        json!(["kind"])
+    );
+    let got = call_as(&fix, &fix.admin, GET_V6, json!({ "roomId": pack })).await;
+    assert_eq!(got["payload"]["recordMembers"], json!(["kind"]), "{got}");
+
+    // `removeRecordMembers` lists none; asked again, it changes nothing.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({ "roomId": pack, "removeRecordMembers": true, "reason": "no replies" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], true, "{r}");
+    assert_eq!(r["payload"]["roomProfile"], "written", "{r}");
+    let written = fix.vta.profile(&pack).unwrap();
+    assert!(written.get("recordMembers").is_none(), "{written}");
+    assert_eq!(written["emoji"], "📋", "{written}");
+    let got = call_as(&fix, &fix.admin, GET_V6, json!({ "roomId": pack })).await;
+    assert!(got["payload"].get("recordMembers").is_none(), "{got}");
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({ "roomId": pack, "removeRecordMembers": true, "reason": "again" }),
+    )
+    .await;
+    assert_eq!(r["payload"]["changed"], false, "{r}");
+
+    // Both at once is outside the schema.
+    let r = call_as(
+        &fix,
+        &fix.admin,
+        UPDATE_V5,
+        json!({
+            "roomId": pack, "recordMembers": ["kind"], "removeRecordMembers": true,
+            "reason": "both",
+        }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&r), Some("malformedRequest"), "{r}");
 }

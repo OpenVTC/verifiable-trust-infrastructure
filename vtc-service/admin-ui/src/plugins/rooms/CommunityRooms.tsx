@@ -36,6 +36,7 @@ import {
   AUTHORITY_WARN_DAYS,
   COMMUNITY_ROOMS_LIST_KEY,
   MAX_DESCRIPTION,
+  REPLIES_AND_REACTIONS,
   createCommunityRoom,
   daysUntil,
   fetchCommunityRooms,
@@ -57,7 +58,7 @@ import { useCan } from "@/lib/viewer";
 import type { CommunityRoom, CommunityRoomCreatePayload, SignalDelay } from "@/lib/wire-types";
 
 import { RefusalCard, VtaFixCommands } from "./CommunityRefusal";
-import { LifecyclePill, RoomStateChip, SignalDelayChoice, TIER_BLURB, communityRoomPath } from "./shared";
+import { LifecyclePill, RepliesChoice, RoomStateChip, SignalDelayChoice, TIER_BLURB, communityRoomPath } from "./shared";
 
 /** The query key of the owner's reads, which a live `communityRooms` hint
  *  invalidates. Under `["rooms"]`, which a live `rooms` hint invalidates. */
@@ -350,6 +351,8 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
   const [retentionDays, setRetentionDays] = useState("");
   const [storageConfig, setStorageConfig] = useState("");
   const [signalDelay, setSignalDelay] = useState<SignalDelay>("randomised");
+  // On for a new room: the request still says so explicitly (`create/0.6`).
+  const [replies, setReplies] = useState(true);
   const [reason, setReason] = useState("");
 
   // Where the room's files go: only a holder of the host's authority can list
@@ -378,6 +381,7 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
         ...(days !== undefined ? { retentionDays: days } : {}),
         ...(storageConfig ? { storageConfig } : {}),
         ...(signalDelay !== "randomised" ? { signalDelay } : {}),
+        ...(replies ? { recordMembers: [...REPLIES_AND_REACTIONS] } : {}),
       };
       return createCommunityRoom(payload, gestureFromConfirm(confirm));
     },
@@ -502,6 +506,7 @@ function NewCommunityRoom({ onDone }: { onDone: () => void }) {
           </Field>
         )}
         <SignalDelayChoice name="community-room-signal-delay" value={signalDelay} onChange={setSignalDelay} />
+        <RepliesChoice checked={replies} onChange={setReplies} />
         <Field label="Reason" hint="Recorded in the audit trail.">
           <input required maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
         </Field>

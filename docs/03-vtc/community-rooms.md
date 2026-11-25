@@ -226,6 +226,42 @@ never a watcher's ([data rooms: the signal delay](../02-vta/data-rooms.md)).
 `create/0.4`, `update/0.3` and `get/0.4` are still served: a room created at 0.4 is
 `randomised`, and update 0.3 leaves the delay as it is.
 
+## Replies and reactions: the room's record members
+
+A room's members reply to, react to and order each other's messages with optional record
+members — `kind`, `inReplyTo`, `writtenAt` — which a writer may use only where the room's
+profile lists them (`RoomProfile.recordMembers`,
+[data rooms](../02-vta/data-rooms.md)). A member holding `curate` may set them in the room;
+most members of a community room hold no `curate`, so the community, which holds `admin`
+in every room it owns, sets them for its administrators.
+
+- **At creation**: `vtc/rooms/community/create/0.6` takes `recordMembers`, written into the
+  profile with the label and description (step 5), echoed in the answer, and audited with
+  the create. Absent is none, as before: a profile never lists them by default. The
+  console's **Replies and reactions** box starts ticked for a new room, and sends
+  `kind`, `inReplyTo` and `writtenAt` — the administrator's explicit choice.
+- **Changing them**: `vtc/rooms/community/update/0.5` takes `recordMembers` (the whole set)
+  or `removeRecordMembers: true`, never both. Either is a change that re-writes the
+  profile; the set compares as a set, so the same members in another order change
+  nothing. Neither given, whatever the profile lists — a curator's set included — is
+  carried over by every write. The console sends them only when the box changed, keeping
+  any other member a curator listed (`editedAt`, …).
+- **Reading them**: `vtc/rooms/community/get/0.6` carries `recordMembers` as the profile
+  listed them at the community's **last write** (`written_record_members` on
+  `room-profile:<room>`). A set an update asked for that no write has carried yet is
+  kept there as *requested*, written by the next attempt — the update's, or the profile
+  sweeper's — and is never answered as the profile's. A set asked for while a write is in
+  flight is not lost: the room stays pending.
+- **Unknown values are kept**: a member a writer does not know grants it nothing, so the
+  community never refuses one.
+- **Older readers**: a member whose app predates these members cannot read the room's
+  profile — its name and description — once it lists them. The console says so beside
+  the box, and turning it off stops new replies and reactions by the room's next epoch;
+  those already written stay.
+
+`create/0.5`, `update/0.4` and `get/0.5` are still served and leave the record members as
+they are.
+
 ## Run a room — the console
 
 **Data rooms → Community rooms** (`/admin/rooms/community`) is the same surface as
@@ -240,14 +276,15 @@ no REST route.
   it (`?tag=`), and so does clicking a room's tag. When `[rooms.community]` is absent the
   tab says so and shows the section to add, from the list's
   `ext["org.openvtc"].communityRooms`.
-- **New community room**: label, an optional description and tags, *Watch signals* (after a short random wait, the default, or at once — saying what that gives up), tier (`attributed` by default; `open`; `private` is
+- **New community room**: label, an optional description and tags, *Watch signals* (after a short random wait, the default, or at once — saying what that gives up), *Replies and reactions* (ticked by default), tier (`attributed` by default; `open`; `private` is
   shown but not offered — it is not served for community rooms yet and the shipped
   `rooms` policy refuses it), history (`chained` / `fromJoin`), retention days,
   storage location (listed only to a holder of `vtc.rooms.admin`; otherwise the
   default), and a reason.
 - **A room's page** (`/admin/rooms/community/<room DID>`): titled with its label, its
   description as the page's lead; its facts — description, tags, and who last changed
-  the details and when — and **Edit details** (label, description, tags and a reason;
+  the details and when, its watch signals and whether members may reply and react — and
+  **Edit details** (label, description, tags, watch signals, replies and reactions and a reason;
   only what differs is sent, an emptied description is removed, emptied tags cleared, and
   no passkey is asked for); and its members
   filtered by offered / admitted / removed. **Add a member** takes the member's DID,
@@ -289,11 +326,14 @@ its own, and membership is reversible.
 
 ```bash
 cnm rooms create --label "Board pack" --visibility attributed --reason "the board's papers" \
-    [--description "Papers for the board's meetings."] [--tag board --tag finance]
+    [--description "Papers for the board's meetings."] [--tag board --tag finance] \
+    [--signal-delay none] [--replies-and-reactions] [--record-member editedAt ...]
 cnm rooms list [--tag board]
 cnm rooms get <room DID>
 cnm rooms update <room DID> [--label "Board pack — 2027"] \
     [--description "…" | --remove-description] [--tag board ... | --clear-tags] \
+    [--signal-delay randomised|none] \
+    [--replies-and-reactions] [--record-member … | --no-record-members] \
     --reason "the 2027 cycle"
 
 cnm rooms members add <room DID> --member <member's persona DID> \

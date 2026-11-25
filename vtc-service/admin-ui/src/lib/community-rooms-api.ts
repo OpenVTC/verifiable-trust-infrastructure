@@ -68,10 +68,10 @@ import type {
 } from "./wire-types";
 import { messageOf } from "@/lib/messages";
 
-export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5";
+export const COMMUNITY_ROOMS_CREATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/create/0.6";
 export const COMMUNITY_ROOMS_LIST_TASK = "https://trusttasks.org/spec/vtc/rooms/community/list/0.4";
-export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.5";
-export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.4";
+export const COMMUNITY_ROOMS_GET_TASK = "https://trusttasks.org/spec/vtc/rooms/community/get/0.6";
+export const COMMUNITY_ROOMS_UPDATE_TASK = "https://trusttasks.org/spec/vtc/rooms/community/update/0.5";
 export const COMMUNITY_ROOMS_MEMBERS_ADD_TASK =
   "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2";
 export const COMMUNITY_ROOMS_MEMBERS_REMOVE_TASK =
@@ -395,10 +395,10 @@ export async function fetchCommunityRoomMembers(
   return { items, truncated: true, departures: departures ?? [] };
 }
 
-/** `vtc/rooms/community/create/0.5`, after the requester's bound gesture: the
- *  community's VTA also writes the label and description into the room as its
- *  profile (`roomProfile` says whether it did yet), and the room keeps the signal
- *  delay asked for (`randomised` when none is). */
+/** `vtc/rooms/community/create/0.6`, after the requester's bound gesture: the
+ *  community's VTA also writes the label, description and any record members into the
+ *  room as its profile (`roomProfile` says whether it did yet), and the room keeps the
+ *  signal delay asked for (`randomised` when none is). */
 export function createCommunityRoom(
   payload: CommunityRoomCreatePayload,
   confirmGesture: ConfirmGesture,
@@ -410,8 +410,8 @@ export function createCommunityRoom(
   );
 }
 
-/** `vtc/rooms/community/update/0.4` — and a new label or description is written
- *  into the room as its profile; a new signal delay goes to the room's host record. It asks for no gesture; one is given only
+/** `vtc/rooms/community/update/0.5` — and a new label, description or record members are
+ *  written into the room as its profile; a new signal delay goes to the room's host record. It asks for no gesture; one is given only
  *  if the community's policy asks for it all the same. */
 export function updateCommunityRoom(
   payload: CommunityRoomUpdatePayload,
@@ -665,7 +665,31 @@ export interface RoomDetailsForm {
   tags: string[];
   /** Absent: the form does not change it. */
   signalDelay?: SignalDelay;
+  /** Whether the room's members may reply and react (`REPLIES_AND_REACTIONS` in its
+   *  profile's record members). Absent: the form does not change it. */
+  repliesAndReactions?: boolean;
   reason: string;
+}
+
+/** The record members a room needs for replies, reactions and the order of a
+ *  conversation (`vtc/_shared/0.5` `RoomRecordMembers`). */
+export const REPLIES_AND_REACTIONS: readonly string[] = ["kind", "inReplyTo", "writtenAt"];
+
+/** The record members a `get/0.6` answers — none from an answer without them. */
+export function recordMembersOfGet(body: { recordMembers?: readonly string[] }): string[] {
+  return [...(body.recordMembers ?? [])];
+}
+
+/** Whether `members` let a room's members reply and react: all of `REPLIES_AND_REACTIONS`. */
+export function repliesOn(members: readonly string[]): boolean {
+  return REPLIES_AND_REACTIONS.every((m) => members.includes(m));
+}
+
+/** `members` with replies and reactions turned on or off, keeping every other member a
+ *  curator listed (`editedAt`, `width`, …). */
+export function withReplies(members: readonly string[], on: boolean): string[] {
+  const rest = members.filter((m) => !REPLIES_AND_REACTIONS.includes(m));
+  return on ? [...rest, ...REPLIES_AND_REACTIONS] : rest;
 }
 
 /** The signal delay a `get/0.5` answers — `randomised` from an answer without one. */
@@ -684,6 +708,7 @@ export function detailsUpdate(
   room: CommunityRoom,
   form: RoomDetailsForm,
   currentDelay: SignalDelay = "randomised",
+  currentMembers: readonly string[] = [],
 ): CommunityRoomUpdatePayload | null {
   const payload: CommunityRoomUpdatePayload = { roomId: room.room.roomId, reason: form.reason.trim() };
   const label = form.label.trim();
@@ -693,6 +718,13 @@ export function detailsUpdate(
   else if (description !== "" && description !== room.description) payload.description = description;
   if (!sameSet(form.tags, room.tags ?? [])) payload.tags = form.tags;
   if (form.signalDelay && form.signalDelay !== currentDelay) payload.signalDelay = form.signalDelay;
+  // Sent only when the choice changed, so an edit made for another reason never
+  // overwrites a set a curator wrote in the room (`update/0.5`).
+  if (form.repliesAndReactions !== undefined && form.repliesAndReactions !== repliesOn(currentMembers)) {
+    const next = withReplies(currentMembers, form.repliesAndReactions);
+    if (next.length > 0) payload.recordMembers = next;
+    else payload.removeRecordMembers = true;
+  }
   return Object.keys(payload).length > 2 ? payload : null;
 }
 
