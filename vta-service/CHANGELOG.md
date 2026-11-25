@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.87.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.87.1...vta-service-v0.87.2) — 2026-11-25
+
+
+### Fixed
+
+- **vta-service**: Answer credential-exchange/query the same way whether or not anything matches ([#2813](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2813))
+
+credential-exchange/query 0.1 (Conformance): "noMatch and \"held but not
+  consented\" MUST be indistinguishable to the verifier", and a verifier the
+  holder has not pre-trusted "is told consentRequired".
+
+  - A verifier that is not trusted is now always answered
+    `credential-exchange/query:consentRequired`, with one fixed message and no
+    details, whether its query matched, matched nothing, or matched only
+    credentials their context withholds from it. A deferral is persisted only
+    when something matched, so operator approval and the later presentation
+    work as before. The answer follows a small random delay (up to 50 ms) so
+    the deferral write does not set the two apart by timing.
+  - A trusted verifier is answered `credential-exchange/query:noMatch`, with
+    one fixed message, both when nothing matched and when context policy
+    withholds every match.
+  - Both codes come from the generated bindings and carry their declared
+    `retryable`; the census witnesses them and its ceiling drops to 371.
+
+
+
 ## [0.87.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.87.0...vta-service-v0.87.1) — 2026-11-24
 
 
