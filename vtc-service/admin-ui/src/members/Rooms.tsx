@@ -8,9 +8,9 @@
 // file they add is confirmed there first. Design:
 // `docs/05-design-notes/data-rooms-files.md` §8.5.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Boxes, CornerDownRight, Download, Eye, FileText, FilePlus2, Gift, MessagesSquare, NotebookPen, Plus, RefreshCw, Share2, X } from "lucide-react";
+import { ArrowLeft, Boxes, CornerDownRight, Download, Eye, FileText, FilePlus2, Gift, MessagesSquare, NotebookPen, Plus, RefreshCw, Send, Share2, X } from "lucide-react";
 
 import { absentWords, byDay, clockTime, excerpt, isConversation, shownTime, speakerOf } from "./conversation";
 
@@ -703,6 +703,7 @@ function ConversationCard({
   const byKey = new Map(view.records.map((r) => [r.key, r]));
   const speaker = (did: string | undefined) => speakerOf(did, me, view.names, (d) => authorName(d));
   const warning = adverseVerification(view.verification);
+  const scroller = useStickToNewest(view.records, me);
   return (
     <section className="card" aria-labelledby="conversation-heading">
       <div className="card-head">
@@ -727,27 +728,61 @@ function ConversationCard({
       {!view.complete && (
         <p className="muted small">The listing stopped at a page bound; older messages are not shown.</p>
       )}
-      <ol className="chat" aria-label="Messages">
-        {byDay(view.records).map(({ day, records }, i) => (
-          <li key={`${day}-${i}`} className="chat-day">
-            {day && <p className="chat-divider">{day}</p>}
-            <ol className="chat-day-items">
-              {records.map((r) => (
-                <ChatItem
-                  key={r.key}
-                  r={r}
-                  target={r.replyTo ? byKey.get(r.replyTo.key) : undefined}
-                  speaker={speaker}
-                  selected={open === r.key}
-                  onOpen={() => setOpen(open === r.key ? null : r.key)}
-                />
-              ))}
-            </ol>
-          </li>
-        ))}
-      </ol>
+      <div className="chat-scroll" ref={scroller.ref} onScroll={scroller.onScroll} tabIndex={0}>
+        <ol className="chat" aria-label="Messages">
+          {byDay(view.records).map(({ day, records }, i) => (
+            <li key={`${day}-${i}`} className="chat-day">
+              {day && <p className="chat-divider">{day}</p>}
+              <ol className="chat-day-items">
+                {records.map((r) => (
+                  <ChatItem
+                    key={r.key}
+                    r={r}
+                    target={r.replyTo ? byKey.get(r.replyTo.key) : undefined}
+                    speaker={speaker}
+                    selected={open === r.key}
+                    onOpen={() => setOpen(open === r.key ? null : r.key)}
+                  />
+                ))}
+              </ol>
+            </li>
+          ))}
+        </ol>
+      </div>
     </section>
   );
+}
+
+/** How close to the bottom, in pixels, still counts as reading the newest. */
+const NEAR_NEWEST_PX = 48;
+
+/**
+ * Keep a conversation's scrolling window at its newest message, as a chat does:
+ * it opens there, and follows a new message while the member is at the bottom, or
+ * when the newest is their own (they just sent it) — never pulling them down from
+ * something older they scrolled up to read. Layout only: the order is the wallet's.
+ */
+function useStickToNewest(records: readonly ConversationRecord[], me: string | undefined) {
+  const ref = useRef<HTMLDivElement>(null);
+  const atNewest = useRef(true);
+  const lastKey = useRef<string | undefined>(undefined);
+  const last = records.at(-1);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const arrived = lastKey.current !== undefined && last?.key !== lastKey.current;
+    const mine = arrived && me !== undefined && last?.author === me;
+    lastKey.current = last?.key;
+    if (atNewest.current || mine) {
+      el.scrollTop = el.scrollHeight;
+      atNewest.current = true;
+    }
+  }, [last?.key, last?.author, records.length, me]);
+  const onScroll = () => {
+    const el = ref.current;
+    if (el) atNewest.current = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_NEWEST_PX;
+  };
+  return { ref, onScroll };
 }
 
 function ChatItem({
@@ -1316,9 +1351,26 @@ function describe(p: TransferProgress | null): string {
 
 // ── Adding ──────────────────────────────────────────────────────────────────
 
+/** What the compose panel writes: a note (titled, one line in the chat) or a chat message. */
+type ComposeMode = "note" | "message";
+const COMPOSE_MODE_KEY = "vtc-member-room-compose";
+
+/** The member's last choice on this browser, else a note. A convenience only. */
+function rememberedMode(): ComposeMode {
+  try {
+    return window.localStorage.getItem(COMPOSE_MODE_KEY) === "message" ? "message" : "note";
+  } catch {
+    return "note";
+  }
+}
+
 function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: string; info: RoomInfo }) {
   const qc = useQueryClient();
   const roomId = info.roomId;
+  // A wallet older than messages takes only notes, and is offered nothing else.
+  const takesMessages = typeof wallet.putMessage === "function";
+  const [mode, setModeState] = useState<ComposeMode>(() => (takesMessages ? rememberedMode() : "note"));
+  const [text, setText] = useState("");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -1339,6 +1391,28 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
       refresh();
     },
   });
+  const message = useMutation({
+    mutationFn: () => wallet.putMessage!({ hostDid, roomId, body: text }),
+    onSuccess: () => {
+      setText("");
+      setDone("Message sent.");
+      refresh();
+    },
+  });
+  const send = () => {
+    if (!text.trim() || message.isPending) return;
+    setDone(null);
+    message.mutate();
+  };
+  const setMode = (m: ComposeMode) => {
+    setModeState(m);
+    setDone(null);
+    try {
+      window.localStorage.setItem(COMPOSE_MODE_KEY, m);
+    } catch {
+      // Remembering is a convenience; the switch works without it.
+    }
+  };
   const upload = useMutation({
     mutationFn: (f: File) =>
       wallet.putFile({
@@ -1366,37 +1440,85 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
         <FilePlus2 size={18} aria-hidden="true" />
         <h2 id="add-heading">Add to this room</h2>
       </div>
+      {takesMessages && (
+        <div className="compose-switch" role="group" aria-label="What to add">
+          <button type="button" className="bd-chip" aria-pressed={mode === "note"} onClick={() => setMode("note")}>
+            <NotebookPen size={13} aria-hidden="true" /> Note
+          </button>
+          <button
+            type="button"
+            className="bd-chip"
+            aria-pressed={mode === "message"}
+            onClick={() => setMode("message")}
+          >
+            <MessagesSquare size={13} aria-hidden="true" /> Message
+          </button>
+        </div>
+      )}
       <p className="muted small">
-        Your wallet shows you what will be added, signed as <b title={info.member}>{authorName(info.member)}</b>,
-        before anything is sent.
+        Your wallet shows you what will be {mode === "message" ? "sent" : "added"}, signed as{" "}
+        <b title={info.member}>{authorName(info.member)}</b>, before anything is sent.
       </p>
       {openTier && (
         <p className="muted small">
-          This room is open: a note is stored in the clear, and a file is stored encrypted under a key its record
-          carries in the clear — so the room&rsquo;s host can read both, as well as its members.
+          This room is open: {mode === "message" ? "a message" : "a note"} is stored in the clear, and a file is
+          stored encrypted under a key its record carries in the clear — so the room&rsquo;s host can read both, as
+          well as its members.
         </p>
       )}
-      <label className="field">
-        <span>Title</span>
-        <input value={title} maxLength={512} onChange={(e) => setTitle(e.target.value)} />
-      </label>
-      <label className="field">
-        <span>Note</span>
-        <textarea value={body} rows={5} onChange={(e) => setBody(e.target.value)} />
-      </label>
-      <div className="actions">
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={!title.trim() || note.isPending}
-          onClick={() => {
-            setDone(null);
-            note.mutate();
-          }}
-        >
-          <NotebookPen size={14} aria-hidden="true" /> {note.isPending ? "Waiting for your wallet…" : "Add note"}
-        </button>
-      </div>
+      {mode === "message" ? (
+        <>
+          <label className="field">
+            <span>Message</span>
+            <textarea
+              value={text}
+              rows={3}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+            />
+          </label>
+          <p className="muted small">Enter sends; Shift+Enter starts a new line.</p>
+          <div className="actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!text.trim() || message.isPending}
+              onClick={send}
+            >
+              <Send size={14} aria-hidden="true" /> {message.isPending ? "Waiting for your wallet…" : "Send"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="field">
+            <span>Title</span>
+            <input value={title} maxLength={512} onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Note</span>
+            <textarea value={body} rows={5} onChange={(e) => setBody(e.target.value)} />
+          </label>
+          <div className="actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!title.trim() || note.isPending}
+              onClick={() => {
+                setDone(null);
+                note.mutate();
+              }}
+            >
+              <NotebookPen size={14} aria-hidden="true" /> {note.isPending ? "Waiting for your wallet…" : "Add note"}
+            </button>
+          </div>
+        </>
+      )}
       <label className="field">
         <span>Or a file</span>
         <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
@@ -1424,9 +1546,9 @@ function AddToRoom({ wallet, hostDid, info }: { wallet: WalletRooms; hostDid: st
           <FilePlus2 size={14} aria-hidden="true" /> {upload.isPending ? describe(progress) : "Add file"}
         </button>
       </div>
-      {(note.isError || upload.isError) && (
+      {(note.isError || message.isError || upload.isError) && (
         <p className="error" role="alert">
-          {errorText(note.error ?? upload.error)}
+          {errorText(note.error ?? message.error ?? upload.error)}
         </p>
       )}
       {done && <p role="status">{done}</p>}

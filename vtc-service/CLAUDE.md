@@ -624,7 +624,11 @@ When adding a flow, add it here and a line to the root index.
   laid out from `rooms.conversation` — the wallet's `assembleRoomRecords` view.
   Never re-derive kinds, ordering, reactions or members' names here: the
   reading rules have one implementation, so the portal, the wallet's console
-  and Keyring show one room alike.
+  and Keyring show one room alike. A chat message is written with the wallet's
+  `putMessage` (text, no title), never as a note with an empty or invented
+  title; the compose switch offers it only when the wallet has the method, and
+  starts on Note. The conversation scrolls in its own window opened at the
+  newest message — layout only, never a reordering.
 - **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
   the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
   ballot is filled in the wallet's own window and the cast goes from the wallet to

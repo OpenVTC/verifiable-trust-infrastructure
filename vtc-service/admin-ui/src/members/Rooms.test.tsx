@@ -468,6 +468,21 @@ describe("data rooms in the portal", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("the conversation scrolls in its own window, opened at the newest, in the wallet's order", async () => {
+    const tall = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(2000);
+    try {
+      const wallet = fakeWallet({ conversation: vi.fn(async () => CHAT) });
+      (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+      renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+      const list = await screen.findByRole("list", { name: "Messages" });
+      const window_ = list.parentElement!;
+      expect(window_.className).toBe("chat-scroll");
+      expect(window_.scrollTop).toBe(2000);
+    } finally {
+      tall.mockRestore();
+    }
+  });
+
   it("a room of notes and files stays a list of records, even from a wallet that assembles conversations", async () => {
     const notesOnly = { ...CHAT, records: [CHAT.records[2]!] };
     const wallet = fakeWallet({ conversation: vi.fn(async () => notesOnly) });
@@ -503,6 +518,69 @@ describe("data rooms in the portal", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add note/ }));
     await screen.findByText("Note added.");
     await waitFor(() => expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({ hostDid: HOST, roomId: ROOM, title: "Pricing", body: "Hold." }));
+  });
+
+  describe("a chat message", () => {
+    afterEach(() => window.localStorage.clear());
+
+    it("the switch starts on Note; Message sends text with no title, and Enter sends it", async () => {
+      const putMessage = vi.fn(async (_: { hostDid: string; roomId: string; body: string }) => ({ key: "m1", version: 5 }));
+      const wallet = fakeWallet({ putMessage });
+      (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+      renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+      await screen.findByText("Add to this room");
+      const asNote = screen.getByRole("button", { name: "Note" });
+      expect(asNote.getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByLabelText("Title")).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Message" }));
+      expect(screen.queryByLabelText("Title")).toBeNull();
+      const box = screen.getByLabelText("Message");
+      fireEvent.change(box, { target: { value: "Lunch at one?" } });
+      // Shift+Enter is a new line, not a send.
+      fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+      expect(putMessage).not.toHaveBeenCalled();
+      fireEvent.keyDown(box, { key: "Enter" });
+      await screen.findByText("Message sent.");
+      expect(putMessage.mock.calls.map((c) => c[0])).toEqual([{ hostDid: HOST, roomId: ROOM, body: "Lunch at one?" }]);
+      expect(wallet.calls.some((c) => c.method === "putNote")).toBe(false);
+      expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("an empty message is never sent", async () => {
+      const putMessage = vi.fn(async () => ({ key: "m1", version: 5 }));
+      const wallet = fakeWallet({ putMessage });
+      (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+      renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+      await screen.findByText("Add to this room");
+      fireEvent.click(screen.getByRole("button", { name: "Message" }));
+      fireEvent.change(screen.getByLabelText("Message"), { target: { value: "  \n " } });
+      fireEvent.keyDown(screen.getByLabelText("Message"), { key: "Enter" });
+      expect((screen.getByRole("button", { name: /Send/ }) as HTMLButtonElement).disabled).toBe(true);
+      expect(putMessage).not.toHaveBeenCalled();
+    });
+
+    it("the member's last choice is kept on this browser", async () => {
+      window.localStorage.setItem("vtc-member-room-compose", "message");
+      const wallet = fakeWallet({ putMessage: vi.fn(async () => ({ key: "m1", version: 5 })) });
+      (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+      renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+      await screen.findByText("Add to this room");
+      expect(screen.getByRole("button", { name: "Message" }).getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(screen.getByRole("button", { name: "Note" }));
+      expect(window.localStorage.getItem("vtc-member-room-compose")).toBe("note");
+    });
+
+    it("a wallet older than messages is offered notes only", async () => {
+      window.localStorage.setItem("vtc-member-room-compose", "message");
+      const wallet = fakeWallet();
+      (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+      renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+      await screen.findByText("Add to this room");
+      expect(screen.queryByRole("button", { name: "Message" })).toBeNull();
+      expect(screen.getByLabelText("Title")).toBeTruthy();
+    });
   });
 
   // rooms/records/put/0.4: an open room takes files too, encrypted under a key

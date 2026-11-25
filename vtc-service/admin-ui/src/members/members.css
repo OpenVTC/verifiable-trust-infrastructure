@@ -2337,7 +2337,30 @@ textarea {
 .chat {
   display: grid;
   gap: 0.75rem;
+}
+/* The conversation scrolls in its own window, opened at the newest message
+   (Rooms.tsx `useStickToNewest`), so the page never has to. */
+.chat-scroll {
   margin-top: 0.75rem;
+  max-height: max(18rem, calc(100vh - var(--topbar-h, 4.5rem) - 16rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.25rem;
+}
+@media (max-width: 56rem) {
+  .chat-scroll {
+    max-height: 70vh;
+  }
+}
+.compose-switch {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+.compose-switch .bd-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 .chat-day-items {
   display: grid;

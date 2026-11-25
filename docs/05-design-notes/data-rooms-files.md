@@ -1062,7 +1062,9 @@ render only for an active member.
 
 **The page asks the wallet, through methods that are the wallet's, not
 through the generic relay.** `window.vtaWallet.rooms.{list, choose, info,
-browse, read, putNote, getFile, putFile, forget}`. `requestTask` and
+browse, read, conversation, putNote, putMessage, getFile, putFile, forget}`
+(`putMessage` is a chat message: text and no title, `kind: "message"` where the
+room's profile takes it). `requestTask` and
 `signTrustTask` keep refusing the whole `rooms/` family
 (`page-task-policy.ts`): the relay returns the agent's reply to the page as it
 is — presentations, persona-signed documents, the agent's own refusal details —
@@ -1152,10 +1154,10 @@ page. An accepted room is then shared here like any other (`choose` with
 
 **Reads ride the grant; every write is confirmed.** `info`, `browse`, `read`
 and `getFile` on a granted room run without a prompt — the member already
-said this portal may show them this room. `putNote` and `putFile` each open a
-confirmation in the extension window, naming the room, the member identity
-that will sign, and what will be written (the title, the file's name and
-size). There is no "remember" on it. A write is the member's signed statement
+said this portal may show them this room. `putNote`, `putMessage` and `putFile`
+each open a confirmation in the extension window, naming the room, the member
+identity that will sign, and what will be written (the title, the message's
+text, the file's name and size). There is no "remember" on it. A write is the member's signed statement
 to every other member, and a page that could add one silently could put words
 in their mouth for as long as it was compromised.
 
