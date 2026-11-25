@@ -21,8 +21,8 @@ the agent prints the notice, forgets what it held, and its next request is
 refused.
 
 The demo is `agent-connect-p0-hcp`: Keyring's P0 tier with its HCP increment
-and VTI's milestone V0. It runs from a branch on a fork, against a frozen,
-unpublished commit of the `hcp/*` suite; nothing merges to `main`.
+and VTI's milestone V0. It runs from a branch on a fork, against the
+unpublished `hcp/*` suite as frozen at X0; nothing merges to `main`.
 
 ---
 
@@ -34,8 +34,9 @@ unpublished commit of the `hcp/*` suite; nothing merges to `main`.
   (`trust_tasks/task_consent.rs`, `trust_tasks/consent_request.rs`), with a
   producer for a request the policy engine did not raise
   (`operations/vault/oob_sign_in.rs`, `remote_approval`).
-- Outbound push to a party with no ACL entry, a fresh document per attempt
-  (`vti-common/src/trust_task_push.rs`, `PushReissuer`).
+- Outbound push to a party with no ACL entry, re-signed when a retry would
+  fall outside the acceptance window (`vti-common/src/trust_task_push.rs`,
+  `PushReissuer`); A5 makes the notice a fresh document on every attempt.
 - The counterparty admission pattern for a sender with no ACL entry
   (`messaging/auth.rs`).
 - The chained audit sink and its censuses.
@@ -96,8 +97,9 @@ through the mediator to the VTA.
   the demo: it keeps only the main pin's tags and would remove the demo image.
 - **An environment file** (DIDs, endpoints, image tags) is written by D3 and
   read by the agent client and the Keyring build.
-- **Purposes** are the proposed DTG-registry draft IRIs, read from
-  configuration.
+- **Purposes** are the DTG registry's draft IRIs, `task-execution/1` and
+  `personalisation/1` under `https://registry.trustoverip.org/dtg/purpose/`,
+  read from configuration.
 
 ## The script
 
@@ -159,8 +161,9 @@ transcript.
 
 ## Key design decisions
 
-- **Consent through task-consent**, not step-up: step-up is self-approve only,
-  and task-consent binds the approval to the request's digest
+- **Consent through task-consent**, not step-up: step-up elevates the
+  requester's own session, which VTI-APV-005 forbids for someone else's
+  approval, and task-consent binds the approval to the request's digest
   ([hcp.md](../docs/05-design-notes/hcp.md) §5).
 - **The agent has no ACL entry.** It is admitted through a zero-authority
   hook, and its authority is the grant ([hcp.md](../docs/05-design-notes/hcp.md)
@@ -170,6 +173,11 @@ transcript.
 - **Temporary grants only**, 4 hours by default; persistent is never offered
   in the demo.
 - **`hcp/*` over TSP and DIDComm only**; REST is refused.
+- **openvti-starter's MODE=tunnel**, because a phone cannot reach MODE=local
+  (see "The environment, in portable terms").
+- **Purposes are DTG registry IRIs**
+  (`https://registry.trustoverip.org/dtg/purpose/<name>/<n>`), the draft
+  entries `task-execution/1` and `personalisation/1`, read from configuration.
 - **The agent answers deterministically**, citing entries and purposes, so the
   demo repeats and nothing reaches a model provider.
 - **The pairing (QR and number) is for the demo only**; P1 merges it with

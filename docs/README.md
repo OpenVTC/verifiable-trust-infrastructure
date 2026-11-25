@@ -348,7 +348,7 @@ Others:
   `authenticator` keys on a person's identity only. Each step is mapped to the
   VTI-KEY requirements it satisfies and the Appendix F rows it closes.
 - **[The Human Context Protocol in the VTA — design](05-design-notes/hcp.md)** —
-  proposed: the VTA as an HCP 2.0 Provider carried by the `hcp/*` Trust Tasks,
+  proposed: the VTA as an HCP 2.0-draft-3 Provider carried by the `hcp/*` Trust Tasks,
   with Keyring as the person's consent surface and an agent client admitted
   with no ACL entry; consent through task-consent, sender-bound hashed tokens,
   fail-closed audit, revocation with acknowledged notices, an optional OAuth

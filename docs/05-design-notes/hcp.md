@@ -1,7 +1,7 @@
 # The Human Context Protocol in the VTA: design
 
-**Status:** proposed. Design only: no code has landed, and nothing here is
-merged to `main` until the `hcp/*` Trust Task suite is published (see
+**Status:** proposed. Design only: no code has landed, and no HCP code merges
+to `main` until the `hcp/*` Trust Task suite's first release (see
 [hcp-plan.md](hcp-plan.md) §5).
 **Companion to:** [hcp-plan.md](hcp-plan.md) (the milestones and work
 packages), [hcp-tasks.md](hcp-tasks.md) (the demo-milestone checklist) and
@@ -10,13 +10,19 @@ packages), [hcp-tasks.md](hcp-tasks.md) (the demo-milestone checklist) and
 **Last updated:** 2026-11-25
 
 **Normative sources:**
-- **HCP 2.0-draft-3**, the Human Context Protocol (`loyalagents/hcp-spec`,
-  `spec/2.0-draft-3/specification.md`). Section numbers below written "HCP n.n"
-  are HCP's.
-- **The `hcp/*` Trust Task family** (dtgwg-trust-tasks-tf): 28 tasks at `0.1`
-  that carry HCP's operations, from `hcp/grants/request` to `hcp/import`. The
-  family is not yet published to trusttasks.org; its specifications state the
-  carriage rules this note relies on (token binding, notice delivery).
+- **HCP 2.0-draft-3**, the Human Context Protocol
+  ([loyalagents/hcp-spec](https://github.com/loyalagents/hcp-spec)). Normative
+  citations are to commit `b790561`,
+  [`spec/2.0-draft-3/specification.md`](https://github.com/loyalagents/hcp-spec/blob/b790561/spec/2.0-draft-3/specification.md).
+  Section numbers below written "HCP n.n" are HCP's.
+- **The `hcp/*` Trust Task family**: 28 tasks at `0.1` that carry HCP's
+  operations, from `hcp/grants/request` to `hcp/import`. It is proposed to
+  dtgwg-trust-tasks-tf as one pull request (branch `feat/hcp-suite`), with two
+  pull requests stacked on it (declared rules that a payload schema cannot
+  check, and the demos), and is not yet published to trusttasks.org.
+  Its specifications state the carriage rules this note relies on (token
+  binding, notice delivery). V0 pins the family as frozen at X0
+  ([hcp-plan.md](hcp-plan.md) §3.1).
 - **Framework and shared tasks:** `task-consent/request/0.1`,
   `task-consent/decision/0.2`, `trust-task-next-step/0.1`,
   `trust-task-discovery/0.4`.
@@ -49,7 +55,8 @@ discovery document, and claims a binding or profile whole or not at all
 
 VTI carries HCP as **Trust Tasks**: each HCP operation is an `hcp/*` task
 served by the VTA's existing spine, so it rides TSP, DIDComm or REST like any
-other task, with a document proof by its issuer (VTI-OPS-020, VTI-OPS-021).
+other task, with a document proof by its issuer (VTI-OPS-020) under the same
+document rules on every transport (VTI-OPS-021).
 That carriage is not an HCP binding. HCP has no identifier for it and opens no
 extension point for bindings (HCP A.1, A.3), and every `hcp/*` specification
 says a provider MUST NOT claim the carriage in `conformsTo`. So the plan
@@ -79,13 +86,13 @@ conformance (HCP 18.1).
 
 ## 2. Where the code stands
 
-Read against `main`; there is no HCP code in the workspace.
+Read against `main` as of 2026-11-25; there is no HCP code in the workspace.
 
 | Area | Today | What HCP needs from it |
 |---|---|---|
 | Someone-else-approves | `task-consent/request` + `decision` (`trust_tasks/task_consent.rs`, `consent_request.rs`): the VTA mints one signed request per approver, binds it to a salted digest of the payload, pushes it, and at threshold writes a single-use grant the requester's resubmit consumes (`policy_gate.rs`). `operations/vault/oob_sign_in.rs` `remote_approval` builds a pending consent for a request the policy engine did not raise, with a bound approver and its own digest | The person's affirmative act for a grant (HCP 6.1.6), approved on Keyring. Reused as is, with a new producer |
-| Step-up | `auth/step-up/approve-request` (`trust_tasks/step_up.rs`) is self-approve only, by design: delegated step-up was removed, and "someone else approves" is the consent flow's job | Not usable for a third party's request; see §5.1 |
-| Outbound push | `vti-common/src/trust_task_push.rs`: one engine (TSP, then DIDComm, then REST), `PushReissuer` re-signs each attempt with a fresh `id` and `issuedAt`; a `did:key` recipient is reached through the VTA's own mediator. No ACL entry is needed to send | The revocation notice (HCP 6.2.3) |
+| Step-up | `auth/step-up/approve-request/0.5` (`trust_tasks/step_up.rs`) elevates the requester's own session; its approver is the requester or the ACL entry's named `stepUp.approver` | Not usable for a third party's request: elevating a session on someone else's approval is what VTI-APV-005 forbids; see §5.1 |
+| Outbound push | `vti-common/src/trust_task_push.rs` (`push_trust_task`): one engine (TSP, then DIDComm, then REST); `PushReissuer` re-signs a document with a fresh `id` and `issuedAt` when a retry would fall outside its acceptance window; a `did:key` recipient is reached through the VTA's own mediator. No ACL entry is needed to send | The revocation notice (HCP 6.2.3), re-issued on every attempt (§8) |
 | Inbound from a party with no ACL entry | `messaging/auth.rs` admits an ACL entry, a `PUBLIC_URIS` task (proof-optional, read-only), or a module's `is_counterparty_task`; `messaging/tsp_inbound.rs` refuses an unsolicited message from anyone else | The agent client has no ACL entry (§4.3) |
 | Revocation | `consent/revoke` pushes nothing | Notice, retry, `revocation.notified` |
 | Audit | The chained sink (`vta-audit`), `VtaOperation` dotted actions, the `audit_coverage` census | HCP's event vocabulary (HCP 8.1) |
@@ -101,14 +108,16 @@ changes none of them.
 |---|---|---|---|
 | HCP Provider and Authorization Service (3.2.4, 3.2.5) | The VTA, with the `hcp` cargo feature: the `vta-hcp` subsystem crate behind `vta-service/src/trust_tasks/hcp.rs` | The VTA's DID; signs consent requests, notices and responses | One instance per VTA, so per person; trust contexts are partitions inside it |
 | Provider Operator (3.2.8) | The person, when self-hosted; otherwise the host (a lab, a fleet, a Nitro deployment) | — | Recorded in VTA configuration |
-| Management Client, and the consent surface | **Keyring**, the VTA's admin app, over DIDComm v2 | The admin DID in the ACL; biometric or passcode on the decision | Governance tasks, and every approval |
-| Context Client (3.2.3) | **The agent client**: a CLI for the demo, then the agent plugin | Its own VID with a mailbox on a mediator; `client.id` is the `issuer` VID | **No ACL entry.** Its authority is the grant |
+| Management Client (HCP Client, 3.2.3), and the consent surface | **Keyring**, the VTA's admin app, over DIDComm v2 | The admin DID in the ACL; biometric or passcode on the decision | Governance tasks, and every approval |
+| Context Client (HCP Client, 3.2.3) | **The agent client**: a CLI for the demo, then the agent plugin | Its own VID with a mailbox on a mediator; `client.id` is the `issuer` VID | **No ACL entry.** Its authority is the grant |
 | Context Subject and Authorizing Principal (3.2.1, 3.2.2) | The VTA's person | No HCP key; `subject.id` is an HMAC of the client VID under a per-instance secret, so each client sees a different identifier | Delegates arrive with the Delegated Authorization Profile (V3) |
 | Authorization Service under OAuth (13) | **The OAuth sidecar** (V3), a separate process | Its own TLS key only | §9 |
 
 The architecture, with each trust boundary; read it as "everything that holds
 authority is inside the VTA box, and everything around it either relays or
-asks":
+asks". The HTTP clients on the right include the conformance suite and, from
+V3, third-party clients' resource requests, which never pass through the
+sidecar:
 
 ```text
   person: scans the QR, types the number, approves with a biometric
@@ -160,12 +169,17 @@ asks":
 A grant (HCP 6.1.5) names the client, the categories and actions, the
 purposes, whether it is temporary or persistent, and when it expires.
 
-- **Temporary by default** (HCP 6.1.4): `expiresIn` absent means 4 hours, and
-  no temporary grant outlives 24 hours (HCP 6.1.3). A persistent grant is
+- **Temporary by default**: a temporary grant lasts 4 hours unless the
+  request says otherwise (`expiresIn` absent, in the `hcp/grants/request`
+  specification), and none outlives 24 hours (HCP 6.1.3). A persistent grant is
   never pre-selected; it is its own act after the person confirms (V1).
-- **Purposes** (HCP 6.1.5.2) are IRIs. A request may name none; the person is
-  then asked to choose. The VTA reads the IRIs from configuration, so a rename
-  needs no code change (decision 9).
+- **Purposes** (HCP 6.1.5.2) are absolute URIs; here, IRIs. A request may name none; the person is
+  then asked to choose. The IRIs are the Trust Over IP DTG registry's,
+  `https://registry.trustoverip.org/dtg/purpose/<name>/<n>`; the demo uses the
+  two draft entries proposed there, `task-execution/1` and `personalisation/1`,
+  the absolute forms of VTI's `taskExecution` and `personalisation`
+  (Appendix H). The VTA reads the IRIs from configuration, so a rename in the
+  registry's review needs no code change (decision 9).
 - **Widening** an existing grant needs a new affirmative act (HCP 6.1.6, last
   item). A client that needs more categories asks for a new grant.
 
@@ -208,7 +222,7 @@ The same hook admits the client's acknowledgement of a revocation notice
 (§8), which `tsp_inbound.rs` would otherwise refuse as unsolicited.
 
 This is still a party acting on the VTA with no ACL entry, which VTI-ACL-001
-does not contemplate. It is recorded as a divergence (§11).
+does not contemplate. It is recorded as a divergence (§12).
 
 ### 4.4 The Management Client
 
@@ -218,9 +232,10 @@ tasks (`hcp/grants/revoke`, `hcp/audit/read`, `hcp/disclosures/summary`,
 `hcp/entries/create`) authenticate the **admin DID**: authcrypt sender, a
 required document proof by that DID, and the ACL admin role through
 `act_scope()` and `require_capability`. This is what every Keyring task
-already does, it needs no token store, and the ACL can revoke it. HCP expects
-a Management Client to present authorization evidence; V1 adds dedicated
-opaque management tokens, and until then this is a recorded divergence (§11).
+already does, it needs no token store, and the ACL can revoke it. HCP reserves
+governance to a Management Client holding an HCP credential (HCP 3.2.3, 5.4,
+6.1.9); V1 adds dedicated
+opaque management tokens, and until then this is a recorded divergence (§12).
 
 ## 5. Consent through task-consent
 
@@ -229,8 +244,8 @@ opaque management tokens, and until then this is a recorded divergence (§11).
 HCP 6.1.6 requires an affirmative act by the person, distinct from
 authentication, after they have been told what is asked. The VTA has two
 signed approval paths. Step-up (`auth/step-up/approve-request`) elevates the
-requester's own session and is self-approve only; using it for a third
-party's request would be exactly what VTI-APV-005 forbids ("MUST NOT
+requester's own session, approved by the requester or a named approver;
+using it for a third party's request would be exactly what VTI-APV-005 forbids ("MUST NOT
 implement a consent requirement by elevating the requester's session on the
 strength of another party's approval"). Task-consent is the path built for
 "someone else approves":
@@ -239,7 +254,8 @@ strength of another party's approval"). Task-consent is the path built for
   single-use (VTI-APV-004);
 - the request expires (VTI-APV-008);
 - what the approver sees is written by the VTA into the request's `effects`
-  and covered by the same signature (VTI-APV-011, VTI-APV-013);
+  and covered by the same signature (VTI-APV-011), derived from the same
+  octets as the digest (VTI-APV-013);
 - Keyring already receives it, checks it, gates the decision on the owner's
   biometric or passcode, and signs `task-consent/decision`;
 - the operation is re-checked when it executes (VTI-APV-017).
@@ -285,8 +301,8 @@ sequenceDiagram
   with `trust-task-next-step` and `continuation: resubmit`. The policy gate's
   `auth:consent_required` refusal is the form to avoid.
 - **Holds are keyed by (`threadId`, `issuer`).** A replay inside an hour
-  returns the same `grantId` and no token is stored anywhere; a hold not
-  approved within 300 seconds ends; a decline answers `permissionDenied`.
+  returns the same `grantId` and no token is stored anywhere; the VTA ends a
+  hold not approved within 300 seconds (how long to hold is provider policy); a decline answers `permissionDenied`.
 - **Registration at first approval.** HCP requires a registered client. The
   demo records the registration when the person approves: the name they
   confirm, the operator from VTA configuration. No new wire specification is
@@ -300,20 +316,25 @@ sequenceDiagram
 - **`hcp/entries/query`** returns at most 20 entries in a declared recency
   order (HCP 7.2–7.3), each with a grant-scoped `ref` (an HMAC, so two grants
   cannot correlate entries), a minimisation report (HCP 7.5) and a `useUntil`
-  (HCP 7.6). A client with no notification endpoint gets at most 1 hour.
+  (HCP 7.6). A client with no notification endpoint gets at most 1 hour
+  (HCP 6.2.3, 7.6).
 - **`hcp/entries/create`** accepts `person-declared` entries only. Accepting
   `model-inferred` ones obliges the provider to claim the Memory Manager
   Profile (HCP 4.7, 15.1), so the VTA refuses them until that profile lands
   (V3).
 - **Directives** (HCP 6.4) are delivered with query results from V1; the
-  client applies them in code, never in a model's context.
+  client applies them in code, never in a model's context. "Answers other
+  people" has no HCP action, so its custom action URI is on a domain the
+  Keyring team controls, read from configuration like the purposes
+  (decision 16); whether such a URI is an extension point is question N8.
 - **Same handlers on every path.** HTTP routes and Trust Task handlers call one
   `vta-hcp` operation each, so parity is by construction and a parity test
   proves it (V1).
 
 ## 7. Audit
 
-HCP 8.1 names the events: `grant.issued` (with `modality` and `acr`),
+HCP 8.1 names the events: `grant.issued` (carrying the `modality` and `acr`
+that HCP 6.1.6 requires),
 `context.read` (with what was disclosed and its `useUntil`),
 `context.created`, `context.shared`, `grant.revoked`, `revocation.notified`,
 `directive.set`.
@@ -322,15 +343,15 @@ HCP 8.1 names the events: `grant.issued` (with `modality` and `acr`),
   in the existing chained sink, not as new `VtaAuditEvent` variants, with an
   HCP index for `hcp/audit/read` and `hcp/disclosures/summary`.
 - **Audit before the state change, and fail closed.** If the row cannot be
-  written, the operation answers `unavailable` (VTI-AUD-002, VTI-AUD-003).
+  written, the operation answers `unavailable` (VTI-AUD-003).
   The one exception is revocation and its notices: a revocation must never be
-  refused for want of an audit row (HCP 6.2.1), so it records best-effort,
+  refused for want of an audit row (HCP 6.2.1, 6.2.3), so it records best-effort,
   never `let _ =`.
 - **Refusals are audited too** (VTI-AUD-003). A refusal an honest client never
   triggers, such as a token presented by the wrong VID, also logs
   `security_alert = true`.
 - **Integrity.** The discovery posture declares `audit_integrity:
-  hash-chained`, which is what the chain gives (VTI-AUD-004). Signed
+  hash-chained`, the tamper evidence VTI-AUD-004 asks for. Signed
   checkpoints come in V2, which matters once the operator is not the person.
 - **Personal data** in a row is referenced, not embedded (VTI-AUD-005);
   reading the trail is itself authorized and audited (VTI-AUD-006).
@@ -342,20 +363,21 @@ notice (HCP 6.2.2, 6.2.3).
 
 - **Immediate.** `hcp/grants/revoke` writes a tombstone and the per-request
   check refuses the grant from then on.
-- **Never rate-limited.** HCP forbids limiting, delaying or conditioning
-  revocation (HCP 6.2.1, 6.2.3). `hcp/grants/revoke` is on a code-level
+- **Never rate-limited.** HCP forbids rate-limiting revocation (HCP 6.2.1)
+  and limiting, delaying or conditioning it (HCP 6.2.3). `hcp/grants/revoke` is on a code-level
   exempt-URI list for `operation_budget` and the REST limiters, never a
   setting, with a census test. VTI-TRN-029 requires a node to bound what any
-  one subject can consume; this exemption is recorded as a divergence (§11).
+  one subject can consume; this exemption is recorded as a divergence (§12).
 - **One retry owner.** The notice `hcp/grants/revoked` goes out through
   `push_trust_task`, and its schedule extends `PushReissuer`'s; there is no
   second retry loop (see [retry-and-idempotency.md](retry-and-idempotency.md)).
 - **Fresh document per attempt, stable `noticeId`.** Each attempt is re-signed
-  with a new `id` and `issuedAt`, so the replay and acceptance-window rules
+  with a new `id` and `issuedAt` (`PushReissuer` today re-issues only past the
+  acceptance window; A5 makes it every attempt for this notice), so the replay and acceptance-window rules
   (VTI-OPS-024, VTI-OPS-026) hold; the client de-duplicates on `noticeId`. At
   least 5 attempts over at least an hour (HCP 9.9), nothing after 24 hours.
   HCP 9.9 resends the same SET; the fresh document and the 24-hour cap are
-  carriage rules of the suite, and the difference is an editor question.
+  carriage rules of the suite, and the difference is editor question N10.
 - **Delivered means acknowledged.** A push that returns `Ok` is only queued,
   and a mediator handoff is not delivery. The notice counts as delivered when
   the client's acknowledgement arrives; the VTA then records
@@ -527,13 +549,15 @@ carries it.
 | 6 | **No-ACL admission through a counterparty hook**, never `PUBLIC_URIS` | §4.3 |
 | 7 | **Management by DID-proven request** in V0; management tokens in V1 | §4.4: there is no session token on Keyring's path to reuse |
 | 8 | **Revocation exempt from rate limits**, as a code-level list with a census | HCP's MUST protects the person; a hidden exception would be worse than a recorded one |
-| 9 | **Purpose IRIs proposed to the Trust Over IP DTG registry** (`trustoverip/dtgwg-vsc-registry`), as `https://registry.trustoverip.org/dtg/purpose/<name>/<n>` (draft); the VTA reads them from configuration | A shared, governed vocabulary beside the registry's `/dtg/vsc/`; a rename in review is a configuration change |
+| 9 | **Purpose IRIs in the Trust Over IP DTG registry** (`trustoverip/dtgwg-vsc-registry`), at `https://registry.trustoverip.org/dtg/purpose/<name>/<n>`; the entries are drafts in the registry's review; the VTA reads them from configuration | A shared, governed vocabulary beside the registry's `/dtg/vsc/`; a rename in review is a configuration change |
 | 10 | **Register the client at the person's first approval**; operator from VTA configuration | The smallest reading that keeps the agent out of the ACL; no new wire specification |
 | 11 | **`person-declared` entries only** until the Memory Manager Profile | Accepting `model-inferred` obliges the profile (HCP 15.1) |
 | 12 | **The HTTP Binding beside the handlers from V1**, the full binding and the First-Party claim in V2 | The carriage cannot be claimed (§1); building HTTP beside each handler costs less than a retrofit |
 | 13 | **MCP is not a shortcut** | HCP 10.5 makes a stdio bridge such as `vta-mcp` a client, and MCP over Streamable HTTP maps onto OAuth (HCP 10.1) |
-| 14 | **The OAuth Authorization Service is a sidecar** (V3); the VTA is the sole owner of the token store; mTLS between them | §9 |
+| 14 | **The OAuth Authorization Service is a sidecar** (V3); the VTA is the sole owner of the token store and mints each token against a one-time ticket; mTLS between them | §9 |
 | 15 | **The demo's client answers deterministically**, citing entries and purposes | Repeatable, and no disclosure to a model provider |
+| 16 | **The directive action URI for "answers other people" is on a domain the Keyring team controls**, read from configuration | HCP 6.4 allows an absolute URI; no registry home fits yet, since a shared action list would mix acting as oneself with acting in the person's name (N8) |
+| 17 | **The demo runs on openvti-starter's MODE=tunnel** | A phone cannot reach MODE=local, which binds loopback, uses `localhost` DIDs and runs no mediator ([tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md)) |
 
 Open: whether the sidecar is our own small binary or embeds a mature
 authorization server (a Rust library survey decides it, before V3); and the
@@ -544,10 +568,16 @@ placements in §9.4.
 A divergence is recorded, not hidden, and recording it is not an exemption.
 Three registers hold them:
 
-- **VTI requirement divergences** go to Appendix F of the VTI specification,
-  as a dtgwg-vti-spec PR, separate from any change proposal.
-- **Proposed new VTI requirements** for HCP (`VTI-HCP-*`) go to dtgwg-vti-spec
-  as a change proposal of their own.
+- **Divergences** from a VTI requirement, or from an HCP rule the VTA departs
+  from for a stated reason, go to Appendix F of the VTI specification, as a
+  dtgwg-vti-spec PR, separate from any change proposal.
+- **Proposed VTI changes** go to dtgwg-vti-spec as change proposals of their
+  own: the new requirements for HCP (`VTI-HCP-*`), and an Appendix H change
+  that lists each purpose's DTG registry IRI as its canonical identifier, with
+  the bare name (`taskExecution`, `personalisation`, …) kept as a deprecated
+  alias that a verifier maps to the IRI before the exact comparison
+  (VTI-ACL-109). Without it, a grant naming the IRI and an ACL or credential
+  naming the bare name are two strings for one purpose.
 - **Readings of HCP** that HCP leaves open are marked "pending HCP
   confirmation" in the `hcp/*` specifications and sent to the HCP editors as
   questions, with the working demo.
@@ -557,13 +587,13 @@ Three registers hold them:
 | No HCP `conformsTo` until V2: an aligned pilot | HCP 18.1 (posture, not a breach) | This note §1; the discovery document |
 | A Context Client acts with no ACL entry, through a zero-authority hook | VTI-ACL-001 | Appendix F |
 | `hcp/grants/revoke` exempt from the operation budget | VTI-TRN-029 | Appendix F |
-| Management by DID-proven request, not an HCP token (V0) | HCP 1.6, 5.4 | Appendix F; editor question |
+| Management by DID-proven request, not an HCP token (V0) | HCP 1.6, 5.4 | Appendix F |
 | `hcp/*` refused over REST (V0), so the decision depends on the transport | VTI-TRN-002, VTI-OPS-092 | Appendix F |
-| A token is bound to the `issuer` VID | HCP 9.3 (stricter) | Suite carriage rule |
-| A fresh notice document per attempt; nothing after 24 hours | HCP 9.9 (same SET resent) | Suite carriage rule; editor question |
+| A token is bound to the `issuer` VID | HCP 9.3, a plain Bearer token (stricter) | Suite carriage rule |
+| A fresh notice document per attempt; nothing after 24 hours | HCP 9.9 (same SET resent) | Suite carriage rule; editor question N10 |
 | A wrong-VID token answers `permissionDenied`, not `scope-denied` | HCP 9.7 (an oracle) | Editor question N6 |
 | The client is registered at the person's first approval | HCP 6.1.7 (left to the profile) | Editor question N9 |
-| A custom directive action IRI for "answers other people" | HCP 6.4, A.3 | Editor question N8 |
+| A custom directive action URI for "answers other people", on a Keyring-controlled domain | HCP 6.4, A.3 | Editor question N8 |
 | A demo-only pairing (QR and number) | Keyring's agent-connect pairing | The Keyring companion plan; merged in V1 |
 
 Editor questions new with this work, sent with the working demo:
@@ -579,6 +609,7 @@ Editor questions new with this work, sent with the working demo:
 | N7 | Is a person in a data room "a party operated by a different organization" for `onwardSharing.domains`? |
 | N8 | Is a custom directive action URI an extension point, and who registers it? |
 | N9 | May a provider register a client at the person's first approval of its grant request? |
+| N10 | May a carriage resend a revocation notice as a fresh signed document with a stable notice id, and stop after 24 hours, where HCP 9.9 resends the same SET? |
 
 ## 13. Conformance
 
@@ -601,5 +632,6 @@ where this ends.
   read only in part; A3 confirms it.
 - The phone leg of the tunnelled demo environment, and the agent client's
   mediator receive loop, are reasoned from the code, not run.
-- The Rust OAuth libraries' maturity (V3), and the RFC texts, which were read
-  from knowledge.
+- The Rust OAuth libraries' maturity (V3). The OAuth RFCs cited in §9 (7009,
+  8414, 8935, 9207, 9700, 9728) were not re-read against their texts for this
+  note.

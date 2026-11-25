@@ -1,6 +1,6 @@
 # The Human Context Protocol in the VTA: V0 task checklist
 
-**Status:** not started; 0 of 12 V0 tasks done.
+**Status:** not started; 0 of 15 V0 tasks done.
 **Companion to:** [hcp.md](hcp.md) (the design) and
 [hcp-plan.md](hcp-plan.md) (the plan this is generated from). The demo week
 is [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md).
@@ -9,8 +9,9 @@ is [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md).
 
 V0 is task-level here; V1, V2 and V3 are milestone-level in
 [hcp-plan.md](hcp-plan.md) §3.4 and get their own pass when they start. Only
-the VTI tasks are listed; the agent client, Keyring and environment tracks are
-checklists in their own repositories.
+the VTI tasks and the coordination tasks V0's exit needs are listed; the agent
+client, Keyring and environment tracks are checklists in their own
+repositories.
 
 Each task: **Acceptance** (true when done) · **Verify** (the evidence) ·
 **Files** (where the change lands) · **Deps**. Every cargo command takes
@@ -50,6 +51,31 @@ by raising a count or growing an allowlist.
     `docs/02-vta/feature-flags.md`, the CI workflow.
   - Deps: X0.
 
+- [ ] **X1 — VTI specification drafts.**
+  - Acceptance: three separate texts are drafted ([hcp.md](hcp.md) §12): the
+    Appendix F divergence entries; the `VTI-HCP-*` change proposal; and the
+    Appendix H change listing each purpose's DTG registry IRI as canonical,
+    with the bare name as a deprecated alias mapped to the IRI before the
+    exact comparison (VTI-ACL-109). None is filed in V0.
+  - Verify: the three drafts are linked from the demo contract.
+  - Deps: none; final text after A9.
+
+- [ ] **X2 — Editor questions.**
+  - Acceptance: N1–N10 ([hcp.md](hcp.md) §12) are written, each with the
+    HCP section it reads and the working assumption the suite takes; they are
+    sent with the working demo, not before.
+  - Verify: the questions are linked from the demo contract.
+  - Deps: none.
+
+- [ ] **X5 — Purpose vocabulary.**
+  - Acceptance: the definition format and the draft entries
+    `task-execution/1` and `personalisation/1` are proposed to
+    `trustoverip/dtgwg-vsc-registry`; the VTA's configuration names those
+    IRIs, so a rename in review is a configuration change only.
+  - Verify: the registry proposal's own checks pass; A4's fixtures use the
+    configured IRIs.
+  - Deps: none; the demo does not wait on review.
+
 ## VTI
 
 - [ ] **A1 — Pin the suite in `vti-specs-hcp`.**
@@ -88,7 +114,7 @@ by raising a count or growing an allowlist.
     DID, with the HCP 6.1.6 items as effects (or a purpose choice where none
     was named); approval gives a grant and a token, expiring 4 hours later;
     a replay within an hour gives the same `grantId` and stores no token; a
-    hold not approved in 300 seconds ends; a decline answers
+    hold not approved in 300 seconds ends (VTA policy); a decline answers
     `permissionDenied`; the client registration is recorded at approval.
   - Verify: `cargo nextest run -p vta-hcp --locked`; A9's hold cases.
   - Files: `vta-hcp/src/request.rs`; hooks in
@@ -156,7 +182,7 @@ by raising a count or growing an allowlist.
 
 - [ ] **A9 — Integration tests.**
   - Acceptance: one `hcp_demo` module in the single `it` binary, file-level
-    `#![cfg(feature = "hcp")]`, through `MockVta` and the transport harness
+    `#![cfg(feature = "hcp")]`, through `MockVta` with the `transport-harness` feature
     over TSP with real gates; the happy path and each refusal (another VID's
     token, a revoked grant, a wrong purpose, REST, revoke under an exhausted
     budget) pass; the agent VID is a `did:webvh`; a transcript is recorded for
