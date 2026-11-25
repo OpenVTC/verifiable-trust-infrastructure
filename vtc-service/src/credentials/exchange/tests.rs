@@ -671,6 +671,18 @@ async fn build_di_vp(
     aud: &str,
     nonce: &str,
 ) -> (String, String, Value) {
+    build_di_vp_placed(holder_seed, issuer_seed, Some((nonce, aud)), None).await
+}
+
+/// [`build_di_vp`] with the binding placed explicitly (#1358): `body` puts
+/// `(nonce, domain)` on the presentation, `proof` puts `(challenge, domain)` in
+/// the holder proof's options — either, both, or neither.
+async fn build_di_vp_placed(
+    holder_seed: u8,
+    issuer_seed: u8,
+    body: Option<(&str, &str)>,
+    proof: Option<(&str, &str)>,
+) -> (String, String, Value) {
     use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
     use affinidi_secrets_resolver::secrets::Secret;
 
@@ -715,24 +727,26 @@ async fn build_di_vp(
     .unwrap();
     vc["proof"] = serde_json::to_value(&vc_proof).unwrap();
 
-    // Holder-signed VP carrying nonce + domain.
+    // Holder-signed VP carrying the binding where asked.
     let mut vp = json!({
         "@context": ["https://www.w3.org/ns/credentials/v2"],
         "type": ["VerifiablePresentation"],
         "holder": holder_did,
         "verifiableCredential": [vc],
-        "nonce": nonce,
-        "domain": aud,
     });
-    let vp_proof = DataIntegrityProof::sign(
-        &vp,
-        &holder_secret,
-        SignOptions::new()
-            .with_proof_purpose("authentication")
-            .with_cryptosuite(CryptoSuite::EddsaJcs2022),
-    )
-    .await
-    .unwrap();
+    if let Some((nonce, aud)) = body {
+        vp["nonce"] = json!(nonce);
+        vp["domain"] = json!(aud);
+    }
+    let mut options = SignOptions::new()
+        .with_proof_purpose("authentication")
+        .with_cryptosuite(CryptoSuite::EddsaJcs2022);
+    if let Some((challenge, aud)) = proof {
+        options = options.with_challenge(challenge).with_domain(aud);
+    }
+    let vp_proof = DataIntegrityProof::sign(&vp, &holder_secret, options)
+        .await
+        .unwrap();
     vp["proof"] = serde_json::to_value(&vp_proof).unwrap();
 
     (holder_did, issuer_did, vp)
@@ -772,6 +786,95 @@ async fn verify_vp_token_rejects_a_di_vp_with_a_wrong_nonce() {
         .unwrap_err();
     assert!(
         matches!(&err, AppError::Validation(m) if m.contains("nonce")),
+        "{err:?}"
+    );
+}
+
+// ── #1358: a DI VP binds the nonce + audience in the proof or the body ──
+
+const AUD: &str = "did:web:vtc.example";
+const NONCE: &str = "verifier-nonce-1358";
+
+async fn verify_placed(
+    body: Option<(&str, &str)>,
+    proof: Option<(&str, &str)>,
+) -> Result<VerifiedPresentationSet, AppError> {
+    let (_h, _i, vp) = build_di_vp_placed(5, 9, body, proof).await;
+    verify_vp_token(&json!({ "membership": [vp] }), AUD, NONCE, None, Utc::now()).await
+}
+
+#[tokio::test]
+async fn a_di_vp_bound_only_in_the_body_is_accepted() {
+    verify_placed(Some((NONCE, AUD)), None)
+        .await
+        .expect("presentation nonce + domain");
+}
+
+#[tokio::test]
+async fn a_di_vp_bound_only_in_the_proof_is_accepted() {
+    verify_placed(None, Some((NONCE, AUD)))
+        .await
+        .expect("proof challenge + domain (OID4VP §14.1.2)");
+}
+
+#[tokio::test]
+async fn a_di_vp_bound_in_both_places_agreeing_is_accepted() {
+    verify_placed(Some((NONCE, AUD)), Some((NONCE, AUD)))
+        .await
+        .expect("both placements, same values");
+}
+
+#[tokio::test]
+async fn a_di_vp_whose_placements_disagree_is_refused() {
+    // The body is right and the proof names another nonce …
+    let err = verify_placed(Some((NONCE, AUD)), Some(("another-nonce", AUD)))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("challenge")),
+        "{err:?}"
+    );
+    // … or the proof is right and the body names another audience.
+    let err = verify_placed(Some((NONCE, "did:web:other.example")), Some((NONCE, AUD)))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("domain")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_di_vp_bound_in_neither_place_is_refused() {
+    let err = verify_placed(None, None).await.unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("binds no nonce")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_di_vp_proof_only_binding_with_another_audience_is_refused() {
+    let err = verify_placed(None, Some((NONCE, "did:web:other.example")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("domain")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_proof_challenge_is_covered_by_the_holder_signature() {
+    // Re-pointing a captured presentation at a fresh challenge breaks its proof:
+    // `challenge` is a proof option, hashed into the eddsa-jcs-2022 signature.
+    let (_h, _i, mut vp) = build_di_vp_placed(5, 9, None, Some(("old-nonce", AUD))).await;
+    vp["proof"]["challenge"] = json!(NONCE);
+    let err = verify_vp_token(&json!({ "membership": [vp] }), AUD, NONCE, None, Utc::now())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, AppError::Validation(m) if m.contains("did not verify")),
         "{err:?}"
     );
 }

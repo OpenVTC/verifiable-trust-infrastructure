@@ -288,12 +288,18 @@ async fn build_di_vp(
         "domain": audience,
     });
 
+    // The nonce + audience go in the proof as well (`challenge` + `domain`, OID4VP
+    // §14.1.2), where `credential-exchange/present/0.2` prefers them; they are
+    // proof options, so the signature covers them. The body copies stay for
+    // verifiers that read only those (#1358).
     let proof = DataIntegrityProof::sign(
         &vp,
         holder_signer,
         SignOptions::new()
             .with_proof_purpose("authentication")
-            .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+            .with_cryptosuite(CryptoSuite::EddsaJcs2022)
+            .with_challenge(nonce)
+            .with_domain(audience),
     )
     .await
     .map_err(|e| VpError::Sign(e.to_string()))?;
@@ -440,6 +446,9 @@ mod tests {
         assert_eq!(vp["holder"], json!(holder_did));
         assert_eq!(vp["nonce"], json!("nonce-123"));
         assert_eq!(vp["domain"], json!("did:web:community.example"));
+        // And in the holder proof, which signs them (#1358).
+        assert_eq!(vp["proof"]["challenge"], json!("nonce-123"));
+        assert_eq!(vp["proof"]["domain"], json!("did:web:community.example"));
         assert_eq!(
             vp["verifiableCredential"][0]["credentialSubject"]["givenName"],
             json!("Ada")

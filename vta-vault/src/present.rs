@@ -369,13 +369,19 @@ pub async fn present_di_vc(
         "domain": aud,
     });
 
-    // Holder binding (§14.4): sign the VP (covering nonce + domain).
+    // Holder binding (§14.4): sign the VP (covering nonce + domain). The nonce
+    // + audience also go in the proof as `challenge` + `domain` (OID4VP
+    // §14.1.2), which `credential-exchange/present/0.2` prefers; as proof
+    // options they are covered by the signature. The body copies stay for
+    // verifiers that read only those (#1358).
     let proof = DataIntegrityProof::sign(
         &vp,
         holder_secret,
         SignOptions::new()
             .with_proof_purpose("authentication")
-            .with_cryptosuite(consent::holder_suite(holder_secret)?),
+            .with_cryptosuite(consent::holder_suite(holder_secret)?)
+            .with_challenge(nonce)
+            .with_domain(aud),
     )
     .await
     .map_err(|e| AppError::Internal(format!("sign VP: {e}")))?;
@@ -1855,6 +1861,9 @@ mod tests {
         assert_eq!(vp["holder"], holder_did);
         assert_eq!(vp["nonce"], "nonce-1"); // freshness, covered by the holder proof
         assert_eq!(vp["domain"], verifier); // audience binding
+        // The same binding in the holder proof (OID4VP §14.1.2, #1358).
+        assert_eq!(vp["proof"]["challenge"], "nonce-1");
+        assert_eq!(vp["proof"]["domain"], verifier);
         assert_eq!(
             vp["verifiableCredential"][0]["credentialSubject"]["givenName"],
             "Alice"
@@ -1872,6 +1881,20 @@ mod tests {
                 VerifyOptions::new(),
             )
             .expect("holder VP proof must verify");
+
+        // … and the proof's `challenge` is signed: re-pointing it breaks the proof.
+        let mut forged = proof.clone();
+        forged.challenge = Some("nonce-2".into());
+        assert!(
+            forged
+                .verify_with_public_key(
+                    &unsigned,
+                    holder_secret.get_public_bytes(),
+                    VerifyOptions::new(),
+                )
+                .is_err(),
+            "a re-pointed challenge must not verify"
+        );
     }
 
     #[tokio::test]
