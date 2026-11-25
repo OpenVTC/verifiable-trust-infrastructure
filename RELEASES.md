@@ -33,7 +33,8 @@ set when the previous release goes GA.
 | Cypress | — | — | 2026-08-02 | 2026-08-18 (`Cypress`) | — | end of life |
 | Dogwood | — | — | 2026-08-29 | 2026-08-30 | `VTI-Dogwood-R1` 2026-09-01 | end of life — no branch (below) |
 | Eucalyptus | `release/eucalyptus` | standard | 2026-09-17 | 2026-10-07 | — | **supported (N)** |
-| Fig | — | — | TBD, 4–6 weeks after Eucalyptus GA | TBD | — | in development on `main` |
+| Fig | `release/fig` | standard | 2026-11-25 (`VTI-Fig-RC-0`) | TBD | — | release candidate |
+| Ginkgo | — | — | TBD, 4–6 weeks after Fig GA | TBD | — | in development on `main` |
 
 Aspen to Eucalyptus went out as tags on `main`, before release branches
 existed. Eucalyptus was given its branch after the fact (`--released-as`):
