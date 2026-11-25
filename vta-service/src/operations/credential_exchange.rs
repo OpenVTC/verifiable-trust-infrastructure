@@ -18,7 +18,9 @@
 //!   **every** matched credential ([`present_matched_set`], one consent record +
 //!   ACL-gated holder key per credential, OID4VP DCQL `vp_token` keyed by
 //!   credential-query id) for a **trusted** verifier, or defer with
-//!   [`PresentOutcome::ConsentRequired`] for an out-of-band approval.
+//!   [`PresentOutcome::ConsentRequired`] for an out-of-band approval. What a
+//!   verifier is told never says whether anything is held (see
+//!   [`PresentOutcome`]).
 //!
 //! ## Scope of this slice
 //! - **SD-JWT-VC** — fully wired (the issuer `did:key` is resolved inside
@@ -967,23 +969,47 @@ pub struct RequestedCredential {
 }
 
 /// The outcome of [`present_query`].
+///
+/// # What the verifier may learn
+///
+/// `credential-exchange/query/0.1` (Conformance): "`noMatch` and \"held but not
+/// consented\" MUST be indistinguishable to the verifier, or refusal itself
+/// becomes an enumeration primitive." So the outcome is decided by **who is
+/// asking** first and by what is held only where the answer cannot show it:
+///
+/// - An **untrusted** verifier always gets [`ConsentRequired`](Self::ConsentRequired)
+///   — whether the query matched, matched nothing, or matched only credentials
+///   their context withholds from this verifier. `requested` is empty in the
+///   last two cases; the caller persists a deferral only when it is not, and
+///   answers the same way either way.
+/// - A **trusted** verifier gets [`Presented`](Self::Presented), or
+///   `NotFound` carrying [`NO_PRESENTABLE_MATCH`] for both "nothing matched" and
+///   "context policy permits none of the matches" — one error, no reason that
+///   tells them apart.
 #[derive(Debug)]
 pub enum PresentOutcome {
     /// A consent-gated, selectively-disclosed presentation was produced.
     Presented(PresentBody),
-    /// The query matched held credential(s), but the verifier is not trusted and
-    /// no consent has been granted — disclosure needs an out-of-band approval
-    /// (which mints the consent records, after which the holder re-presents).
+    /// The verifier is not trusted, so nothing is disclosed without an
+    /// out-of-band approval (which mints the consent records, after which the
+    /// holder re-presents). Returned for **every** untrusted query, matched or
+    /// not: an empty `requested` means there is nothing to defer.
     ConsentRequired {
         /// The verifier asking for the presentation.
         verifier_did: String,
         /// Every held credential the query would disclose (what the approver
-        /// authorizes — a multi-credential query lists each).
+        /// authorizes — a multi-credential query lists each). Empty when nothing
+        /// this verifier may be shown satisfies the query.
         requested: Vec<RequestedCredential>,
         /// The verifier's stated purpose (shown to the approver).
         purpose: String,
     },
 }
+
+/// The one reason [`present_query`] gives a trusted verifier when nothing will
+/// be presented to it — whether nothing matched or context policy withholds
+/// every match. Fixed, so the two cannot be told apart.
+pub const NO_PRESENTABLE_MATCH: &str = "no credential this holder can present satisfies the query";
 
 /// The full holder `query → present` path, end to end: match the verifier's
 /// query over the vault and, under the consent [`ConsentPolicy`], either present
@@ -994,8 +1020,10 @@ pub enum PresentOutcome {
 /// ([`present_matched_set`]) — answering a multi-credential query in one
 /// `vp_token`. For any other verifier it returns
 /// [`PresentOutcome::ConsentRequired`] listing every credential the query would
-/// disclose (the wire layer persists this for an out-of-band approval). No holder
-/// key is resolved on the defer path. `NotFound` when nothing satisfies the query.
+/// disclose (the wire layer persists this for an out-of-band approval) — or an
+/// empty list when nothing matched, so the two answers cannot be told apart. No
+/// holder key is resolved on the defer path. A trusted verifier gets `NotFound`
+/// with [`NO_PRESENTABLE_MATCH`] when nothing it may be shown satisfies the query.
 ///
 /// `auth` gates holder-key access — the autonomous wire flow passes the VTA's own
 /// authority; an operator-initiated path passes the operator's claims.
@@ -1013,12 +1041,9 @@ pub async fn present_query(
     status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<PresentOutcome, AppError> {
+    // No early return on an empty match: the same work runs, and the same
+    // decision below is reached, whether or not anything is held.
     let mut matched = match_vault(vault, &query.dcql_query, query.oid4vp_session.as_ref()).await?;
-    if matched.is_empty() {
-        return Err(AppError::NotFound(
-            "no held credential satisfies the verifier's query".to_string(),
-        ));
-    }
 
     // Context-policy guardrail (resource-bound, actor-independent): each matched
     // credential's owning context governs *to whom* and *which types* it may be
@@ -1049,20 +1074,19 @@ pub async fn present_query(
             filtered.push(m);
         }
     }
-    if filtered.is_empty() {
-        return Err(AppError::NotFound(
-            "context policy permits none of the matched credentials to this verifier".to_string(),
-        ));
-    }
     let matched = filtered;
 
     if !policy.trusted_verifiers.contains(verifier_did) {
-        // Defer — list every credential the query would disclose for the approver.
+        // Defer — list every credential the query would disclose for the
+        // approver. Possibly none: the verifier is answered the same way.
         return Ok(PresentOutcome::ConsentRequired {
             verifier_did: verifier_did.to_string(),
             requested: matched.into_iter().map(requested_from_match).collect(),
             purpose: query.purpose.clone(),
         });
+    }
+    if matched.is_empty() {
+        return Err(AppError::NotFound(NO_PRESENTABLE_MATCH.to_string()));
     }
 
     let present = present_matched_set(
@@ -1886,7 +1910,8 @@ mod tests {
 
     /// Resource-bound present guardrail: a credential whose owning context
     /// forbids the verifier is excluded from the presentation (here it is the
-    /// only match, so the result is `NotFound`); a verifier the context permits
+    /// only match, so the result is `NotFound`, with the same reason as
+    /// nothing matching at all); a verifier the context permits
     /// presents normally. Applies even though the caller is super-admin.
     #[tokio::test]
     async fn present_query_excludes_credentials_their_context_forbids_the_verifier() {
@@ -1958,7 +1983,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(forbidden, Err(AppError::NotFound(_))),
+            matches!(&forbidden, Err(AppError::NotFound(m)) if m == NO_PRESENTABLE_MATCH),
             "context policy must exclude the forbidden verifier, got {forbidden:?}"
         );
 
