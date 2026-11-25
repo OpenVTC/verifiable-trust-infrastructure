@@ -626,15 +626,24 @@ When adding a flow, add it here and a line to the root index.
   reading rules have one implementation, so the portal, the wallet's console
   and Keyring show one room alike. A chat message is written with the wallet's
   `putMessage` (text, no title), never as a note with an empty or invented
-  title; the compose switch offers it only when the wallet has the method, and
-  starts on Note. The conversation scrolls in its own window opened at the
-  newest message — layout only, never a reordering. An author the wallet's
+  title; a message is offered only when the wallet has the method. A room
+  of notes and files keeps the records list and its Add panel, whose switch
+  starts on Note. A room used for chat **is the page** (`ChatRoom.tsx`): a
+  window-high card with the room's name, tier and what the community sees,
+  the room's DID, epoch, storage and "you post as" folded under *About this
+  room*, the messages (runs of one author grouped by `conversation::runsOf`
+  — layout only), notes and files as cards opened in a drawer, and a docked
+  composer that starts on a message, with a note behind its toggle and a file
+  behind the paperclip. The conversation scrolls in its own window opened at
+  the newest message — layout only, never a reordering. An author the wallet's
   reading gives **no** name is named as the community's directory shows them
   (`room-authors.ts`, `vtc/directory/query/0.1` with the portal's key), else by
-  their DID marked as one; the room's own name always comes first. Look authors
-  up only in `open` / `attributed` rooms, whose host already sees who wrote
-  what — never a private room's, which would tell the community who writes
-  there — and send only the DID, never the room.
+  their DID marked as one; the room's own name always comes first, and every
+  name in the chat (messages, reactions, rewrites, the drawer's "By", "you
+  post as") goes through `speakerOf` and the same cards. Look authors up only
+  in `open` / `attributed` rooms, whose host already sees who wrote what —
+  never a private room's, which would tell the community who writes there —
+  and send only the DID, never the room.
 - **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
   the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
   ballot is filled in the wallet's own window and the cast goes from the wallet to

@@ -8,13 +8,12 @@
 // file they add is confirmed there first. Design:
 // `docs/05-design-notes/data-rooms-files.md` §8.5.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Boxes, CornerDownRight, Download, Eye, FileText, FilePlus2, Gift, MessagesSquare, NotebookPen, Plus, RefreshCw, Send, Share2, X } from "lucide-react";
+import { ArrowLeft, Boxes, Download, Eye, FileText, FilePlus2, Gift, MessagesSquare, NotebookPen, Plus, RefreshCw, Send, Share2, X } from "lucide-react";
 
-import { absentWords, byDay, clockTime, excerpt, isConversation, shownTime, speakerOf, type Speaker } from "./conversation";
-import { AuthorName } from "./author-card";
-import { authorsOf, mayLookUpAuthors, useAuthorCards, type AuthorCard } from "./room-authors";
+import { isConversation } from "./conversation";
+import { ChatRoom, describe } from "./ChatRoom";
 
 import { blobBytes, createLimiter, mayPreview, showBytes, worthAutoPreview, type Shown } from "./file-preview";
 import { InstallWallet } from "./InstallWallet";
@@ -36,8 +35,6 @@ import {
   type RecordSummary,
   type RoomInfo,
   type RoomRecord,
-  type Conversation as ConversationView,
-  type ConversationRecord,
   type TransferProgress,
   type WalletRooms,
 } from "./wallet-rooms";
@@ -456,21 +453,30 @@ export function RoomPage({ hostDid, roomId }: { hostDid: string; roomId: string 
   const wallet = walletRooms();
   return (
     <main className="home home-wide" id="main">
-      <p>
-        <a href="#/rooms" className="back">
-          <ArrowLeft size={14} aria-hidden="true" /> Data rooms
-        </a>
-      </p>
-      <section className="welcome welcome-tight">
-        <p className="eyebrow">Data room</p>
-        {wallet ? (
-          <RoomHeading wallet={wallet} hostDid={hostDid} roomId={roomId} />
-        ) : (
-          <h1 className="wrap room-title">{shortenDid(roomId)}</h1>
-        )}
-      </section>
-      {wallet ? <Room wallet={wallet} hostDid={hostDid} roomId={roomId} /> : <NoWallet />}
+      {wallet ? (
+        <Room wallet={wallet} hostDid={hostDid} roomId={roomId} />
+      ) : (
+        <>
+          <BackToRooms />
+          <section className="welcome welcome-tight">
+            <p className="eyebrow">Data room</p>
+            <h1 className="wrap room-title">{shortenDid(roomId)}</h1>
+          </section>
+          <NoWallet />
+        </>
+      )}
     </main>
+  );
+}
+
+/** The way back to the rooms list. A chat carries its own, in its header. */
+function BackToRooms() {
+  return (
+    <p>
+      <a href="#/rooms" className="back">
+        <ArrowLeft size={14} aria-hidden="true" /> Data rooms
+      </a>
+    </p>
   );
 }
 
@@ -518,45 +524,76 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
     }
   };
 
+  const heading = (
+    <>
+      <BackToRooms />
+      <section className="welcome welcome-tight">
+        <p className="eyebrow">Data room</p>
+        <RoomHeading wallet={wallet} hostDid={hostDid} roomId={roomId} />
+      </section>
+    </>
+  );
   if (info.isPending || (typeof wallet.conversation === "function" && conversation.isPending)) {
-    return <p className="muted">Asking your wallet…</p>;
+    return (
+      <>
+        {heading}
+        <p className="muted">Asking your wallet…</p>
+      </>
+    );
   }
   if (info.isError) {
     return (
-      <div className="alert" role="alert">
-        <p className="alert-title">This room did not open.</p>
-        <p>{errorText(info.error)}</p>
-        <p>
-          If you have not shared it with this portal, go back and choose <b>Share rooms…</b>.
-        </p>
-      </div>
+      <>
+        {heading}
+        <div className="alert" role="alert">
+          <p className="alert-title">This room did not open.</p>
+          <p>{errorText(info.error)}</p>
+          <p>
+            If you have not shared it with this portal, go back and choose <b>Share rooms…</b>.
+          </p>
+        </div>
+      </>
+    );
+  }
+  // A room used for chat reads as a chat: the conversation is the page.
+  if (conversation.data && isConversation(conversation.data)) {
+    return (
+      <ChatRoom
+        wallet={wallet}
+        hostDid={hostDid}
+        info={info.data}
+        view={conversation.data}
+        onRefresh={() => void conversation.refetch()}
+        backHref="#/rooms"
+        byDid={(d) => authorName(d)}
+        renderRecord={(key, onClose, byline) => (
+          <RecordView
+            wallet={wallet}
+            hostDid={hostDid}
+            roomId={roomId}
+            recordKey={key}
+            onClose={onClose}
+            byline={byline}
+          />
+        )}
+      />
     );
   }
   // The list on the left; on the right, sticky, what the member is working on — the record
   // they opened, else the form to add one — so it is never below the fold.
   return (
     <>
+      {heading}
       <RoomFacts info={info.data} />
       <div className={open ? "room-layout has-open" : "room-layout"}>
-        {conversation.data && isConversation(conversation.data) ? (
-          <ConversationCard
-            view={conversation.data}
-            me={info.data.member}
-            visibility={info.data.visibility}
-            open={open}
-            setOpen={setOpen}
-            onRefresh={() => void conversation.refetch()}
-          />
-        ) : (
-          <Records
-            wallet={wallet}
-            hostDid={hostDid}
-            roomId={roomId}
-            me={info.data.member}
-            open={open}
-            setOpen={setOpen}
-          />
-        )}
+        <Records
+          wallet={wallet}
+          hostDid={hostDid}
+          roomId={roomId}
+          me={info.data.member}
+          open={open}
+          setOpen={setOpen}
+        />
         <div className="room-pane" ref={pane}>
           {open ? (
             <RecordView
@@ -681,206 +718,6 @@ function Records({
   );
 }
 
-// ── A room used for chat ────────────────────────────────────────────────────
-
-/**
- * The room as a conversation, oldest first under a divider for each day: each
- * message under the name its author gave themselves in this room (or "You"),
- * replies quoting what they answer, reactions counted beneath; notes and files
- * as one line each, opened in the pane beside. The wallet decided all of it by
- * the reading rules; this lays it out. An author the room gives no name is
- * named as the community's directory shows them — asked only where the room's
- * host already sees who wrote what (`room-authors.ts`) — else by their DID.
- */
-function ConversationCard({
-  view,
-  me,
-  visibility,
-  open,
-  setOpen,
-  onRefresh,
-}: {
-  view: ConversationView;
-  me?: string;
-  visibility?: string;
-  open: string | null;
-  setOpen: (k: string | null) => void;
-  onRefresh: () => void;
-}) {
-  const byKey = new Map(view.records.map((r) => [r.key, r]));
-  // Only the authors the room itself gives no name: the wallet's reading comes first.
-  const unnamed = authorsOf(view.records, me).filter((d) => !view.names[d]?.trim());
-  const cards = useAuthorCards(unnamed, mayLookUpAuthors(visibility));
-  const speaker = (did: string | undefined) =>
-    speakerOf(did, me, view.names, (d) => authorName(d), (d) => cards.get(d)?.name);
-  const warning = adverseVerification(view.verification);
-  const scroller = useStickToNewest(view.records, me);
-  return (
-    <section className="card" aria-labelledby="conversation-heading">
-      <div className="card-head">
-        <MessagesSquare size={18} aria-hidden="true" />
-        <h2 id="conversation-heading">Conversation</h2>
-        <span className="push" />
-        {open && (
-          <button type="button" className="btn btn-sm" onClick={() => setOpen(null)}>
-            <Plus size={14} aria-hidden="true" /> Add
-          </button>
-        )}
-        <button type="button" className="btn btn-ghost btn-sm" onClick={onRefresh} aria-label="Refresh">
-          <RefreshCw size={14} aria-hidden="true" />
-        </button>
-      </div>
-      {warning && (
-        <div className="alert" role="alert">
-          <p className="alert-title">The host's listing does not add up.</p>
-          <p>{warning} Your wallet still shows what it was given.</p>
-        </div>
-      )}
-      {!view.complete && (
-        <p className="muted small">The listing stopped at a page bound; older messages are not shown.</p>
-      )}
-      <div className="chat-scroll" ref={scroller.ref} onScroll={scroller.onScroll} tabIndex={0}>
-        <ol className="chat" aria-label="Messages">
-          {byDay(view.records).map(({ day, records }, i) => (
-            <li key={`${day}-${i}`} className="chat-day">
-              {day && <p className="chat-divider">{day}</p>}
-              <ol className="chat-day-items">
-                {records.map((r) => (
-                  <ChatItem
-                    key={r.key}
-                    r={r}
-                    target={r.replyTo ? byKey.get(r.replyTo.key) : undefined}
-                    speaker={speaker}
-                    cards={cards}
-                    selected={open === r.key}
-                    onOpen={() => setOpen(open === r.key ? null : r.key)}
-                  />
-                ))}
-              </ol>
-            </li>
-          ))}
-        </ol>
-      </div>
-    </section>
-  );
-}
-
-/** How close to the bottom, in pixels, still counts as reading the newest. */
-const NEAR_NEWEST_PX = 48;
-
-/**
- * Keep a conversation's scrolling window at its newest message, as a chat does:
- * it opens there, and follows a new message while the member is at the bottom, or
- * when the newest is their own (they just sent it) — never pulling them down from
- * something older they scrolled up to read. Layout only: the order is the wallet's.
- */
-function useStickToNewest(records: readonly ConversationRecord[], me: string | undefined) {
-  const ref = useRef<HTMLDivElement>(null);
-  const atNewest = useRef(true);
-  const lastKey = useRef<string | undefined>(undefined);
-  const last = records.at(-1);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const arrived = lastKey.current !== undefined && last?.key !== lastKey.current;
-    const mine = arrived && me !== undefined && last?.author === me;
-    lastKey.current = last?.key;
-    if (atNewest.current || mine) {
-      el.scrollTop = el.scrollHeight;
-      atNewest.current = true;
-    }
-  }, [last?.key, last?.author, records.length, me]);
-  const onScroll = () => {
-    const el = ref.current;
-    if (el) atNewest.current = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_NEWEST_PX;
-  };
-  return { ref, onScroll };
-}
-
-function ChatItem({
-  r,
-  target,
-  speaker,
-  cards,
-  selected,
-  onOpen,
-}: {
-  r: ConversationRecord;
-  target?: ConversationRecord;
-  speaker: (did: string | undefined) => Speaker;
-  /** What the directory shows of each author it was asked about. */
-  cards: ReadonlyMap<string, AuthorCard>;
-  selected: boolean;
-  onOpen: () => void;
-}) {
-  const time = shownTime(r);
-  const author = (did: string | undefined) => (
-    <AuthorName speaker={speaker(did)} did={did} card={did ? cards.get(did) : undefined} />
-  );
-  if (r.shown === "note") {
-    // A note or a file is one line in the conversation; its content opens beside it.
-    return (
-      <li className={selected ? "chat-note selected" : "chat-note"}>
-        {r.file ? <FileText size={14} aria-hidden="true" /> : <NotebookPen size={14} aria-hidden="true" />}
-        <span className="chat-note-title">
-          {r.file && !r.title ? "File" : "Note"}: <b>{r.title || r.file?.name || "(untitled)"}</b>
-          <span className="muted small"> · {author(r.author)}{time ? ` · ${clockTime(time)}` : ""}</span>
-        </span>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={onOpen} aria-current={selected ? "true" : undefined}>
-          See
-        </button>
-      </li>
-    );
-  }
-  if (r.shown !== "message") {
-    return (
-      <li className="chat-absent muted small" title={r.reason}>
-        {absentWords(r)}
-      </li>
-    );
-  }
-  const who = speaker(r.author);
-  const rewriter = r.rewrite ? speaker(r.rewrite.by) : undefined;
-  return (
-    <li className={who.own ? "chat-msg own" : "chat-msg"}>
-      <p className="chat-from">
-        {author(r.author)}
-        {who.ownName && <span className="muted"> (their own name)</span>}
-      </p>
-      {r.replyTo && (
-        <p className="chat-reply muted small">
-          <CornerDownRight size={12} aria-hidden="true" />{" "}
-          {r.replyTo.available && target
-            ? `${speaker(target.author).label}: ${excerpt(target)}`
-            : "a message that is not available"}
-        </p>
-      )}
-      {/* Another member's words: rendered as text, never as markup. */}
-      <p className="chat-body">{r.body}</p>
-      {r.file && (
-        <button type="button" className="btn btn-ghost btn-sm" onClick={onOpen}>
-          <FileText size={14} aria-hidden="true" /> {r.file.name}
-        </button>
-      )}
-      <p className="chat-meta muted small">
-        {rewriter && <span>rewritten by {author(r.rewrite?.by)} · </span>}
-        {r.edited && <span>edited · </span>}
-        {r.written.arrivedLate && <span title={`claims ${r.written.arrivedLate.claimed}`}>arrived later than it says · </span>}
-        {time && <time dateTime={time} title={formatDateTime(time)}>{clockTime(time)}</time>}
-      </p>
-      {r.reactions.length > 0 && (
-        <p className="chat-reactions">
-          {r.reactions.map((x) => (
-            <span key={x.value} className="chat-reaction" title={x.authors.map((a) => speaker(a).label).join(", ")}>
-              {x.value} {x.count}
-            </span>
-          ))}
-        </p>
-      )}
-    </li>
-  );
-}
-
 /**
  * The records, newest first, one compact row each. Retracted ones have nothing to open, so
  * they are folded away under a count rather than taking a row each.
@@ -1000,12 +837,15 @@ function RecordView({
   roomId,
   recordKey,
   onClose,
+  byline,
 }: {
   wallet: WalletRooms;
   hostDid: string;
   roomId: string;
   recordKey: string;
   onClose: () => void;
+  /** How to name the record's author; the list's short form when not given. */
+  byline?: (did: string) => ReactNode;
 }) {
   const rec = useQuery({
     queryKey: ["member-room-record", roomId, recordKey],
@@ -1028,7 +868,7 @@ function RecordView({
       ) : rec.isError ? (
         <RecordRefused error={rec.error} />
       ) : (
-        <RecordBody wallet={wallet} hostDid={hostDid} roomId={roomId} rec={rec.data} />
+        <RecordBody wallet={wallet} hostDid={hostDid} roomId={roomId} rec={rec.data} byline={byline} />
       )}
     </section>
   );
@@ -1051,11 +891,13 @@ function RecordBody({
   hostDid,
   roomId,
   rec,
+  byline,
 }: {
   wallet: WalletRooms;
   hostDid: string;
   roomId: string;
   rec: RoomRecord;
+  byline?: (did: string) => ReactNode;
 }) {
   if (rec.status === "retracted") return <p className="empty">This record was retracted.</p>;
   return (
@@ -1065,7 +907,7 @@ function RecordBody({
           <div>
             <dt>By</dt>
             <dd title={rec.author}>
-              {authorName(rec.author)}
+              {byline ? byline(rec.author) : authorName(rec.author)}
               <code className="wrap muted small did-under">{rec.author}</code>
             </dd>
           </div>
@@ -1350,21 +1192,6 @@ function FileBox({
       )}
     </div>
   );
-}
-
-function describe(p: TransferProgress | null): string {
-  if (!p) return "Starting…";
-  const words: Record<string, string> = {
-    checking: "Checking the room",
-    sealing: "Encrypting",
-    uploading: "Uploading",
-    writing: "Writing the record",
-    reading: "Reading the record",
-    downloading: "Downloading",
-    verifying: "Verifying",
-  };
-  const w = words[p.stage] ?? p.stage;
-  return p.done !== undefined && p.total ? `${w} ${p.done}/${p.total}` : `${w}…`;
 }
 
 // ── Adding ──────────────────────────────────────────────────────────────────
