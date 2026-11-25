@@ -1,6 +1,6 @@
 # Written by `trust-tasks`. Do not edit by hand.
 version = 1
-registry = "/Users/glenngore/devel/dtgwg-trust-tasks-tf-worktrees/community-room-record-members/website"
+registry = "https://trusttasks.org"
 
 [[task]]
 slug = "vtc/admin/actions/acknowledge"
@@ -420,13 +420,13 @@ digest = "sha256:ed2042dbd1c0cf1df93c888f8f9c3bce8fd8c2a5f40aba5e6c4e0980c219eff
 slug = "vtc/community/profile/show"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/community/profile/show/0.1"
-digest = "sha256:2d80d2a3e329f8839fe034fa7b7c2c00fa3540b092e23c109369768df632e259"
+digest = "sha256:94c57f3cc97c88856395dc27d49cc3401f1aa6b8eb3df84c635ba3e9d1e0a58d"
 
 [[task]]
 slug = "vtc/community/profile/update"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/community/profile/update/0.1"
-digest = "sha256:90f7d93ad743e4f68c60f69611a56e8c1e0514e7231c291fd45d5a0884067807"
+digest = "sha256:ac32e2933e81c82ae042d211b02eacbd61d2b70ddda5636054227db1f4c5176c"
 
 [[task]]
 slug = "vtc/community/requested-attributes/show"
@@ -714,7 +714,7 @@ digest = "sha256:e4f852a1313ae2890e7cd4f1812e6dda9d24b2e5b9140f1519d6708050cfada
 slug = "vtc/endorsements/issue"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1"
-digest = "sha256:7591cdc41e29964f41449a70e1672f35866784d2aac1fc9ea8bc636a99790ac8"
+digest = "sha256:efd919bff92c8632ffb86838999bc41efad7723e77b8e1e089a011195539f3e7"
 
 [[task]]
 slug = "vtc/endorsements/list"
@@ -894,7 +894,7 @@ digest = "sha256:918bc05d6776361ded4b4c4429bc1a3f7980a3c87694d09007bc1ad412dedef
 slug = "vtc/join-requests/decide"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/join-requests/decide/0.1"
-digest = "sha256:a6fd9bd132f0f983599541c0a4f74e9d3e93d3bd602161881fc9a67c8f816dcc"
+digest = "sha256:9d0ba5eed1d13aed0c5e64ed79cb7763f67706eb0849a91559f33f4d1d1bbb64"
 
 [[task]]
 slug = "vtc/join-requests/list"
@@ -1020,7 +1020,7 @@ digest = "sha256:298b83a0056e805f25254054fa8bb1c4e5fab118107f348a6c6427e029cfa5c
 slug = "vtc/members/personhood/assert"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.2"
-digest = "sha256:3b1060695a33764ebdb657fbf5a18330b3aefa41ad4fcc6a020184e500e8da64"
+digest = "sha256:b68314641ff7482f9ee1fd5d22690d74d47de56b8abc4e8c76ef96c6e3526e25"
 
 [[task]]
 slug = "vtc/members/personhood/challenge"
@@ -1032,7 +1032,7 @@ digest = "sha256:65b42e63995ba62dd7661a68976cb05a212c59fcb262dafd98723a3c5be55f0
 slug = "vtc/members/personhood/revoke"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1"
-digest = "sha256:ab3d56f055c92de9b0a31233f45d15c486340f750af3fb4a1f8dcf35b965e5b8"
+digest = "sha256:9da72d79ba9dfd53967183797739be3e08f74ec00ebee3a061e39262efc83845"
 
 [[task]]
 slug = "vtc/members/purge"
@@ -1056,7 +1056,7 @@ digest = "sha256:f0644bbb853d4bcd94703b37c181dcdd116bcc8698cc6774ce2d0bf6e723ee9
 slug = "vtc/members/renew"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/members/renew/0.1"
-digest = "sha256:bacc4292668ab09cae4ba8c90ffcfbed85a855096d882cd132c7da596003cbf0"
+digest = "sha256:072c3b4dbd36c13f6bab3a1c89e0151f8bff97e2a5112c58a786b243c1783b4c"
 
 [[task]]
 slug = "vtc/members/request-vmc"
@@ -1074,7 +1074,7 @@ digest = "sha256:45358c70418a4b16898f1e74649bac6da75daa4d819b04175f44dadc9ca0fc5
 slug = "vtc/members/rotate"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/members/rotate/0.1"
-digest = "sha256:67b4348bf9b4369467f068ea201931abb00fbca081a2f1f3d1ccd7f4976f8e37"
+digest = "sha256:dc1b31340a92c8f24bcf014e8092f3dc893331a9aaa6c7333036f81242de7b50"
 
 [[task]]
 slug = "vtc/members/rotate-challenge"
