@@ -12,7 +12,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Boxes, CornerDownRight, Download, Eye, FileText, FilePlus2, Gift, MessagesSquare, NotebookPen, Plus, RefreshCw, Send, Share2, X } from "lucide-react";
 
-import { absentWords, byDay, clockTime, excerpt, isConversation, shownTime, speakerOf } from "./conversation";
+import { absentWords, byDay, clockTime, excerpt, isConversation, shownTime, speakerOf, type Speaker } from "./conversation";
+import { AuthorName } from "./author-card";
+import { authorsOf, mayLookUpAuthors, useAuthorCards, type AuthorCard } from "./room-authors";
 
 import { blobBytes, createLimiter, mayPreview, showBytes, worthAutoPreview, type Shown } from "./file-preview";
 import { InstallWallet } from "./InstallWallet";
@@ -540,6 +542,7 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
           <ConversationCard
             view={conversation.data}
             me={info.data.member}
+            visibility={info.data.visibility}
             open={open}
             setOpen={setOpen}
             onRefresh={() => void conversation.refetch()}
@@ -685,23 +688,31 @@ function Records({
  * message under the name its author gave themselves in this room (or "You"),
  * replies quoting what they answer, reactions counted beneath; notes and files
  * as one line each, opened in the pane beside. The wallet decided all of it by
- * the reading rules; this lays it out.
+ * the reading rules; this lays it out. An author the room gives no name is
+ * named as the community's directory shows them — asked only where the room's
+ * host already sees who wrote what (`room-authors.ts`) — else by their DID.
  */
 function ConversationCard({
   view,
   me,
+  visibility,
   open,
   setOpen,
   onRefresh,
 }: {
   view: ConversationView;
   me?: string;
+  visibility?: string;
   open: string | null;
   setOpen: (k: string | null) => void;
   onRefresh: () => void;
 }) {
   const byKey = new Map(view.records.map((r) => [r.key, r]));
-  const speaker = (did: string | undefined) => speakerOf(did, me, view.names, (d) => authorName(d));
+  // Only the authors the room itself gives no name: the wallet's reading comes first.
+  const unnamed = authorsOf(view.records, me).filter((d) => !view.names[d]?.trim());
+  const cards = useAuthorCards(unnamed, mayLookUpAuthors(visibility));
+  const speaker = (did: string | undefined) =>
+    speakerOf(did, me, view.names, (d) => authorName(d), (d) => cards.get(d)?.name);
   const warning = adverseVerification(view.verification);
   const scroller = useStickToNewest(view.records, me);
   return (
@@ -740,6 +751,7 @@ function ConversationCard({
                     r={r}
                     target={r.replyTo ? byKey.get(r.replyTo.key) : undefined}
                     speaker={speaker}
+                    cards={cards}
                     selected={open === r.key}
                     onOpen={() => setOpen(open === r.key ? null : r.key)}
                   />
@@ -789,16 +801,22 @@ function ChatItem({
   r,
   target,
   speaker,
+  cards,
   selected,
   onOpen,
 }: {
   r: ConversationRecord;
   target?: ConversationRecord;
-  speaker: (did: string | undefined) => ReturnType<typeof speakerOf>;
+  speaker: (did: string | undefined) => Speaker;
+  /** What the directory shows of each author it was asked about. */
+  cards: ReadonlyMap<string, AuthorCard>;
   selected: boolean;
   onOpen: () => void;
 }) {
   const time = shownTime(r);
+  const author = (did: string | undefined) => (
+    <AuthorName speaker={speaker(did)} did={did} card={did ? cards.get(did) : undefined} />
+  );
   if (r.shown === "note") {
     // A note or a file is one line in the conversation; its content opens beside it.
     return (
@@ -806,7 +824,7 @@ function ChatItem({
         {r.file ? <FileText size={14} aria-hidden="true" /> : <NotebookPen size={14} aria-hidden="true" />}
         <span className="chat-note-title">
           {r.file && !r.title ? "File" : "Note"}: <b>{r.title || r.file?.name || "(untitled)"}</b>
-          <span className="muted small"> · {speaker(r.author).label}{time ? ` · ${clockTime(time)}` : ""}</span>
+          <span className="muted small"> · {author(r.author)}{time ? ` · ${clockTime(time)}` : ""}</span>
         </span>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onOpen} aria-current={selected ? "true" : undefined}>
           See
@@ -825,8 +843,8 @@ function ChatItem({
   const rewriter = r.rewrite ? speaker(r.rewrite.by) : undefined;
   return (
     <li className={who.own ? "chat-msg own" : "chat-msg"}>
-      <p className="chat-from" title={r.author}>
-        {who.label}
+      <p className="chat-from">
+        {author(r.author)}
         {who.ownName && <span className="muted"> (their own name)</span>}
       </p>
       {r.replyTo && (
@@ -845,7 +863,7 @@ function ChatItem({
         </button>
       )}
       <p className="chat-meta muted small">
-        {rewriter && <span>rewritten by {rewriter.label} · </span>}
+        {rewriter && <span>rewritten by {author(r.rewrite?.by)} · </span>}
         {r.edited && <span>edited · </span>}
         {r.written.arrivedLate && <span title={`claims ${r.written.arrivedLate.claimed}`}>arrived later than it says · </span>}
         {time && <time dateTime={time} title={formatDateTime(time)}>{clockTime(time)}</time>}

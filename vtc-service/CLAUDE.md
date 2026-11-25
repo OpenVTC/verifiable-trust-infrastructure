@@ -628,7 +628,13 @@ When adding a flow, add it here and a line to the root index.
   `putMessage` (text, no title), never as a note with an empty or invented
   title; the compose switch offers it only when the wallet has the method, and
   starts on Note. The conversation scrolls in its own window opened at the
-  newest message — layout only, never a reordering.
+  newest message — layout only, never a reordering. An author the wallet's
+  reading gives **no** name is named as the community's directory shows them
+  (`room-authors.ts`, `vtc/directory/query/0.1` with the portal's key), else by
+  their DID marked as one; the room's own name always comes first. Look authors
+  up only in `open` / `attributed` rooms, whose host already sees who wrote
+  what — never a private room's, which would tell the community who writes
+  there — and send only the DID, never the room.
 - **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
   the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
   ballot is filled in the wallet's own window and the cast goes from the wallet to

@@ -1020,6 +1020,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // signed by the portal key the member delegated `vtc/directory` to.
     "https://trusttasks.org/spec/vtc/directory/card/show/0.1",
     "https://trusttasks.org/spec/vtc/directory/card/update/0.1",
+    // A room's authors named as the directory shows them (`members/room-authors.ts`).
+    "https://trusttasks.org/spec/vtc/directory/query/0.1",
     // Its pictures: a member's own upload, and every picture read through the
     // projection.
     "https://trusttasks.org/spec/vtc/directory/images/upload/0.1",

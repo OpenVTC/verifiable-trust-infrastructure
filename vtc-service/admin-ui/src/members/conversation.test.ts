@@ -25,11 +25,19 @@ describe("a room used for chat", () => {
     expect(isConversation({ records: [] })).toBe(false);
   });
 
-  it("names the member You, another by their own name in the room, else by the DID", () => {
+  it("names the member You, another by their own name in the room, else the directory's, else by the DID", () => {
     const byDid = (d: string) => `did(${d})`;
-    expect(speakerOf("did:me", "did:me", { "did:me": "Geoff" }, byDid)).toEqual({ label: "You", own: true, ownName: false });
-    expect(speakerOf("did:a", "did:me", { "did:a": " Alberto " }, byDid)).toEqual({ label: "Alberto", own: false, ownName: true });
-    expect(speakerOf("did:b", "did:me", {}, byDid)).toEqual({ label: "did(did:b)", own: false, ownName: false });
+    const none = { own: false, ownName: false, directory: false, did: false };
+    const listed = (d: string) => ({ "did:a": "Alberto in the directory", "did:c": " Carol " })[d];
+    expect(speakerOf("did:me", "did:me", { "did:me": "Geoff" }, byDid, listed)).toEqual({ ...none, label: "You", own: true });
+    // The wallet's reading of the room comes first, so every surface names an author alike.
+    expect(speakerOf("did:a", "did:me", { "did:a": " Alberto " }, byDid, listed)).toEqual({ ...none, label: "Alberto", ownName: true });
+    // Where the room gives no name, the directory's.
+    expect(speakerOf("did:c", "did:me", {}, byDid, listed)).toEqual({ ...none, label: "Carol", directory: true });
+    // Else the DID, marked as one.
+    expect(speakerOf("did:b", "did:me", {}, byDid, listed)).toEqual({ ...none, label: "did(did:b)", did: true });
+    expect(speakerOf("did:b", "did:me", {}, byDid)).toEqual({ ...none, label: "did(did:b)", did: true });
+    expect(speakerOf(undefined, "did:me", {}, byDid)).toEqual({ ...none, label: "Someone" });
   });
 
   it("shows the author's plausible claim of when, else the room's time, and nothing for an implausible claim", () => {
