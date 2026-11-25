@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `vtc/community/profile/show/0.1` | any entry |
 //! | `vtc/ceremonies/list/0.1` | any entry |
-//! | `vtc/directory/query/0.1` | any entry, as the viewer the directory policy projects for |
+//! | `vtc/directory/query/0.1` | any entry, or the member portal key it delegated `vtc/directory` to, as the viewer the directory policy projects for |
 //! | `vtc/endorsement-types/list/0.2` | `Admin` |
 //! | `vtc/recognition/check/0.1` | `Admin` |
 //! | `vtc/members/{list,removed,show,solicit-vmc}/0.1` | `Admin` |
@@ -190,17 +190,42 @@ async fn handle_ceremonies_list(
 /// `vtc/directory/query/0.1` — the subject's record as the directory policy
 /// projects it for the signer. "No such member" and "nothing visible to you"
 /// are the one `notFound`, as on the route this replaced.
+///
+/// Like the other `vtc/directory` reads, it accepts the member portal's
+/// sign-in key as the member who delegated `vtc/directory` to it, while that
+/// session is live: the portal names a room's authors with it. Any other
+/// signer is authorized as themselves.
 async fn handle_directory_query(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (signer, payload) = match member_with::<directory_query::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
+    let delegated = match ctx.verified_signer.as_deref() {
+        Some(signer) => match crate::member_portal::delegation::accept(
+            state,
+            signer,
+            &doc.type_uri.to_string(),
+            &doc.id.to_string(),
+        )
+        .await
+        {
+            Ok(member) => member,
+            Err(e) => return app_error_to_reject(&doc, &e),
+        },
+        None => None,
+    };
+    let (did, payload) = match delegated {
+        Some(member) => match parse_spec_payload::<directory_query::Payload>(&doc) {
+            Ok(p) => (member, p),
+            Err(reject) => return reject,
+        },
+        None => match member_with::<directory_query::Payload>(state, ctx, &doc).await {
+            Ok((signer, p)) => (signer.did, p),
+            Err(reject) => return reject,
+        },
     };
     let subject = payload.subject.to_string();
-    let viewer = match crate::directory::read::viewer(state, &signer.did).await {
+    let viewer = match crate::directory::read::viewer(state, &did).await {
         Ok(v) => v,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
