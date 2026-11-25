@@ -12,6 +12,13 @@
 //! `vtc-service`. External consumers should depend on `vta-sdk`, not
 //! on this crate.
 
+// Proving a Trust Task route's handler future `Send` walks the whole admin
+// decision spine (`action_tasks::handle_decision` -> `admin_actions::decide`
+// -> `queues::execute` -> member removal ...), which exceeds the default limit
+// of 128 on nightly (`recursion_depth_exceeding_limit`, rust-lang/rust#159228,
+// a future hard error). Same limit and cause as `vta-service`.
+#![recursion_limit = "256"]
+
 pub mod acl;
 pub mod acl_cli;
 pub mod admin_actions;

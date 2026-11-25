@@ -81,8 +81,10 @@ pub struct TenantConfigOverlay {
 pub struct TenantCollectionOverlay {
     #[serde(default)]
     pub suspend: Option<bool>,
-    /// The retired key, read only to say it is ignored.
+    /// The retired key, read only to say it is ignored. That happens where the
+    /// overlay is applied, which is `tee`-only, so other builds never read it.
     #[serde(default, rename = "collect_by_default")]
+    #[cfg_attr(not(feature = "tee"), allow(dead_code))]
     retired_collect_by_default: Option<bool>,
 }
 

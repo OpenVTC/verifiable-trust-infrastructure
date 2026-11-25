@@ -20,13 +20,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
 vti-common = { path = "../vti-common", version = "0.70" }
 vta-sdk = { path = "../vta-sdk", version = "0.94" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+vta-keyspaces = { path = "../vta-keyspaces" }
 chrono = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
