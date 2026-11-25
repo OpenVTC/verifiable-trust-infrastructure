@@ -18,7 +18,9 @@
 //!   key-binding proof by the configured `credential_holder_did`.
 //! - [`handle_issue`] — deposit a delivered credential into the vault.
 //! - [`handle_query`] — answer a verifier's DCQL query with a `present`, or defer
-//!   it for the operator when the verifier is not trusted.
+//!   it for the operator when the verifier is not trusted. The answer never
+//!   says whether anything is held (`consentRequired` to every untrusted
+//!   verifier, one fixed `noMatch` to a trusted one).
 //!
 //! They used to be bare DIDComm messages typed as their task URI, served beside
 //! the envelope. `bindings/didcomm/0.2` §2 requires a consumer to refuse that
@@ -39,8 +41,10 @@
 //! # The approval surface
 //!
 //! When a verifier the holder hasn't pre-trusted sends a
-//! `credential-exchange/query`, the VTA **defers** it: it persists a
-//! `pending-present:` record ([`handle_query`]). These three tasks are the
+//! `credential-exchange/query` that matches a held credential, the VTA
+//! **defers** it: it persists a `pending-present:` record ([`handle_query`]) and
+//! answers `consentRequired` — as it answers every untrusted query, matched or
+//! not. These three tasks are the
 //! holder operator's out-of-band surface over that backlog:
 //!
 //! - `pending-list/1.0` — list the actionable deferrals.
@@ -68,15 +72,36 @@ use crate::audit::audit;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::operations::credential_exchange::{
-    ConsentPolicy, PresentOutcome, RequestedCredential, approve_pending_presentation,
-    build_credential_request_for_offer, defer_presentation, deny_pending_presentation, pending,
-    present_query, receive_issued_credential,
+    ConsentPolicy, NO_PRESENTABLE_MATCH, PresentOutcome, RequestedCredential,
+    approve_pending_presentation, build_credential_request_for_offer, defer_presentation,
+    deny_pending_presentation, pending, present_query, receive_issued_credential,
 };
 use crate::server::AppState;
 
-use super::helpers::{acknowledge, app_error_to_reject, parse_payload, silence, success_response};
+use super::helpers::{
+    acknowledge, app_error_to_reject, error_response, parse_payload, success_response,
+};
 #[cfg(any(feature = "didcomm", feature = "tsp"))]
 use super::idempotency::IDEMPOTENCY_KEY_MEMBER;
+
+/// What every untrusted verifier is told, whatever its query matched. One fixed
+/// text, and no `details`: the task requires that "held but not consented" and
+/// "nothing held" be indistinguishable to the verifier.
+const CONSENT_REQUIRED_MESSAGE: &str = "the holder decides this query out of band; a presentation may \
+     follow on this thread, or nothing will. Re-sending the query does not advance it";
+
+/// The upper bound of the random delay before a `consentRequired` answer.
+///
+/// The no-match path skips the one keyspace write a deferral makes, so without
+/// this the answer to an unheld type would come back measurably sooner. The
+/// task leaves timing to the implementer and suggests varying this response
+/// time. Uniform jitter of up to 50 ms is far wider than that write and below
+/// what a verifier on a mediated transport would notice; it is kept small
+/// because the wait holds one of the collector's in-flight slots. Averaging
+/// many probes could still narrow it, but each probe for a held type leaves a
+/// pending record in front of the operator, and the task tells a verifier not
+/// to re-send.
+const CONSENT_REQUIRED_JITTER_MS: u64 = 50;
 
 /// How long a pushed exchange step may take to be delivered. A counterparty
 /// that misses one can ask again: an issuer re-offers, a verifier re-queries.
@@ -282,12 +307,14 @@ pub(super) async fn handle_issue(
 /// **consent policy** (trusted verifiers from config) is the gate.
 /// `present_query` does match → ACL-gated holder-key resolution →
 /// consent-policy → present. A trusted verifier gets a `present` pushed back on
-/// the query's thread. Any other **defers**: the query is persisted as a
-/// pending presentation keyed by its thread, for the operator to approve
-/// (`pending-approve`, which then pushes the `present`) or deny. Nothing goes
-/// back on the transport for a deferral — it is accepted but not performed, so
-/// an acknowledgement would claim too much, and silence says nothing
-/// (SPEC §4.4.2 item 3).
+/// the query's thread, or `credential-exchange/query:noMatch` — one fixed
+/// answer whether nothing matched or context policy withholds every match. Any
+/// other verifier is answered `credential-exchange/query:consentRequired`,
+/// identically whether or not anything matched (the task's Conformance: "noMatch
+/// and \"held but not consented\" MUST be indistinguishable to the verifier").
+/// Only a query that matched is persisted, as a pending presentation keyed by
+/// its thread, for the operator to approve (`pending-approve`, which then
+/// pushes the `present`) or deny.
 pub(super) async fn handle_query(
     state: &AppState,
     auth: &AuthClaims,
@@ -308,6 +335,8 @@ pub(super) async fn handle_query(
             .clone(),
     );
 
+    let trusted = policy.trusted_verifiers.contains(&verifier_did);
+
     let outcome = match present_query(
         &state.vault_ks,
         &state.keys_ks,
@@ -324,6 +353,17 @@ pub(super) async fn handle_query(
     .await
     {
         Ok(o) => o,
+        // Nothing this verifier may be shown. Never the operation's own text:
+        // a trusted verifier gets one fixed `noMatch`, an untrusted one the
+        // same `consentRequired` as a query that matched.
+        Err(AppError::NotFound(_)) if trusted => {
+            return refuse_query(
+                &doc,
+                trust_tasks_rs::specs::credential_exchange::query::v0_1::error_codes::NO_MATCH,
+                NO_PRESENTABLE_MATCH,
+            );
+        }
+        Err(AppError::NotFound(_)) => return consent_required(&doc).await,
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
@@ -348,28 +388,68 @@ pub(super) async fn handle_query(
             requested, purpose, ..
         } => {
             let requested_count = requested.len();
-            if let Err(e) = defer_presentation(
-                &state.vault_ks,
-                &thread,
-                &verifier_did,
-                requested,
-                &body,
-                chrono::Utc::now(),
-            )
-            .await
-            {
-                return app_error_to_reject(&doc, e);
+            if requested_count > 0 {
+                // A failed write is logged, not answered: an error here would
+                // tell the verifier that something matched, and
+                // `consentRequired` already allows for "nothing will follow".
+                match defer_presentation(
+                    &state.vault_ks,
+                    &thread,
+                    &verifier_did,
+                    requested,
+                    &body,
+                    chrono::Utc::now(),
+                )
+                .await
+                {
+                    Ok(_) => tracing::info!(
+                        verifier = %verifier_did,
+                        approval_id = %thread,
+                        requested = requested_count,
+                        %purpose,
+                        "credential query deferred — holder consent required (pending approval persisted)"
+                    ),
+                    Err(e) => tracing::error!(
+                        verifier = %verifier_did,
+                        approval_id = %thread,
+                        error = %e,
+                        "credential query matched, but its deferral could not be persisted"
+                    ),
+                }
+            } else {
+                tracing::debug!(
+                    verifier = %verifier_did,
+                    "credential query from an untrusted verifier matched nothing presentable; nothing deferred"
+                );
             }
-            tracing::info!(
-                verifier = %verifier_did,
-                approval_id = %thread,
-                requested = requested_count,
-                %purpose,
-                "credential query deferred — holder consent required (pending approval persisted)"
-            );
-            silence()
+            consent_required(&doc).await
         }
     }
+}
+
+/// The one answer every untrusted verifier gets: `consentRequired`, fixed
+/// message, no `details`, after a short random delay
+/// ([`CONSENT_REQUIRED_JITTER_MS`]).
+async fn consent_required(doc: &TrustTask<Value>) -> TrustTaskOutcome {
+    let jitter = rand::random_range(0..=CONSENT_REQUIRED_JITTER_MS);
+    tokio::time::sleep(std::time::Duration::from_millis(jitter)).await;
+    refuse_query(
+        doc,
+        trust_tasks_rs::specs::credential_exchange::query::v0_1::error_codes::CONSENT_REQUIRED,
+        CONSENT_REQUIRED_MESSAGE,
+    )
+}
+
+/// Answer a query with one of the codes its task declares, carrying the
+/// declared `retryable` (`consentRequired` is `true`, `noMatch` `false`) and a
+/// fixed message — never `details`.
+fn refuse_query(
+    doc: &TrustTask<Value>,
+    code: trust_tasks_rs::DeclaredErrorCode,
+    message: &str,
+) -> TrustTaskOutcome {
+    let payload = trust_tasks_rs::ErrorPayload::from(code).with_message(message);
+    error_response(doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload))
 }
 
 /// Project an internal pending record into the approver-facing wire summary.
@@ -697,6 +777,174 @@ mod tests {
         assert!(
             crate::messaging::push::take_pushes(&state).is_empty(),
             "a declined offer sends no request"
+        );
+    }
+
+    // ── credential-exchange/query: the answer does not say what is held ──
+
+    const HELD_VCT: &str = "https://openvtc.org/credentials/MembershipCredential";
+    const UNHELD_VCT: &str = "https://openvtc.org/credentials/NeverIssuedCredential";
+
+    fn query_doc(vct: &str) -> TrustTask<Value> {
+        doc(
+            cx::QUERY,
+            json!({
+                "dcql_query": { "credentials": [{
+                    "id": "membership",
+                    "format": "dc+sd-jwt",
+                    "meta": { "vct_values": [vct] },
+                    "claims": [{ "path": ["givenName"] }]
+                }]},
+                "nonce": "verifier-nonce",
+                "purpose": "join the Acme community",
+            }),
+        )
+    }
+
+    /// Everything a verifier can read in an answer, less what differs per
+    /// request (the answer's own `id`, its `issuedAt`, and the pointers back
+    /// to the query: `threadId`, `payload.inResponseTo`).
+    fn observable(outcome: &TrustTaskOutcome) -> (u16, Value, Value) {
+        let b = body(outcome);
+        let mut payload = b["payload"].clone();
+        payload
+            .as_object_mut()
+            .expect("an error payload")
+            .remove("inResponseTo");
+        (outcome.status.as_u16(), b["type"].clone(), payload)
+    }
+
+    async fn pending_count(state: &AppState) -> usize {
+        pending::list(&state.vault_ks)
+            .await
+            .expect("list pending")
+            .len()
+    }
+
+    /// From a verifier the holder does not trust, a query for a type it holds
+    /// and one for a type it does not are answered identically —
+    /// `consentRequired`, same message, same `details` — and only the held one
+    /// leaves a deferral for the operator.
+    #[tokio::test]
+    async fn an_untrusted_verifier_cannot_tell_held_from_unheld() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        state.config.write().await.trusted_presentation_verifiers = Vec::new();
+        let subject = state.config.read().await.vta_did.clone().expect("vta did");
+        crate::test_support::seed_held_credential(&state.vault_ks, HELD_VCT, "givenName", &subject)
+            .await;
+        let verifier = super::super::ceremony::ceremony_claims("did:web:stranger.example");
+
+        let unheld = handle_query(&state, &verifier, query_doc(UNHELD_VCT)).await;
+        assert_eq!(
+            pending_count(&state).await,
+            0,
+            "nothing matched, nothing deferred"
+        );
+
+        let held_query = query_doc(HELD_VCT);
+        let held_thread = held_query.id.clone();
+        let held = handle_query(&state, &verifier, held_query).await;
+
+        assert_eq!(
+            observable(&unheld),
+            observable(&held),
+            "held and unheld must be indistinguishable to an untrusted verifier"
+        );
+        assert_eq!(
+            body(&held)["payload"]["code"],
+            trust_tasks_rs::specs::credential_exchange::query::v0_1::error_codes::CONSENT_REQUIRED
+                .code,
+        );
+        assert_eq!(
+            body(&held)["payload"]["retryable"],
+            true,
+            "as the task declares it"
+        );
+        assert!(
+            body(&held)["payload"].get("details").is_none(),
+            "{}",
+            body(&held)
+        );
+
+        let deferred = pending::list(&state.vault_ks).await.expect("list pending");
+        assert_eq!(deferred.len(), 1, "only the held query is deferred");
+        assert_eq!(deferred[0].id, held_thread);
+        assert_eq!(deferred[0].verifier_did, "did:web:stranger.example");
+    }
+
+    /// A trusted verifier is told `noMatch` with one fixed answer, whether
+    /// nothing matched or context policy withholds the only match from it.
+    #[tokio::test]
+    async fn a_trusted_verifier_gets_one_no_match_for_unheld_and_withheld() {
+        const VERIFIER: &str = "did:web:trusted.example";
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        state.config.write().await.trusted_presentation_verifiers = vec![VERIFIER.to_string()];
+        let subject = state.config.read().await.vta_did.clone().expect("vta did");
+
+        // The held credential belongs to a context that will disclose only to a
+        // different verifier.
+        let id = crate::test_support::seed_held_credential(
+            &state.vault_ks,
+            HELD_VCT,
+            "givenName",
+            &subject,
+        )
+        .await;
+        let mut stored = crate::vault::storage::get(&state.vault_ks, &id)
+            .await
+            .expect("read")
+            .expect("stored");
+        stored.context_id = Some("staff".into());
+        crate::vault::storage::put(&state.vault_ks, &stored)
+            .await
+            .expect("rebind");
+        crate::contexts::store_context(
+            &state.contexts_ks,
+            &crate::contexts::ContextRecord {
+                id: "staff".into(),
+                name: "Staff".into(),
+                did: None,
+                description: None,
+                parent: None,
+                base_path: "m/26'/2'/7'".into(),
+                index: 7,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                context_policy: Some(vta_sdk::context_policy::ContextPolicy {
+                    trusted_verifiers: Some(
+                        ["did:web:someone-else.example".to_string()]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    ..vta_sdk::context_policy::ContextPolicy::unrestricted()
+                }),
+            },
+        )
+        .await
+        .expect("store context");
+
+        let verifier = super::super::ceremony::ceremony_claims(VERIFIER);
+        let unheld = handle_query(&state, &verifier, query_doc(UNHELD_VCT)).await;
+        let withheld = handle_query(&state, &verifier, query_doc(HELD_VCT)).await;
+
+        assert_eq!(
+            observable(&unheld),
+            observable(&withheld),
+            "unheld and policy-withheld must be one answer"
+        );
+        assert_eq!(
+            body(&withheld)["payload"]["code"],
+            trust_tasks_rs::specs::credential_exchange::query::v0_1::error_codes::NO_MATCH.code,
+        );
+        assert!(
+            body(&withheld)["payload"].get("details").is_none(),
+            "{}",
+            body(&withheld)
+        );
+        assert_eq!(
+            pending_count(&state).await,
+            0,
+            "a trusted query defers nothing"
         );
     }
 }

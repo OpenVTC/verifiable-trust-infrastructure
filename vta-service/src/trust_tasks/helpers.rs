@@ -485,17 +485,6 @@ pub(super) fn acknowledge(doc: &TrustTask<Value>) -> TrustTaskOutcome {
     success_response(doc, serde_json::Map::new())
 }
 
-/// No reply at all. Every transport reads an empty body as "nothing goes back"
-/// (`accept_from_proven_sender`). For a fire-and-forget task that was accepted
-/// but not yet performed, where an acknowledgement would claim too much — the
-/// absence of a reply carries no information (SPEC §4.4.2 item 3).
-pub(super) fn silence() -> TrustTaskOutcome {
-    TrustTaskOutcome {
-        status: StatusCode::NO_CONTENT,
-        body: Vec::new(),
-    }
-}
-
 /// Build a routed `task_failed` rejection for a URI we know about but
 /// haven't implemented yet. Kept available for Phase 3+ slices that
 /// land their match arms before the handler body — each new slice can
