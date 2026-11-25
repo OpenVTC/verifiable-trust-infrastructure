@@ -32,8 +32,8 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-vta-config = { path = "../vta-config", version = "0.47" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
+vta-config = { path = "../vta-config" }
+vta-keyspaces = { path = "../vta-keyspaces" }
 tempfile = { workspace = true }
 
 [lints]

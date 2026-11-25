@@ -26,7 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
+vta-keyspaces = { path = "../vta-keyspaces" }
 chrono = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

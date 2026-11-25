@@ -60,7 +60,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
+vta-keyspaces = { path = "../vta-keyspaces" }
 # Generates the IACA -> Document Signer chains the mdoc trust tests need.
 rcgen = { workspace = true, features = ["default", "x509-parser"] }
 tokio = { workspace = true }

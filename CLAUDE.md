@@ -80,6 +80,10 @@ Layer 4 (longest internal chain 4):
   didcomm-test           → vta-sdk, vti-common
   vta-audit              → vta-sdk, vti-common
   vta-keyspaces          → vti-common
+  vta-persona            → vti-common
+  vta-policy             → vta-sdk, vti-common
+  vta-vault              → vta-sdk, vti-common
+  vta-webvh              → vta-sdk, vti-common
   vtc-audit              → vti-common
   vti-rooms              → vti-common, vti-specs-rooms
   vti-secrets            → vta-sdk, vti-common
@@ -88,9 +92,7 @@ Layer 4 (longest internal chain 4):
 
 Layer 5 (longest internal chain 5):
   vta-config             → vta-sdk, vti-common, vti-secrets
-  vta-persona            → vta-keyspaces, vti-common
-  vta-vault              → vta-keyspaces, vta-sdk, vti-common
-  vta-webvh              → vta-keyspaces, vta-sdk, vti-common
+  vta-sweepers           → vta-audit, vta-keyspaces, vta-vault, vti-common
   vtc-client             → vta-sdk, vti-rooms, vti-specs
   vti-oob-server         → vti-common, vti-specs-core, vti-trust-task-server
   vti-rooms-dtg          → vta-sdk, vti-common, vti-rooms
@@ -103,11 +105,9 @@ Layer 5 (longest internal chain 5):
 Layer 6 (longest internal chain 6):
   vta-cli-common         → vta-sdk, vtc-client, vti-common, vti-rooms,
                            vti-specs
-  vta-keys               → vta-config, vta-keyspaces, vta-sdk, vta-signing,
-                           vti-common, vti-secrets
-  vta-policy             → vta-config, vta-keyspaces, vta-sdk, vti-common
+  vta-keys               → vta-config, vta-sdk, vta-signing, vti-common,
+                           vti-secrets
   vta-support            → vta-config, vta-keyspaces, vta-sdk, vti-common
-  vta-sweepers           → vta-audit, vta-keyspaces, vta-vault, vti-common
   vtc-mcp                → vta-sdk, vtc-client, vti-mcp-common, vti-specs
   vti-rooms-host         → vti-common, vti-rooms, vti-rooms-dtg,
                            vti-specs-rooms, vti-trust-task-server
