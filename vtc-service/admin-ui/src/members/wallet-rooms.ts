@@ -296,6 +296,10 @@ export interface WalletRooms {
     description?: string;
     tags?: string[];
   }): Promise<{ key: string; version: number }>;
+  /** A chat message: text and no title, which every reader — the wallet's console,
+   *  Keyring, this page — shows as a message, not a note. Confirmed in the wallet's
+   *  window. Absent from a wallet older than messages, which then takes only notes. */
+  putMessage?(p: { hostDid: string; roomId: string; body: string }): Promise<{ key: string; version: number }>;
   getFile(p: {
     hostDid: string;
     roomId: string;
