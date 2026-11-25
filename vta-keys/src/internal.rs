@@ -40,7 +40,7 @@ use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use zeroize::Zeroize;
 
-/// Row prefix inside [`vta_keyspaces::INTERNAL_KEYS`].
+/// Row prefix inside the `vta_keyspaces::INTERNAL_KEYS` keyspace.
 const SECRET_PREFIX: &str = "internal:";
 
 /// A stored internal key's private material plus the type needed to use it.

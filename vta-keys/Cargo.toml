@@ -36,7 +36,6 @@ tee = ["vti-secrets/tee"]
 tpm = ["vti-secrets/tpm"]
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
 vta-config = { path = "../vta-config", version = "0.47" }
 vta-signing = { path = "../vta-signing", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.70" }
@@ -65,6 +64,7 @@ x25519-dalek = { workspace = true }
 p256 = { workspace = true }
 
 [dev-dependencies]
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
 tempfile = { workspace = true }
 
 [lints]

@@ -67,12 +67,13 @@ tsp = [
     # `didcomm`-only. So `--features tsp` alone builds a VTA that connects to
     # a mediator and speaks TSP on it, with no DIDComm dispatcher present.
     "vta-sdk/tsp",
+    "dep:trust-tasks-tsp",
     "dep:affinidi-messaging-sdk",
     "affinidi-messaging-sdk/tsp",
     # The shared durable relationship store (`vti_common::relationship_store`).
     "vti-common/tsp",
 ]
-webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest", "dep:vta-webvh", "vta-vault/webvh", "vta-keyspaces/webvh", "vta-backup/webvh"]
+webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest", "dep:urlencoding", "dep:vta-webvh", "vta-vault/webvh", "vta-keyspaces/webvh", "vta-backup/webvh"]
 setup = ["webvh", "dep:tempfile"]
 # Creating, hosting and acting as did:webs persona, relationship and
 # integration DIDs (docs/05-design-notes/did-webs-in-the-vta.md). Alpha, and
@@ -277,7 +278,8 @@ trust-tasks-rs = { workspace = true }
 # "Pinning a task version").
 vti-specs = { path = "../vti-specs", version = "0.17" }
 trust-tasks-didcomm = { workspace = true }
-trust-tasks-tsp = { workspace = true }
+# The TSP envelope type, read by `messaging::tsp_inbound` only.
+trust-tasks-tsp = { workspace = true, optional = true }
 # Shared CLI helpers for the consumer side of sealed-transfer (request
 # generation, bundle opening). Used by `vta bootstrap request` /
 # `vta bootstrap open` so cold-start clients can run the offline flow
@@ -358,8 +360,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 # Used by the password-POST proxy-login driver to form-encode credentials
-# (operations::vault::password_post). Previously dev-only.
-urlencoding = "2"
+# (operations::vault::password_post, which is behind `webvh`).
+urlencoding = { version = "2", optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 bip39 = { workspace = true }

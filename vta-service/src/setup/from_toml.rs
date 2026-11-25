@@ -1567,6 +1567,8 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
                 "vta_did.path '{path}' must be `/`-separated segments with no `:` (e.g. nodes)"
             ));
         }
+        #[cfg(not(feature = "webs"))]
+        let _ = path;
     }
     if let VtaDidInput::CreateWebvh {
         pre_rotation_count,

@@ -32,7 +32,6 @@ bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023"]
 webvh = ["dep:reqwest", "vta-sdk/client"]
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
 vti-common = { path = "../vti-common", version = "0.70", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", version = "0.94", features = ["didcomm", "sealed-transfer", "proof-verify"] }
 affinidi-crypto = { workspace = true }
@@ -61,6 +60,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.44" }
 # Generates the IACA -> Document Signer chains the mdoc trust tests need.
 rcgen = { workspace = true, features = ["default", "x509-parser"] }
 tokio = { workspace = true }
