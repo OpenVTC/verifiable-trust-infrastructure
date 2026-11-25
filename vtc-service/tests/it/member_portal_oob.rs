@@ -2232,6 +2232,37 @@ async fn a_scoped_grant_lets_the_portal_key_sign_directory_documents_as_the_memb
     assert_eq!(code(&profile), "permissionDenied", "{}", profile.body);
 }
 
+/// The portal names a room's authors with `vtc/directory/query/0.1`, signed by
+/// `K_b`: it is a directory read like the others, so the delegated key reads as
+/// its member — here, the member's own card by their DID. Before, it went
+/// through `member_signer`, which knows only ACL entries, and every author was
+/// refused (`permissionDenied`) and shown as a DID.
+#[tokio::test]
+async fn the_portal_key_looks_up_a_member_by_did_as_its_member() {
+    let f = fixture().await;
+    let (b, member, _, done) = sign_in_delegating(&f, None).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    let up = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/card/update/0.1"),
+        json!({ "values": { "displayName": "Alice" }, "visibility": { "displayName": "members" } }),
+    )
+    .await;
+    assert_eq!(up.status, StatusCode::OK, "{}", up.body);
+
+    let got = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/query/0.1"),
+        json!({ "subject": member.did }),
+    )
+    .await;
+    assert_eq!(got.status, StatusCode::OK, "{}", got.body);
+    assert_eq!(got.body["payload"]["subject"], member.did.as_str());
+    assert_eq!(got.body["payload"]["fields"]["displayName"], "Alice");
+}
+
 /// A member browsing the portal's directory signs every read with `K_b`. Those
 /// are charged to the member's own signer bucket (a burst of 60), not the
 /// address's anonymous burst of 10 — which refused a member within a few clicks.
