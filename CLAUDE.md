@@ -92,7 +92,7 @@ Layer 4 (longest internal chain 4):
 
 Layer 5 (longest internal chain 5):
   vta-config             → vta-sdk, vti-common, vti-secrets
-  vta-sweepers           → vta-audit, vta-keyspaces, vta-vault, vti-common
+  vta-sweepers           → vta-audit, vta-vault, vti-common
   vtc-client             → vta-sdk, vti-rooms, vti-specs
   vti-oob-server         → vti-common, vti-specs-core, vti-trust-task-server
   vti-rooms-dtg          → vta-sdk, vti-common, vti-rooms
