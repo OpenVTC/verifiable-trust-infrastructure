@@ -53,15 +53,15 @@ milestone that carries its HCP increment, and the bottom row is the
 conformance claim each milestone leaves the VTA able to make.
 
 ```text
- Keyring  P0 HCP increment  P0 rest (C9)      P1 HCP increment    P2 HCP increment   (no tier)
-          (the demo)                          |                   |
-          |                                   |                   |
- VTI      V0 -------------------------------> V1 ---------------> V2 --------------> V3
-          demo week, fork branch              A7 + H0 + H1        H2                 H3 | H4 | H5
-          |                                   |                   |                  |
- claim    aligned pilot                       aligned pilot       First-Party        + profiles,
-          (no conformsTo)                     (no conformsTo)     package            Provider Interop,
-                                                                                     Agent Interop
+ Keyring  P0 HCP increment  P0 rest (C9)    P1 HCP increment  P2 HCP increment  (no tier)
+          (the demo)                        |                 |
+          |                                 |                 |
+ VTI      V0 -----------------------------> V1 -------------> V2 -------------> V3
+          demo week, fork branch            A7 + H0 + H1      H2                H3 | H4 | H5
+          |                                 |                 |                 |
+ claim    aligned pilot                     aligned pilot     First-Party       + profiles,
+          (no conformsTo)                   (no conformsTo)   package           Provider and
+                                                                                Agent Interop
 ```
 
 | Milestone | Keyring side (companion) | VTI side | Runnable demo | Conformance at the end |
@@ -166,15 +166,15 @@ until A3 and D3 are live.
 
 ```text
  X0 -> X0b -> A1 -> A2 --+--> A8 spine wiring ----------+
-                   |     +--> A3 hold (wired by A8) ----+--> A9 tests --> X4 gate --+
-                   |     +--> A4 query, create ---------|                           |
-                   |     +--> A5 revoke, notice --------|                           |
-                   |     +--> A6 audit, summary --------+                           |
-                   |     +--> D1 image --> D2 verify --> D3 lab, MODE=tunnel -------+
-                   |                                                                |
-                   +--> C0 Keyring client --> C1 approve (A3 live) -----------------+--> first run
-                                         +--> C2, C3, C6 --> C7 jest ---------------+    -> rehearsal
- B1 QR, number --> B2 hold --> B3 answers, B4 notice --> B6 tests ------------------+    -> demo
+              |          +--> A3 hold (wired by A8) ----+--> A9 tests --> X4 gate --+
+              |          +--> A4 query, create ---------|                           |
+              |          +--> A5 revoke, notice --------|                           |
+              |          +--> A6 audit, summary --------+                           |
+              |          +--> D1 image --> D2 verify --> D3 lab, MODE=tunnel -------+
+              |                                                                     |
+              +-------> C0 Keyring client --> C1 approve (A3 live) -----------------+--> first run
+                                         +--> C2, C3, C6 --> C7 jest ---------------+   -> rehearsal
+ B1 QR, number --> B2 hold --> B3 answers, B4 notice --> B6 tests ------------------+   -> demo
  X1, X2, X5 run beside everything; nothing waits on them
 ```
 

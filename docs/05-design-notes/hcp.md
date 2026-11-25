@@ -67,15 +67,16 @@ The two paths share one set of handlers, one grant store and one audit trail;
 read the diagram as "the claim attaches only to the right-hand side":
 
 ```text
-        +---------------- one VTA: vta-hcp handlers, one grant store -----------------+
-        |                                                                              |
-  Trust Task carriage (TSP > DIDComm > REST)       HTTP Binding /v2/* and discovery
-    hcp/* tasks, trust-task-discovery                HCP-Version, problem+json, Bearer
-    never in conformsTo                              listed in conformsTo (from V2)
-    used by: Keyring, the agent client               used by: the conformance suite,
-                                                     HTTP clients, an MCP bridge (HCP 10.5)
-        |                                                                              |
-        +------- Core semantics, audit and revocation are identical on both paths -----+
+  +------------------ one VTA: vta-hcp handlers, one grant store -------------------+
+  |                                                                                 |
+  |  Trust Task carriage                     HTTP Binding /v2/* and discovery       |
+  |  (TSP, then DIDComm, then REST)          (HCP-Version, problem+json, Bearer)    |
+  |  hcp/* tasks, trust-task-discovery                                              |
+  |  never in conformsTo                     listed in conformsTo (from V2)         |
+  |  used by: Keyring, the agent client      used by: the conformance suite, HTTP   |
+  |                                          clients, an MCP bridge (HCP 10.5)      |
+  |                                                                                 |
+  +------- Core semantics, audit and revocation are identical on both paths --------+
 ```
 
 Until the HTTP Binding is complete (V2 in [hcp-plan.md](hcp-plan.md)), the
@@ -123,7 +124,7 @@ sidecar:
   person: scans the QR, types the number, approves with a biometric
         |
   +-----v--------------------+                        +---------------------------+
-  | Keyring (phone)          |                        | Agent client (CLI, plugin)|
+  | Keyring (phone)          |                        | Agent client: CLI, plugin |
   | Management Client and    |                        | Context Client; own VID,  |
   | consent surface          |                        | no ACL entry              |
   +-----------+--------------+                        +-------------+-------------+
@@ -133,14 +134,14 @@ sidecar:
   | mediator: relays envelopes and holds mailboxes; reads no payload              |
   +---------------------------------------+---------------------------------------+
                                           |
-  ========================================v======== enclave boundary (Nitro, optional)
+  ==== enclave boundary (Nitro, optional) v========================================
   || VTA                                                                         ||
   ||  spine -> policy gate -> hcp handlers (vta-hcp, cargo feature `hcp`)        ||
   ||  grants, token hashes, tombstones, holds, entries, directives, notices      ||
   ||  audit chain (fails closed); signing keys and the subject.id secret,        ||
   ||  reached only through key custody                                           ||
-  ||  HTTP Binding /v2/* (V1 parity, V2 full) <----------------------------------++--- HTTP clients,
-  ========================================^========================================   the suite
+  ||  HTTP Binding /v2/* (V1 parity, V2 full) <----------------------------------++--- HTTP clients
+  ========================================^========================================
                                           | internal API: mTLS (over vsock under Nitro)
   +- - - - - - - - - - - - - - - - - - - -+- - - - - - - - - - - - - - - - - - - -+
   : OAuth sidecar (V3, optional; on the parent instance under Nitro):             :
