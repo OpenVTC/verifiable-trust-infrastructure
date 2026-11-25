@@ -480,7 +480,7 @@ digest = "sha256:affd35e2d34a1af1ebfef5aa712069e6274af4c4a07552734c78bb047e3da08
 slug = "vtc/directory/card/present"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/directory/card/present/0.1"
-digest = "sha256:7d449a7630477da644f4ee5612967bd7faf8b023735c8c67d6d97784fcb71fe4"
+digest = "sha256:513773a8a3ab91b2bed4cea39aef16def1845460ed3e029b2579a40f3a2d0721"
 
 [[task]]
 slug = "vtc/directory/card/public"
