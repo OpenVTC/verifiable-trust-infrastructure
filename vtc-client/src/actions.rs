@@ -146,7 +146,7 @@ mod tests {
             json!({ "subject": "did:key:z6MkSubject", "fromRole": "member", "toRole": "admin" });
         json!({
             "actionId": "act-0123456789abcdef",
-            "typeUri": "https://trusttasks.org/spec/acl/change-role/0.1",
+            "typeUri": "https://trusttasks.org/spec/acl/change-role/0.2",
             "payload": payload,
             "payloadDigest": payload_digest(&payload).unwrap(),
             "challenge": "c".repeat(64),

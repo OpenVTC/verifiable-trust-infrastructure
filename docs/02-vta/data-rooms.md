@@ -2025,10 +2025,16 @@ use to whoever hosts it. Depth is capped at `MAX_CHAIN_DEPTH` (8).
 | Verb | Task URI | Needs |
 |---|---|---|
 | Write | `rooms/records/put/0.5` (0.3 and 0.4 still served) | `write` |
-| Read | `rooms/records/get/0.3` (0.2 still served) | `read` |
-| List | `rooms/records/list/0.6` (hosts also serve 0.5, and 0.7 with `order` — not yet sent by `vtc-client`) | `read` |
+| Read | `rooms/records/get/0.4` (0.2 and 0.3 still served) | `read` |
+| List | `rooms/records/list/0.8` (hosts also serve 0.5 – 0.7; `vtc-client` sends neither `order` nor `beforeVersion` yet) | `read` |
 | Curate | `rooms/records/curate/0.1` | `curate` |
-| Watch | `rooms/watch/0.1` (`VtcClient::watch`, `cancel_watch`) | `read` |
+| Watch | `rooms/watch/0.2` (0.1 still served; `VtcClient::watch`, `cancel_watch` one-shot, `watch_live` live) | `read` |
+
+`vtc-client` asks each of these, and `rooms/create`, at the newest version and
+asks again at the one before only when the host answers `unsupportedType` —
+never with a member the earlier version lacks: an open record that needs
+`put/0.5` (`VtcClient::put_cleartext_record` with `kind` or `inReplyTo`) gets
+the older host's refusal back.
 | Mint an epoch | `rooms/epoch/mint/0.1` | `admin` |
 | Transfer ownership | `rooms/owner/transfer/0.1` | `admin` |
 | Claim ownership | `rooms/owner/claim/0.1` | a nomination (§10) |

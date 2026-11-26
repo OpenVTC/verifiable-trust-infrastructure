@@ -50,10 +50,12 @@ pub use vti_rooms::authz::MAX_CHAIN_DEPTH;
 pub use vti_rooms::wire::{
     AuthorityPresentation, ChainResponse, CleartextContent, CommitsResponse, CurateRecordResponse,
     EpochLink, ListRecordsResponse, MintEpochResponse, OwnerResponse, PruneResponse,
-    PutRecordResponse, ROOMS_CREATE_V2_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE, ROOMS_EPOCH_COMMITS_TYPE,
-    ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_V2_TYPE, ROOMS_OWNER_CLAIM_TYPE,
-    ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE, ROOMS_RECORDS_GET_V2_TYPE,
-    ROOMS_RECORDS_GET_V3_TYPE, ROOMS_RECORDS_LIST_V6_TYPE, ROOMS_RECORDS_PUT_V3_TYPE,
+    PutRecordResponse, ROOMS_CREATE_V2_TYPE, ROOMS_CREATE_V3_TYPE, ROOMS_EPOCH_CHAIN_V2_TYPE,
+    ROOMS_EPOCH_COMMITS_TYPE, ROOMS_EPOCH_MINT_TYPE, ROOMS_EPOCH_PRUNE_V2_TYPE,
+    ROOMS_OWNER_CLAIM_TYPE, ROOMS_OWNER_TRANSFER_TYPE, ROOMS_RECORDS_CURATE_TYPE,
+    ROOMS_RECORDS_GET_V2_TYPE, ROOMS_RECORDS_GET_V3_TYPE, ROOMS_RECORDS_GET_V4_TYPE,
+    ROOMS_RECORDS_LIST_V6_TYPE, ROOMS_RECORDS_LIST_V8_TYPE, ROOMS_RECORDS_PUT_V3_TYPE,
+    ROOMS_RECORDS_PUT_V4_TYPE, ROOMS_RECORDS_PUT_V5_TYPE, ROOMS_WATCH_TYPE, ROOMS_WATCH_V2_TYPE,
     RelayedCommit, SealedContent,
 };
 
@@ -125,10 +127,13 @@ impl RoomSession {
 }
 
 impl VtcClient {
-    /// Register a room with this host (`rooms/create/0.2`).
+    /// Register a room with this host.
     ///
     /// The caller brings `room_id`: a room identified by something its host chose could not
     /// move to another host without changing identity.
+    ///
+    /// Asked as `rooms/create/0.3`; a host that answers `unsupportedType` predates it and is
+    /// asked again as `0.2`. This request carries nothing 0.3 added, so the two mean the same.
     pub async fn create_room(
         &self,
         room_id: &str,
@@ -144,13 +149,14 @@ impl VtcClient {
             "visibility": visibility,
             "retentionDays": retention_days,
         });
-        self.room_task(
-            ROOMS_CREATE_V2_TYPE,
+        self.room_task_newest(
+            &[ROOMS_CREATE_V3_TYPE, ROOMS_CREATE_V2_TYPE],
             payload,
             signer_did,
             private_key_multibase,
         )
         .await
+        .map(|(_, v)| v)
     }
 
     /// Write a record.
@@ -162,6 +168,10 @@ impl VtcClient {
     /// `Some(n)` requires the stored record to be at version `n`. A mismatch comes back
     /// carrying the current version, so a caller does not have to re-read to learn what it
     /// lost to.
+    ///
+    /// Asked as `rooms/records/put/0.5`; a host that answers `unsupportedType` predates it
+    /// and is asked again as `0.4`, then `0.3`. [`CleartextContent`] carries nothing the
+    /// later versions added, and a sealed write is the same at every version.
     #[allow(clippy::too_many_arguments)]
     pub async fn put_record(
         &self,
@@ -189,9 +199,13 @@ impl VtcClient {
         if let Some(v) = expected_version {
             payload["expectedVersion"] = serde_json::json!(v);
         }
-        let value = self
-            .room_task(
-                ROOMS_RECORDS_PUT_V3_TYPE,
+        let (_, value) = self
+            .room_task_newest(
+                &[
+                    ROOMS_RECORDS_PUT_V5_TYPE,
+                    ROOMS_RECORDS_PUT_V4_TYPE,
+                    ROOMS_RECORDS_PUT_V3_TYPE,
+                ],
                 payload,
                 signer_did,
                 private_key_multibase,
@@ -209,9 +223,10 @@ impl VtcClient {
     /// sealed room: authorizing reads by session would hand the host a member identifier on
     /// every access, and a period of those reconstructs the membership the tier withholds.
     ///
-    /// Asked as `rooms/records/get/0.3`, whose answer carries the host's `createdAt`,
-    /// `createdBy` and `bodyStoredAt`; a host that answers `unsupportedType` predates it,
-    /// and is asked again as `0.2`, whose answer has none of them.
+    /// Asked as `rooms/records/get/0.4`, whose answer is 0.3's: the host's `createdAt`,
+    /// `createdBy` and `bodyStoredAt` (0.4 adds only an optional `purpose` to the request,
+    /// which this does not send). A host that answers `unsupportedType` predates it and is
+    /// asked again as `0.3`, then `0.2`, whose answer has none of the three.
     pub async fn get_record(
         &self,
         session: &RoomSession,
@@ -224,26 +239,18 @@ impl VtcClient {
             "key": key,
             "presentation": session.presentation,
         });
-        match self
-            .room_task(
+        self.room_task_newest(
+            &[
+                ROOMS_RECORDS_GET_V4_TYPE,
                 ROOMS_RECORDS_GET_V3_TYPE,
-                payload.clone(),
-                signer_did,
-                private_key_multibase,
-            )
-            .await
-        {
-            Err(e) if is_unsupported_type(&e) => {
-                self.room_task(
-                    ROOMS_RECORDS_GET_V2_TYPE,
-                    payload,
-                    signer_did,
-                    private_key_multibase,
-                )
-                .await
-            }
-            other => other,
-        }
+                ROOMS_RECORDS_GET_V2_TYPE,
+            ],
+            payload,
+            signer_did,
+            private_key_multibase,
+        )
+        .await
+        .map(|(_, v)| v)
     }
 
     /// List record metadata.
@@ -257,10 +264,11 @@ impl VtcClient {
     /// `cursor` is absent** — a page shorter than the one asked for says nothing, which is
     /// why this takes the token rather than leaving callers to guess from a length.
     ///
-    /// Asked as `rooms/records/list/0.6`, whose rows carry an `open` record's `kind` and the
-    /// host's `createdAt`, `createdBy` and `bodyStoredAt`; a host that answers
-    /// `unsupportedType` predates it and is asked again as `0.5`. A cursor is the host's,
-    /// whichever version issued it.
+    /// Asked as `rooms/records/list/0.8`, whose rows are 0.6's: an `open` record's `kind` and
+    /// the host's `createdAt`, `createdBy` and `bodyStoredAt` (0.7 and 0.8 add only an
+    /// optional order and upper bound to the request, which this does not send). A host that
+    /// answers `unsupportedType` predates it and is asked again as `0.6`, then `0.5`. A
+    /// cursor is the host's, whichever version issued it.
     pub async fn list_records(
         &self,
         session: &RoomSession,
@@ -283,27 +291,19 @@ impl VtcClient {
         if let Some(c) = cursor {
             payload["cursor"] = serde_json::json!(c);
         }
-        let mut value = match self
-            .room_task(
-                ROOMS_RECORDS_LIST_V6_TYPE,
-                payload.clone(),
+        let (_, mut value) = self
+            .room_task_newest(
+                &[
+                    ROOMS_RECORDS_LIST_V8_TYPE,
+                    ROOMS_RECORDS_LIST_V6_TYPE,
+                    vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
+                ],
+                payload,
                 signer_did,
                 private_key_multibase,
             )
-            .await
-        {
-            Err(e) if is_unsupported_type(&e) => {
-                self.room_task(
-                    vti_rooms::wire::ROOMS_RECORDS_LIST_V5_TYPE,
-                    payload,
-                    signer_did,
-                    private_key_multibase,
-                )
-                .await?
-            }
-            other => other?,
-        };
-        // `rooms/records/list/0.5` and `0.6` name the continuation token `nextCursor`; the listing
+            .await?;
+        // `rooms/records/list/0.5` to `0.8` name the continuation token `nextCursor`; the listing
         // type reads it as `cursor`.
         if let Some(obj) = value.as_object_mut()
             && let Some(next) = obj.remove("nextCursor")
@@ -428,7 +428,8 @@ impl VtcClient {
         })
     }
 
-    /// Arm, or re-arm, a watch on the room (`rooms/watch/0.1`): the host sends one
+    /// Arm, or re-arm, a one-shot watch on the room (`rooms/watch/0.1`'s, asked as `0.2`
+    /// without `live` — the same watch — and as `0.1` of a host that predates 0.2): the host sends one
     /// content-free `rooms/changed/0.1` signal to `address` the first time the room's
     /// latest version is above `since_version` — at once if it already is — and nothing more
     /// until the watch is armed again.
@@ -464,7 +465,8 @@ impl VtcClient {
             .await
     }
 
-    /// Cancel the watch on the room and `address` (`rooms/watch/0.1` with `cancel`). A watch
+    /// Cancel the watch on the room and `address` (`rooms/watch` with `cancel`, asked as
+    /// `0.2` and then `0.1` as [`Self::watch`] is). A watch
     /// the host does not hold answers `armed: false` too, so a retry is harmless.
     #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
     pub async fn cancel_watch(
@@ -484,25 +486,35 @@ impl VtcClient {
             .await
     }
 
-    #[allow(deprecated)] // rooms/watch/0.1, still served beside 0.2 for one-shot watches
+    /// A one-shot watch request, asked as `rooms/watch/0.2` and, of a host that answers
+    /// `unsupportedType`, as `0.1`. The answer is read against the version that gave it, then
+    /// as 0.1's, which has every member a one-shot 0.2 answer carries (`live` is only ever
+    /// present on a live watch, which this never asks for).
+    #[allow(deprecated)] // the 0.1 response is this client's published return type
     async fn watch_task(
         &self,
         payload: serde_json::Value,
         signer_did: &str,
         private_key_multibase: &str,
     ) -> Result<vti_specs::rooms::watch::v0_1::Response, VtcError> {
-        use trust_tasks_rs::Payload as _;
-        let value = self
-            .room_task(
-                vti_specs::rooms::watch::v0_1::Payload::TYPE_URI,
+        let (asked, value) = self
+            .room_task_newest(
+                &[ROOMS_WATCH_V2_TYPE, ROOMS_WATCH_TYPE],
                 payload,
                 signer_did,
                 private_key_multibase,
             )
             .await?;
+        if asked == 0 {
+            serde_json::from_value::<vti_specs::rooms::watch::v0_2::Response>(value.clone())
+                .map_err(|e| VtcError::Http {
+                    status: 200,
+                    body: format!("watch response is not a rooms/watch/0.2 response: {e}"),
+                })?;
+        }
         serde_json::from_value(value).map_err(|e| VtcError::Http {
             status: 200,
-            body: format!("watch response is not a rooms/watch/0.1 response: {e}"),
+            body: format!("watch response is not a one-shot rooms/watch response: {e}"),
         })
     }
 
@@ -924,6 +936,32 @@ fn prune_payload(
     payload
 }
 
+impl VtcClient {
+    /// Ask a room task at the newest of `uris` the host serves: each is asked in turn, the
+    /// next only when the host answers `unsupportedType` — any other refusal is the answer.
+    /// Every URI must accept `payload` as it stands, so this is only for requests that carry
+    /// nothing the newer versions added. Answers which one answered, as its index in `uris`.
+    async fn room_task_newest(
+        &self,
+        uris: &[&str],
+        payload: serde_json::Value,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<(usize, serde_json::Value), VtcError> {
+        let mut last = None;
+        for (i, uri) in uris.iter().enumerate() {
+            match self
+                .room_task(uri, payload.clone(), signer_did, private_key_multibase)
+                .await
+            {
+                Err(e) if is_unsupported_type(&e) => last = Some(e),
+                other => return other.map(|v| (i, v)),
+            }
+        }
+        Err(last.unwrap_or_else(|| VtcError::Url("no task version to ask".into())))
+    }
+}
+
 /// Whether a refusal says the host does not serve the task's type at all — the framework's
 /// `unsupportedType` — so a reader may ask again at an earlier version. Any other refusal is
 /// the answer.
@@ -943,13 +981,17 @@ fn is_room_read(type_uri: &str) -> bool {
     [
         ROOMS_RECORDS_GET_V2_TYPE,
         ROOMS_RECORDS_GET_V3_TYPE,
+        ROOMS_RECORDS_GET_V4_TYPE,
         ROOMS_RECORDS_LIST_V6_TYPE,
+        ROOMS_RECORDS_LIST_V8_TYPE,
         ROOMS_EPOCH_CHAIN_V2_TYPE,
         ROOMS_EPOCH_COMMITS_TYPE,
         rooms::records::list::v0_5::Payload::TYPE_URI,
         rooms::blobs::get::v0_2::Payload::TYPE_URI,
         rooms::blobs::chunk::v0_1::Payload::TYPE_URI,
         rooms::info::v0_3::Payload::TYPE_URI,
+        rooms::info::v0_4::Payload::TYPE_URI,
+        rooms::info::v0_5::Payload::TYPE_URI,
     ]
     .contains(&type_uri)
 }
@@ -981,7 +1023,10 @@ mod tests {
         assert!(is_room_read(rooms::blobs::chunk::v0_1::Payload::TYPE_URI));
         for write in [
             ROOMS_CREATE_V2_TYPE,
+            ROOMS_CREATE_V3_TYPE,
             ROOMS_RECORDS_PUT_V3_TYPE,
+            ROOMS_RECORDS_PUT_V5_TYPE,
+            ROOMS_WATCH_V2_TYPE,
             ROOMS_EPOCH_MINT_TYPE,
             ROOMS_EPOCH_PRUNE_V2_TYPE,
             ROOMS_RECORDS_CURATE_TYPE,
@@ -1091,6 +1136,257 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Visibility::Attributed).unwrap(),
             serde_json::json!("attributed")
+        );
+    }
+
+    // ── Asking the newest version a host serves ─────────────────────────────
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    /// A room member's signing key and its `did:key`.
+    fn member_key() -> (String, String) {
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let did = format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&signing.verifying_key().to_bytes())
+        );
+        (
+            did,
+            multibase::encode(multibase::Base::Base58Btc, signing.to_bytes()),
+        )
+    }
+
+    /// A host that answers `unsupportedType` to every type outside `serves`, and `answer` to
+    /// the rest; the types it was asked, in order, come back when it is dropped.
+    async fn host(
+        serves: &'static [&'static str],
+        answer: serde_json::Value,
+    ) -> (VtcClient, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let asked = tokio::spawn(async move {
+            let mut asked = Vec::new();
+            while let Ok(Ok((mut sock, _))) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept()).await
+            {
+                let mut buf = Vec::new();
+                let (head_end, length) = loop {
+                    let mut chunk = [0u8; 8192];
+                    let n = sock.read(&mut chunk).await.unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..i]).to_ascii_lowercase();
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:").map(str::to_owned))
+                            .map_or(0, |v| v.trim().parse().unwrap());
+                        break (i + 4, len);
+                    }
+                };
+                while buf.len() < head_end + length {
+                    let mut chunk = [0u8; 8192];
+                    let n = sock.read(&mut chunk).await.unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let doc: serde_json::Value = serde_json::from_slice(&buf[head_end..]).unwrap();
+                let ty = doc["type"].as_str().unwrap().to_string();
+                let (status, body) = if serves.contains(&ty.as_str()) {
+                    let reply = serde_json::json!({
+                        "id": "urn:uuid:4d2c3f4e-1b2a-4c3d-8e9f-0a1b2c3d4e5f",
+                        "type": format!("{ty}#response"),
+                        "issuer": "did:key:zHost",
+                        "payload": answer,
+                    });
+                    ("200 OK", reply.to_string())
+                } else {
+                    let refusal = serde_json::json!({
+                        "type": "https://trusttasks.org/spec/trust-task-error/0.6",
+                        "payload": { "code": "unsupportedType", "message": "not served" },
+                    });
+                    ("400 Bad Request", refusal.to_string())
+                };
+                asked.push(ty);
+                sock.write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            }
+            asked
+        });
+        (
+            VtcClient::anonymous(&format!("http://127.0.0.1:{port}"), "did:key:zHost"),
+            asked,
+        )
+    }
+
+    fn session() -> RoomSession {
+        RoomSession::new("did:key:zRoom", "vmc", vec!["vac".into()]).unwrap()
+    }
+
+    fn put_answer() -> serde_json::Value {
+        serde_json::json!({ "key": "k1", "version": 1, "epoch": 1 })
+    }
+
+    #[tokio::test]
+    async fn a_put_asks_the_newest_version_and_stops_where_the_host_answers() {
+        let (did, key) = member_key();
+        let (client, asked) = host(&[ROOMS_RECORDS_PUT_V5_TYPE], put_answer()).await;
+        let sealed = SealedContent {
+            epoch: 1,
+            nonce: "AAAAAAAAAAAAAAAA".into(),
+            ciphertext: "AAAA".into(),
+            version: None,
+        };
+        let got = client
+            .put_record(&session(), "k1", Some(sealed), None, None, &did, &key)
+            .await
+            .unwrap();
+        assert_eq!(got.version, 1);
+        assert_eq!(asked.await.unwrap(), vec![ROOMS_RECORDS_PUT_V5_TYPE]);
+    }
+
+    #[tokio::test]
+    async fn a_host_that_predates_a_version_is_asked_the_one_before() {
+        let (did, key) = member_key();
+        let (client, asked) = host(&[ROOMS_RECORDS_PUT_V3_TYPE], put_answer()).await;
+        let clear = CleartextContent {
+            title: None,
+            description: None,
+            body: "hello".into(),
+            tags: vec![],
+        };
+        client
+            .put_record(&session(), "k1", None, Some(clear), None, &did, &key)
+            .await
+            .unwrap();
+        assert_eq!(
+            asked.await.unwrap(),
+            vec![
+                ROOMS_RECORDS_PUT_V5_TYPE,
+                ROOMS_RECORDS_PUT_V4_TYPE,
+                ROOMS_RECORDS_PUT_V3_TYPE
+            ]
+        );
+    }
+
+    /// A one-shot watch is asked as 0.2 without `live`, and the answer is read as the 0.1
+    /// response this client returns.
+    #[tokio::test]
+    #[allow(deprecated)] // the 0.1 response is what `watch` returns
+    async fn a_one_shot_watch_is_asked_as_0_2_and_falls_back_to_0_1() {
+        let (did, key) = member_key();
+        let answer = serde_json::json!({ "roomId": "did:key:zRoom", "address": "did:key:zMe", "armed": true });
+        let (client, asked) = host(&[ROOMS_WATCH_V2_TYPE], answer.clone()).await;
+        let got = client
+            .watch(&session(), "did:key:zMe", Some(3), None, &did, &key)
+            .await
+            .unwrap();
+        assert!(got.armed);
+        assert_eq!(asked.await.unwrap(), vec![ROOMS_WATCH_V2_TYPE]);
+
+        let (client, asked) = host(&[ROOMS_WATCH_TYPE], answer).await;
+        client
+            .cancel_watch(&session(), "did:key:zMe", &did, &key)
+            .await
+            .unwrap();
+        assert_eq!(
+            asked.await.unwrap(),
+            vec![ROOMS_WATCH_V2_TYPE, ROOMS_WATCH_TYPE]
+        );
+    }
+
+    /// A record that needs 0.5 is never sent at an earlier version with a member dropped: a
+    /// host that predates 0.5 gets the refusal back.
+    #[tokio::test]
+    async fn an_open_record_that_needs_0_5_is_not_downgraded() {
+        let (did, key) = member_key();
+        let (client, asked) = host(
+            &[ROOMS_RECORDS_PUT_V3_TYPE, ROOMS_RECORDS_PUT_V4_TYPE],
+            put_answer(),
+        )
+        .await;
+        let err = client
+            .put_cleartext_record(
+                &session(),
+                "m1",
+                serde_json::json!({ "body": "Hi", "kind": "message", "writtenAt": "2026-11-25T12:00:00Z" }),
+                &[],
+                None,
+                &did,
+                &key,
+            )
+            .await
+            .unwrap_err();
+        assert!(is_unsupported_type(&err), "{err}");
+        assert_eq!(asked.await.unwrap(), vec![ROOMS_RECORDS_PUT_V5_TYPE]);
+
+        // One that 0.3 accepts falls back as far as it must.
+        let (client, asked) = host(&[ROOMS_RECORDS_PUT_V3_TYPE], put_answer()).await;
+        client
+            .put_cleartext_record(
+                &session(),
+                "n1",
+                serde_json::json!({ "body": "a note" }),
+                &[],
+                None,
+                &did,
+                &key,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            asked.await.unwrap(),
+            vec![
+                ROOMS_RECORDS_PUT_V5_TYPE,
+                ROOMS_RECORDS_PUT_V4_TYPE,
+                ROOMS_RECORDS_PUT_V3_TYPE
+            ]
+        );
+    }
+
+    /// A refusal other than `unsupportedType` is the answer: nothing is asked again.
+    #[tokio::test]
+    async fn any_other_refusal_is_not_retried_at_an_earlier_version() {
+        let (did, key) = member_key();
+        // A host that refuses every type, with a code that is not `unsupportedType`.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = tokio::spawn(async move {
+            let mut n = 0;
+            while let Ok(Ok((mut sock, _))) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), listener.accept()).await
+            {
+                n += 1;
+                let mut chunk = [0u8; 16384];
+                let _ = sock.read(&mut chunk).await;
+                let body = r#"{"payload":{"code":"permissionDenied","message":"no"}}"#;
+                let _ = sock
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+            n
+        });
+        let client = VtcClient::anonymous(&format!("http://127.0.0.1:{port}"), "did:key:zHost");
+        let err = client
+            .get_record(&session(), "k1", &did, &key)
+            .await
+            .unwrap_err();
+        assert!(!is_unsupported_type(&err));
+        assert_eq!(
+            served.await.unwrap(),
+            1,
+            "asked once, at the newest version"
         );
     }
 }

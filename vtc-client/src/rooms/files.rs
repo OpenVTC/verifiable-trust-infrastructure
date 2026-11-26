@@ -1,5 +1,5 @@
 //! Moving a room file's ciphertext: `rooms/blobs/upload/*`, `rooms/blobs/{get,chunk}` and
-//! the record put that names a blob (`rooms/records/put/0.3`).
+//! the record put that names a blob (`rooms/records/put`, newest the host serves).
 //!
 //! What goes over these calls is ciphertext and its manifest, never a key and never a file
 //! name: a file is sealed before [`VtcClient::begin_upload`] and opened after
@@ -25,7 +25,11 @@ use vti_specs::rooms::info::v0_4 as room_info_v4;
 use vti_specs::rooms::info::v0_5 as room_info;
 use vti_specs::rooms::records::get::v0_2 as get_v2;
 use vti_specs::rooms::records::prune::v0_2 as records_prune;
+#[allow(deprecated)] // asked of a host that predates put/0.4; its response is a published type
 use vti_specs::rooms::records::put::v0_3 as put_v3;
+#[allow(deprecated)] // asked of a host that predates put/0.5
+use vti_specs::rooms::records::put::v0_4 as put_v4;
+use vti_specs::rooms::records::put::v0_5 as put_v5;
 use vti_specs::rooms::records::retention::set::v0_1 as retention_set;
 use vti_specs::rooms::signal_delay::set::v0_1 as signal_delay_set;
 
@@ -38,8 +42,10 @@ pub use download_chunk::Response as DownloadChunkResponse;
 #[allow(deprecated)]
 // get/0.3 adds only host-recorded times and author, which this client does not read yet
 pub use get_v2::Response as GetRecordV2Response;
-#[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
+#[allow(deprecated)]
+// the members every put version answers; kept as this client's return type
 pub use put_v3::Response as PutRecordV3Response;
+pub use put_v5::Response as PutRecordResponseV5;
 pub use records_prune::Response as PruneRecordsResponse;
 pub use retention_set::Response as RetentionSetResponse;
 pub use room_info::Response as RoomInfoResponse;
@@ -63,6 +69,23 @@ fn response<R: DeserializeOwned>(type_uri: &str, value: serde_json::Value) -> Re
         status: 200,
         body: format!("{type_uri} response does not match its schema: {e}"),
     })
+}
+
+/// A record put's answer as this client's published 0.3 response type, read first against
+/// the version that answered (`asked`: 0 = 0.5, 1 = 0.4, 2 = 0.3). Every version answers
+/// the same members, so nothing is lost.
+#[allow(deprecated)]
+fn put_answer(asked: usize, v: serde_json::Value) -> Result<PutRecordV3Response, VtcError> {
+    match asked {
+        0 => {
+            response::<put_v5::Response>(put_v5::Payload::TYPE_URI, v.clone())?;
+        }
+        1 => {
+            response::<put_v4::Response>(put_v4::Payload::TYPE_URI, v.clone())?;
+        }
+        _ => {}
+    }
+    response(put_v3::Payload::TYPE_URI, v)
 }
 
 /// The client for requests straight to a room's storage (direct mode): finite timeouts
@@ -446,12 +469,13 @@ impl VtcClient {
         response(uri, v)
     }
 
-    /// `rooms/records/put/0.3`: write a sealed record that names its blobs.
+    /// Write a sealed record that names its blobs (`rooms/records/put`, asked as `0.5`, then
+    /// `0.4` and `0.3` of a host that predates it — a sealed write is the same at each).
     ///
     /// Each blob must be committed in this room first, and the record's sealed body must
     /// describe it; the host can check the first and never the second.
     #[allow(clippy::too_many_arguments)]
-    #[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
+    #[allow(deprecated)] // the 0.3 response is this client's published return type
     pub async fn put_sealed_record_with_blobs(
         &self,
         session: &RoomSession,
@@ -474,12 +498,20 @@ impl VtcClient {
         if let Some(v) = expected_version {
             value["expectedVersion"] = serde_json::json!(v);
         }
-        let p = payload::<put_v3::Payload>(value)?;
-        let uri = put_v3::Payload::TYPE_URI;
-        let v = self
-            .room_task(uri, p, signer_did, private_key_multibase)
+        let p = payload::<put_v5::Payload>(value)?;
+        let (asked, v) = self
+            .room_task_newest(
+                &[
+                    put_v5::Payload::TYPE_URI,
+                    put_v4::Payload::TYPE_URI,
+                    put_v3::Payload::TYPE_URI,
+                ],
+                p,
+                signer_did,
+                private_key_multibase,
+            )
             .await?;
-        response(uri, v)
+        put_answer(asked, v)
     }
 
     /// `rooms/records/prune/0.2`: remove the records the room's record retention makes
@@ -550,6 +582,70 @@ impl VtcClient {
         response(uri, v)
     }
 
+    /// `rooms/records/put/0.5`: write an `open` room's record whose `cleartext` may carry
+    /// what every version allows — its provenance (`basis`, `confidence`, `evidence`,
+    /// `validFor`) and `validUntil` (0.3), its file (`file`, 0.4) — and what a message, a
+    /// reply or a reaction is: `kind`, `inReplyTo`, `writtenAt`, `editedAt` (0.5). Whether
+    /// the room's writers may use the last four is the room profile's `recordMembers`.
+    ///
+    /// A host that answers `unsupportedType` predates 0.5. The record is then asked again
+    /// at the earliest version whose schema accepts it as given (`0.4`, then `0.3`) — never
+    /// with a member dropped: a record that needs 0.5 gets the host's refusal back.
+    ///
+    /// The payload is checked against the generated type but sent **as given**, so a
+    /// `validUntil` or `writtenAt` reaches the host in the spelling the writer chose.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(deprecated)] // 0.4 and 0.3 are asked of hosts that predate 0.5
+    pub async fn put_cleartext_record(
+        &self,
+        session: &RoomSession,
+        key: &str,
+        cleartext: serde_json::Value,
+        blobs: &[String],
+        expected_version: Option<u64>,
+        signer_did: &str,
+        private_key_multibase: &str,
+    ) -> Result<PutRecordResponseV5, VtcError> {
+        let mut value = serde_json::json!({
+            "roomId": session.room_id,
+            "key": key,
+            "presentation": session.presentation,
+            "cleartext": cleartext,
+        });
+        if !blobs.is_empty() {
+            value["blobs"] = serde_json::json!(blobs);
+        }
+        if let Some(v) = expected_version {
+            value["expectedVersion"] = serde_json::json!(v);
+        }
+        serde_json::from_value::<put_v5::Payload>(value.clone())
+            .map_err(|e| VtcError::Url(format!("payload refused by its schema: {e}")))?;
+        // The versions this record can be asked at as it stands, newest first.
+        let mut uris = vec![put_v5::Payload::TYPE_URI];
+        if serde_json::from_value::<put_v4::Payload>(value.clone()).is_ok() {
+            uris.push(put_v4::Payload::TYPE_URI);
+        }
+        if serde_json::from_value::<put_v3::Payload>(value.clone()).is_ok() {
+            uris.push(put_v3::Payload::TYPE_URI);
+        }
+        let (asked, v) = self
+            .room_task_newest(&uris, value, signer_did, private_key_multibase)
+            .await?;
+        let uri = uris[asked];
+        // Read against the version that answered, then as 0.5's: every version answers the
+        // same members.
+        match asked {
+            0 => {}
+            _ if uri == put_v4::Payload::TYPE_URI => {
+                response::<put_v4::Response>(uri, v.clone())?;
+            }
+            _ => {
+                response::<put_v3::Response>(uri, v.clone())?;
+            }
+        }
+        response(put_v5::Payload::TYPE_URI, v)
+    }
+
     /// `rooms/records/put/0.3`: write an `open` room's record whose `cleartext` may carry
     /// its provenance (`basis`, `confidence`, `evidence`, `validFor`) and `validUntil`.
     ///
@@ -561,7 +657,10 @@ impl VtcClient {
     /// The payload is checked against the generated type but sent **as given**, so a
     /// `validUntil` reaches the host in the spelling the writer chose.
     #[allow(clippy::too_many_arguments)]
-    #[allow(deprecated)] // 0.4 adds only an open room's file, which this client does not write
+    #[allow(deprecated)]
+    #[deprecated(
+        note = "asks only rooms/records/put/0.3; use `put_cleartext_record`, which asks the newest version the host serves"
+    )]
     pub async fn put_cleartext_record_v3(
         &self,
         session: &RoomSession,
