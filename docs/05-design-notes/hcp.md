@@ -155,12 +155,12 @@ sidecar:
 | Boundary | Protection (V0) | Later |
 |---|---|---|
 | Agent client → VTA | TSP sealed and signed with `VID_sndr` = `issuer`; a document proof by `issuer` is required; the token's client must equal `issuer`, else `permissionDenied` (a carriage rule of the suite); admitted with no ACL entry only for the agent-sent `hcp/*` tasks (§4.3) | HTTP Bearer over the HTTP Binding (V1); OAuth (V3) |
-| Keyring → VTA | DIDComm authcrypt from the admin DID, a required document proof by that DID, the ACL admin role; no token (§4.4) | Dedicated management tokens (V1) |
-| VTA → Keyring | A VTA-signed `task-consent/request` carrying the held request's HCP 6.1.6 items; Keyring accepts it only for the VID and `threadId` it scanned | Same |
+| Keyring → VTA | DIDComm authcrypt from the admin DID, a required document proof by that DID, the ACL admin role; no `accessToken` in the payload: the VTA checks that the proven `issuer` is the enrolled admin DID (§4.4) | Dedicated management tokens (V1) |
+| VTA → Keyring | A VTA-signed `task-consent/request` carrying the held request's HCP 6.1.6 items, with `parentThreadId` set to the held request's `threadId`; Keyring accepts it only for the VID it scanned and when `parentThreadId` equals the `threadId` it scanned (§5.2) | Same |
 | VTA → agent client | A VTA-signed notice, a fresh document per attempt with a stable `noticeId`, pushed over TSP | Security Event Tokens over RFC 8935 (V3) |
 | REST `/trust-tasks` | `hcp/*` refused: REST carries no sender binding | Allowed with a required `issuer` proof (V1) |
 | Retained copies | A token is never logged; the accepted-document store and the idempotency cache keep `accessTokenDigest`, not the token; a proof is verified at receipt only | A census asserts it (V1) |
-| Model provider | The demo client answers deterministically from the entries | An editor question (§12, N3) |
+| Model provider | The demo client answers deterministically from the entries; the token never enters a model's context or a tool result (HCP 10.5, §4.2) | An editor question (§12, N3); a dedicated `vta-mcp` HCP tool (V1, §9.4) |
 | Enclave (Nitro) | The VTA runs inside; the sidecar, when there is one, outside on the parent | §9.3 |
 
 ## 4. Authority
@@ -183,6 +183,18 @@ purposes, whether it is temporary or persistent, and when it expires.
   registry's review needs no code change (decision 9).
 - **Widening** an existing grant needs a new affirmative act (HCP 6.1.6, last
   item). A client that needs more categories asks for a new grant.
+- **Narrowing** at approval is not in V0. `task-consent/decision` carries
+  approve or deny and no choices, so the person approves the grant as asked or
+  declines it. A narrower grant afterwards comes from governance tasks: in V0,
+  revoke and let the client ask again for less; from V2, `hcp/rules/*` and
+  `hcp/entries/restrict-purposes`. Carrying choices in the decision would need
+  a new `task-consent/decision` version, and none is planned.
+- **A grant belongs to the client VID it was issued to.** A new identity is a
+  new client, with a new grant. `acl/swap-key` moves an ACL entry to a new key
+  and never moves a grant. Where an agent holds both a grant and an ACL entry
+  (for example, one also connected on Keyring's base agent-connect path),
+  disconnecting it in Keyring revokes both: the grant through
+  `hcp/grants/revoke`, with its notice (§8), and the ACL entry.
 
 ### 4.2 Tokens and the per-request check
 
@@ -194,10 +206,26 @@ purposes, whether it is temporary or persistent, and when it expires.
   `issuer`, category and purpose. It returns a `VerifiedGrant`, a typestate
   with private fields that only the check can build; a handler that needs a
   grant takes one.
-- **Refusals do not leak.** Revoked, expired, wrong purpose and unknown token
-  all answer the same `scope-denied`. A token presented by the wrong VID
-  answers `permissionDenied`, which does confirm a stolen token is live; that
-  is the suite's rule today and an editor question (§12, N6).
+- **The token lives as long as the grant.** The suite's `0.1` has no refresh,
+  so the token's expiry equals the grant's `expiresAt` (4 hours by default). A
+  shorter token would end in `hcp:invalidToken` under a grant that is still
+  live.
+- **Refusals use the suite's wire codes.** A revoked, expired or unknown token
+  answers `hcp:invalidToken` (`retryable: false`), which the client reads as
+  notice of revocation (HCP 6.2.2). A request outside the grant (a category or
+  purpose it does not cover, or an entry that does not exist) answers
+  `permissionDenied` with one fixed `message` whatever the reason (HCP 5.5).
+  HCP's `invalid-token` and `scope-denied` are its HTTP names (HCP 9.7); they
+  are not codes on this wire, and the VTA never sends them over the Trust Task
+  carriage. A token presented by the wrong VID answers `permissionDenied` (the
+  suite's token binding), which tells the sender the token is live where an
+  unknown one answers `hcp:invalidToken`; that is the suite's rule today and an
+  editor question (§12, N6).
+- **Out of the model's context** (HCP 10.5). An agent runtime holds the token
+  in the component that builds and sends the document. The token never enters
+  a model's context and is never returned as tool content. The demo's client
+  has no model in the loop (decision 15); `vta-mcp` needs a dedicated HCP tool
+  for it, never the generic `vta_call` (§9.4).
 - **Sender binding holds on TSP and DIDComm only**, which is why `hcp/*` is
   refused over REST until REST carries a required `issuer` proof (V1).
 
@@ -230,13 +258,27 @@ does not contemplate. It is recorded as a divergence (§12).
 Keyring holds no VTA session token on its DIDComm path: its identity is the
 authcrypt sender plus a document proof on every task. So in V0 the governance
 tasks (`hcp/grants/revoke`, `hcp/audit/read`, `hcp/disclosures/summary`,
-`hcp/entries/create`) authenticate the **admin DID**: authcrypt sender, a
-required document proof by that DID, and the ACL admin role through
-`act_scope()` and `require_capability`. This is what every Keyring task
-already does, it needs no token store, and the ACL can revoke it. HCP reserves
-governance to a Management Client holding an HCP credential (HCP 3.2.3, 5.4,
-6.1.9); V1 adds dedicated
-opaque management tokens, and until then this is a recorded divergence (§12).
+`hcp/entries/create`) **omit `accessToken`**, and the VTA checks that the
+request's proven `issuer` is the **admin DID** the person enrolled as the
+Management Client: authcrypt sender, a required document proof by that DID,
+and the ACL admin role through `act_scope()` and `require_capability`. Any
+other issuer is refused `permissionDenied`. This is what every Keyring task
+already does, it needs no token store, and the ACL can revoke it.
+
+The suite carries this as a working assumption, pending HCP confirmation:
+`accessToken` is optional on a governance request (and on `hcp/entries/create`)
+whose `issuer`, proven by the request proof the carriage already requires, is a
+Management Client the Authorizing Principal enrolled by authenticating (HCP
+3.2.3, "credentials"); where a token is present, the token rules apply as
+before. The suite asks the HCP editors whether such a proof counts as those
+credentials (the suite's question 56, cross-referring its questions 22, 37 and
+53). HCP otherwise reserves governance to a Management Client holding an HCP
+credential (HCP 3.2.3, 5.4, 6.1.9). V1 adds dedicated opaque management tokens;
+until then this is a recorded divergence (§12).
+
+Keyring's own governance tasks are **never held** for consent in V0: each is
+the person's own act, authenticated as above, and only `hcp/grants/request`
+from a Context Client is held (§5).
 
 ## 5. Consent through task-consent
 
@@ -268,6 +310,24 @@ item (categories and their descriptions, actions, purposes, the longest
 Operator, whether directives are followed). The Client Operator comes from the
 registration, never from the request; a request's free text is untrusted.
 
+The effect kinds are published here so that Keyring can render a structured
+checklist rather than only each `summary`. Every effect still carries a
+`summary` a surface must show, so a kind Keyring does not know degrades to its
+text. The kinds and `detail` shapes are the V0 contract between A3 and Keyring's
+C1 ([hcp-plan.md](hcp-plan.md) §4):
+
+| `kind` | One per | `detail` |
+|---|---|---|
+| `hcpClient` | request | `clientId` (the client VID), `name` (as the person will confirm it), `operator` (from VTA configuration) |
+| `hcpCategory` | requested category | `category` (slug or URI), `description`, `actions` (the HCP actions asked for it) |
+| `hcpPurpose` | requested purpose; one with `choose: true` when the request names none | `purpose` (the IRI), `description` |
+| `hcpUseUntil` | request | `maxUseSeconds` (the longest `useUntil` a disclosure may carry) |
+| `hcpGrantTerm` | request | `persistence` (`temporary` in V0), `expiresAt` (RFC 3339) |
+| `hcpDirectives` | request | `followsDirectives` (boolean) |
+
+The approval binds to the payload digest, not to these members: they describe
+the request, and a surface that ignores `detail` loses only structure.
+
 ### 5.2 The approval and grant flow
 
 Read the diagram as two halves: steps 1–7 hold the request and ask the person;
@@ -286,8 +346,8 @@ sequenceDiagram
     Note over V: admitted with no ACL entry, zero authority (§4.3)
     V->>V: pending task-consent: request digest, bound approver,<br/>6.1.6 items as effects
     V-->>C: trust-task-next-step, continuation resubmit (never an error)
-    V->>K: task-consent/request, VTA-signed, through the mediator
-    K->>P: checklist, if the VID and threadId match the scan
+    V->>K: task-consent/request, VTA-signed, parentThreadId = held threadId, through the mediator
+    K->>P: checklist, if the VID and parentThreadId match the scan
     P->>K: approves with a biometric
     K->>V: task-consent/decision, signed by the admin DID
     V->>V: verify; record the client registration; single-use consent grant
@@ -302,8 +362,25 @@ sequenceDiagram
   with `trust-task-next-step` and `continuation: resubmit`. The policy gate's
   `auth:consent_required` refusal is the form to avoid.
 - **Holds are keyed by (`threadId`, `issuer`).** A replay inside an hour
-  returns the same `grantId` and no token is stored anywhere; the VTA ends a
-  hold not approved within 300 seconds (how long to hold is provider policy); a decline answers `permissionDenied`.
+  returns the same `grantId` and no token is stored anywhere.
+- **A hold ends once, and its thread is never reopened.** A decline answers
+  `permissionDenied`: `hcp/grants/request` issues a grant rather than
+  producing a decision, so the framework's rule for a declined referral applies
+  (SPEC §4.13.3 rule 2). A hold not approved within 300 seconds (how long to
+  hold is provider policy) is **denied, not reopened**: the policy denies, and
+  the next resubmission on that thread gets the same `permissionDenied`, with
+  the same fixed message, as a decline and an unknown person (SPEC §4.13.3
+  rule 5). A new ask needs a new request on a new thread. The VTA remembers an
+  ended thread (declined, timed out, or approved and past its hour) for at
+  least as long as it would accept a resubmission on it. One visible end per
+  hold also stops a client telling an abandoned hold from an unknown person.
+- **The consent request names the held thread.** The VTA sets the envelope's
+  `parentThreadId` on `task-consent/request` to the held request's `threadId`
+  (SPEC §4.9.2, §4.13.3 rule 3), and Keyring accepts the request only when it
+  equals the `threadId` it scanned. `parentThreadId` is an envelope member, so
+  no schema changes. This is new work: today `consent_request.rs` builds the
+  document with `id`, `type`, `issuer`, `recipient`, `issuedAt` and `payload`,
+  and sets no thread member (A3), and Keyring keeps only the payload (its C1).
 - **Registration at first approval.** HCP requires a registered client. The
   demo records the registration when the person approves: the name they
   confirm, the operator from VTA configuration. No new wire specification is
@@ -328,6 +405,11 @@ sequenceDiagram
   people" has no HCP action, so its custom action URI is on a domain the
   Keyring team controls, read from configuration like the purposes
   (decision 16); whether such a URI is an extension point is question N8.
+- **`vta/memory/*` stays beside the HCP entry store in V0**, unchanged. The
+  two are separate stores: nothing is copied between them, and a Context
+  Client with a grant sees only `hcp_entries`. A bridge between them, or a
+  migration of one into the other, is **deferred**, not decided
+  ([hcp-plan.md](hcp-plan.md) §8).
 - **Same handlers on every path.** HTTP routes and Trust Task handlers call one
   `vta-hcp` operation each, so parity is by construction and a parity test
   proves it (V1).
@@ -413,7 +495,7 @@ sequenceDiagram
         V-->>K: notification: delivered at <time>
     end
     C->>V: hcp/entries/query with the old token
-    V-->>C: scope-denied
+    V-->>C: hcp:invalidToken
 ```
 
 ## 9. Keep the VTA lightweight: the OAuth sidecar
@@ -511,6 +593,7 @@ these are recommendations:
 |---|---|
 | HTTP Binding | **Keep in the VTA, behind its own feature.** It is the resource-server surface the conformance claim rests on, and every request needs the per-request check against VTA state; a façade would only proxy |
 | MCP over Streamable HTTP | **Extend the separate `vta-mcp` process; nothing in the VTA.** HCP 10.5 already makes a bridge a client of the provider |
+| `vta-mcp` today (stdio) | **A client bridge, not a provider front end** (HCP 10.5; question N1). Work listed for V1 ([hcp-plan.md](hcp-plan.md) §3.4): `vta-sdk` handles held replies (it sets a `threadId`, never returns a `trust-task-next-step` as the result, and resubmits per its continuation or gives up); `vta-mcp` gets a dedicated HCP tool that keeps the token out of the model's context, and until then `vta_call` refuses `hcp/*` |
 | SETs over RFC 8935 | **Keep in the VTA as another `PushReissuer` channel**: one retry owner, and the SET is signed with VTA keys. Needs an SSRF guard on outbound HTTP |
 | Discovery | **HCP discovery in the VTA** (it reflects the served, feature-gated tasks); **OAuth metadata in the sidecar**, with a census over both |
 | Device and login pages | **In the sidecar; consent stays in Keyring** |
@@ -526,7 +609,7 @@ purge declared. No bare keyspace literals.
 | `hcp_grants` | Grants (HCP 6.1.5): status, client, purposes, expiry | Backed up; a restored grant comes back suspended |
 | `hcp_tokens` | SHA-256 of each token → grant | Excluded: never restored |
 | `hcp_tombstones` | Revoked grant ids | Placed so that a restore can never drop one |
-| `hcp_holds` | Held `grants/request` by (`threadId`, `issuer`) | Excluded |
+| `hcp_holds` | Held `grants/request` by (`threadId`, `issuer`), and ended threads for as long as a resubmission on them would be accepted (§5.2) | Excluded |
 | `hcp_entries` | Entries, with linear versions | Backed up |
 | `hcp_directives` | Directives (V1) | Backed up |
 | `hcp_notices` | The notice schedule per `noticeId` | Backed up |
@@ -548,7 +631,7 @@ carries it.
 | 4 | **The hold is `trust-task-next-step`**, never an error | HCP treats a pending request as a state, not a failure |
 | 5 | **Opaque, hashed, sender-bound tokens**; `hcp/*` refused over REST until REST carries an `issuer` proof | Sender binding holds only where the transport authenticates the sender |
 | 6 | **No-ACL admission through a counterparty hook**, never `PUBLIC_URIS` | §4.3 |
-| 7 | **Management by DID-proven request** in V0; management tokens in V1 | §4.4: there is no session token on Keyring's path to reuse |
+| 7 | **Management by DID-proven request** in V0: no `accessToken`, the proven `issuer` must be the enrolled admin DID; management tokens in V1 | §4.4: there is no session token on Keyring's path to reuse; the suite's working assumption, pending HCP confirmation (its question 56) |
 | 8 | **Revocation exempt from rate limits**, as a code-level list with a census | HCP's MUST protects the person; a hidden exception would be worse than a recorded one |
 | 9 | **Purpose IRIs in the Trust Over IP DTG registry** (`trustoverip/dtgwg-vsc-registry`), at `https://registry.trustoverip.org/dtg/purpose/<name>/<n>`; the entries are drafts in the registry's review; the VTA reads them from configuration | A shared, governed vocabulary beside the registry's `/dtg/vsc/`; a rename in review is a configuration change |
 | 10 | **Register the client at the person's first approval**; operator from VTA configuration | The smallest reading that keeps the agent out of the ACL; no new wire specification |
@@ -559,6 +642,14 @@ carries it.
 | 15 | **The demo's client answers deterministically**, citing entries and purposes | Repeatable, and no disclosure to a model provider |
 | 16 | **The directive action URI for "answers other people" is on a domain the Keyring team controls**, read from configuration | HCP 6.4 allows an absolute URI; no registry home fits yet, since a shared action list would mix acting as oneself with acting in the person's name (N8) |
 | 17 | **The demo runs on openvti-starter's MODE=tunnel** | A phone cannot reach MODE=local, which binds loopback, uses `localhost` DIDs and runs no mediator ([tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md)) |
+| 18 | **An expired hold is denied, never reopened**; decline, timeout and unknown person answer the same `permissionDenied` | §5.2: one end per hold, and no probe |
+| 19 | **The consent request carries `parentThreadId`** equal to the held request's `threadId` | The framework's carrier for a nested exchange (SPEC §4.13.3 rule 3); no schema change |
+| 20 | **The suite's wire codes**: `hcp:invalidToken` for a revoked, expired or unknown token, `permissionDenied` outside the grant | §4.2: `scope-denied` is HCP's HTTP name, not a code on this wire |
+| 21 | **The token expires with its grant** | The suite's `0.1` has no refresh |
+| 22 | **No narrowing at approval in V0**: approve as asked, then narrow with governance tasks | §4.1: `task-consent/decision` carries no choices |
+| 23 | **A key swap never moves a grant; disconnect revokes both grant and ACL entry** | §4.1: a new identity is a new client |
+| 24 | **`vta/memory/*` stays beside HCP in V0**; a bridge is deferred | §6: two stores, nothing copied |
+| 25 | **`vta-mcp` is a client bridge**; Keyring's governance tasks are never held in V0 | §9.4, §4.4 |
 
 Open: whether the sidecar is our own small binary or embeds a mature
 authorization server (a Rust library survey decides it, before V3); and the
@@ -588,11 +679,11 @@ Three registers hold them:
 | No HCP `conformsTo` until V2: an aligned pilot | HCP 18.1 (posture, not a breach) | This note §1; the discovery document |
 | A Context Client acts with no ACL entry, through a zero-authority hook | VTI-ACL-001 | Appendix F |
 | `hcp/grants/revoke` exempt from the operation budget | VTI-TRN-029 | Appendix F |
-| Management by DID-proven request, not an HCP token (V0) | HCP 1.6, 5.4 | Appendix F |
+| Management by DID-proven request, not an HCP token (V0) | HCP 1.6, 5.4 | Appendix F; the suite's working assumption and its question 56 |
 | `hcp/*` refused over REST (V0), so the decision depends on the transport | VTI-TRN-002, VTI-OPS-092 | Appendix F |
 | A token is bound to the `issuer` VID | HCP 9.3, a plain Bearer token (stricter) | Suite carriage rule |
 | A fresh notice document per attempt; nothing after 24 hours | HCP 9.9 (same SET resent) | Suite carriage rule; editor question N10 |
-| A wrong-VID token answers `permissionDenied`, not `scope-denied` | HCP 9.7 (an oracle) | Editor question N6 |
+| A wrong-VID token answers `permissionDenied`, not `hcp:invalidToken` | HCP 9.7 (an oracle) | Editor question N6 |
 | The client is registered at the person's first approval | HCP 6.1.7 (left to the profile) | Editor question N9 |
 | A custom directive action URI for "answers other people", on a Keyring-controlled domain | HCP 6.4, A.3 | Editor question N8 |
 | A demo-only pairing (QR and number) | Keyring's agent-connect pairing | The Keyring companion plan; merged in V1 |
@@ -606,7 +697,7 @@ Editor questions new with this work, sent with the working demo:
 | N3 | Is sending disclosed context to a model API run by another organisation onward disclosure (HCP 3.12) or processing under the client? |
 | N4 | May MCP over Streamable HTTP be used under First-Party without OAuth (HCP 10.1 against 12.2)? |
 | N5 | Where is the HCP 20.2 test hook defined, and is there a published suite? |
-| N6 | Should a wrong-VID token answer `scope-denied` like the others, since `permissionDenied` confirms the token is live? |
+| N6 | Should a wrong-VID token answer `hcp:invalidToken` like an unknown one, since `permissionDenied` confirms the token is live? |
 | N7 | Is a person in a data room "a party operated by a different organization" for `onwardSharing.domains`? |
 | N8 | Is a custom directive action URI an extension point, and who registers it? |
 | N9 | May a provider register a client at the person's first approval of its grant request? |

@@ -169,7 +169,7 @@ transcript.
   hook, and its authority is the grant ([hcp.md](../docs/05-design-notes/hcp.md)
   §4.3).
 - **Keyring manages by DID-proven request** (admin DID, proof, ACL admin
-  role); management tokens come in V1.
+  role, no `accessToken`); management tokens come in V1.
 - **Temporary grants only**, 4 hours by default; persistent is never offered
   in the demo.
 - **`hcp/*` over TSP and DIDComm only**; REST is refused.

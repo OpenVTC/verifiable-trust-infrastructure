@@ -93,9 +93,12 @@ by raising a count or growing an allowlist.
 - [ ] **A2 — `vta-hcp` core, trait and stub.**
   - Acceptance: `HcpProvider`, `HcpCtx` and `HcpError` (`#[non_exhaustive]`,
     mapped through `reject_declared` to declared codes only) are frozen and
-    `StubHcp` answers every fixture; revoked, expired, wrong-purpose and
-    unknown tokens give the same `scope-denied`; a wrong-VID token gives a
-    `permissionDenied` that reveals nothing else; `VerifiedGrant` can be built
+    `StubHcp` answers every fixture; revoked, expired and unknown tokens give
+    `hcp:invalidToken`; a request outside the grant (wrong category or
+    purpose) gives `permissionDenied` with one fixed message; a wrong-VID
+    token gives a `permissionDenied` that reveals nothing else; no
+    `scope-denied` or `invalid-token` is ever sent on this wire; a token's
+    expiry equals its grant's; `VerifiedGrant` can be built
     only by the per-request check; tokens are `Zeroizing` with a redacting
     `Debug`; the `subject.id` secret is reached only through key custody;
     `vta-hcp` does not depend on `vta-service`; a backup round trip keeps the
@@ -111,11 +114,15 @@ by raising a count or growing an allowlist.
   - Acceptance: a held request answers `trust-task-next-step` with
     `continuation: resubmit`, never an error; the pending
     `task-consent/request` is bound to the request's digest and to the admin
-    DID, with the HCP 6.1.6 items as effects (or a purpose choice where none
-    was named); approval gives a grant and a token, expiring 4 hours later;
-    a replay within an hour gives the same `grantId` and stores no token; a
-    hold not approved in 300 seconds ends (VTA policy); a decline answers
-    `permissionDenied`; the client registration is recorded at approval.
+    DID, with the HCP 6.1.6 items as effects of the kinds published in
+    [hcp.md](hcp.md) §5.1 (or a purpose choice where none was named), and with
+    `parentThreadId` equal to the held request's `threadId`; approval gives a
+    grant and a token, both expiring 4 hours later; a replay within an hour
+    gives the same `grantId` and stores no token; a hold not approved in 300
+    seconds is denied (VTA policy), and the next resubmission on that thread
+    gets the same `permissionDenied` as a decline and an unknown person, with
+    the thread never reopened; the client registration is recorded at
+    approval.
   - Verify: `cargo nextest run -p vta-hcp --locked`; A9's hold cases.
   - Files: `vta-hcp/src/request.rs`; hooks in
     `vta-service/src/trust_tasks/hcp.rs` (through A8).
@@ -162,7 +169,9 @@ by raising a count or growing an allowlist.
     is not served; `hcp/*` over REST is refused; a missing proof is refused;
     the agent-sent tasks are admitted with no ACL entry only through
     `hcp::is_context_client_task`, after an ACL refusal, with zero authority;
-    governance tasks need the admin role through `act_scope()`; no token
+    governance tasks need the admin role through `act_scope()` and carry no
+    `accessToken`, and one whose proven `issuer` is not the enrolled admin DID
+    is refused `permissionDenied`; `vta_call` refuses `hcp/*`; no token
     appears in the accepted-document store, the idempotency cache, the
     duplicate-execution record or a log (a new census asserts it);
     `spec_pin_census`, `every_uri_is_classified`,
@@ -185,7 +194,8 @@ by raising a count or growing an allowlist.
     `#![cfg(feature = "hcp")]`, through `MockVta` with the `transport-harness` feature
     over TSP with real gates; the happy path and each refusal (another VID's
     token, a revoked grant, a wrong purpose, REST, revoke under an exhausted
-    budget) pass; the agent VID is a `did:webvh`; a transcript is recorded for
+    budget, a decline and a timed-out hold, each followed by a resubmission
+    that gets `permissionDenied` and no grant) pass; the agent VID is a `did:webvh`; a transcript is recorded for
     the agent client's and Keyring's fakes. A failure seen only under load is
     re-run alone before it is called a regression.
   - Verify: `cargo test -p vta-service --features hcp --test it --locked --

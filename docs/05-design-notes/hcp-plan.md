@@ -99,12 +99,12 @@ after the demo. Task-level detail for V0 (acceptance, verify, files) is in
 |---|---|---|
 | A1 | **`vti-specs-hcp`**: pin the `hcp/*` tasks V0 uses with `trust-tasks -C vti-specs-hcp add` and `check`; commit `trust-tasks.toml`, the lock and the bundles together; framework specs (`trust-task-next-step`, `trust-task-discovery`) are not pinned here; the facade re-export and `schema_index` merge | X0b |
 | A2 | **`vta-hcp` core**: the `HcpProvider` trait, `HcpCtx`, `HcpError` and a `StubHcp` with fixtures (the contract the other A packages build against); grant and entry stores; opaque hashed tokens; the per-request check returning `VerifiedGrant`; the `subject.id` secret through key custody; the keyspace checklist ([hcp.md](hcp.md) §10); orchestration in `vta-service/src/operations/hcp.rs` | A1 |
-| A3 | **`hcp/grants/request` hold**: (`threadId`, `issuer`) match; the pending `task-consent/request` from a `remote_approval`-style producer with a bound approver and the HCP 6.1.6 items as effects; the hold as `trust-task-next-step`; registration at approval; the same `grantId` for an hour | A2, A8 |
+| A3 | **`hcp/grants/request` hold**: (`threadId`, `issuer`) match; the pending `task-consent/request` from a `remote_approval`-style producer with a bound approver and the HCP 6.1.6 items as effects of the published kinds ([hcp.md](hcp.md) §5.1); `parentThreadId` set to the held `threadId` on that request (`consent_request.rs` sets no thread member today); the hold as `trust-task-next-step`; an expired hold denied, never reopened, with ended threads remembered; registration at approval; the same `grantId` for an hour; the token expiring with the grant | A2, A8 |
 | A4 | **`hcp/entries/query`** (at most 20, recency order, grant-scoped `ref`, minimisation report, `useUntil` with the 1-hour cap) and **`hcp/entries/create`** (`person-declared` only) | A2 |
 | A5 | **`hcp/grants/revoke` and the notice**: immediate, tombstone, exempt from the operation budget and the REST limiters by a code-level list; the `hcp/grants/revoked` schedule extends `PushReissuer`'s, re-issuing on every attempt (today it re-issues only past the acceptance window); fresh document per attempt, stable `noticeId`; the client's acknowledgement admitted with no ACL entry | A2 |
 | A6 | **`hcp/audit/read` and `hcp/disclosures/summary`** (with the notice state Keyring polls); HCP events as `VtaOperation` dotted actions; audit before the state change, fail closed except on revoke | A2 |
-| A8 | **Spine wiring**, by the Trust Task recipe: a `TASK_*` const per URI from the generated `TYPE_URI`; one `dispatch_table!` line per served URI with its class, under `#[cfg(feature = "hcp")]`, and each in `KNOWN_FEATURE_GATED_URIS`; `RETRY_SAFETY` rows (`grants/request` is `KeyedSecret`: it returns a token); policy-gate subject handling; a `checked!` conformance witness per served URI; the MCP guard risk class and the `vta-mcp` census; `error_code_census` witnesses; the token-bearing response out of the duplicate-execution record; the `hcp::is_context_client_task` admission hook; `hcp/*` refused over REST. `hcp/grants/revoked` is sent by the VTA, so it gets a const but is never served. No census allowlist grows | A2 (on `StubHcp` first) |
-| A9 | **Integration tests** in `vta-service/tests/it/hcp_demo.rs` through `MockVta` with the `transport-harness` feature, over TSP, real gates, no auth bypass: the happy path and the refusals (another VID's token, a revoked grant, a wrong purpose, REST, revoke under an exhausted budget), each asserting the wire `code`, its typed error and its audit row; a `did:webvh` agent VID, not only `did:key`. Records a transcript the agent client's and Keyring's fakes are regenerated from | A3–A6, A8 |
+| A8 | **Spine wiring**, by the Trust Task recipe: a `TASK_*` const per URI from the generated `TYPE_URI`; one `dispatch_table!` line per served URI with its class, under `#[cfg(feature = "hcp")]`, and each in `KNOWN_FEATURE_GATED_URIS`; `RETRY_SAFETY` rows (`grants/request` is `KeyedSecret`: it returns a token); policy-gate subject handling; a `checked!` conformance witness per served URI; the MCP guard risk class and the `vta-mcp` census; `error_code_census` witnesses; the token-bearing response out of the duplicate-execution record; the `hcp::is_context_client_task` admission hook; `hcp/*` refused over REST; governance tasks accepted with no `accessToken` only from the enrolled admin DID, any other issuer `permissionDenied`; `vta_call` refuses `hcp/*`. `hcp/grants/revoked` is sent by the VTA, so it gets a const but is never served. No census allowlist grows | A2 (on `StubHcp` first) |
+| A9 | **Integration tests** in `vta-service/tests/it/hcp_demo.rs` through `MockVta` with the `transport-harness` feature, over TSP, real gates, no auth bypass: the happy path and the refusals (another VID's token, a revoked grant, a wrong purpose, REST, revoke under an exhausted budget, a decline and a timed-out hold, each followed by a resubmission that gets the same `permissionDenied` and no grant), each asserting the wire `code`, its typed error and its audit row; a `did:webvh` agent VID, not only `did:key`. Records a transcript the agent client's and Keyring's fakes are regenerated from | A3–A6, A8 |
 
 A7 (`hcp/directives/set`) was moved to V1 with the Keyring screen that uses it,
 so V0's discovery serves six `hcp/*` tasks and V1's seven.
@@ -114,7 +114,7 @@ so V0's discovery serves six `hcp/*` tasks and V1's seven.
 | WP | Where | Work |
 |---|---|---|
 | B1–B4, B6 | The agent client (`berkmancenter/vti-agent-connect`, TypeScript) | Own VID and mediator mailbox; QR and number; the hold and resubmit over TSP; answers from retrieved context, printing purpose and `useUntil`; a mediator receive loop that acknowledges `hcp/grants/revoked`, de-duplicates on `noticeId`, purges and stops; tests against a fake VTA, including a duplicate notice |
-| C0–C3, C6–C8 | keyring-wallet | The flag; an HCP client with `trust-tasks-ts` types from the suite as frozen at X0; scan, number and approve (the structured HCP 6.1.6 checklist over the request's effects); the agent list; a new memory; revoke with the live notice state, polling `hcp/disclosures/summary`; jest; mockups |
+| C0–C3, C6–C8 | keyring-wallet | The flag; an HCP client with `trust-tasks-ts` types from the suite as frozen at X0; governance tasks with no `accessToken`; scan, number and approve (the structured HCP 6.1.6 checklist over the request's effects, by the kinds in [hcp.md](hcp.md) §5.1; the consent request accepted only when its `parentThreadId` equals the scanned `threadId`); the agent list; disconnect revoking both the grant and any ACL entry; a new memory; revoke with the live notice state, polling `hcp/disclosures/summary`; jest; mockups |
 | D1–D4 | openvti-starter, a demo variant | A VTA image built from the VTI branch with `hcp` added to its features, tagged by ref, never `latest`; `pins:verify` for it; the lab stack in MODE=tunnel; the runbook ([tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md)) |
 
 ### 3.4 After V0
@@ -131,7 +131,11 @@ so V0's discovery serves six `hcp/*` tasks and V1's seven.
   survive a restore; a redaction census (no token in any retained store);
   discovery with no `conformsTo`; management tokens replacing DID-proven
   management; the Rust presence-fix release and the suite's first release
-  adopted; SDK client methods and `pnm` commands with `--json`; a fuzz target
+  adopted; SDK client methods and `pnm` commands with `--json`; held replies
+  in `vta-sdk` (a `threadId` on every request, a `trust-task-next-step` never
+  returned as the result, resubmission per its continuation) and a dedicated
+  HCP tool in `vta-mcp` that keeps the token out of the model's context (HCP
+  10.5; [hcp.md](hcp.md) §9.4), replacing the V0 refusal in `vta_call`; a fuzz target
   for the admission parser; the demo branch rebased onto `main` with a map of
   old to new commits.
 - **H1, context plane:** `hcp/entries/{get,revise,withdraw}`,
@@ -271,3 +275,9 @@ P2 items are separable and ship on their own exits.
   stays on a Keyring-controlled domain until the HCP editors answer N8 and the
   registry's editors decide whether acts in another's name get a vocabulary.
 - **Exact wire members** beyond what the `hcp/*` specifications fix.
+- **`vta/memory/*` and the HCP entry store.** They stay side by side in V0,
+  with nothing copied between them; whether a bridge or a migration follows is
+  deferred ([hcp.md](hcp.md) §6).
+- **Narrowing at approval.** V0 approves as asked and narrows with governance
+  tasks; a decision that carries choices would be a new `task-consent/decision`
+  version and is not planned ([hcp.md](hcp.md) §4.1).
