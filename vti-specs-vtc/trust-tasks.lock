@@ -1,6 +1,6 @@
 # Written by `trust-tasks`. Do not edit by hand.
 version = 1
-registry = "/Users/glenngore/devel/dtgwg-trust-tasks-tf-worktrees/directory-query-entry-id/website"
+registry = "https://trusttasks.org"
 
 [[task]]
 slug = "vtc/admin/actions/acknowledge"
