@@ -17,7 +17,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const directory = vi.hoisted(() => ({ send: vi.fn() }));
 vi.mock("./directory-api", async (actual) => {
   const real = await actual<typeof import("./directory-api")>();
-  return { ...real, send: directory.send };
+  return {
+    ...real,
+    send: directory.send,
+    // The module's own reads call its internal `send`: route the picture read through the mock too.
+    getImage: (entryId: string, field: string, sha256: string) =>
+      directory.send("https://trusttasks.org/spec/vtc/directory/images/get/0.1", { entryId, field, sha256 }),
+  };
 });
 
 import { DirectoryError } from "./directory-api";
@@ -494,7 +500,10 @@ describe("data rooms in the portal", () => {
       { ...CHAT.records[0]!, key: "a1", author: ALBERTO, body: "Hi all", reactions: [] },
     ],
   };
-  const QUERY = "https://trusttasks.org/spec/vtc/directory/query/0.1";
+  const QUERY = "https://trusttasks.org/spec/vtc/directory/query/0.2";
+  const QUERY_V1 = "https://trusttasks.org/spec/vtc/directory/query/0.1";
+  const IMAGES_GET = "https://trusttasks.org/spec/vtc/directory/images/get/0.1";
+  const WALL = "https://trusttasks.org/spec/vtc/badges/wall/show/0.1";
 
   it("an author the room gives no name is named as the directory shows them, else by a DID marked as one", async () => {
     directory.send.mockImplementation(async (type: string, p: { subject: string }) => {
@@ -531,6 +540,80 @@ describe("data rooms in the portal", () => {
     const daveCard = screen.getByRole("group", { name: /About/ });
     expect(within(daveCard).getByText(/shows you no card/)).toBeTruthy();
     expect(within(daveCard).getByText(DAVE)).toBeTruthy();
+  });
+
+  it("a member's card shows their picture, read by the entry the directory names, their bio and badges, and opens their full card", async () => {
+    const bytes = new TextEncoder().encode("a picture");
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const sha256 = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+    const data = btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const ENTRY = "dir_carolcarolcarol01";
+    directory.send.mockImplementation(async (type: string, p: Record<string, unknown>) => {
+      if (type === QUERY && p.subject === CAROL) {
+        return {
+          subject: CAROL,
+          entryId: ENTRY,
+          fields: {
+            displayName: "Carol Chen",
+            bio: "Runs the <b>board</b> papers and the members' library. " + "x".repeat(200),
+            avatar: { sha256, mediaType: "image/png" },
+          },
+        };
+      }
+      if (type === IMAGES_GET && p.entryId === ENTRY && p.field === "avatar" && p.sha256 === sha256) {
+        return { data, image: { sha256, mediaType: "image/png" } };
+      }
+      if (type === WALL && p.entryId === ENTRY) {
+        return {
+          entries: [
+            { badge: { badgeId: "b1", name: "Bug Hunter" }, count: 1, pinned: true, since: "2026-11-17T00:00:00Z" },
+            { badge: { badgeId: "b2", name: "Helping Hand" }, count: 2, pinned: false, since: "2026-11-17T00:00:00Z" },
+          ],
+          visibility: "members",
+        };
+      }
+      throw new DirectoryError("notFound", "no directory entry for that DID is visible to this caller");
+    });
+    const wallet = fakeWallet({ conversation: vi.fn(async () => UNNAMED) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    const carol = await screen.findByRole("button", { name: "Carol Chen" });
+    // The chat's avatar is her picture, digest-checked, read through the projection by her entry.
+    await waitFor(() => expect(document.querySelector(`img.chat-avatar-face[src^="data:image/png"]`)).not.toBeNull());
+    expect(directory.send.mock.calls.some((c) => c[0] === IMAGES_GET && (c[1] as { entryId: string }).entryId === ENTRY)).toBe(true);
+    fireEvent.click(carol);
+    const card = screen.getByRole("group", { name: "About Carol Chen" });
+    // Her bio is text, never markup, and cut short.
+    expect(within(card).getByText(/^Runs the <b>board<\/b> papers/).textContent!.endsWith("…")).toBe(true);
+    expect(card.querySelector("b b")).toBeNull();
+    // Her badges, read only once the card opened.
+    expect(await within(card).findByText("Bug Hunter")).toBeTruthy();
+    expect(within(card).getByText("Helping Hand ×2")).toBeTruthy();
+    expect(within(card).getByRole("link", { name: /Open card/ }).getAttribute("href")).toBe(`#/directory/${ENTRY}`);
+    fireEvent.click(carol);
+    // Dave, whom the directory does not show, keeps a figure and no link.
+    fireEvent.click(screen.getByRole("button", { name: /tiger-phrase/ }));
+    const daveCard = screen.getByRole("group", { name: /About .*tiger-phrase/ });
+    expect(within(daveCard).queryByRole("link", { name: /Open card/ })).toBeNull();
+  });
+
+  it("a community older than query 0.2 is asked at 0.1, and its card has no picture or link", async () => {
+    directory.send.mockImplementation(async (type: string, p: Record<string, unknown>) => {
+      if (type === QUERY) throw new DirectoryError("unsupportedType", "not served");
+      if (type === QUERY_V1 && p.subject === CAROL) {
+        return { subject: CAROL, fields: { displayName: "Carol Chen", avatar: { sha256: "0".repeat(64), mediaType: "image/png" } } };
+      }
+      throw new DirectoryError("notFound", "no directory entry for that DID is visible to this caller");
+    });
+    const wallet = fakeWallet({ conversation: vi.fn(async () => UNNAMED) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    const carol = await screen.findByRole("button", { name: "Carol Chen" });
+    fireEvent.click(carol);
+    const card = screen.getByRole("group", { name: "About Carol Chen" });
+    expect(within(card).getByText("CC")).toBeTruthy();
+    expect(within(card).queryByRole("link", { name: /Open card/ })).toBeNull();
+    expect(directory.send.mock.calls.some((c) => c[0] === IMAGES_GET || c[0] === WALL)).toBe(false);
   });
 
   it("a private room's authors are never looked up: that would tell the community who writes there", async () => {

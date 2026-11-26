@@ -646,8 +646,11 @@ When adding a flow, add it here and a line to the root index.
   behind the paperclip. The conversation scrolls in its own window opened at
   the newest message — layout only, never a reordering. An author the wallet's
   reading gives **no** name is named as the community's directory shows them
-  (`room-authors.ts`, `vtc/directory/query/0.1` with the portal's key), else by
-  their DID marked as one; the room's own name always comes first, and every
+  (`room-authors.ts`, `vtc/directory/query/0.2` with the portal's key — 0.1
+  for a community that predates it), else by their DID marked as one. Their
+  card's picture is read by the entry 0.2 names (`images/get` through the
+  projection, digest-checked — never a URL), its badges by `badges/wall/show`
+  only when the card opens, and "Open card" links `#/directory/<entryId>`; the room's own name always comes first, and every
   name in the chat (messages, reactions, rewrites, the drawer's "By", "you
   post as") goes through `speakerOf` and the same cards. Look authors up only
   in `open` / `attributed` rooms, whose host already sees who wrote what —
