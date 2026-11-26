@@ -1146,13 +1146,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // Community rooms, the Community rooms tab (`trust_tasks::community_room_tasks`).
     // Each room with its description, tags and who last changed them; a create or update
     // also writes the label and description into the room as its profile, and states or
-    // changes the room's signal delay (create 0.5, update 0.4, get 0.5).
-    "https://trusttasks.org/spec/vtc/rooms/community/create/0.5",
+    // changes the room's signal delay and record members (create 0.6, update 0.5, get 0.6).
+    "https://trusttasks.org/spec/vtc/rooms/community/create/0.6",
     // Each room's state in its owner's lifecycle, and archiving and removing it
     // (`rooms::community_lifecycle`).
-    "https://trusttasks.org/spec/vtc/rooms/community/get/0.5",
+    "https://trusttasks.org/spec/vtc/rooms/community/get/0.6",
     "https://trusttasks.org/spec/vtc/rooms/community/list/0.4",
-    "https://trusttasks.org/spec/vtc/rooms/community/update/0.4",
+    "https://trusttasks.org/spec/vtc/rooms/community/update/0.5",
     "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2",
     "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.2",
     "https://trusttasks.org/spec/vtc/rooms/community/members/remove/0.2",

@@ -292,7 +292,7 @@ describe("Room usage", () => {
 // a name, or an error for not being allowed to read one.
 describe("Room names on the host pages", () => {
   const COMMUNITY_LIST = "https://trusttasks.org/spec/vtc/rooms/community/list/0.4";
-  const COMMUNITY_GET = "https://trusttasks.org/spec/vtc/rooms/community/get/0.5";
+  const COMMUNITY_GET = "https://trusttasks.org/spec/vtc/rooms/community/get/0.6";
   const COMMUNITY_MEMBERS = "https://trusttasks.org/spec/vtc/rooms/community/members/list/0.1";
   const OTHER_ROOM = "did:webvh:QmOther:alice.example.com:notes";
   const BOTH = whoamiWith(["vtc.rooms.admin", "vtc.rooms.manage"]);

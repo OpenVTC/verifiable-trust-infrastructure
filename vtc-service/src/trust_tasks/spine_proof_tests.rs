@@ -569,6 +569,10 @@ const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
         community_room_tasks::GET_V5_TYPE,
         "reads one room the community owns, with its details, state and signal delay; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
     ),
+    (
+        community_room_tasks::GET_V6_TYPE,
+        "reads one room the community owns, with its details, state, signal delay and record members; the handler authorizes vtc.rooms.manage from the signer's own entry, so an unsigned caller is refused regardless",
+    ),
     #[cfg(feature = "voting")]
     (
         election_tasks::BALLOT_BOXES_LIST_TYPE,

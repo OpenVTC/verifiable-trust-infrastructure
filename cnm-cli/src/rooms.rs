@@ -70,6 +70,15 @@ pub enum RoomsCommands {
         /// writer wrote. Default `randomised`.
         #[arg(long, value_enum)]
         signal_delay: Option<SignalDelayArg>,
+        /// Let the room's members reply to and react to messages: lists `kind`, `inReplyTo`
+        /// and `writtenAt` in the room's profile. A member whose app predates them cannot
+        /// read the room's name and description once they are listed.
+        #[arg(long)]
+        replies_and_reactions: bool,
+        /// A record member for the room's profile to list (repeat), beside or instead of
+        /// `--replies-and-reactions`. Default: none.
+        #[arg(long = "record-member")]
+        record_members: Vec<String>,
         /// Why — recorded in the audit trail.
         #[arg(long)]
         reason: String,
@@ -95,8 +104,8 @@ pub enum RoomsCommands {
         /// The room's DID.
         room: String,
     },
-    /// Rename a room the community owns, change its description or tags, or turn its
-    /// signal delay on or off. Each one given replaces what the room has; the rest are left
+    /// Rename a room the community owns, change its description or tags, turn its
+    /// signal delay on or off, or set the record members its profile lists. Each one given replaces what the room has; the rest are left
     /// as they are. Takes no passkey: it changes nobody's access.
     Update {
         /// The room's DID.
@@ -122,6 +131,19 @@ pub enum RoomsCommands {
         /// writer wrote.
         #[arg(long, value_enum)]
         signal_delay: Option<SignalDelayArg>,
+        /// Let the room's members reply to and react to messages: lists `kind`, `inReplyTo`
+        /// and `writtenAt` in the room's profile, with any `--record-member`s, replacing the
+        /// whole set it lists now. A member whose app predates them cannot read the room's
+        /// name and description once they are listed.
+        #[arg(long, conflicts_with = "no_record_members")]
+        replies_and_reactions: bool,
+        /// A record member for the room's profile to list (repeat), replacing the whole set.
+        #[arg(long = "record-member", conflicts_with = "no_record_members")]
+        record_members: Vec<String>,
+        /// List no record members: replies and reactions stop by the room's next epoch;
+        /// those already written stay.
+        #[arg(long)]
+        no_record_members: bool,
         /// Why — recorded in the audit trail with the earlier values.
         #[arg(long)]
         reason: String,
@@ -791,6 +813,42 @@ fn valid_until(valid_for: Option<&str>, valid_until: Option<&str>) -> CliResult<
     }
 }
 
+/// The record members `create/0.6` and `update/0.5` set — `None` when the flags set none
+/// (left as they are), empty for `--no-record-members` (list none).
+fn record_members_of(replies: bool, members: Vec<String>, none: bool) -> Option<Vec<String>> {
+    if none {
+        return Some(Vec::new());
+    }
+    if !replies && members.is_empty() {
+        return None;
+    }
+    let mut all = members;
+    if replies {
+        all.extend(REPLIES_AND_REACTIONS.iter().map(|m| m.to_string()));
+    }
+    Some(dedup(all))
+}
+
+/// The record members a room needs for replies, reactions and a conversation's order.
+const REPLIES_AND_REACTIONS: [&str; 3] = ["kind", "inReplyTo", "writtenAt"];
+
+/// The record members, from a response that carries them (`create/0.6`, `get/0.6`).
+fn print_record_members(v: &Value) {
+    if let Some(m) = v["recordMembers"].as_array().filter(|m| !m.is_empty()) {
+        let names: Vec<&str> = m.iter().filter_map(Value::as_str).collect();
+        let replies = REPLIES_AND_REACTIONS.iter().all(|r| names.contains(r));
+        println!(
+            "  {DIM}record members: {}{}{RESET}",
+            names.join(", "),
+            if replies {
+                " (replies and reactions on)"
+            } else {
+                ""
+            }
+        );
+    }
+}
+
 /// The room's signal delay, from a response that carries it (`create/0.5`, `get/0.5`,
 /// `update/0.4`).
 fn print_signal_delay(v: &Value) {
@@ -885,7 +943,7 @@ fn room_tags(room: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// `vtc/rooms/community/update/0.4`'s payload; an error when it would name no change.
+/// `vtc/rooms/community/update/0.5`'s payload; an error when it would name no change.
 #[allow(clippy::too_many_arguments)]
 fn update_payload(
     room: &str,
@@ -895,6 +953,7 @@ fn update_payload(
     tags: Vec<String>,
     clear_tags: bool,
     signal_delay: Option<SignalDelayArg>,
+    record_members: Option<Vec<String>>,
     reason: String,
 ) -> CliResult<Value> {
     let mut payload = json!({ "roomId": room, "reason": reason });
@@ -914,14 +973,20 @@ fn update_payload(
     if let Some(d) = signal_delay {
         payload["signalDelay"] = json!(d.as_str());
     }
+    match record_members {
+        Some(m) if m.is_empty() => payload["removeRecordMembers"] = json!(true),
+        Some(m) => payload["recordMembers"] = json!(m),
+        None => {}
+    }
     if payload.as_object().is_some_and(|o| o.len() < 3) {
         return Err(
             "name what to change: --label, --description, --remove-description, \
-             --tag, --clear-tags or --signal-delay"
+             --tag, --clear-tags, --signal-delay, --replies-and-reactions, --record-member \
+             or --no-record-members"
                 .into(),
         );
     }
-    typed::<spec::update::v0_4::Payload>(payload)
+    typed::<spec::update::v0_5::Payload>(payload)
 }
 
 /// Tags as a set, in the order first given.
@@ -974,6 +1039,8 @@ async fn run_task(
             retention_days,
             storage_config,
             signal_delay,
+            replies_and_reactions,
+            record_members,
             reason,
         } => {
             let mut payload = json!({
@@ -1005,16 +1072,20 @@ async fn run_task(
                     eprintln!("{SIGNAL_DELAY_NONE_NOTE}");
                 }
             }
+            if let Some(m) = record_members_of(replies_and_reactions, record_members, false) {
+                payload["recordMembers"] = json!(m);
+            }
             // 0.4: the label and description are also written into the room as its profile;
-            // 0.5: and the room's signal delay.
-            let type_uri = <spec::create::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-            let payload = typed::<spec::create::v0_5::Payload>(payload)?;
+            // 0.5: and the room's signal delay; 0.6: and the record members its profile lists.
+            let type_uri = <spec::create::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let payload = typed::<spec::create::v0_6::Payload>(payload)?;
             let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
             print_signal_delay(&v);
+            print_record_members(&v);
             if let Some(said) = room_profile_said(&v) {
                 println!("{said}");
             }
@@ -1100,14 +1171,15 @@ async fn run_task(
             Ok(())
         }
         RoomsCommands::Get { room } => {
-            let payload = typed::<spec::get::v0_5::Payload>(json!({ "roomId": room }))?;
-            let type_uri = <spec::get::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let payload = typed::<spec::get::v0_6::Payload>(json!({ "roomId": room }))?;
+            let type_uri = <spec::get::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
             let v = read(client, type_uri, payload, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
             }
             print_room(&v["room"]);
             print_signal_delay(&v);
+            print_record_members(&v);
             if let Some(state) = v.pointer("/ext/org.openvtc/roomProfile") {
                 println!("  {DIM}{}{RESET}", room_profile_state(state));
             }
@@ -1192,8 +1264,8 @@ async fn run_task(
         } => {
             // Which room, by the label administrators know it by — checked before anything
             // is signed (`remove/0.1` producer item).
-            let get = typed::<spec::get::v0_5::Payload>(json!({ "roomId": room }))?;
-            let get_uri = <spec::get::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            let get = typed::<spec::get::v0_6::Payload>(json!({ "roomId": room }))?;
+            let get_uri = <spec::get::v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
             let current = read(client, get_uri, get, &key).await?;
             let label = current["room"]["label"].as_str().unwrap_or_default();
             confirm_label(label, &confirm, &room)?;
@@ -1276,6 +1348,9 @@ async fn run_task(
             tags,
             clear_tags,
             signal_delay,
+            replies_and_reactions,
+            record_members,
+            no_record_members,
             reason,
         } => {
             let payload = update_payload(
@@ -1286,13 +1361,15 @@ async fn run_task(
                 tags,
                 clear_tags,
                 signal_delay,
+                record_members_of(replies_and_reactions, record_members, no_record_members),
                 reason,
             )?;
             if signal_delay == Some(SignalDelayArg::None) && !is_json_output() {
                 eprintln!("{SIGNAL_DELAY_NONE_NOTE}");
             }
-            // A new label or description is written into the room as its profile too.
-            let type_uri = <spec::update::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+            // A new label, description or record members are written into the room as its
+            // profile too.
+            let type_uri = <spec::update::v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
             let v = change(client, &target.base, type_uri, payload, &did, &key).await?;
             if is_json_output() {
                 return Ok(print_json(&v)?);
@@ -1547,6 +1624,7 @@ mod tests {
             vec!["board".into(), "finance".into(), "board".into()],
             false,
             None,
+            None,
             "the 2027 cycle".into(),
         )
         .unwrap();
@@ -1562,6 +1640,7 @@ mod tests {
             false,
             Vec::new(),
             true,
+            None,
             None,
             "r".into(),
         )
@@ -1581,6 +1660,7 @@ mod tests {
             Vec::new(),
             false,
             None,
+            None,
             "r".into(),
         );
         assert!(
@@ -1595,6 +1675,7 @@ mod tests {
             false,
             vec!["Board Pack".into()],
             false,
+            None,
             None,
             "r".into(),
         );
@@ -1612,11 +1693,45 @@ mod tests {
             Vec::new(),
             false,
             Some(SignalDelayArg::None),
+            None,
             "the board talks here".into(),
         )
         .unwrap();
         assert_eq!(delay["signalDelay"], "none");
         assert!(delay.get("label").is_none());
+
+        // update/0.5: the record members alone are a change; none is `removeRecordMembers`.
+        let replies = update_payload(
+            "did:key:z6MkRoom",
+            None,
+            None,
+            false,
+            Vec::new(),
+            false,
+            None,
+            record_members_of(true, vec!["editedAt".into()], false),
+            "the board wants to reply".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            replies["recordMembers"],
+            json!(["editedAt", "kind", "inReplyTo", "writtenAt"])
+        );
+        let none = update_payload(
+            "did:key:z6MkRoom",
+            None,
+            None,
+            false,
+            Vec::new(),
+            false,
+            None,
+            record_members_of(false, Vec::new(), true),
+            "no replies".into(),
+        )
+        .unwrap();
+        assert_eq!(none["removeRecordMembers"], true);
+        assert!(none.get("recordMembers").is_none());
+        assert_eq!(record_members_of(false, Vec::new(), false), None);
     }
 
     #[test]

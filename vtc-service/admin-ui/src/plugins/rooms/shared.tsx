@@ -99,7 +99,7 @@ export function configPath(configId: string): string {
 }
 
 /** What `none` gives up, in the specification's words (`rooms/signal-delay/set/0.1`; a
- *  surface offering it SHOULD say so — `vtc/rooms/community/create/0.5`, `update/0.4`). */
+ *  surface offering it SHOULD say so — `vtc/rooms/community/create/0.6`, `update/0.5`). */
 export const SIGNAL_DELAY_NONE_TRADE_OFF =
   "The wait keeps a signal's time from marking one write. In a busy room that costs little — " +
   "the room's rhythm shows in its writes anyway. In a quiet room, one write followed by one " +
@@ -110,6 +110,38 @@ export const SIGNAL_DELAY_NONE_TRADE_OFF =
 export const SIGNAL_DELAY_RANDOMISED_MEANS =
   "This host waits a few seconds, at random, before telling a member's device the room changed, " +
   "so a signal's time does not mark one write.";
+
+/** What turning replies and reactions on means for members whose reader predates them
+ *  (`RoomProfile` *Turning them on*; a surface offering it SHOULD say so). */
+export const REPLIES_OLDER_READERS =
+  "A member whose app predates replies and reactions cannot read the room's name and " +
+  "description once they are on.";
+
+/** Whether a room's members may reply to and react to messages: the record members
+ *  `kind`, `inReplyTo` and `writtenAt` in the room's profile. */
+export function RepliesChoice({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <fieldset className="choice-group">
+      <legend className="field-label">Replies and reactions</legend>
+      <label className="checkbox">
+        <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+        <span className="checkbox-text">
+          Members can reply to and react to messages
+          <span className="choice-hint">
+            For a room members talk in. {REPLIES_OLDER_READERS} Turning it off stops new replies and
+            reactions by the room&rsquo;s next epoch; those already written stay.
+          </span>
+        </span>
+      </label>
+    </fieldset>
+  );
+}
 
 /** Whether a room's watch signals wait: the room's signal delay, chosen at creation and
  *  changed on its page. Says what `none` gives up whenever it is the choice. */

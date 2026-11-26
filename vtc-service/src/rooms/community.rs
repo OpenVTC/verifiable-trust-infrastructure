@@ -64,6 +64,9 @@ pub mod codes {
         remove::v0_1 as remove_room, unarchive::v0_1 as unarchive, update::v0_3 as update,
         update::v0_4 as update_v4,
     };
+    use vti_specs::vtc::rooms::community::{
+        create::v0_6 as create_v6, get::v0_6 as get_v6, update::v0_5 as update_v5,
+    };
     use vti_specs::vtc::rooms::memberships::list::v0_1 as memberships_list;
     use vti_specs::vtc::rooms::memberships::list::v0_2 as memberships_list_v2;
     use vti_specs::vtc::rooms::offers::{accept::v0_1 as accept, list::v0_4 as list};
@@ -87,6 +90,11 @@ pub mod codes {
     pub const ADD_WRONG_STATE: &str = add::error_codes::WRONG_STATE.code;
     pub const GET_V4_NOT_FOUND: &str = get_v4::error_codes::NOT_FOUND.code;
     pub const GET_V5_NOT_FOUND: &str = get_v5::error_codes::NOT_FOUND.code;
+    pub const GET_V6_NOT_FOUND: &str = get_v6::error_codes::NOT_FOUND.code;
+    pub const CREATE_V6_SIGNAL_DELAY_NOT_PERMITTED: &str =
+        create_v6::error_codes::SIGNAL_DELAY_NOT_PERMITTED.code;
+    pub const UPDATE_V5_SIGNAL_DELAY_NOT_PERMITTED: &str =
+        update_v5::error_codes::SIGNAL_DELAY_NOT_PERMITTED.code;
     pub const CREATE_SIGNAL_DELAY_NOT_PERMITTED: &str =
         create_v5::error_codes::SIGNAL_DELAY_NOT_PERMITTED.code;
     pub const UPDATE_SIGNAL_DELAY_NOT_PERMITTED: &str =

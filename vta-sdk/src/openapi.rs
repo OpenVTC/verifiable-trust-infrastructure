@@ -257,6 +257,12 @@ spec_types! {
     /// `vtc/rooms/community/create/0.5#response` — as 0.4, and the signal delay the room
     /// was created with.
     RoomsCommunityCreate05Response(rooms_community::create::v0_5::Response);
+    /// `vtc/rooms/community/create/0.6` payload — as 0.5, and the record members the
+    /// room's profile is to list (none when absent).
+    RoomsCommunityCreate06Payload(rooms_community::create::v0_6::Payload);
+    /// `vtc/rooms/community/create/0.6#response` — as 0.5, and the record members
+    /// requested, when any were.
+    RoomsCommunityCreate06Response(rooms_community::create::v0_6::Response);
     /// `vtc/rooms/community/list/0.4` payload — a page, optionally only the rooms
     /// carrying one tag, or in the given states.
     RoomsCommunityList04Payload(rooms_community::list::v0_4::Payload);
@@ -268,6 +274,9 @@ spec_types! {
     RoomsCommunityGet04Response(rooms_community::get::v0_4::Response);
     /// `vtc/rooms/community/get/0.5#response` — as 0.4, and the room's signal delay.
     RoomsCommunityGet05Response(rooms_community::get::v0_5::Response);
+    /// `vtc/rooms/community/get/0.6#response` — as 0.5, and the record members the room's
+    /// profile listed at the community's last write.
+    RoomsCommunityGet06Response(rooms_community::get::v0_6::Response);
     /// `vtc/rooms/community/archive/0.1` payload — archive a room read-only or with
     /// no access, and why.
     RoomsCommunityArchive01Payload(rooms_community::archive::v0_1::Payload);
@@ -301,6 +310,11 @@ spec_types! {
     /// `vtc/rooms/community/update/0.4#response` — as 0.3, and the room's signal delay
     /// as it now stands.
     RoomsCommunityUpdate04Response(rooms_community::update::v0_4::Response);
+    /// `vtc/rooms/community/update/0.5` payload — as 0.4, and the record members the
+    /// room's profile is to list (`recordMembers`, or `removeRecordMembers`).
+    RoomsCommunityUpdate05Payload(rooms_community::update::v0_5::Payload);
+    /// `vtc/rooms/community/update/0.5#response` — as 0.4.
+    RoomsCommunityUpdate05Response(rooms_community::update::v0_5::Response);
     /// `vtc/rooms/community/members/add/0.2` payload — admit an active member
     /// with actions, an expiry and a reason.
     RoomsCommunityMembersAdd02Payload(rooms_community::members::add::v0_2::Payload);

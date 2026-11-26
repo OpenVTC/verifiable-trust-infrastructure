@@ -286,7 +286,7 @@ describe("Community rooms tab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create room" }));
     expect(await screen.findByText("Created")).toBeTruthy();
     expect(sentPayloads(requests, COMMUNITY_ROOMS_CREATE_TASK)).toEqual([
-      { label: "Board pack", visibility: "attributed", reason: "the board's papers" },
+      { label: "Board pack", visibility: "attributed", reason: "the board's papers", recordMembers: ["kind", "inReplyTo", "writtenAt"] },
     ]);
     expect(stepUp.calls).toEqual([COMMUNITY_ROOMS_CREATE_TASK]);
   });
@@ -316,6 +316,7 @@ describe("Community rooms tab", () => {
         reason: "the board's papers",
         description: "Papers for the board's meetings.",
         tags: ["board", "finance"],
+        recordMembers: ["kind", "inReplyTo", "writtenAt"],
       },
     ]);
   });
@@ -339,7 +340,34 @@ describe("Community rooms tab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create room" }));
     expect(await screen.findByText("Created")).toBeTruthy();
     expect(sentPayloads(requests, COMMUNITY_ROOMS_CREATE_TASK)).toEqual([
-      { label: "Board chat", visibility: "attributed", reason: "the board talks here", signalDelay: "none" },
+      {
+        label: "Board chat",
+        visibility: "attributed",
+        reason: "the board talks here",
+        signalDelay: "none",
+        recordMembers: ["kind", "inReplyTo", "writtenAt"],
+      },
+    ]);
+  });
+
+  it("creates a room with replies and reactions on by default, and without them when unticked", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_CREATE_TASK, { room: communityRoom(), signalDelay: "randomised" }),
+    ]);
+    mount("/rooms/community?create=1");
+    fireEvent.change(await screen.findByLabelText(/^Label/), { target: { value: "Board papers" } });
+    fireEvent.change(screen.getByLabelText(/^Reason/), { target: { value: "the board's papers" } });
+    const box = screen.getByRole("checkbox", { name: /reply to and react to/ }) as HTMLInputElement;
+    // On by default, saying what it means for members on an older app.
+    expect(box.checked).toBe(true);
+    expect(screen.getByText(/predates replies and reactions/)).toBeTruthy();
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("button", { name: "Create room" }));
+    expect(await screen.findByText("Created")).toBeTruthy();
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_CREATE_TASK)).toEqual([
+      { label: "Board papers", visibility: "attributed", reason: "the board's papers" },
     ]);
   });
 
@@ -666,6 +694,41 @@ describe("a community room's page", () => {
     });
   });
 
+  it("shows whether members may reply and react, and turns it on keeping a curator's other members", async () => {
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      taskRoute(COMMUNITY_ROOMS_GET_TASK, {
+        room: communityRoom(),
+        signalDelay: "randomised",
+        recordMembers: ["editedAt"],
+      }),
+      taskRoute(COMMUNITY_ROOMS_MEMBERS_LIST_TASK, { items: [] }),
+      taskRoute(COMMUNITY_ROOMS_UPDATE_TASK, {
+        room: communityRoom(),
+        changed: true,
+        roomProfile: "written",
+        signalDelay: "randomised",
+      }),
+    ]);
+    mount(page);
+    expect(await screen.findByText("Replies and reactions")).toBeTruthy();
+    expect(screen.getByText("Off")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Edit details/ }));
+    const form = screen.getByRole("region", { name: "Edit details" });
+    fireEvent.change(within(form).getByLabelText(/^Reason/), { target: { value: "the board wants to reply" } });
+    // Unchanged, nothing is sent for it: a rename alone never touches the record members.
+    const box = within(form).getByRole("checkbox", { name: /reply to and react to/ }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    fireEvent.click(within(form).getByRole("button", { name: "Save details" }));
+    await waitFor(() => expect(sentPayloads(requests, COMMUNITY_ROOMS_UPDATE_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, COMMUNITY_ROOMS_UPDATE_TASK)[0]).toEqual({
+      roomId: ROOM,
+      reason: "the board wants to reply",
+      recordMembers: ["editedAt", "kind", "inReplyTo", "writtenAt"],
+    });
+  });
+
   it("names a room the community does not own", async () => {
     mockFetch([
       ...NAME_BOOK_ROUTES,
@@ -740,6 +803,23 @@ describe("community-rooms-api", () => {
       roomId: ROOM,
       reason: "r",
       signalDelay: "randomised",
+    });
+    // Replies and reactions are sent only when the choice changed, keeping other members.
+    const chat = ["kind", "inReplyTo", "writtenAt"];
+    expect(detailsUpdate(room, { ...form, repliesAndReactions: true }, "randomised", chat)).toBeNull();
+    expect(detailsUpdate(room, { ...form, repliesAndReactions: false }, "randomised", [])).toBeNull();
+    expect(detailsUpdate(room, { ...form, repliesAndReactions: false }, "randomised", chat)).toEqual({
+      roomId: ROOM,
+      reason: "r",
+      removeRecordMembers: true,
+    });
+    expect(
+      detailsUpdate(room, { ...form, repliesAndReactions: false }, "randomised", [...chat, "editedAt"]),
+    ).toEqual({ roomId: ROOM, reason: "r", recordMembers: ["editedAt"] });
+    expect(detailsUpdate(room, { ...form, repliesAndReactions: true }, "randomised", ["kind"])).toEqual({
+      roomId: ROOM,
+      reason: "r",
+      recordMembers: chat,
     });
     expect(detailsUpdate(room, { ...form, description: "  " })).toEqual({
       roomId: ROOM,

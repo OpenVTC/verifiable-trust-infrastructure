@@ -19,6 +19,16 @@
 //! and is retried, because one written without its `recordMembers` would withdraw the
 //! replies and reactions the room's writers may use.
 //!
+//! # Record members an administrator sets
+//!
+//! `create/0.6` and `update/0.5` may set the profile's `recordMembers` (create item 12,
+//! update item 10). The set is kept as **requested** — in [`RecordMembersRecord`],
+//! `room-record-members:<room>` — until a write carries it, and
+//! replaces the read-back's only then; with none requested, the read-back's are carried
+//! over as before. What the written profile listed is kept too, for `get/0.6` item 6 —
+//! never a requested set no write has carried yet. A request made while a write is in
+//! flight is not lost: it stays requested, and the room stays pending.
+//!
 //! # Never the request's to fail
 //!
 //! A room with no profile yet is a complete room: create and update answer `written` only
@@ -68,6 +78,48 @@ const MEMBER_EXT: &str = "org.openvtc.rooms";
 
 fn record_key(room_id: &str) -> Vec<u8> {
     format!("room-profile:{room_id}").into_bytes()
+}
+
+fn members_key(room_id: &str) -> Vec<u8> {
+    format!("room-record-members:{room_id}").into_bytes()
+}
+
+/// What this community knows of one room's record members (`create/0.6`, `update/0.5`,
+/// `get/0.6`), kept beside [`ProfileRecord`] (`room-record-members:<room>`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct RecordMembersRecord {
+    /// Record members an administrator set that no write has carried yet; empty means the
+    /// profile is to list none. Cleared once written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested: Option<Vec<String>>,
+    /// The record members the profile listed at the community's last write — carried over
+    /// from the read-back or set by a request. Absent: it listed none, or none was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written: Option<Vec<String>>,
+}
+
+/// The record-members record of `room_id`; empty when this community has none.
+pub async fn members_record(
+    rooms: &CommunityRooms,
+    room_id: &str,
+) -> Result<RecordMembersRecord, AppError> {
+    Ok(rooms
+        .keyspace()
+        .get(members_key(room_id))
+        .await?
+        .unwrap_or_default())
+}
+
+async fn put_members_record(
+    rooms: &CommunityRooms,
+    room_id: &str,
+    rec: &RecordMembersRecord,
+) -> Result<(), AppError> {
+    rooms.keyspace().insert(members_key(room_id), rec).await?;
+    super::community::changed();
+    Ok(())
 }
 
 fn rfc3339(t: DateTime<Utc>) -> String {
@@ -208,6 +260,35 @@ pub async fn list_ext(state: &AppState, room_ids: &[String]) -> Result<Value, Ap
     Ok(Value::Object(rooms))
 }
 
+/// Record the record members an administrator set for `room_id`'s profile (`create/0.6`,
+/// `update/0.5`; empty: none), to be written by the next attempt. Call before
+/// [`write_now`].
+pub async fn request_record_members(
+    state: &AppState,
+    room_id: &str,
+    members: Vec<String>,
+) -> Result<(), AppError> {
+    let mut members_rec = members_record(&state.community_rooms, room_id).await?;
+    members_rec.requested = Some(members);
+    put_members_record(&state.community_rooms, room_id, &members_rec).await?;
+    let mut rec = record(&state.community_rooms, room_id)
+        .await?
+        .unwrap_or_else(|| ProfileRecord::new(room_id));
+    rec.pending = true;
+    put_record(&state.community_rooms, &rec).await
+}
+
+/// The record members `room_id`'s profile listed when the community last wrote it
+/// (`get/0.6` item 6): none for a profile that listed none or was never written.
+pub async fn written_record_members(
+    state: &AppState,
+    room_id: &str,
+) -> Result<Option<Vec<String>>, AppError> {
+    Ok(members_record(&state.community_rooms, room_id)
+        .await?
+        .written)
+}
+
 /// Whether an update must write the profile (update 0.2 item 10): the label or description
 /// changed, the community has never written it (a room made before create 0.3), or an
 /// earlier write is still pending.
@@ -250,24 +331,46 @@ async fn attempt(
     rec.last_attempt_at = Some(rfc3339(now));
     put_record(&state.community_rooms, &rec).await?;
 
+    let requested = members_record(&state.community_rooms, &room.room_id)
+        .await?
+        .requested;
+
     let vtc_did = state.config.read().await.vtc_did.clone();
     let result = match (state.community_rooms.key_holder(), vtc_did) {
-        (Some(holder), Some(vtc_did)) => write_at_vta(&holder, &vtc_did, room).await,
+        (Some(holder), Some(vtc_did)) => {
+            write_at_vta(&holder, &vtc_did, room, requested.as_deref()).await
+        }
         (None, _) => Err("this community has no VTA link to write the profile with".to_string()),
         (_, None) => Err("this community has no DID".to_string()),
     };
+    // Read again: an update may have requested other record members while the VTA wrote.
+    let mut rec = record(&state.community_rooms, &room.room_id)
+        .await?
+        .unwrap_or(rec);
     match result {
-        Ok(()) => {
-            rec.pending = false;
+        Ok(listed) => {
             rec.written_name = Some(room.label.clone());
             rec.written_description = room.description.clone();
             rec.written_at = Some(rfc3339(now));
             rec.attempts = 0;
             rec.next_attempt_at = None;
             rec.last_error = None;
+            // A request that arrived meanwhile is still owed a write.
+            let mut members_rec = members_record(&state.community_rooms, &room.room_id).await?;
+            let superseded = members_rec.requested != requested;
+            if !superseded {
+                members_rec.requested = None;
+            }
+            members_rec.written = listed;
+            put_members_record(&state.community_rooms, &room.room_id, &members_rec).await?;
+            rec.pending = superseded;
             put_record(&state.community_rooms, &rec).await?;
             tracing::info!(room = %room.room_id, "wrote a community room's profile into the room");
-            Ok(ProfileOutcome::Written)
+            Ok(if superseded {
+                ProfileOutcome::Pending
+            } else {
+                ProfileOutcome::Written
+            })
         }
         Err(why) => {
             rec.attempts = rec.attempts.saturating_add(1);
@@ -282,8 +385,15 @@ async fn attempt(
 }
 
 /// The profile write at the community's VTA, as the community: read the current profile,
-/// carry over what the community does not manage, write the label and description.
-async fn write_at_vta(holder: &KeyHolder, vtc_did: &str, room: &OwnedRoom) -> Result<(), String> {
+/// carry over what the community does not manage, write the label and description — and
+/// the record members `requested` sets, when it sets them (empty: none). Answers the
+/// record members the written profile lists.
+async fn write_at_vta(
+    holder: &KeyHolder,
+    vtc_did: &str,
+    room: &OwnedRoom,
+    requested: Option<&[String]>,
+) -> Result<Option<Vec<String>>, String> {
     let as_community = json!({ MEMBER_EXT: { "member": vtc_did } });
 
     let mut profile = carried_members(holder, vtc_did, room, &as_community).await?;
@@ -291,6 +401,16 @@ async fn write_at_vta(holder: &KeyHolder, vtc_did: &str, room: &OwnedRoom) -> Re
     if let Some(d) = &room.description {
         profile.insert("description".into(), json!(d));
     }
+    match requested {
+        Some([]) => {
+            profile.remove("recordMembers");
+        }
+        Some(set) => {
+            profile.insert("recordMembers".into(), json!(set));
+        }
+        None => {}
+    }
+    let listed = listed_record_members(&profile);
 
     let request: profile_write::Payload = serde_json::from_value(json!({
         "roomId": room.room_id,
@@ -311,7 +431,7 @@ async fn write_at_vta(holder: &KeyHolder, vtc_did: &str, room: &OwnedRoom) -> Re
         format!("the community's VTA answered rooms/keys/profile/write in a shape its specification does not define: {e}")
     })?;
     match answer.outcome {
-        profile_write::ResponseOutcome::Written => Ok(()),
+        profile_write::ResponseOutcome::Written => Ok(listed),
         other => Err(format!(
             "the community's VTA answered rooms/keys/profile/write with outcome `{other}`"
         )),
@@ -372,6 +492,17 @@ async fn carried_members(
     members.remove("name");
     members.remove("description");
     Ok(members)
+}
+
+/// The record members a profile lists, as strings; none when it lists none.
+fn listed_record_members(profile: &serde_json::Map<String, Value>) -> Option<Vec<String>> {
+    let list: Vec<String> = profile
+        .get("recordMembers")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    (!list.is_empty()).then_some(list)
 }
 
 fn holder_error(e: &HolderError) -> String {
