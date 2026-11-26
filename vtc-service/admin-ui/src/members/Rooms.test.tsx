@@ -795,6 +795,28 @@ describe("data rooms in the portal", () => {
     expect(screen.queryByText("Live")).toBeNull();
   });
 
+  it("a room whose newest record is folded away (a reaction) is acknowledged at the room's version, so the watch does not fire forever", async () => {
+    let onEvent: ((e: RoomWatchEvent) => void) | undefined;
+    const handle = { read: vi.fn(), stop: vi.fn() };
+    // Version 9 is a reaction: folded into message m1, it is no record the page shows,
+    // so the highest version shown stays 4.
+    const conversation = vi.fn(async () => CHAT);
+    const watch = vi.fn((_p: unknown, on: (e: RoomWatchEvent) => void) => {
+      onEvent = on;
+      return handle;
+    });
+    const wallet = answeringWallet({ conversation, watch });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    await waitFor(() => expect(watch).toHaveBeenCalled());
+    act(() => onEvent!({ type: "changed", latestVersion: 9 }));
+    // Told the room's version, never the page's lower one — which the host would
+    // answer by firing again at once.
+    await waitFor(() => expect(handle.read).toHaveBeenCalledWith(9));
+    expect(handle.read).not.toHaveBeenCalledWith(4);
+  });
+
   it("a watched room is read again when the wallet says it moved, and the watch is told what was read", async () => {
     let onEvent: ((e: RoomWatchEvent) => void) | undefined;
     const handle = { read: vi.fn(), stop: vi.fn() };

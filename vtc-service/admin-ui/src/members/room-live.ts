@@ -68,10 +68,17 @@ export function useRoomLive(
       if (poll !== undefined) clearInterval(poll);
       poll = undefined;
     };
+    // The room's own latest version, as the watch reported it. The page's records
+    // are not every record: reactions, names, edits and withdrawals are folded
+    // into the messages they concern, so the highest version shown can sit below
+    // the room's — and acknowledging that would have the host fire again at once,
+    // forever. Acknowledge the room's version once it has been read.
+    let latest = 0;
+    const acked = (v: number | undefined) => Math.max(v ?? 0, heldRef.current ?? 0, latest) || undefined;
     const readThenAck = async () => {
       try {
         const v = await readRef.current();
-        handle?.read(v ?? heldRef.current);
+        handle?.read(acked(v));
       } catch {
         // The next change, or the timer, reads again.
       }
@@ -79,11 +86,13 @@ export function useRoomLive(
     const watch = () => {
       if (stopped) return;
       setStatus((s) => (s === "polling" ? s : "connecting"));
-      handle = wallet.watch!({ hostDid, roomId, ...(heldRef.current !== undefined ? { sinceVersion: heldRef.current } : {}) }, (e) => {
+      const since = acked(undefined);
+      handle = wallet.watch!({ hostDid, roomId, ...(since !== undefined ? { sinceVersion: since } : {}) }, (e) => {
         if (stopped) return;
         switch (e.type) {
           case "changed":
             attempt = 0;
+            latest = Math.max(latest, e.latestVersion);
             void readThenAck();
             return;
           case "state":
@@ -96,7 +105,7 @@ export function useRoomLive(
             } else if (e.state === "lapsed") {
               // A lapsed watch is armed again once the page says what it has read.
               setStatus("connecting");
-              handle?.read(heldRef.current);
+              handle?.read(acked(undefined));
             } else {
               // refused | unavailable: the wallet cannot watch this room now.
               startPolling();

@@ -670,7 +670,10 @@ When adding a flow, add it here and a line to the root index.
   say so, stop offering replies and reactions, and offer the words as a plain
   message — never drop a reply's target silently. The watch (`room-live.ts`)
   carries only that the room moved: read it again through the wallet, then
-  `read(highest version)`; while it is `refused`/`unavailable`/`failed` read on
+  `read(v)` with the room's version — the `changed` event's `latestVersion`,
+  never only the highest record the page shows (reactions, names, edits and
+  withdrawals are folded away, and acknowledging below the room's version makes
+  the host fire again at once, forever); while it is `refused`/`unavailable`/`failed` read on
   a 20-second timer while the tab is visible, and on `closed` watch again with
   backoff. "Live" is derived from the latest event and drops the moment any
   other arrives (R6.2) — never latch it. A watch can stop delivering without
