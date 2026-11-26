@@ -9716,6 +9716,31 @@ export interface components {
             /** @description The projected member's DID. */
             subject: string;
         };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcDirectoryQueryV0_2EntryId: string;
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcDirectoryQueryV0_2Ext: {
+            [key: string]: unknown;
+        };
+        /** @description Read one member's directory projection, addressed by their DID: the fields the member, the community's ceiling and its directory policy all let this caller see, and the member's entry identifier. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcDirectoryQueryV0_2Payload: {
+            ext?: components["schemas"]["VtcDirectoryQueryV0_2Ext"];
+            /** @description Comma-separated narrowing hint. A hint only — never an authorisation. */
+            fields?: string;
+            /** @description DID of the member whose directory projection is requested. */
+            subject: string;
+        };
+        /** @description Success response to vtc/directory/query. Type https://trusttasks.org/spec/vtc/directory/query/0.2#response. The member's projection for this caller, and their entry identifier. */
+        VtcDirectoryQueryV0_2Response: {
+            entryId: components["schemas"]["VtcDirectoryQueryV0_2EntryId"];
+            ext?: components["schemas"]["VtcDirectoryQueryV0_2Ext"];
+            /** @description The permitted projection. A withheld field is ABSENT, never present-and-null. */
+            fields: {
+                [key: string]: unknown;
+            };
+            /** @description The projected member's DID. */
+            subject: string;
+        };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
         VtcEndorsementTypesDeleteV0_1Ext: {
             [key: string]: unknown;

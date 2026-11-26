@@ -695,6 +695,10 @@ const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
         "a community read; the handler refuses an unsigned caller where that read is gated at all",
     ),
     (
+        community_tasks::DIRECTORY_QUERY_V2_TYPE,
+        "a community read; the handler refuses an unsigned caller where that read is gated at all",
+    ),
+    (
         directory_tasks::FIELDS_LIST_TYPE,
         "reads the directory schema; the handler authorizes from the signer's own standing, so an unsigned caller is refused regardless",
     ),

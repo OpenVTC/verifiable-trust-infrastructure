@@ -127,6 +127,8 @@ use crate::server::AppState;
         vta_sdk::openapi::DirectoryEntriesShow01Response,
         vta_sdk::openapi::DirectoryQuery01Payload,
         vta_sdk::openapi::DirectoryQuery01Response,
+        vta_sdk::openapi::DirectoryQuery02Payload,
+        vta_sdk::openapi::DirectoryQuery02Response,
         vta_sdk::openapi::DirectoryCardShow01Payload,
         vta_sdk::openapi::DirectoryCardShow01Response,
         vta_sdk::openapi::DirectoryCardUpdate01Payload,
