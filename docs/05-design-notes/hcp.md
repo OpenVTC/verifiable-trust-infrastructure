@@ -91,8 +91,8 @@ Read against `main` as of 2026-11-25; there is no HCP code in the workspace.
 
 | Area | Today | What HCP needs from it |
 |---|---|---|
-| Someone-else-approves | `task-consent/request` + `decision` (`trust_tasks/task_consent.rs`, `consent_request.rs`): the VTA mints one signed request per approver, binds it to a salted digest of the payload, pushes it, and at threshold writes a single-use grant the requester's resubmit consumes (`policy_gate.rs`). `operations/vault/oob_sign_in.rs` `remote_approval` builds a pending consent for a request the policy engine did not raise, with a bound approver and its own digest | The person's affirmative act for a grant (HCP 6.1.6), approved on Keyring. Reused as is, with a new producer |
-| Step-up | `auth/step-up/approve-request/0.5` (`trust_tasks/step_up.rs`) elevates the requester's own session; its approver is the requester or the ACL entry's named `stepUp.approver` | Not usable for a third party's request: elevating a session on someone else's approval is what VTI-APV-005 forbids; see §5.1 |
+| Someone-else-approves | `task-consent/request` + `decision` (`trust_tasks/task_consent.rs`, `consent_request.rs`): the VTA mints one signed request per approver, binds it to a salted digest of the payload, pushes it, and at threshold writes a single-use grant the requester's resubmit consumes (`policy_gate.rs`). `operations/vault/oob_sign_in.rs` `remote_approval` builds a pending consent for a request the policy engine did not raise, with a bound approver and its own digest. The policy gate raises consent only from the Policy Decision Point (a `requireConsent` rule), which is off by default (`[policy] enforcement = false`, `vta-config/src/lib.rs`), and no ACL entry field raises it; a `remote_approval`-style producer does not go through the PDP | The person's affirmative act for a grant (HCP 6.1.6), approved on Keyring. Reused as is, with a new producer, so HCP does not depend on enabling the PDP |
+| Step-up | `auth/step-up/approve-request/0.5` (`trust_tasks/step_up.rs`) elevates the requester's own session; its approver is always the requester (`initiate_self_step_up`). The ACL entry's `stepUp.approver` and `stepUp.require` are stored but gate nothing | Not usable for a third party's request: elevating a session on someone else's approval is what VTI-APV-005 forbids; see §5.1 |
 | Outbound push | `vti-common/src/trust_task_push.rs` (`push_trust_task`): one engine (TSP, then DIDComm, then REST); `PushReissuer` re-signs a document with a fresh `id` and `issuedAt` when a retry would fall outside its acceptance window; a `did:key` recipient is reached through the VTA's own mediator. No ACL entry is needed to send | The revocation notice (HCP 6.2.3), re-issued on every attempt (§8) |
 | Inbound from a party with no ACL entry | `messaging/auth.rs` admits an ACL entry, a `PUBLIC_URIS` task (proof-optional, read-only), or a module's `is_counterparty_task`; `messaging/tsp_inbound.rs` refuses an unsolicited message from anyone else | The agent client has no ACL entry (§4.3) |
 | Revocation | `consent/revoke` pushes nothing | Notice, retry, `revocation.notified` |
@@ -287,8 +287,10 @@ from a Context Client is held (§5).
 HCP 6.1.6 requires an affirmative act by the person, distinct from
 authentication, after they have been told what is asked. The VTA has two
 signed approval paths. Step-up (`auth/step-up/approve-request`) elevates the
-requester's own session, approved by the requester or a named approver;
-using it for a third party's request would be exactly what VTI-APV-005 forbids ("MUST NOT
+requester's own session and is self-approve only: its approver is always the
+requester (`initiate_self_step_up`), and the ACL's `stepUp.approver` is stored
+but gates nothing. Someone else approving is the consent flow's job, and
+using step-up for a third party's request would be exactly what VTI-APV-005 forbids ("MUST NOT
 implement a consent requirement by elevating the requester's session on the
 strength of another party's approval"). Task-consent is the path built for
 "someone else approves":
@@ -300,7 +302,11 @@ strength of another party's approval"). Task-consent is the path built for
   and covered by the same signature (VTI-APV-011), derived from the same
   octets as the digest (VTI-APV-013);
 - Keyring already receives it, checks it, gates the decision on the owner's
-  biometric or passcode, and signs `task-consent/decision`;
+  biometric or passcode, and signs `task-consent/decision`. The VTA accepts a
+  decision (`task-consent/decision/0.2`) only with a proof made for
+  `assertionMethod`, by a key listed under the approver's `assertionMethod`,
+  and refuses one made for `authentication`, so the admin DID needs an
+  `assertionMethod` verification method;
 - the operation is re-checked when it executes (VTI-APV-017).
 
 The HCP 6.1.6 items need no specification change: the shared `Effect` has an
@@ -346,10 +352,11 @@ sequenceDiagram
     Note over V: admitted with no ACL entry, zero authority (§4.3)
     V->>V: pending task-consent: request digest, bound approver,<br/>6.1.6 items as effects
     V-->>C: trust-task-next-step, continuation resubmit (never an error)
-    V->>K: task-consent/request, VTA-signed, parentThreadId = held threadId, through the mediator
+    V->>K: task-consent/request, VTA-signed, parentThreadId = held threadId,<br/>push engine: TSP, then DIDComm, then REST, via Keyring's mediator
+    Note over V,K: doorbell once: the DeviceBinding gateway (push/wake),<br/>else the mediator wake; no route: nothing is sent
     K->>P: checklist, if the VID and parentThreadId match the scan
     P->>K: approves with a biometric
-    K->>V: task-consent/decision, signed by the admin DID
+    K->>V: task-consent/decision, proof by the admin DID (assertionMethod)
     V->>V: verify; record the client registration; single-use consent grant
     C->>V: resubmits hcp/grants/request (same threadId)
     V->>V: audit grant.issued (modality, acr), then grant (4 h) and token hash
@@ -361,8 +368,30 @@ sequenceDiagram
   outcome; the `hcp/grants/request` specification answers a pending request
   with `trust-task-next-step` and `continuation: resubmit`. The policy gate's
   `auth:consent_required` refusal is the form to avoid.
+- **How the request reaches Keyring.** `push_to_device` decides the route
+  (`approver_mediator`): a `did:key` approver through the VTA's configured
+  `[messaging] mediator_did`, any other through the mediator its DID document
+  advertises. With no route, nothing is sent and only the relay copy exists,
+  which a CLI requester cannot pass on. Otherwise the push engine queues it
+  durably over the transports both sides speak, TSP, then DIDComm, then REST,
+  escalating when an attempt shows no evidence of collection, and rings the
+  doorbell once: a `push/wake` to the gateway in Keyring's ACL `DeviceBinding`
+  where one is set, else `messaging/wake/request/0.1` to Keyring's mediator. A
+  mediator that does not serve that task ignores it, and the device collects on
+  its next connection; whether the starter's pinned mediator serves it is not
+  verified. The push fires only when the pending is newly raised, so a
+  resubmission never re-rings the phone. The demo keeps Keyring in the
+  foreground, so it does not depend on the wake.
 - **Holds are keyed by (`threadId`, `issuer`).** A replay inside an hour
   returns the same `grantId` and no token is stored anywhere.
+- **Four timers, each stated on its own.** The hold's 300 seconds is the HCP
+  producer's own `expiresAt`, set the way `remote_approval` sets its window;
+  it does not inherit the policy gate's 900-second pending lifetime
+  (`CONSENT_PENDING_TTL_SECS`). The push engine's 300-second `deliver_by`
+  (`CONSENT_PUSH_DELIVER_BY_SECS`) bounds retries of the push hop only, not the
+  request's validity. The single-use consent grant an approval writes lasts 600
+  seconds (`task_consent.rs`); the client's resubmission consumes it, and the
+  HCP grant it then issues lasts 4 hours (§4.1).
 - **A hold ends once, and its thread is never reopened.** A decline answers
   `permissionDenied`: `hcp/grants/request` issues a grant rather than
   producing a decision, so the framework's rule for a declined referral applies

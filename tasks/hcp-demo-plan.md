@@ -44,7 +44,8 @@ unpublished `hcp/*` suite as frozen at X0; nothing merges to `main`.
 **Keyring**
 - Receives a `task-consent/request` live while the app is open, checks it,
   gates the decision on the owner's biometric or passcode and signs
-  `task-consent/decision`.
+  `task-consent/decision`. The VTA accepts that proof only for
+  `assertionMethod`, so the admin DID must carry an `assertionMethod` key.
 
 **openvti-starter**
 - MODE=tunnel: an HTTPS `did:webvh` VTA and a mediator with DIDComm and TSP,
@@ -89,6 +90,14 @@ through the mediator to the VTA.
 - **Foreground only.** Keyring is not woken in the background, so the app is
   open and in the foreground at approval, and it polls
   `hcp/disclosures/summary` for the notice state.
+- **The VTI baseline is the `3ee07a12` pin** (vta-service 0.83.0,
+  openvti-starter's current VTA pin) or a later `main`, which contains it.
+  It has the consent push's delivery receipts and the mediator-wake fallback;
+  keyring-wallet's own VTI pin, `f7b78e29d`, has neither. If X0 has to fall
+  back from `main`, it falls back to `3ee07a12`, never to `f7b78e29d`. Whether
+  the starter's pinned mediator serves the wake task is not verified, so the
+  demo relies on Keyring in the foreground (or a `DeviceBinding` wake), not on
+  the mediator wake.
 - **The image** is built through openvti-starter's tooling from the VTI branch
   ref, with `hcp` added to the image's features, tagged `vta:<ref8>` and
   `vta:<version>-<ref8>` (never `:local` or `latest`), and not pushed to a
