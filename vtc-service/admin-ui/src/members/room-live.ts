@@ -4,7 +4,12 @@
 // unavailable — the page reads the room on a gentle timer while the tab is seen.
 //
 // The status is derived from the latest event and goes back to "not live" the
-// moment the watch reports anything else (R6.2: never latched).
+// moment the watch reports anything else (R6.2: never latched). A watch can
+// still stop delivering without saying so — a wedged session, a host that lost
+// it — so while it reports itself armed the page also reads the room on a slow
+// backstop timer, and at once when the tab is seen again (a hidden tab's timers
+// are throttled, and the wallet's worker may have been put to sleep): a broken
+// delivery costs minutes, never the watch's whole lease.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -13,6 +18,9 @@ import type { RoomWatchHandle, WalletRooms } from "./wallet-rooms";
 
 /** How often a room is read when nothing can tell the page it moved. */
 export const FALLBACK_READ_MS = 20_000;
+
+/** How often a room is read even while the wallet says it is watching. */
+export const BACKSTOP_READ_MS = 5 * 60_000;
 
 /** `live`: the wallet is watching. `connecting`: asking it to. `polling`: reading on a timer. `manual`: the wallet cannot watch. */
 export type LiveStatus = "live" | "connecting" | "polling" | "manual";
@@ -47,12 +55,13 @@ export function useRoomLive(
     let attempt = 0;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let poll: ReturnType<typeof setInterval> | undefined;
+    const visible = () => typeof document === "undefined" || document.visibilityState === "visible";
 
     const startPolling = () => {
       setStatus("polling");
       if (poll !== undefined) return;
       poll = setInterval(() => {
-        if (typeof document === "undefined" || document.visibilityState === "visible") void readRef.current();
+        if (visible()) void readRef.current();
       }, FALLBACK_READ_MS);
     };
     const stopPolling = () => {
@@ -106,9 +115,19 @@ export function useRoomLive(
       });
     };
     watch();
+    // The backstop: while polling, the 20 s timer already reads.
+    const backstop = setInterval(() => {
+      if (poll === undefined && visible()) void readThenAck();
+    }, BACKSTOP_READ_MS);
+    const onVisible = () => {
+      if (visible()) void readThenAck();
+    };
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisible);
     return () => {
       stopped = true;
       if (retry !== undefined) clearTimeout(retry);
+      clearInterval(backstop);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisible);
       stopPolling();
       handle?.stop();
       handle = null;
