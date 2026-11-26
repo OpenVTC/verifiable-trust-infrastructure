@@ -6,14 +6,46 @@
 // the window. Everything shown is text: values members typed are never markup.
 
 import { useId, useLayoutEffect, useRef, useState } from "react";
-import { Check, Copy, User } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Check, Copy, IdCard, User } from "lucide-react";
 
+import { showWall } from "./badges-api";
 import type { Speaker } from "./conversation";
-import { hueOf, initials } from "./member-card";
+import { hueOf, initials, usePicture } from "./member-card";
 import type { AuthorCard } from "./room-authors";
 
-/** An author's initials on their own colour — or a plain figure for a DID with no name. */
-export function AuthorAvatar({ speaker, did, size = 32 }: { speaker: Speaker; did?: string; size?: number }) {
+/** The most badge names the card lists before "+N". */
+const CARD_BADGES = 4;
+
+/**
+ * An author's picture, read through the directory's projection by their entry
+ * (digest-checked, `usePicture`); else their initials on their own colour — or
+ * a plain figure for a DID with no name.
+ */
+export function AuthorAvatar({
+  speaker,
+  did,
+  card,
+  size = 32,
+}: {
+  speaker: Speaker;
+  did?: string;
+  card?: AuthorCard;
+  size?: number;
+}) {
+  const picture = usePicture(card?.entryId ?? "", "avatar", card?.entryId ? card.avatar : undefined);
+  if (picture) {
+    return (
+      <img
+        className="avatar chat-avatar-face"
+        src={picture}
+        alt=""
+        width={size}
+        height={size}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   const style = {
     width: size,
     height: size,
@@ -48,6 +80,30 @@ function CopyDid({ did }: { did: string }) {
     >
       {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
     </button>
+  );
+}
+
+/** The badges a member shows on their card, by name — one read, made when their card is opened. Nothing when badges are off or hidden. */
+function CardBadges({ entryId }: { entryId: string }) {
+  const wall = useQuery({
+    queryKey: ["badges", "wall", entryId],
+    queryFn: () => showWall(entryId),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const entries = wall.data?.entries ?? [];
+  if (entries.length === 0) return null;
+  const shown = entries.slice(0, CARD_BADGES);
+  return (
+    <span className="author-card-badges" aria-label="Badges">
+      {shown.map((e) => (
+        <span key={e.badge.badgeId} className="author-card-badge">
+          {e.badge.name}
+          {e.count > 1 ? ` ×${e.count}` : ""}
+        </span>
+      ))}
+      {entries.length > shown.length && <span className="muted small">+{entries.length - shown.length}</span>}
+    </span>
   );
 }
 
@@ -141,7 +197,7 @@ export function AuthorName({
           aria-label={`About ${speaker.label}`}
         >
           <span className="author-card-head">
-            <AuthorAvatar speaker={{ ...speaker, did: !name }} did={did} size={44} />
+            <AuthorAvatar speaker={{ ...speaker, did: !name }} did={did} card={card} size={44} />
             <span className="author-card-names">
               <b>{name ?? "No name shown to you"}</b>
               {card?.nickname && card.nickname !== card.name && <span className="muted small">@{card.nickname}</span>}
@@ -149,6 +205,9 @@ export function AuthorName({
             </span>
           </span>
           {card?.role && <span className="small">Role: {card.role}</span>}
+          {/* A member's words: text, never markup. */}
+          {card?.bio && <span className="author-card-bio">{card.bio}</span>}
+          {card?.entryId && <CardBadges entryId={card.entryId} />}
           {speaker.ownName && (
             <span className="muted small">
               The name they gave themselves in this room.
@@ -162,6 +221,11 @@ export function AuthorName({
             <code className="author-card-did">{did}</code>
             <CopyDid did={did} />
           </span>
+          {card?.entryId && (
+            <a className="btn btn-sm author-card-open" href={`#/directory/${encodeURIComponent(card.entryId)}`}>
+              <IdCard size={14} aria-hidden="true" /> Open card
+            </a>
+          )}
         </span>
       )}
     </span>

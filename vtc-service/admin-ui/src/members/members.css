@@ -2560,6 +2560,10 @@ textarea {
   place-items: center;
   border-radius: 50%;
 }
+img.chat-avatar-face {
+  object-fit: cover;
+  flex: none;
+}
 .chat-stack {
   display: flex;
   flex-direction: column;
@@ -3083,6 +3087,37 @@ button.chat-reaction:focus-visible,
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+/* The start of a member's bio: their words, as text, a few lines at most. */
+.author-card-bio {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.author-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+.author-card-badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--brand) 12%, var(--bg-subtle));
+  color: var(--text);
+}
+.author-card-open {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  text-decoration: none;
 }
 .author-card-did-row {
   display: flex;

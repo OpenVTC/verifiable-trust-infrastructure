@@ -30,7 +30,7 @@ import {
   type Speaker,
 } from "./conversation";
 import { AuthorAvatar, AuthorName } from "./author-card";
-import { authorsOf, mayLookUpAuthors, useAuthorCards } from "./room-authors";
+import { authorsOf, mayLookUpAuthors, useAuthorCards, type AuthorCard } from "./room-authors";
 import { useRoomLive, type LiveStatus } from "./room-live";
 import {
   adverseVerification,
@@ -249,6 +249,7 @@ export function ChatRoom({
                       target={r.replyTo ? byKey.get(r.replyTo.key) : undefined}
                       speaker={speaker}
                       nameOf={nameOf}
+                      cardOf={(d) => (d ? cards.get(d) : undefined)}
                       selected={open === r.key}
                       onOpen={() => setOpen(open === r.key ? null : r.key)}
                       me={me}
@@ -345,6 +346,7 @@ function ChatItem({
   target,
   speaker,
   nameOf,
+  cardOf,
   selected,
   onOpen,
   me,
@@ -358,6 +360,8 @@ function ChatItem({
   target?: ConversationRecord;
   speaker: (did: string | undefined) => Speaker;
   nameOf: (did: string | undefined) => ReactNode;
+  /** What the directory shows of an author, for their picture. */
+  cardOf: (did: string | undefined) => AuthorCard | undefined;
   selected: boolean;
   onOpen: () => void;
   me?: string;
@@ -422,7 +426,7 @@ function ChatItem({
     <li className={classes.join(" ")}>
       {!who.own && (
         <span className="chat-avatar">
-          {first && <AuthorAvatar speaker={who} did={r.author} />}
+          {first && <AuthorAvatar speaker={who} did={r.author} card={cardOf(r.author)} />}
         </span>
       )}
       <div className="chat-stack">
