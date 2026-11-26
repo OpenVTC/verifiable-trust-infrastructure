@@ -7,7 +7,7 @@
 //! |---|---|
 //! | `vtc/community/profile/show/0.1` | any entry |
 //! | `vtc/ceremonies/list/0.1` | any entry |
-//! | `vtc/directory/query/0.1` | any entry, or the member portal key it delegated `vtc/directory` to, as the viewer the directory policy projects for |
+//! | `vtc/directory/query/{0.1,0.2}` | any entry, or the member portal key it delegated `vtc/directory` to, as the viewer the directory policy projects for |
 //! | `vtc/endorsement-types/list/0.2` | `Admin` |
 //! | `vtc/recognition/check/0.1` | `Admin` |
 //! | `vtc/members/{list,removed,show,solicit-vmc}/0.1` | `Admin` |
@@ -37,6 +37,7 @@ use trust_tasks_rs::{Payload, RejectReason, TrustTask};
 use vti_specs::vtc::ceremonies::list::v0_1 as ceremonies_list;
 use vti_specs::vtc::community::profile::show::v0_1 as profile_show;
 use vti_specs::vtc::directory::query::v0_1 as directory_query;
+use vti_specs::vtc::directory::query::v0_2 as directory_query_v2;
 use vti_specs::vtc::endorsement_types::list::v0_2 as endorsement_types_list;
 use vti_specs::vtc::invitations::{
     deliver::v0_1 as invitation_deliver, issue::v0_1 as invitation_issue,
@@ -96,7 +97,11 @@ pub(crate) const ENDORSEMENT_TYPES_LIST_TYPE: &str =
     <endorsement_types_list::Payload as Payload>::TYPE_URI;
 
 #[cfg(test)]
+#[allow(deprecated)]
 pub(crate) const DIRECTORY_QUERY_TYPE: &str = <directory_query::Payload as Payload>::TYPE_URI;
+
+#[cfg(test)]
+pub(crate) const DIRECTORY_QUERY_V2_TYPE: &str = <directory_query_v2::Payload as Payload>::TYPE_URI;
 
 #[cfg(test)]
 pub(crate) const CEREMONIES_LIST_TYPE: &str = <ceremonies_list::Payload as Payload>::TYPE_URI;
@@ -114,7 +119,10 @@ pub(crate) const SECRET_RESPONSES: &[&str] = &[INVITATIONS_ISSUE_TYPE, INVITATIO
 pub(super) fn register(routes: Routes) -> Routes {
     let routes = on!(routes, profile_show::Payload => |state, ctx, doc| handle_profile_show(state, ctx, doc));
     let routes = on!(routes, ceremonies_list::Payload => |state, ctx, doc| handle_ceremonies_list(state, ctx, doc));
+    // `query/0.1` is superseded by `0.2` and still served, for callers not yet moved.
+    #[allow(deprecated)]
     let routes = on!(routes, directory_query::Payload => |state, ctx, doc| handle_directory_query(state, ctx, doc));
+    let routes = on!(routes, directory_query_v2::Payload => |state, ctx, doc| handle_directory_query_v2(state, ctx, doc));
     let routes = on!(routes, endorsement_types_list::Payload => |state, ctx, doc| handle_endorsement_types_list(state, ctx, doc));
     let routes = on!(routes, recognition_check::Payload => |state, ctx, doc| handle_recognition_check(state, ctx, doc));
     let routes = on!(routes, members_list::Payload => |state, ctx, doc| handle_members_list(state, ctx, doc));
@@ -189,19 +197,58 @@ async fn handle_ceremonies_list(
 
 /// `vtc/directory/query/0.1` — the subject's record as the directory policy
 /// projects it for the signer. "No such member" and "nothing visible to you"
-/// are the one `notFound`, as on the route this replaced.
-///
-/// Like the other `vtc/directory` reads, it accepts the member portal's
-/// sign-in key as the member who delegated `vtc/directory` to it, while that
-/// session is live: the portal names a room's authors with it. Any other
-/// signer is authorized as themselves.
+/// are the one `notFound`, as on the route this replaced. Superseded by `0.2`
+/// and still served.
+#[allow(deprecated)]
 async fn handle_directory_query(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let delegated = match ctx.verified_signer.as_deref() {
-        Some(signer) => match crate::member_portal::delegation::accept(
+    let did = match directory_query_signer(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<directory_query::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let hint = payload.fields.as_ref().map(|f| f.to_string());
+    answer_directory_query(state, &doc, &did, payload.subject.to_string(), hint, false).await
+}
+
+/// `vtc/directory/query/0.2` — `0.1`, and the member's directory entry, so a
+/// caller who met them by DID can read their picture and open their card.
+async fn handle_directory_query_v2(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let did = match directory_query_signer(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let payload = match parse_spec_payload::<directory_query_v2::Payload>(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let hint = payload.fields.as_ref().map(|f| f.to_string());
+    answer_directory_query(state, &doc, &did, payload.subject.to_string(), hint, true).await
+}
+
+/// Who a `vtc/directory/query` is read as.
+///
+/// Like the other `vtc/directory` reads, it accepts the member portal's
+/// sign-in key as the member who delegated `vtc/directory` to it, while that
+/// session is live: the portal names a room's authors with it. Any other
+/// signer is authorized as themselves, holding any entry.
+async fn directory_query_signer(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<String, TrustTaskOutcome> {
+    if let Some(signer) = ctx.verified_signer.as_deref() {
+        match crate::member_portal::delegation::accept(
             state,
             signer,
             &doc.type_uri.to_string(),
@@ -209,31 +256,34 @@ async fn handle_directory_query(
         )
         .await
         {
-            Ok(member) => member,
-            Err(e) => return app_error_to_reject(&doc, &e),
-        },
-        None => None,
-    };
-    let (did, payload) = match delegated {
-        Some(member) => match parse_spec_payload::<directory_query::Payload>(&doc) {
-            Ok(p) => (member, p),
-            Err(reject) => return reject,
-        },
-        None => match member_with::<directory_query::Payload>(state, ctx, &doc).await {
-            Ok((signer, p)) => (signer.did, p),
-            Err(reject) => return reject,
-        },
-    };
-    let subject = payload.subject.to_string();
-    let viewer = match crate::directory::read::viewer(state, &did).await {
+            Ok(Some(member)) => return Ok(member),
+            Ok(None) => {}
+            Err(e) => return Err(app_error_to_reject(doc, &e)),
+        }
+    }
+    member_signer(state, ctx, doc).await.map(|s| s.did)
+}
+
+/// The projection of `subject` for the member `did`, as either version
+/// answers it; `with_entry` adds the member's `entryId` (`0.2`).
+async fn answer_directory_query(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    did: &str,
+    subject: String,
+    hint: Option<String>,
+    with_entry: bool,
+) -> TrustTaskOutcome {
+    let viewer = match crate::directory::read::viewer(state, did).await {
         Ok(v) => v,
-        Err(e) => return app_error_to_reject(&doc, &e),
+        Err(e) => return app_error_to_reject(doc, &e),
     };
     match crate::directory::read::query_by_did(state, &viewer, &subject).await {
-        Ok(Some(mut fields)) => {
+        Ok(Some(answer)) => {
+            let mut fields = answer.fields;
             // `fields` is a narrowing hint, never an authorisation: a field
             // asked for and withheld is absent, never an error.
-            if let Some(hint) = payload.fields.as_ref().map(|f| f.to_string()) {
+            if let Some(hint) = hint {
                 let wanted: std::collections::BTreeSet<&str> = hint
                     .split(',')
                     .map(str::trim)
@@ -242,15 +292,17 @@ async fn handle_directory_query(
                 fields.retain(|k, _| wanted.contains(k.as_str()));
             }
             if fields.is_empty() {
-                return not_visible(&doc);
+                return not_visible(doc);
             }
-            success_response(
-                &doc,
-                serde_json::json!({ "subject": subject, "fields": fields }),
-            )
+            let body = if with_entry {
+                serde_json::json!({ "subject": subject, "entryId": answer.entry_id, "fields": fields })
+            } else {
+                serde_json::json!({ "subject": subject, "fields": fields })
+            };
+            success_response(doc, body)
         }
-        Ok(None) => not_visible(&doc),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Ok(None) => not_visible(doc),
+        Err(e) => app_error_to_reject(doc, &e),
     }
 }
 

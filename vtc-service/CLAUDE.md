@@ -403,7 +403,9 @@ When adding a flow, add it here and a line to the root index.
 ### VTC member directory (`vtc/directory/*`)
 - **What**: The community's field schema (`fields/*`), each member's card
   (`card/{show,update,assert}`), and browse/search/show (`entries/*`, plus the
-  older `query/0.1`), every read a **projection** for its caller; pictures
+  lookup by DID, `query/0.1` and `0.2`, which also answers the member's
+  `entryId` — only where the answer is given at all, so only to a caller
+  already shown the member), every read a **projection** for its caller; pictures
   (`images/{upload,get}`), external cards (`card/{publish,public}`),
   administrators' notes (`notes/*`), the export, and credential-sourced fields
   (`card/present`). Groups are their own family (*VTC community groups*);

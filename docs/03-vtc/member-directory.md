@@ -26,7 +26,7 @@ Specification: *Community Directory and Groups* in the VTI specification
 | `vtc/directory/card/assert/0.1` | `vtc.directory.admin` | Values of `admin`-sourced fields (a chapter, a grade); the member sees them and cannot change them |
 | `vtc/directory/entries/list/0.2` | members, administrators | Browse, search and filter, each entry projected for the caller |
 | `vtc/directory/entries/show/0.1` | members, administrators | One entry by entry identifier; by DID only for `vtc.directory.admin` or `vtc.members.manage` |
-| `vtc/directory/query/0.1` | members, administrators | The older lookup by DID, answered through the same projection |
+| `vtc/directory/query/0.2` | members (also through the portal's key), administrators | A lookup by DID, answered through the same projection, with the member's `entryId` so the caller can read their picture and open their card. Answered only where the projection shows the caller the member's DID, to the member, or to `vtc.directory.admin` / `vtc.members.manage`; otherwise `notFound`, as for no member. `0.1` is still served, without the entry |
 | `vtc/directory/disclosure/0.1` | anyone the join manifest answers | The disclosure statement (below) |
 | `vtc/directory/images/upload/0.1` | members, `vtc.directory.admin` | Hand the community a picture for a card; it keeps its own re-encoding (below) |
 | `vtc/directory/images/get/0.1` | anyone, through the projection | A picture's bytes, where the caller's projection of that entry shows it |

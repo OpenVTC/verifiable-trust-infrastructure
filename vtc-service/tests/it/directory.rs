@@ -29,7 +29,8 @@ fn task(name: &str) -> String {
 use vti_specs::vtc::directory as d;
 
 // The declared codes, read from the generated bindings.
-const DIRECTORY_QUERY_ERR_NOT_FOUND: &str = d::query::v0_1::error_codes::NOT_FOUND.code;
+// One slug-level code, declared alike by query 0.1 and 0.2.
+const DIRECTORY_QUERY_ERR_NOT_FOUND: &str = d::query::v0_2::error_codes::NOT_FOUND.code;
 const DEFINE_ERR_FIELD_EXISTS: &str = d::fields::define::v0_1::error_codes::FIELD_EXISTS.code;
 const DEFINE_ERR_RESERVED_KEY: &str = d::fields::define::v0_1::error_codes::RESERVED_KEY.code;
 const DEFINE_ERR_ABOVE_CEILING: &str = d::fields::define::v0_1::error_codes::ABOVE_CEILING.code;
@@ -192,6 +193,78 @@ async fn a_member_queries_only_a_did_its_member_chose_to_show() {
     assert!(
         body["fields"].get("joinedAt").is_none(),
         "withheld means absent"
+    );
+}
+
+/// `query/0.2` answers the member's entry — the one `entries/show` reads and
+/// the card is keyed by — so a member who met them by DID can open their card
+/// and read their picture. `0.1` answers as it did, with no entry.
+#[tokio::test]
+async fn query_0_2_answers_the_entry_entries_show_uses() {
+    let fix = build_fixture().await;
+    let viewer = member(&fix).await;
+    let subject = member(&fix).await;
+    ok(
+        &fix,
+        &subject,
+        "card/update",
+        json!({ "values": { "displayName": "Sam" }, "visibility": { "did": "members", "displayName": "members" } }),
+    )
+    .await;
+    let entry = entry_of(&fix, &subject).await;
+
+    let (status, doc) = call(
+        &fix.vtc,
+        &viewer,
+        &format!("{SPEC}/query/0.2"),
+        json!({ "subject": subject.did }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(doc["type"], format!("{SPEC}/query/0.2#response"));
+    let body = &doc["payload"];
+    assert_eq!(body["entryId"], entry.as_str(), "{body}");
+    assert_eq!(body["fields"]["displayName"], "Sam");
+
+    // The entry it names opens the card, for the same viewer.
+    let shown = ok(&fix, &viewer, "entries/show", json!({ "entryId": entry })).await;
+    assert_eq!(shown["entry"]["entryId"], entry.as_str(), "{shown}");
+
+    let old = ok(&fix, &viewer, "query", json!({ "subject": subject.did })).await;
+    assert!(old.get("entryId").is_none(), "0.1 is unchanged: {old}");
+}
+
+async fn query_v2(fix: &Fixture, from: &Party, subject: &str) -> Value {
+    call(
+        &fix.vtc,
+        from,
+        &format!("{SPEC}/query/0.2"),
+        json!({ "subject": subject }),
+    )
+    .await
+    .1["payload"]
+        .clone()
+}
+
+/// At `0.2`, as at `0.1`: a member hidden from the caller is the same
+/// `notFound` as no member, and no refusal carries an entry.
+#[tokio::test]
+async fn nothing_visible_is_indistinguishable_from_no_such_member_at_0_2() {
+    let fix = build_fixture().await;
+    let viewer = member(&fix).await;
+    let subject = member(&fix).await;
+    let hidden = query_v2(&fix, &viewer, &subject.did).await;
+    let ghost = query_v2(&fix, &viewer, "did:key:zGhost").await;
+    assert_eq!(
+        tt_error_code(&hidden),
+        DIRECTORY_QUERY_ERR_NOT_FOUND,
+        "{hidden}"
+    );
+    assert_eq!(hidden["message"], ghost["message"], "indistinguishable");
+    assert_eq!(hidden["details"], ghost["details"], "indistinguishable");
+    assert!(
+        !hidden.to_string().contains("dir_"),
+        "a refusal never carries an entry: {hidden}"
     );
 }
 

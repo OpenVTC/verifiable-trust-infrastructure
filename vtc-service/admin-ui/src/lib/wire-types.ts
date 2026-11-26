@@ -342,6 +342,7 @@ export type DirectoryEntriesListPayload = Schemas["VtcDirectoryEntriesListV0_2Pa
 export type DirectoryEntriesListResponse = Schemas["VtcDirectoryEntriesListV0_2Response"];
 export type DirectoryEntriesShowResponse = Schemas["VtcDirectoryEntriesShowV0_1Response"];
 export type DirectoryQueryResponse = Schemas["VtcDirectoryQueryV0_1Response"];
+export type DirectoryQueryResponseV2 = Schemas["VtcDirectoryQueryV0_2Response"];
 export type DirectoryCard = Schemas["VtcDirectoryCardShowV0_1DirectoryCard"];
 export type DirectoryCardShowResponse = Schemas["VtcDirectoryCardShowV0_1Response"];
 export type DirectoryCardUpdatePayload = Schemas["VtcDirectoryCardUpdateV0_1Payload"];

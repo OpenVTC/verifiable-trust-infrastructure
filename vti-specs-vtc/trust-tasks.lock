@@ -1,6 +1,6 @@
 # Written by `trust-tasks`. Do not edit by hand.
 version = 1
-registry = "https://trusttasks.org"
+registry = "/Users/glenngore/devel/dtgwg-trust-tasks-tf-worktrees/directory-query-entry-id/website"
 
 [[task]]
 slug = "vtc/admin/actions/acknowledge"
@@ -588,7 +588,13 @@ digest = "sha256:7017dff00520ee26a9d6ce5ff06162c17aa3e45a880a9ddda3108e7aa29e54b
 slug = "vtc/directory/query"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/directory/query/0.1"
-digest = "sha256:208b03398401c434bc94b99039e1f6ee3a9b4cbfae86064549c7eb71f679e641"
+digest = "sha256:61c7fb357da441b7095e71e10d4f2c02ac56a91bba823e9dfc9498b2de46f6eb"
+
+[[task]]
+slug = "vtc/directory/query"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/directory/query/0.2"
+digest = "sha256:4e9acd2282bbeb829070f810bc577b38aebd37fe91fde6a7d0fe750c35d738fe"
 
 [[task]]
 slug = "vtc/elections/ballot-boxes/list"

@@ -1,5 +1,5 @@
 //! Reading the directory: `vtc/directory/entries/{list,show}/0.1`, and
-//! `vtc/directory/query/0.1` answered through the same projection.
+//! `vtc/directory/query/{0.1,0.2}` answered through the same projection.
 //!
 //! Every entry a read returns is a [`super::project::project`] for the
 //! caller. Search and filters match only what that projection shows, so a
@@ -597,19 +597,32 @@ pub async fn show(state: &AppState, viewer: &Viewer, by: &ShowBy) -> Result<Valu
         .ok_or(ShowError::NotFound)
 }
 
-/// `vtc/directory/query/0.1`, answered through the projection so it never
-/// disagrees with `entries/show`.
+/// What `vtc/directory/query` answers for one member: their entry and their
+/// projection for the caller.
+#[derive(Debug, Clone)]
+pub struct QueryAnswer {
+    /// The member's directory entry (`dir_…`), as `entries/list` and
+    /// `entries/show` answer it. `query/0.2` returns it; `0.1` does not.
+    pub entry_id: String,
+    /// The projection, keyed by field.
+    pub fields: Map<String, Value>,
+}
+
+/// `vtc/directory/query/0.1` and `0.2`, answered through the projection so it
+/// never disagrees with `entries/show`.
 ///
 /// It addresses a member by DID, which is the membership oracle the directory
 /// is built not to be. So a caller who may not address entries by DID is
 /// answered only when the projection would show them that DID anyway — when
 /// the member chose to show it to them. Everyone else gets `None`, which the
-/// task answers `notFound`, exactly as for a DID that is no member.
+/// task answers `notFound`, exactly as for a DID that is no member — and so
+/// the entry identifier `0.2` answers reaches only a caller already shown the
+/// member.
 pub async fn query_by_did(
     state: &AppState,
     viewer: &Viewer,
     did: &str,
-) -> Result<Option<Map<String, Value>>, AppError> {
+) -> Result<Option<QueryAnswer>, AppError> {
     if !viewer.may_read() {
         return Ok(None);
     }
@@ -625,7 +638,10 @@ pub async fn query_by_did(
     if !may_address && !fields.contains_key("did") {
         return Ok(None);
     }
-    Ok(Some(fields))
+    Ok(Some(QueryAnswer {
+        entry_id: subject.card.entry_id.clone(),
+        fields,
+    }))
 }
 
 #[cfg(test)]

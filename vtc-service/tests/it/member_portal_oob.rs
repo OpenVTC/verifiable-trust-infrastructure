@@ -2261,6 +2261,22 @@ async fn the_portal_key_looks_up_a_member_by_did_as_its_member() {
     assert_eq!(got.status, StatusCode::OK, "{}", got.body);
     assert_eq!(got.body["payload"]["subject"], member.did.as_str());
     assert_eq!(got.body["payload"]["fields"]["displayName"], "Alice");
+
+    // At 0.2 the same key gets the member's entry: the one their card is keyed
+    // by, which the portal reads a picture and opens the card with.
+    let shown = as_portal(&f, &b, &format!("{DIRECTORY}/card/show/0.1"), json!({})).await;
+    let entry = shown.body["payload"]["card"]["entryId"].clone();
+    assert!(entry.is_string(), "{}", shown.body);
+    let v2 = as_portal(
+        &f,
+        &b,
+        &format!("{DIRECTORY}/query/0.2"),
+        json!({ "subject": member.did }),
+    )
+    .await;
+    assert_eq!(v2.status, StatusCode::OK, "{}", v2.body);
+    assert_eq!(v2.body["payload"]["entryId"], entry, "{}", v2.body);
+    assert_eq!(v2.body["payload"]["fields"]["displayName"], "Alice");
 }
 
 /// A member browsing the portal's directory signs every read with `K_b`. Those

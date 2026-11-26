@@ -359,6 +359,10 @@ spec_types! {
     /// `vtc/directory/query/0.1#response` — that member's projection, when they show
     /// their DID to the caller.
     DirectoryQuery01Response(directory::query::v0_1::Response);
+    /// `vtc/directory/query/0.2` payload — one member, addressed by DID.
+    DirectoryQuery02Payload(directory::query::v0_2::Payload);
+    /// `vtc/directory/query/0.2#response` — as 0.1, and the member's directory entry.
+    DirectoryQuery02Response(directory::query::v0_2::Response);
     /// `vtc/directory/card/show/0.1` payload.
     DirectoryCardShow01Payload(directory::card::show::v0_1::Payload);
     /// `vtc/directory/card/show/0.1#response` — the member's own card, whole.
@@ -1079,6 +1083,8 @@ mod tests {
         check::<DirectoryEntriesShow01Response>();
         check::<DirectoryQuery01Payload>();
         check::<DirectoryQuery01Response>();
+        check::<DirectoryQuery02Payload>();
+        check::<DirectoryQuery02Response>();
         check::<DirectoryCardShow01Payload>();
         check::<DirectoryCardShow01Response>();
         check::<DirectoryCardUpdate01Payload>();

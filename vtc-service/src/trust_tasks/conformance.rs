@@ -2137,6 +2137,17 @@ fn table() -> Vec<Conformance> {
             })
         ),
         checked!(
+            s::directory::query::v0_2::Payload,
+            s::directory::query::v0_2::Response,
+            json!({ "subject": DID, "fields": "did,role,displayName" }),
+            // As 0.1, and the member's entry (`QueryAnswer::entry_id`).
+            json!({
+                "subject": DID,
+                "entryId": "dir_3pQkV7wXyZ1aB2cD4eF6gH",
+                "fields": { "did": DID, "role": "member", "displayName": "Alberto Leon" },
+            })
+        ),
+        checked!(
             s::directory::fields::list::v0_1::Payload,
             s::directory::fields::list::v0_1::Response,
             json!({ "includeRetired": true }),

@@ -23060,6 +23060,68 @@
         },
         "additionalProperties": false
       },
+      "VtcDirectoryQueryV0_2EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcDirectoryQueryV0_2Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcDirectoryQueryV0_2Payload": {
+        "type": "object",
+        "description": "Read one member's directory projection, addressed by their DID: the fields the member, the community's ceiling and its directory policy all let this caller see, and the member's entry identifier. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "subject"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryQueryV0_2Ext"
+          },
+          "fields": {
+            "type": "string",
+            "description": "Comma-separated narrowing hint. A hint only — never an authorisation.",
+            "minLength": 1
+          },
+          "subject": {
+            "type": "string",
+            "description": "DID of the member whose directory projection is requested.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcDirectoryQueryV0_2Response": {
+        "type": "object",
+        "description": "Success response to vtc/directory/query. Type https://trusttasks.org/spec/vtc/directory/query/0.2#response. The member's projection for this caller, and their entry identifier.",
+        "required": [
+          "subject",
+          "entryId",
+          "fields"
+        ],
+        "properties": {
+          "entryId": {
+            "$ref": "#/components/schemas/VtcDirectoryQueryV0_2EntryId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcDirectoryQueryV0_2Ext"
+          },
+          "fields": {
+            "type": "object",
+            "description": "The permitted projection. A withheld field is ABSENT, never present-and-null.",
+            "additionalProperties": true
+          },
+          "subject": {
+            "type": "string",
+            "description": "The projected member's DID.",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcEndorsementTypesDeleteV0_1Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
