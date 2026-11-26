@@ -9,7 +9,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The directory, asked who a room's authors are: by default it shows nobody
@@ -23,7 +23,7 @@ vi.mock("./directory-api", async (actual) => {
 import { DirectoryError } from "./directory-api";
 import { RoomPage, RoomsPage, downloadName } from "./Rooms";
 import { routeOf } from "./Portal";
-import { fileWontFit, type RoomInfo, type WalletRooms } from "./wallet-rooms";
+import { fileWontFit, type RoomInfo, type RoomWatchEvent, type WalletRooms } from "./wallet-rooms";
 
 const HOST = "did:webvh:QmHost:acme.example";
 const ROOM = "did:webvh:QmRoom:rooms.example";
@@ -609,6 +609,164 @@ describe("data rooms in the portal", () => {
     await screen.findByText("File added.");
     expect(wallet.calls.some((c) => c.method === "putFile")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Replying, reacting and staying current, through a wallet that does all three.
+  const notListedError = () => Object.assign(new Error("the room's profile does not list inReplyTo"), { code: "recordMembersNotListed" });
+  function answeringWallet(over: Partial<WalletRooms> = {}) {
+    return fakeWallet({
+      conversation: vi.fn(async () => CHAT),
+      putMessage: vi.fn(async () => ({ key: "m9", version: 9 })),
+      react: vi.fn(async () => ({ key: "r1", version: 10 })),
+      unreact: vi.fn(async () => ({ withdrawn: 1 })),
+      ...over,
+    });
+  }
+
+  it("a reply names what it answers above the box, and is sent with it", async () => {
+    const wallet = answeringWallet();
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    // Alberto's "Hi" is the first message; its Reply action is the first.
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]!);
+    expect(screen.getByText(/Replying to/).textContent).toContain("Alberto Leon");
+    const box = screen.getByLabelText("Message");
+    fireEvent.change(box, { target: { value: "Hello back" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await screen.findByText("Message sent.");
+    expect(wallet.putMessage).toHaveBeenCalledWith({
+      hostDid: HOST,
+      roomId: ROOM,
+      body: "Hello back",
+      replyTo: { key: "m1", version: 1 },
+    });
+    // Sent: the reply is cleared.
+    expect(screen.queryByText(/Replying to/)).toBeNull();
+    // Cancelling one sends a plain message.
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel the reply" }));
+    expect(screen.queryByText(/Replying to/)).toBeNull();
+  });
+
+  it("a room that takes no replies says so, offers the words as a plain message, and stops offering replies", async () => {
+    const putMessage = vi
+      .fn()
+      .mockRejectedValueOnce(notListedError())
+      .mockResolvedValue({ key: "m9", version: 9 });
+    const wallet = answeringWallet({ putMessage });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Reply" })[0]!);
+    const box = screen.getByLabelText("Message");
+    fireEvent.change(box, { target: { value: "Hello back" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    const plain = await screen.findByRole("button", { name: "Send as a plain message" });
+    // Nothing was written; the member is told why, never shown a raw error.
+    expect(screen.getAllByText(/doesn't take replies/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Reply" })).toBeNull();
+    fireEvent.click(plain);
+    await screen.findByText("Message sent.");
+    expect(putMessage).toHaveBeenLastCalledWith({ hostDid: HOST, roomId: ROOM, body: "Hello back" });
+  });
+
+  it("a reaction goes through the wallet; the member's own is taken back by selecting it", async () => {
+    const wallet = answeringWallet();
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    fireEvent.click(screen.getAllByRole("button", { name: "React" })[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "React 😂" }));
+    await waitFor(() =>
+      expect(wallet.react).toHaveBeenCalledWith({ hostDid: HOST, roomId: ROOM, key: "m1", version: 1, value: "😂" }),
+    );
+    // The member's own 👍 on "Hi" is theirs to take back.
+    const mine = screen.getByRole("button", { name: "👍 1, including yours" });
+    expect(mine.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(mine);
+    await waitFor(() =>
+      expect(wallet.unreact).toHaveBeenCalledWith({ hostDid: HOST, roomId: ROOM, key: "m1", value: "👍" }),
+    );
+    // A room that takes no reactions says so, and offers none.
+    (wallet.react as ReturnType<typeof vi.fn>).mockRejectedValueOnce(notListedError());
+    fireEvent.click(screen.getAllByRole("button", { name: "React" })[0]!);
+    fireEvent.click(screen.getByRole("button", { name: "React 🎉" }));
+    await screen.findByText(/doesn't take replies and reactions yet/);
+    expect(screen.queryByRole("button", { name: "React" })).toBeNull();
+  });
+
+  it("a wallet older than replies and reactions is offered neither, and the room is refreshed by hand", async () => {
+    const wallet = fakeWallet({
+      conversation: vi.fn(async () => CHAT),
+      putMessage: vi.fn(async () => ({ key: "m9", version: 9 })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    expect(screen.queryByRole("button", { name: "Reply" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "React" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /including yours/ })).toBeNull();
+    expect(screen.getByText("👍 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect(screen.queryByText("Live")).toBeNull();
+  });
+
+  it("a watched room is read again when the wallet says it moved, and the watch is told what was read", async () => {
+    let onEvent: ((e: RoomWatchEvent) => void) | undefined;
+    const handle = { read: vi.fn(), stop: vi.fn() };
+    const moved = { ...CHAT, records: [...CHAT.records, { ...CHAT.records[0]!, key: "m5", version: 5, body: "New" }] };
+    const conversation = vi.fn().mockResolvedValueOnce(CHAT).mockResolvedValue(moved);
+    const watch = vi.fn((_p: unknown, on: (e: RoomWatchEvent) => void) => {
+      onEvent = on;
+      return handle;
+    });
+    const wallet = answeringWallet({ conversation, watch });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    const view = renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    await waitFor(() => expect(watch).toHaveBeenCalled());
+    // Watched from the highest version the page holds.
+    expect(watch.mock.calls[0]![0]).toEqual({ hostDid: HOST, roomId: ROOM, sinceVersion: 4 });
+    // Armed: live, and no refresh button in the header.
+    act(() => onEvent!({ type: "state", state: "armed" }));
+    expect(screen.getByText("Live")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+    // It moved: read again, then the watch is told the room was read to 5.
+    act(() => onEvent!({ type: "changed", latestVersion: 5 }));
+    await screen.findByText("New");
+    await waitFor(() => expect(handle.read).toHaveBeenCalledWith(5));
+    // Anything else and it is not live any more: never latched.
+    act(() => onEvent!({ type: "state", state: "refused" }));
+    expect(screen.queryByText("Live")).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    view.unmount();
+    expect(handle.stop).toHaveBeenCalled();
+  });
+
+  it("a watch the wallet cannot keep falls back to reading the room on a timer", async () => {
+    let onEvent: ((e: RoomWatchEvent) => void) | undefined;
+    const conversation = vi.fn(async () => CHAT);
+    const watch = vi.fn((_p: unknown, on: (e: RoomWatchEvent) => void) => {
+      onEvent = on;
+      return { read: vi.fn(), stop: vi.fn() };
+    });
+    const wallet = answeringWallet({ conversation, watch });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    await waitFor(() => expect(watch).toHaveBeenCalled());
+    const before = conversation.mock.calls.length;
+    vi.useFakeTimers();
+    try {
+      act(() => onEvent!({ type: "state", state: "unavailable" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => expect(conversation.mock.calls.length).toBeGreaterThan(before));
   });
 
   it("a wallet older than messages is offered only a note, even in a chat", async () => {

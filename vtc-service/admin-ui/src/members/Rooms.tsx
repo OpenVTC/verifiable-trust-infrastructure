@@ -563,7 +563,7 @@ function Room({ wallet, hostDid, roomId }: { wallet: WalletRooms; hostDid: strin
         hostDid={hostDid}
         info={info.data}
         view={conversation.data}
-        onRefresh={() => void conversation.refetch()}
+        onRefresh={() => conversation.refetch()}
         backHref="#/rooms"
         byDid={(d) => authorName(d)}
         renderRecord={(key, onClose, byline) => (

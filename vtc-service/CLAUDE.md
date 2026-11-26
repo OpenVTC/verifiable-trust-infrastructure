@@ -644,6 +644,21 @@ When adding a flow, add it here and a line to the root index.
   in `open` / `attributed` rooms, whose host already sees who wrote what —
   never a private room's, which would tell the community who writes there —
   and send only the DID, never the room.
+  **Replies, reactions and live updates** go only through the wallet's own
+  methods (`putMessage` `replyTo`, `react`, `unreact`, `watch`), feature-
+  detected: a wallet without `react` is offered neither replies nor
+  reactions, one without `watch` keeps the refresh button. A reaction's
+  count, authors and "yours" come from the wallet's reading — the page never
+  counts records; selecting the member's own takes it back (`unreact`). The
+  wallet confirms every reply and reaction. `recordMembersNotListed` means the
+  room's profile does not list what the write needs and nothing was written:
+  say so, stop offering replies and reactions, and offer the words as a plain
+  message — never drop a reply's target silently. The watch (`room-live.ts`)
+  carries only that the room moved: read it again through the wallet, then
+  `read(highest version)`; while it is `refused`/`unavailable`/`failed` read on
+  a 20-second timer while the tab is visible, and on `closed` watch again with
+  backoff. "Live" is derived from the latest event and drops the moment any
+  other arrives (R6.2) — never latch it.
 - **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
   the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
   ballot is filled in the wallet's own window and the cast goes from the wallet to

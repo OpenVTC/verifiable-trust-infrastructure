@@ -161,3 +161,35 @@ export function runsOf<R extends Pick<ConversationRecord, "author" | "shown" | "
     last: !joins(r, records[i + 1]),
   }));
 }
+
+// ── Replying, reacting, and staying current ────────────────────────────────
+
+/** The reactions the picker offers. Any short value a wallet takes is shown as the wallet reads it. */
+export const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🙏", "🎉", "👀"] as const;
+
+/** Whether `value` is a reaction a wallet takes: not empty, one line, at most 64 characters. */
+export function reactionValueOk(value: string): boolean {
+  return value.length > 0 && [...value].length <= 64 && !/[\r\n]/.test(value);
+}
+
+/** Whether the member is among those who reacted with `value` — so a click takes it back. */
+export function reactedWith(
+  reactions: readonly { value: string; authors: readonly string[] }[],
+  value: string,
+  me: string | undefined,
+): boolean {
+  if (me === undefined) return false;
+  return reactions.some((x) => x.value === value && x.authors.includes(me));
+}
+
+/** The highest record version the page holds: what a watch is told it has read. */
+export function highestVersion(records: readonly Pick<ConversationRecord, "version">[]): number | undefined {
+  let max: number | undefined;
+  for (const r of records) if (max === undefined || r.version > max) max = r.version;
+  return max;
+}
+
+/** How long to wait before watching again after the `attempt`-th close: doubling from a second, at most a minute. */
+export function rewatchDelay(attempt: number): number {
+  return Math.min(60_000, 1_000 * 2 ** Math.max(0, Math.min(attempt, 6)));
+}

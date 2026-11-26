@@ -2660,6 +2660,167 @@ textarea {
   line-height: 1.5;
   cursor: default;
 }
+button.chat-reaction {
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: pointer;
+}
+button.chat-reaction:hover {
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--border));
+}
+.chat-reaction.mine {
+  border-color: color-mix(in srgb, var(--brand) 60%, var(--border));
+  background: color-mix(in srgb, var(--brand) 14%, var(--bg-elev));
+}
+button.chat-reaction:focus-visible,
+.chat-action:focus-visible,
+.chat-pick:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* A message's actions — reply, react — float on its top edge on hover or focus,
+   and on a tap where there is no hover. */
+.chat-stack {
+  position: relative;
+}
+.chat-actions {
+  position: absolute;
+  bottom: 0.15rem;
+  left: calc(100% + 0.4rem);
+  z-index: 3;
+  white-space: nowrap;
+  display: none;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-card);
+}
+.chat-msg.own .chat-actions {
+  left: auto;
+  right: calc(100% + 0.4rem);
+}
+/* Where there is no room beside the bubble, the actions sit beneath it. */
+@media (max-width: 40rem) {
+  .chat-actions,
+  .chat-msg.own .chat-actions {
+    position: static;
+    align-self: flex-start;
+    flex-wrap: wrap;
+    white-space: normal;
+    max-width: 100%;
+  }
+  .chat-msg.own .chat-actions {
+    align-self: flex-end;
+  }
+  .chat-actions {
+    border-radius: var(--radius-lg);
+  }
+  .chat-picker {
+    flex-wrap: wrap;
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+.chat-msg.acting .chat-actions,
+.chat-msg:focus-within .chat-actions {
+  display: inline-flex;
+}
+@media (hover: hover) {
+  .chat-msg:hover .chat-actions {
+    display: inline-flex;
+  }
+}
+.chat-action {
+  all: unset;
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.chat-action:hover,
+.chat-action[aria-expanded="true"] {
+  color: var(--brand);
+  background: var(--bg-subtle);
+}
+.chat-picker {
+  display: inline-flex;
+  gap: 0.05rem;
+  padding-left: 0.15rem;
+  border-left: 1px solid var(--border);
+}
+.chat-pick {
+  all: unset;
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.chat-pick:hover {
+  background: var(--bg-subtle);
+  transform: scale(1.15);
+}
+.chat-pick.mine {
+  background: color-mix(in srgb, var(--brand) 18%, var(--bg-elev));
+}
+
+/* The room's state above the messages: replies not taken, a reaction that failed. */
+.chat-notice {
+  margin: 0.5rem 1rem 0;
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* The wallet watching the room. */
+.chat-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.chat-live-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 25%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chat-live-dot {
+    animation: chat-live-pulse 2.4s ease-in-out infinite;
+  }
+}
+@keyframes chat-live-pulse {
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--success) 10%, transparent);
+  }
+}
+.link-button {
+  all: unset;
+  color: var(--brand);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.link-button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
 
 /* A note or a file: a small card in the flow, opened in the drawer. */
 .chat-note {
@@ -2796,6 +2957,28 @@ textarea {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-subtle);
+}
+/* What the member is answering, above the box. */
+.chat-compose-reply {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.4rem 0.35rem 0.7rem;
+  border-left: 3px solid var(--brand);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.chat-compose-reply-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-compose-reply-text b {
+  color: var(--text);
 }
 .chat-compose-file-name {
   flex: 1;
