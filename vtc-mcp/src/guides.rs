@@ -431,8 +431,11 @@ pub const WORKFLOWS: &[Workflow] = &[
                        (`attributed` by default, or `open`; `private` is not served for \
                        community rooms), history (`chained` or `fromJoin`), retention days, \
                        a storage location where you hold `vtc.rooms.admin`, and a `reason`. \
-                       The community's VTA mints the room's DID, founds its group and issues \
-                       the community's own credentials before the room is recorded.",
+                       For a room members will talk in, turn on replies and reactions \
+                       (`recordMembers`: `kind`, `inReplyTo`, `writtenAt`) and set \
+                       `signalDelay` to `none`. The community's VTA mints the room's DID, \
+                       founds its group and issues the community's own credentials before the \
+                       room is recorded.",
                 parks: None,
             },
             Step {
@@ -446,7 +449,9 @@ pub const WORKFLOWS: &[Workflow] = &[
             Step {
                 task: "vtc/rooms/community/members/list",
                 what: "See who is offered, admitted or removed. `vtc/rooms/community/get` \
-                       reads one room; `vtc/rooms/community/update` changes its details.",
+                       reads one room, its signal delay and record members; \
+                       `vtc/rooms/community/update` changes its details, and turns replies \
+                       and reactions on (`recordMembers`) or off (`removeRecordMembers`).",
                 parks: None,
             },
             Step {
