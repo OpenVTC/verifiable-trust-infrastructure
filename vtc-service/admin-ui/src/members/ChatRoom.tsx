@@ -13,13 +13,17 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CornerDownRight, FileText, MessagesSquare, NotebookPen, Paperclip, RefreshCw, Send, X } from "lucide-react";
+import { ArrowLeft, CornerDownRight, FileText, MessagesSquare, NotebookPen, Paperclip, RefreshCw, Reply, Send, SmilePlus, X } from "lucide-react";
 
 import {
   absentWords,
   byDay,
   clockTime,
   excerpt,
+  highestVersion,
+  QUICK_REACTIONS,
+  reactedWith,
+  reactionValueOk,
   runsOf,
   shownTime,
   speakerOf,
@@ -27,9 +31,12 @@ import {
 } from "./conversation";
 import { AuthorAvatar, AuthorName } from "./author-card";
 import { authorsOf, mayLookUpAuthors, useAuthorCards } from "./room-authors";
+import { useRoomLive, type LiveStatus } from "./room-live";
 import {
   adverseVerification,
+  declinedInWallet,
   fileWontFit,
+  notListed,
   formatBytes,
   roomName,
   type Conversation as ConversationView,
@@ -78,7 +85,8 @@ export function ChatRoom({
   hostDid: string;
   info: RoomInfo;
   view: ConversationView;
-  onRefresh: () => void;
+  /** Read the conversation again; resolves once it is read. */
+  onRefresh: () => Promise<unknown> | void;
   /** Where the header's back arrow goes: the rooms list. */
   backHref: string;
   /** How the page names a DID nobody names (`authorName`). */
@@ -89,6 +97,35 @@ export function ChatRoom({
   const roomId = info.roomId;
   const me = info.member;
   const [open, setOpen] = useState<string | null>(null);
+  const qc = useQueryClient();
+  // What the member is answering, chosen on a message; the composer sends it with the reply.
+  const [replyTo, setReplyTo] = useState<ConversationRecord | null>(null);
+  // The room's profile does not list what replies and reactions need: offer neither again.
+  const [unlisted, setUnlisted] = useState(false);
+  const [reactError, setReactError] = useState<string | null>(null);
+  // A wallet that reacts also writes replies; an older one takes neither.
+  const canAnswer = typeof wallet.react === "function" && typeof wallet.putMessage === "function" && !unlisted;
+  const live = useRoomLive(wallet, hostDid, roomId, highestVersion(view.records), async () => {
+    await onRefresh();
+    const now = qc.getQueryData<ConversationView>(["member-room-conversation", roomId]);
+    return highestVersion(now?.records ?? view.records);
+  });
+  const reaction = useMutation({
+    mutationFn: async ({ r, value, mine }: { r: ConversationRecord; value: string; mine: boolean }) => {
+      if (mine) return wallet.unreact!({ hostDid, roomId, key: r.key, value });
+      return wallet.react!({ hostDid, roomId, key: r.key, version: r.version, value });
+    },
+    onMutate: () => setReactError(null),
+    onSuccess: () => void onRefresh(),
+    onError: (e) => {
+      if (notListed(e)) setUnlisted(true);
+      else if (!declinedInWallet(e)) setReactError(messageOf(e));
+    },
+  });
+  const onReact = (r: ConversationRecord, value: string) => {
+    if (!reactionValueOk(value) || reaction.isPending) return;
+    reaction.mutate({ r, value, mine: reactedWith(r.reactions, value, me) });
+  };
   const list = useQuery({
     queryKey: ["member-rooms", hostDid],
     queryFn: async () => (await wallet.list({ hostDid })).rooms,
@@ -129,9 +166,12 @@ export function ChatRoom({
             </h1>
             <span className="tier-pill">{info.visibility}</span>
             <span className="push" />
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onRefresh} aria-label="Refresh">
-              <RefreshCw size={14} aria-hidden="true" />
-            </button>
+            <LiveBadge status={live} />
+            {live !== "live" && (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onRefresh()} aria-label="Refresh">
+                <RefreshCw size={14} aria-hidden="true" />
+              </button>
+            )}
           </div>
           {privacy && <p className="chat-privacy">{privacy}</p>}
           <details className="chat-about">
@@ -162,6 +202,15 @@ export function ChatRoom({
                   {mine && <Meter label="Yours" used={mine.usage.bytes} max={mine.limits.maxBytes} />}
                 </dd>
               </div>
+              <div>
+                <dt>Updates</dt>
+                <dd>
+                  {liveWords(live)}{" "}
+                  <button type="button" className="link-button" onClick={() => void onRefresh()}>
+                    Refresh now
+                  </button>
+                </dd>
+              </div>
             </dl>
           </details>
         </header>
@@ -170,6 +219,17 @@ export function ChatRoom({
             <p className="alert-title">The host's listing does not add up.</p>
             <p>{warning} Your wallet still shows what it was given.</p>
           </div>
+        )}
+        {unlisted && (
+          <p className="chat-notice" role="status">
+            This room doesn't take replies and reactions yet — an administrator can turn on <b>Replies and reactions</b>{" "}
+            for it.
+          </p>
+        )}
+        {reactError && (
+          <p className="error chat-notice" role="alert">
+            {reactError}
+          </p>
         )}
         <div className="chat-scroll" ref={scroller.ref} onScroll={scroller.onScroll} tabIndex={0}>
           {!view.complete && (
@@ -191,6 +251,10 @@ export function ChatRoom({
                       nameOf={nameOf}
                       selected={open === r.key}
                       onOpen={() => setOpen(open === r.key ? null : r.key)}
+                      me={me}
+                      canAnswer={canAnswer}
+                      onReply={() => setReplyTo(r)}
+                      onReact={(value) => onReact(r, value)}
                     />
                   ))}
                 </ol>
@@ -198,7 +262,16 @@ export function ChatRoom({
             ))}
           </ol>
         </div>
-        <ChatComposer wallet={wallet} hostDid={hostDid} info={info} postAs={asOthersSee?.label} />
+        <ChatComposer
+          wallet={wallet}
+          hostDid={hostDid}
+          info={info}
+          postAs={asOthersSee?.label}
+          replyTo={replyTo && canAnswer ? replyTo : null}
+          replyingTo={replyTo ? speaker(replyTo.author).label : ""}
+          onClearReply={() => setReplyTo(null)}
+          onUnlisted={() => setUnlisted(true)}
+        />
       </section>
       {open && (
         <RecordDrawer onClose={() => setOpen(null)}>
@@ -206,6 +279,30 @@ export function ChatRoom({
         </RecordDrawer>
       )}
     </div>
+  );
+}
+
+/** Where the room's updates stand, in a member's words. */
+export function liveWords(status: LiveStatus): string {
+  switch (status) {
+    case "live":
+      return "New messages appear as they arrive.";
+    case "connecting":
+      return "Asking your wallet to watch this room…";
+    case "polling":
+      return "Your wallet cannot watch this room now, so it is read every few seconds.";
+    case "manual":
+      return "Your wallet cannot watch rooms: refresh to see new messages.";
+  }
+}
+
+/** A small mark while the wallet watches the room. Derived from its latest event, never latched. */
+function LiveBadge({ status }: { status: LiveStatus }) {
+  if (status !== "live") return null;
+  return (
+    <span className="chat-live" title={liveWords(status)} role="status">
+      <span className="chat-live-dot" aria-hidden="true" /> Live
+    </span>
   );
 }
 
@@ -250,6 +347,10 @@ function ChatItem({
   nameOf,
   selected,
   onOpen,
+  me,
+  canAnswer,
+  onReply,
+  onReact,
 }: {
   r: ConversationRecord;
   first: boolean;
@@ -259,7 +360,21 @@ function ChatItem({
   nameOf: (did: string | undefined) => ReactNode;
   selected: boolean;
   onOpen: () => void;
+  me?: string;
+  /** The wallet replies and reacts, and the room takes both. */
+  canAnswer: boolean;
+  onReply: () => void;
+  onReact: (value: string) => void;
 }) {
+  const [actions, setActions] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const bar = useRef<HTMLDivElement>(null);
+  // Opened on the newest message, the actions would sit below the fold on a phone.
+  useEffect(() => {
+    if ((actions || picking) && typeof bar.current?.scrollIntoView === "function") {
+      bar.current.scrollIntoView({ block: "nearest" });
+    }
+  }, [actions, picking]);
   const time = shownTime(r);
   const stamp = time && (
     <time dateTime={time} title={formatDateTime(time)}>
@@ -296,7 +411,13 @@ function ChatItem({
     );
   }
   const who = speaker(r.author);
-  const classes = ["chat-msg", who.own ? "own" : "", first ? "first" : "", last ? "last" : ""].filter(Boolean);
+  const classes = [
+    "chat-msg",
+    who.own ? "own" : "",
+    first ? "first" : "",
+    last ? "last" : "",
+    actions || picking ? "acting" : "",
+  ].filter(Boolean);
   return (
     <li className={classes.join(" ")}>
       {!who.own && (
@@ -315,7 +436,13 @@ function ChatItem({
             </p>
           )
         )}
-        <div className="chat-bubble">
+        <div
+          className="chat-bubble"
+          onClick={(e) => {
+            // A tap shows a message's actions where there is no hover (a phone); links and buttons keep theirs.
+            if (canAnswer && !(e.target as HTMLElement).closest("button, a")) setActions((a) => !a);
+          }}
+        >
           {r.replyTo && (
             <p className="chat-reply">
               <CornerDownRight size={12} aria-hidden="true" />{" "}
@@ -340,13 +467,67 @@ function ChatItem({
             {stamp}
           </p>
         </div>
+        {canAnswer && (
+          <div className="chat-actions" role="toolbar" aria-label="Message actions" ref={bar}>
+            <button type="button" className="chat-action" aria-label="Reply" title="Reply" onClick={() => { setActions(false); onReply(); }}>
+              <Reply size={15} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="chat-action"
+              aria-label="React"
+              title="React"
+              aria-expanded={picking}
+              onClick={() => setPicking((p) => !p)}
+            >
+              <SmilePlus size={15} aria-hidden="true" />
+            </button>
+            {picking && (
+              <span className="chat-picker" role="group" aria-label="Reactions">
+                {QUICK_REACTIONS.map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    className={reactedWith(r.reactions, v, me) ? "chat-pick mine" : "chat-pick"}
+                    aria-label={`React ${v}`}
+                    aria-pressed={reactedWith(r.reactions, v, me)}
+                    onClick={() => {
+                      setPicking(false);
+                      setActions(false);
+                      onReact(v);
+                    }}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </span>
+            )}
+          </div>
+        )}
         {r.reactions.length > 0 && (
           <p className="chat-reactions">
-            {r.reactions.map((x) => (
-              <span key={x.value} className="chat-reaction" title={x.authors.map((a) => speaker(a).label).join(", ")}>
-                {x.value} {x.count}
-              </span>
-            ))}
+            {r.reactions.map((x) => {
+              const mine = reactedWith(r.reactions, x.value, me);
+              const who_ = x.authors.map((a) => speaker(a).label).join(", ");
+              // Another member's reaction value is text: rendered as such, never markup.
+              return canAnswer ? (
+                <button
+                  key={x.value}
+                  type="button"
+                  className={mine ? "chat-reaction mine" : "chat-reaction"}
+                  title={mine ? `${who_} — select to take yours back` : who_}
+                  aria-pressed={mine}
+                  aria-label={`${x.value} ${x.count}${mine ? ", including yours" : ""}`}
+                  onClick={() => onReact(x.value)}
+                >
+                  {x.value} {x.count}
+                </button>
+              ) : (
+                <span key={x.value} className="chat-reaction" title={who_}>
+                  {x.value} {x.count}
+                </span>
+              );
+            })}
           </p>
         )}
       </div>
@@ -386,11 +567,22 @@ function ChatComposer({
   hostDid,
   info,
   postAs,
+  replyTo,
+  replyingTo,
+  onClearReply,
+  onUnlisted,
 }: {
   wallet: WalletRooms;
   hostDid: string;
   info: RoomInfo;
   postAs?: string;
+  /** The message being answered, when the member chose one. */
+  replyTo: ConversationRecord | null;
+  /** Its author, named as the chat names them. */
+  replyingTo: string;
+  onClearReply: () => void;
+  /** The room's profile does not list what a reply needs. */
+  onUnlisted: () => void;
 }) {
   const qc = useQueryClient();
   const roomId = info.roomId;
@@ -410,14 +602,34 @@ function ChatComposer({
     void qc.invalidateQueries({ queryKey: ["member-room-conversation", roomId] });
     void qc.invalidateQueries({ queryKey: ["member-room-info", roomId] });
   };
+  // A reply the room refused for want of its record members: offered again as a plain message.
+  const [replyRefused, setReplyRefused] = useState(false);
   const message = useMutation({
-    mutationFn: () => wallet.putMessage!({ hostDid, roomId, body: text }),
+    mutationFn: (answer: ConversationRecord | null) =>
+      wallet.putMessage!({
+        hostDid,
+        roomId,
+        body: text,
+        ...(answer ? { replyTo: { key: answer.key, version: answer.version } } : {}),
+      }),
     onSuccess: () => {
       setText("");
       setDone("Message sent.");
+      setReplyRefused(false);
+      onClearReply();
       refresh();
     },
+    onError: (e) => {
+      if (notListed(e)) {
+        setReplyRefused(true);
+        onUnlisted();
+      }
+    },
   });
+  // The box takes the focus when the member chooses a message to answer.
+  useEffect(() => {
+    if (replyTo) box.current?.focus();
+  }, [replyTo]);
   const note = useMutation({
     mutationFn: () => wallet.putNote({ hostDid, roomId, title: title.trim(), ...(body ? { body } : {}) }),
     onSuccess: () => {
@@ -441,7 +653,7 @@ function ChatComposer({
   const send = () => {
     if (!text.trim() || message.isPending) return;
     setDone(null);
-    message.mutate();
+    message.mutate(replyTo);
   };
   // The box grows with what is typed, up to a few lines.
   useLayoutEffect(() => {
@@ -453,11 +665,43 @@ function ChatComposer({
 
   const wontFit = file ? fileWontFit(info, file.size) : null;
   const busy = message.isPending || note.isPending || upload.isPending;
-  const error = message.error ?? note.error ?? upload.error;
+  const shown = (e: unknown) => (e && !notListed(e) && !declinedInWallet(e) ? e : null);
+  const error = shown(message.error) ?? note.error ?? upload.error;
   const what = noting ? "note" : file ? "file" : "message";
 
   return (
     <div className="chat-compose">
+      {replyTo && !noting && (
+        <div className="chat-compose-reply">
+          <CornerDownRight size={14} aria-hidden="true" />
+          <span className="chat-compose-reply-text">
+            Replying to <b>{replyingTo}</b>: {excerpt(replyTo, 60)}
+          </span>
+          <button type="button" className="btn btn-ghost btn-sm" aria-label="Cancel the reply" onClick={onClearReply}>
+            <X size={14} aria-hidden="true" />
+          </button>
+        </div>
+      )}
+      {replyRefused && (
+        <div className="chat-compose-reply" role="alert">
+          <span className="chat-compose-reply-text">
+            This room doesn't take replies yet — an administrator can turn on <b>Replies and reactions</b>.
+          </span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={!text.trim() || message.isPending}
+            onClick={() => {
+              setReplyRefused(false);
+              setDone(null);
+              onClearReply();
+              message.mutate(null);
+            }}
+          >
+            Send as a plain message
+          </button>
+        </div>
+      )}
       {file && (
         <div className="chat-compose-file">
           <FileText size={16} aria-hidden="true" />

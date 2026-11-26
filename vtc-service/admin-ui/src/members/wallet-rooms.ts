@@ -299,7 +299,28 @@ export interface WalletRooms {
   /** A chat message: text and no title, which every reader — the wallet's console,
    *  Keyring, this page — shows as a message, not a note. Confirmed in the wallet's
    *  window. Absent from a wallet older than messages, which then takes only notes. */
-  putMessage?(p: { hostDid: string; roomId: string; body: string }): Promise<{ key: string; version: number }>;
+  putMessage?(p: {
+    hostDid: string;
+    roomId: string;
+    body: string;
+    /** The record it answers. Taken only by a wallet that also has `react` (older ones ignore it,
+     *  so the page offers replies only there); refused with `recordMembersNotListed`, writing
+     *  nothing, where the room takes no replies. */
+    replyTo?: { key: string; version?: number };
+  }): Promise<{ key: string; version: number }>;
+  /** React to a record with `value` (an emoji or a short word: no line break, at most 64
+   *  characters), confirmed in the wallet's window. Refused with `recordMembersNotListed` where
+   *  the room takes no reactions. Absent from a wallet older than reactions. */
+  react?(p: { hostDid: string; roomId: string; key: string; version?: number; value: string }): Promise<{
+    key: string;
+    version: number;
+  }>;
+  /** Take back the member's own reaction `value` on a record, confirmed in the wallet's window.
+   *  `withdrawn`: how many were taken back (0 when they had none there). */
+  unreact?(p: { hostDid: string; roomId: string; key: string; value: string }): Promise<{ withdrawn: number }>;
+  /** Be told when the room changes — that it moved and to which version, never what changed.
+   *  Absent from a wallet older than watches; the page then reads the room when asked. */
+  watch?(p: { hostDid: string; roomId: string; sinceVersion?: number }, onEvent: (e: RoomWatchEvent) => void): RoomWatchHandle;
   getFile(p: {
     hostDid: string;
     roomId: string;
@@ -322,6 +343,40 @@ export interface WalletRooms {
     tags?: string[];
     onProgress?: (p: TransferProgress) => void;
   }): Promise<{ key: string; version: number; size: number }>;
+}
+
+/** Where a room watch stands (`rooms.watch`). While `refused` or `unavailable`, read on a timer. */
+export type RoomWatchState = "arming" | "armed" | "fired" | "refused" | "unavailable" | "lapsed";
+
+/** What a room watch hears. `changed`: read the room again, then `read(version)`. `closed`: the
+ *  watch ended (`stop`, the wallet restarted, a failure) — watch again to resume. */
+export type RoomWatchEvent =
+  | { type: "changed"; latestVersion: number }
+  | { type: "state"; state: RoomWatchState }
+  | { type: "failed"; error: unknown }
+  | { type: "closed" };
+
+/** The page's hold on one room's watch. */
+export interface RoomWatchHandle {
+  /** The room was read to `version` (the highest record version read): a watch that fired or lapsed is armed again. */
+  read(version?: number): void;
+  stop(): void;
+}
+
+/** The `code` a wallet puts on a page-facing error, when it gives one. */
+export function walletCode(e: unknown): string | undefined {
+  const code = e && typeof e === "object" ? (e as { code?: unknown }).code : undefined;
+  return typeof code === "string" && code.length > 0 ? code : undefined;
+}
+
+/** The room's profile does not list what a reply or a reaction needs: nothing was written. */
+export function notListed(e: unknown): boolean {
+  return walletCode(e) === "recordMembersNotListed";
+}
+
+/** The member said no in the wallet's window: not an error to show. */
+export function declinedInWallet(e: unknown): boolean {
+  return walletCode(e) === "declined";
 }
 
 /** The wallet's room methods, or `null` when no wallet (or an older one) is on this page. */

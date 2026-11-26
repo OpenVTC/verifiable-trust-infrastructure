@@ -3,7 +3,20 @@
 
 import { describe, expect, it } from "vitest";
 
-import { absentWords, byDay, dayLabel, excerpt, isConversation, runsOf, shownTime, speakerOf } from "./conversation";
+import {
+  absentWords,
+  byDay,
+  dayLabel,
+  excerpt,
+  highestVersion,
+  isConversation,
+  reactedWith,
+  reactionValueOk,
+  rewatchDelay,
+  runsOf,
+  shownTime,
+  speakerOf,
+} from "./conversation";
 import type { ConversationRecord } from "./wallet-rooms";
 
 const rec = (over: Partial<ConversationRecord>): ConversationRecord => ({
@@ -99,5 +112,28 @@ describe("runs of one author's messages", () => {
     expect(placed.map((p) => p.r.key)).toEqual(["a", "b"]);
     // An earlier time after a later one is not read as a run.
     expect(shape(rs)).toEqual(["FL", "FL"]);
+  });
+
+  it("takes a reaction a wallet takes: one line, not empty, at most 64 characters", () => {
+    expect(reactionValueOk("👍")).toBe(true);
+    expect(reactionValueOk("nice")).toBe(true);
+    expect(reactionValueOk("")).toBe(false);
+    expect(reactionValueOk("a\nb")).toBe(false);
+    expect(reactionValueOk("x".repeat(64))).toBe(true);
+    expect(reactionValueOk("x".repeat(65))).toBe(false);
+  });
+
+  it("knows the member's own reaction, so a click takes it back", () => {
+    const rs = [{ value: "👍", authors: ["did:a", "did:me"] }, { value: "😮", authors: ["did:a"] }];
+    expect(reactedWith(rs, "👍", "did:me")).toBe(true);
+    expect(reactedWith(rs, "😮", "did:me")).toBe(false);
+    expect(reactedWith(rs, "👍", undefined)).toBe(false);
+  });
+
+  it("tells a watch the highest version read, and waits longer after each close, to a minute", () => {
+    expect(highestVersion([{ version: 3 }, { version: 9 }, { version: 4 }])).toBe(9);
+    expect(highestVersion([])).toBeUndefined();
+    expect([0, 1, 2, 3].map(rewatchDelay)).toEqual([1000, 2000, 4000, 8000]);
+    expect(rewatchDelay(20)).toBe(60_000);
   });
 });
