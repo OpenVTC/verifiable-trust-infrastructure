@@ -1513,7 +1513,7 @@ mod tests {
         let (base, served) = one_shot_vtc(
             "403 Forbidden",
             reply_doc(
-                "https://trusttasks.org/spec/trust-task-error/0.3",
+                "https://trusttasks.org/spec/trust-task-error/0.6",
                 json!({ "code": "permissionDenied", "message": "not a manager of this group" }),
             ),
         )
@@ -1580,7 +1580,7 @@ mod tests {
             }
             VtcError::Refused {
                 document: json!({
-                    "type": "https://trusttasks.org/spec/trust-task-error/0.3",
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.6",
                     "issuer": VTC_DID,
                     "payload": { "code": "permissionDenied", "details": details },
                 })
@@ -1616,7 +1616,7 @@ mod tests {
     fn a_refusal_is_a_tool_result_carrying_the_communitys_code() {
         let err = outcome(Err(VtcError::Refused {
             document: json!({
-                "type": "https://trusttasks.org/spec/trust-task-error/0.3",
+                "type": "https://trusttasks.org/spec/trust-task-error/0.6",
                 "issuer": VTC_DID,
                 "payload": { "code": "permissionDenied", "message": "not a manager" },
             })

@@ -720,7 +720,7 @@ mod tests {
 
     fn refusal(local: &str, details: Value) -> String {
         reply_doc(
-            "https://trusttasks.org/spec/trust-task-error/0.3",
+            "https://trusttasks.org/spec/trust-task-error/0.6",
             json!({ "code": format!("auth/oob/redeem:{local}"), "message": "…", "details": details }),
         )
     }
@@ -1028,7 +1028,7 @@ mod tests {
         let (base, _s) = scripted_vtc(vec![(
             "403 Forbidden",
             reply_doc(
-                "https://trusttasks.org/spec/trust-task-error/0.3",
+                "https://trusttasks.org/spec/trust-task-error/0.6",
                 json!({ "code": "permissionDenied", "message": "not an identity" }),
             ),
         )])

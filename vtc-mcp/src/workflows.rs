@@ -47,7 +47,7 @@ pub(crate) mod wire {
         "https://trusttasks.org/spec/vtc/boards/facilitators/add/0.1";
     pub const ELECTIONS_CREATE: &str = "https://trusttasks.org/spec/vtc/elections/create/0.5";
     pub const ELECTIONS_SHOW: &str = "https://trusttasks.org/spec/vtc/elections/show/0.6";
-    pub const ROOMS_CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.5";
+    pub const ROOMS_CREATE: &str = "https://trusttasks.org/spec/vtc/rooms/community/create/0.6";
     pub const ROOMS_MEMBERS_ADD: &str =
         "https://trusttasks.org/spec/vtc/rooms/community/members/add/0.2";
     pub const ROOMS_MEMBERS_LIST: &str =
@@ -519,8 +519,19 @@ impl VtcMcp {
     ) -> Value {
         const TOOL: &str = "room_open";
         let mut progress = Progress::new();
+        let create = match with_replies_and_reactions(p.create, p.replies_and_reactions) {
+            Ok(create) => create,
+            Err(error) => {
+                progress.record(
+                    "vtc/rooms/community/create",
+                    "refused-locally",
+                    json!({ "error": error }),
+                );
+                return progress.finish("stopped", json!({}));
+            }
+        };
         let created = match self
-            .step(TOOL, wire::ROOMS_CREATE, p.create, peer, &mut progress)
+            .step(TOOL, wire::ROOMS_CREATE, create, peer, &mut progress)
             .await
         {
             StepEnd::Done(v) => v,
@@ -946,12 +957,46 @@ pub struct ElectionCreateParams {
     pub manifest: Value,
 }
 
+/// The record members the console's "Replies and reactions" lists: what a
+/// room used as a conversation needs for replies, reactions and the order of
+/// its messages (`vtc/rooms/community/create/0.6`, `RoomRecordMembers`).
+pub const REPLIES_AND_REACTIONS: [&str; 3] = ["kind", "inReplyTo", "writtenAt"];
+
+/// `create` with `recordMembers` set as `replies_and_reactions` asks: `true`
+/// lists [`REPLIES_AND_REACTIONS`], `false` lists none, absent leaves `create`
+/// as given. Given beside a `recordMembers` of the payload's own, it is the
+/// caller's to choose between them, never this workflow's.
+fn with_replies_and_reactions(mut create: Value, on: Option<bool>) -> Result<Value, String> {
+    let Some(on) = on else {
+        return Ok(create);
+    };
+    if create.get("recordMembers").is_some() {
+        return Err("give `replies_and_reactions` or `create.recordMembers`, not both".into());
+    }
+    if on {
+        create["recordMembers"] = json!(REPLIES_AND_REACTIONS);
+    }
+    Ok(create)
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RoomOpenParams {
     /// The `vtc/rooms/community/create` payload: `label`, `visibility`
     /// (`attributed` or `open`), `reason`, and optionally `description`,
-    /// `tags`, `retentionPolicy`, `retentionDays`, `storageConfig`.
+    /// `tags`, `retentionPolicy`, `retentionDays`, `storageConfig`,
+    /// `signalDelay` (`none` for a room used as a conversation) and
+    /// `recordMembers`.
     pub create: Value,
+    /// Replies and reactions, as the console's option of that name: `true`
+    /// lists `kind`, `inReplyTo` and `writtenAt` in the room's profile so its
+    /// members can reply, react and order a conversation; `false` lists none.
+    /// The console starts this on for a new room; here it is sent only when
+    /// given. Leave it out to send `create` as it is (with or without its own
+    /// `recordMembers`); give it alongside `create.recordMembers` and the
+    /// workflow refuses rather than choose. A member on a reader older than
+    /// these members cannot read the room's profile once it lists them.
+    #[serde(default)]
+    pub replies_and_reactions: Option<bool>,
     /// Members to offer admission, each a `vtc/rooms/community/members/add`
     /// payload without `roomId`: `member` (DID), `actions`, `validUntil`,
     /// `reason`.
@@ -1127,9 +1172,11 @@ impl VtcMcp {
 
     #[tool(
         description = "Open a community-owned data room end to end: create it from a \
-                       `vtc/rooms/community/create` payload, offer each named member \
-                       admission, and list who is offered. Stops at the first refused step and \
-                       reports how far it got.",
+                       `vtc/rooms/community/create` payload (with replies and reactions on \
+                       when `replies_and_reactions` is true, as the console offers for a \
+                       room used as a conversation), offer each named member admission, and \
+                       list who is offered. Stops at the first refused step and reports how \
+                       far it got.",
         annotations(
             title = "Open a data room",
             read_only_hint = false,
@@ -1721,7 +1768,7 @@ mod tests {
         let (base, served) = scripted_vtc(vec![(
             "403 Forbidden",
             reply_doc(
-                "https://trusttasks.org/spec/trust-task-error/0.3",
+                "https://trusttasks.org/spec/trust-task-error/0.6",
                 json!({ "code": "vtc/groups/create:noKeyHolder", "message": "add [groups]" }),
             ),
         )])
@@ -1756,6 +1803,139 @@ mod tests {
                 .contains("noKeyHolder")
         );
         assert_eq!(served.await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn replies_and_reactions_set_the_consoles_record_members_only_when_asked() {
+        let create =
+            json!({ "label": "Members' chat", "visibility": "attributed", "reason": "talk" });
+        // Absent: the payload as given.
+        assert_eq!(
+            with_replies_and_reactions(create.clone(), None).unwrap(),
+            create
+        );
+        // On: the console's set.
+        let on = with_replies_and_reactions(create.clone(), Some(true)).unwrap();
+        assert_eq!(
+            on["recordMembers"],
+            json!(["kind", "inReplyTo", "writtenAt"])
+        );
+        // Off: none listed.
+        let off = with_replies_and_reactions(create.clone(), Some(false)).unwrap();
+        assert!(off.get("recordMembers").is_none());
+        // Beside the payload's own: the caller chooses, not the workflow.
+        let mut own = create;
+        own["recordMembers"] = json!(["kind"]);
+        assert!(with_replies_and_reactions(own.clone(), Some(true)).is_err());
+        assert_eq!(with_replies_and_reactions(own.clone(), None).unwrap(), own);
+    }
+
+    /// `room_open` creates at `vtc/rooms/community/create/0.6` — the version
+    /// that takes record members — with replies and reactions on when asked,
+    /// then offers each member admission and lists who is offered.
+    #[tokio::test]
+    async fn a_room_opens_with_replies_and_reactions_when_asked() {
+        const ROOM: &str = "did:webvh:example.com:rooms:chat";
+        let (base, served) = scripted_vtc(vec![
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::ROOMS_CREATE),
+                    json!({
+                        "room": { "room": { "roomId": ROOM } },
+                        "roomProfile": "written",
+                        "signalDelay": "none",
+                        "recordMembers": ["kind", "inReplyTo", "writtenAt"],
+                    }),
+                ),
+            ),
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::ROOMS_MEMBERS_ADD),
+                    json!({ "member": { "member": "did:key:zMember" } }),
+                ),
+            ),
+            (
+                "200 OK",
+                reply_doc(
+                    &format!("{}#response", wire::ROOMS_MEMBERS_LIST),
+                    json!({ "items": [] }),
+                ),
+            ),
+        ])
+        .await;
+        let bridge = bridge_at(
+            &base,
+            Guard {
+                confirm: ConfirmLevel::Never,
+                ..Guard::default()
+            },
+        );
+        let report = bridge
+            .run_room_open(
+                RoomOpenParams {
+                    create: json!({
+                        "label": "Members' chat",
+                        "visibility": "attributed",
+                        "signalDelay": "none",
+                        "reason": "a room to talk in",
+                    }),
+                    replies_and_reactions: Some(true),
+                    members: vec![json!({
+                        "member": "did:key:zMember",
+                        "actions": ["read", "write"],
+                        "validUntil": "2027-11-26T00:00:00Z",
+                        "reason": "a member",
+                    })],
+                },
+                None,
+            )
+            .await;
+        assert_eq!(report["outcome"], "completed", "{report}");
+        assert_eq!(report["roomId"], ROOM);
+        let sent = served.await.unwrap();
+        assert_eq!(sent[0]["type"], wire::ROOMS_CREATE);
+        assert!(wire::ROOMS_CREATE.ends_with("/create/0.6"));
+        assert_eq!(
+            sent[0]["payload"]["recordMembers"],
+            json!(["kind", "inReplyTo", "writtenAt"])
+        );
+        assert_eq!(sent[0]["payload"]["signalDelay"], "none");
+        assert_eq!(sent[1]["payload"]["roomId"], ROOM);
+        assert_eq!(sent[2]["payload"], json!({ "roomId": ROOM }));
+    }
+
+    /// Asked for replies and reactions beside a payload that names its own
+    /// record members, the workflow sends nothing rather than pick one.
+    #[tokio::test]
+    async fn a_room_naming_its_own_record_members_and_the_option_is_refused_locally() {
+        let bridge = bridge_at(
+            "http://192.0.2.1:9/v1",
+            Guard {
+                confirm: ConfirmLevel::Never,
+                ..Guard::default()
+            },
+        );
+        let report = bridge
+            .run_room_open(
+                RoomOpenParams {
+                    create: json!({
+                        "label": "Members' chat",
+                        "visibility": "attributed",
+                        "recordMembers": ["kind"],
+                        "reason": "talk",
+                    }),
+                    replies_and_reactions: Some(true),
+                    members: vec![],
+                },
+                None,
+            )
+            .await;
+        assert_eq!(report["outcome"], "stopped");
+        let steps = report["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["status"], "refused-locally");
     }
 
     #[tokio::test]
