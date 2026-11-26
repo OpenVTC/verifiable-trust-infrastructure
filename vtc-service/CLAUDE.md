@@ -662,10 +662,14 @@ When adding a flow, add it here and a line to the root index.
   reactions, one without `watch` keeps the refresh button. A reaction's
   count, authors and "yours" come from the wallet's reading — the page never
   counts records; selecting the member's own takes it back (`unreact`). The
-  wallet confirms every reply, and every reaction unless the member gave this
-  portal a reaction grant for that room in the wallet (≤30 min, one room,
-  reactions only, revocable — the page can neither ask for nor see one, so
-  never build UI that assumes a window will or will not appear). `recordMembersNotListed` means the
+  wallet confirms every message, reply and reaction, except under a grant the
+  member gave this portal in the wallet: a reaction grant (≤30 min, one room,
+  reactions only) or a session grant (messages and reactions while this one
+  page holds the room open through its `watch` — 30 min idle, 8 h cap,
+  rate-limited). Both are revocable and the page can neither ask for nor see
+  one, so never build UI that assumes a window will or will not appear, and
+  keep the `watch` held for exactly as long as the room is shown (stop it on
+  leaving): the wallet ends a session grant when it closes. `recordMembersNotListed` means the
   room's profile does not list what the write needs and nothing was written:
   say so, stop offering replies and reactions, and offer the words as a plain
   message — never drop a reply's target silently. The watch (`room-live.ts`)
