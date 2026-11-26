@@ -454,12 +454,15 @@ describe("data rooms in the portal", () => {
     verification: { count: "match" },
   };
 
-  it("a room used for chat is its conversation: who said what, under their own names, notes as one line", async () => {
+  it("a room used for chat reads as a chat: who said what, under their own names, notes as small cards", async () => {
     const wallet = fakeWallet({ conversation: vi.fn(async () => CHAT) });
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
     renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
-    await screen.findByRole("heading", { name: "Conversation" });
+    await screen.findByRole("list", { name: "Messages" });
+    // The chat is the page: the room is its heading, and there is no records list.
+    expect(screen.getByRole("heading", { level: 1 })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Records" })).toBeNull();
+    expect(screen.queryByText("Add to this room")).toBeNull();
     // Another member by the name they gave themselves, said to be theirs; the member as You.
     expect(screen.getAllByText("Alberto Leon").length).toBeGreaterThan(0);
     expect(screen.getByText("(their own name)")).toBeTruthy();
@@ -472,9 +475,10 @@ describe("data rooms in the portal", () => {
     expect(screen.getByText("Message withdrawn by its author")).toBeTruthy();
     // No message is read one by one: the wallet assembled the room.
     expect(wallet.calls.map((c) => c.method)).not.toContain("browse");
-    // A note opens beside the conversation, read through the wallet.
-    fireEvent.click(screen.getByRole("button", { name: "See" }));
-    await screen.findByRole("heading", { name: "Term sheet" });
+    // A note opens in the drawer beside the conversation, read through the wallet.
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    const drawer = await screen.findByRole("complementary", { name: "Opened record" });
+    await within(drawer).findByRole("heading", { name: "Term sheet" });
     expect(wallet.calls.some((c) => c.method === "read" && (c.args as { key: string }).key === "k1")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -509,7 +513,8 @@ describe("data rooms in the portal", () => {
     // The room's own name comes first: the directory is not asked about Alberto.
     expect(screen.getByRole("button", { name: "Alberto Leon" })).toBeTruthy();
     const asked = directory.send.mock.calls.map((c) => (c[1] as { subject: string }).subject).sort();
-    expect(asked).toEqual([CAROL, DAVE].sort());
+    // The member's own DID too, for "you post as": their own card is theirs to read.
+    expect(asked).toEqual([CAROL, DAVE, MEMBER].sort());
     expect(directory.send.mock.calls.every((c) => c[0] === QUERY)).toBe(true);
     // Hovering opens the member's card.
     fireEvent.mouseEnter(carol.parentElement!);
@@ -517,6 +522,8 @@ describe("data rooms in the portal", () => {
     expect(within(card).getByText("she/her")).toBeTruthy();
     expect(within(card).getByText("Role: member")).toBeTruthy();
     expect(within(card).getByText(CAROL)).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "Copy DID" })).toBeTruthy();
+    expect(within(card).queryByText(/As the community's directory shows them/)).toBeNull();
     fireEvent.mouseLeave(carol.parentElement!);
     expect(screen.queryByRole("group", { name: "About Carol Chen" })).toBeNull();
     // A DID's card says the directory showed nothing, and gives the whole DID.
@@ -535,6 +542,96 @@ describe("data rooms in the portal", () => {
     renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
     await screen.findByRole("button", { name: /airport-electric/ });
     expect(directory.send).not.toHaveBeenCalled();
+  });
+
+  it("a run of messages by one author carries their name and initials once", async () => {
+    const at = (m: number) => new Date(Date.UTC(2026, 10, 24, 12, m)).toISOString();
+    const run = {
+      ...CHAT,
+      records: [
+        { ...CHAT.records[0]!, key: "r1", body: "one", written: { at: at(0) }, orderAt: at(0), reactions: [] },
+        { ...CHAT.records[0]!, key: "r2", body: "two", written: { at: at(1) }, orderAt: at(1), reactions: [] },
+        { ...CHAT.records[0]!, key: "r3", body: "three", written: { at: at(30) }, orderAt: at(30), reactions: [] },
+      ],
+    };
+    const wallet = fakeWallet({ conversation: vi.fn(async () => run) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByText("three");
+    // Two within five minutes are one run; the third, half an hour later, starts another.
+    expect(screen.getAllByRole("button", { name: "Alberto Leon" })).toHaveLength(2);
+    const items = screen.getAllByRole("listitem").filter((li) => li.classList.contains("chat-msg"));
+    expect(items.map((li) => li.classList.contains("first"))).toEqual([true, false, true]);
+  });
+
+  it("the room's details are folded under About: its DID, who the member posts as, its epoch and storage", async () => {
+    const wallet = fakeWallet({ conversation: vi.fn(async () => CHAT) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByRole("list", { name: "Messages" });
+    const about = screen.getByText("About this room").closest("details")!;
+    expect(about.open).toBe(false);
+    expect(within(about).getByText(ROOM)).toBeTruthy();
+    expect(within(about).getByText("You post as")).toBeTruthy();
+    expect(within(about).getByText("3")).toBeTruthy();
+    expect(screen.getByText(/The community sees who added what/)).toBeTruthy();
+  });
+
+  it("the docked composer sends a message on Enter, takes a note behind its toggle, and a file by the paperclip", async () => {
+    const wallet = fakeWallet({
+      conversation: vi.fn(async () => CHAT),
+      putMessage: vi.fn(async () => ({ key: "m9", version: 9 })),
+    });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    const box = await screen.findByLabelText("Message");
+    fireEvent.change(box, { target: { value: "Hello room" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await screen.findByText("Message sent.");
+    expect(wallet.putMessage).toHaveBeenCalledWith({ hostDid: HOST, roomId: ROOM, body: "Hello room" });
+    // A note: its own small form, then back to the message.
+    fireEvent.click(screen.getByRole("button", { name: "Write a note" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Agenda" } });
+    fireEvent.change(screen.getByLabelText("Note"), { target: { value: "1. Budget" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add note/ }));
+    await screen.findByText("Note added.");
+    expect(wallet.calls.find((c) => c.method === "putNote")?.args).toEqual({
+      hostDid: HOST,
+      roomId: ROOM,
+      title: "Agenda",
+      body: "1. Budget",
+    });
+    expect(screen.getByLabelText("Message")).toBeTruthy();
+    // A file: chosen, shown, then added through the wallet.
+    const f = new File(["abc"], "plan.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Choose a file"), { target: { files: [f] } });
+    fireEvent.click(await screen.findByRole("button", { name: "Add file" }));
+    await screen.findByText("File added.");
+    expect(wallet.calls.some((c) => c.method === "putFile")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("a wallet older than messages is offered only a note, even in a chat", async () => {
+    const wallet = fakeWallet({ conversation: vi.fn(async () => CHAT) });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    await screen.findByLabelText("Title");
+    expect(screen.queryByLabelText("Message")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Back to the message/ })).toBeNull();
+  });
+
+  it("an opened record names its author as the chat does, and Escape closes it", async () => {
+    const wallet = fakeWallet({ conversation: vi.fn(async () => CHAT) });
+    const read = wallet.read;
+    wallet.read = vi.fn(async (args: Parameters<WalletRooms["read"]>[0]) => ({ ...(await read(args)), author: ALBERTO }));
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open" }));
+    const drawer = await screen.findByRole("complementary", { name: "Opened record" });
+    // By the name the room gives them, as in the conversation — not the DID's last segment.
+    await within(drawer).findByRole("button", { name: "Alberto Leon" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Opened record" })).toBeNull());
   });
 
   it("the conversation scrolls in its own window, opened at the newest, in the wallet's order", async () => {

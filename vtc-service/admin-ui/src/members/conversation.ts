@@ -125,3 +125,39 @@ export function absentWords(r: Pick<ConversationRecord, "shown">): string {
       return "";
   }
 }
+
+/** How long between two messages by one author still reads as one run of them. */
+export const RUN_GAP_MS = 5 * 60_000;
+
+/** A record as the chat lays it out: whether it opens and closes a run of its author's messages. */
+export interface Placed<R> {
+  r: R;
+  /** The first of a run: its author's name and avatar go here. */
+  first: boolean;
+  /** The last of a run: the next record is someone else's, or not a message, or later. */
+  last: boolean;
+}
+
+/**
+ * Group consecutive messages by one author, each within `gap` of the one before,
+ * into runs — layout only: the records stay in the wallet's order, and nothing
+ * is merged. A note, a file or an absent record always stands alone. Times are
+ * the ones the page shows (`shownTime`), else when the room got the record.
+ */
+export function runsOf<R extends Pick<ConversationRecord, "author" | "shown" | "written" | "orderAt">>(
+  records: readonly R[],
+  gap = RUN_GAP_MS,
+): Placed<R>[] {
+  const at = (r: R) => Date.parse(shownTime(r) ?? r.orderAt);
+  const joins = (a: R | undefined, b: R | undefined) => {
+    if (!a || !b || a.shown !== "message" || b.shown !== "message") return false;
+    if (a.author === undefined || a.author !== b.author) return false;
+    const d = at(b) - at(a);
+    return Number.isFinite(d) && d >= 0 && d <= gap;
+  };
+  return records.map((r, i) => ({
+    r,
+    first: !joins(records[i - 1], r),
+    last: !joins(r, records[i + 1]),
+  }));
+}

@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { absentWords, byDay, dayLabel, excerpt, isConversation, shownTime, speakerOf } from "./conversation";
+import { absentWords, byDay, dayLabel, excerpt, isConversation, runsOf, shownTime, speakerOf } from "./conversation";
 import type { ConversationRecord } from "./wallet-rooms";
 
 const rec = (over: Partial<ConversationRecord>): ConversationRecord => ({
@@ -72,5 +72,32 @@ describe("a room used for chat", () => {
     expect(absentWords({ shown: "withdrawn" })).toMatch(/withdrawn/);
     expect(absentWords({ shown: "refused" })).toMatch(/did not verify/);
     expect(absentWords({ shown: "message" })).toBe("");
+  });
+});
+
+describe("runs of one author's messages", () => {
+  const at = (m: number) => new Date(Date.UTC(2026, 10, 24, 12, m)).toISOString();
+  const msg = (key: string, author: string | undefined, m: number, over: Partial<ConversationRecord> = {}) =>
+    rec({ key, author, written: { at: at(m) }, orderAt: at(m), ...over });
+  const shape = (rs: ConversationRecord[]) => runsOf(rs).map((p) => `${p.first ? "F" : "-"}${p.last ? "L" : "-"}`);
+
+  it("groups consecutive messages by one author within five minutes", () => {
+    expect(shape([msg("a", "did:a", 0), msg("b", "did:a", 2), msg("c", "did:a", 6)])).toEqual(["F-", "--", "-L"]);
+  });
+
+  it("starts a new run on another author, a longer gap, or anything but a message", () => {
+    expect(shape([msg("a", "did:a", 0), msg("b", "did:b", 1), msg("c", "did:b", 9)])).toEqual(["FL", "FL", "FL"]);
+    expect(
+      shape([msg("a", "did:a", 0), msg("n", "did:a", 1, { shown: "note" }), msg("c", "did:a", 2)]),
+    ).toEqual(["FL", "FL", "FL"]);
+    expect(shape([msg("a", undefined, 0), msg("b", undefined, 1)])).toEqual(["FL", "FL"]);
+  });
+
+  it("keeps the wallet's order and merges nothing", () => {
+    const rs = [msg("a", "did:a", 3), msg("b", "did:a", 1)];
+    const placed = runsOf(rs);
+    expect(placed.map((p) => p.r.key)).toEqual(["a", "b"]);
+    // An earlier time after a later one is not read as a run.
+    expect(shape(rs)).toEqual(["FL", "FL"]);
   });
 });
