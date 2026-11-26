@@ -852,6 +852,43 @@ describe("data rooms in the portal", () => {
     await waitFor(() => expect(conversation.mock.calls.length).toBeGreaterThan(before));
   });
 
+  it("a watch that says it is armed is still backed by a slow read, and the room is read when the tab is seen again", async () => {
+    let onEvent: ((e: RoomWatchEvent) => void) | undefined;
+    const handle = { read: vi.fn(), stop: vi.fn() };
+    const conversation = vi.fn(async () => CHAT);
+    const watch = vi.fn((_p: unknown, on: (e: RoomWatchEvent) => void) => {
+      onEvent = on;
+      return handle;
+    });
+    const wallet = answeringWallet({ conversation, watch });
+    (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };
+    // The backstop's timer starts with the page, so the clock is faked from the start.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      renderWith(<RoomPage hostDid={HOST} roomId={ROOM} />);
+      await screen.findByRole("list", { name: "Messages" });
+      await waitFor(() => expect(watch).toHaveBeenCalled());
+      act(() => onEvent!({ type: "state", state: "armed" }));
+      expect(screen.getByText("Live")).toBeTruthy();
+      // A delivery that broke without a word: nothing arrives, yet the room is read
+      // again within the backstop, and the watch is told what was read.
+      const before = conversation.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+      });
+      await waitFor(() => expect(conversation.mock.calls.length).toBeGreaterThan(before));
+      await waitFor(() => expect(handle.read).toHaveBeenCalled());
+      // Coming back to the tab reads at once.
+      const seen = conversation.mock.calls.length;
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await waitFor(() => expect(conversation.mock.calls.length).toBeGreaterThan(seen));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a wallet older than messages is offered only a note, even in a chat", async () => {
     const wallet = fakeWallet({ conversation: vi.fn(async () => CHAT) });
     (window as { vtaWallet?: unknown }).vtaWallet = { rooms: wallet };

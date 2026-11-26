@@ -670,7 +670,10 @@ When adding a flow, add it here and a line to the root index.
   `read(highest version)`; while it is `refused`/`unavailable`/`failed` read on
   a 20-second timer while the tab is visible, and on `closed` watch again with
   backoff. "Live" is derived from the latest event and drops the moment any
-  other arrives (R6.2) — never latch it.
+  other arrives (R6.2) — never latch it. A watch can stop delivering without
+  saying so, so while it is armed the page still reads the room every five
+  minutes (`BACKSTOP_READ_MS`) and at once when the tab is seen again; never
+  remove that backstop.
 - **Elections in the portal** (`src/members/Elections.tsx`, `wallet-elections.ts`):
   the pages talk only to the member's wallet (`window.vtaWallet.elections`). The
   ballot is filled in the wallet's own window and the cast goes from the wallet to
