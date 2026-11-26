@@ -1159,8 +1159,8 @@ pub(super) async fn name_record_content(
         let (_, record, _) = act_and_send_newest(
             client,
             target,
-            (vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE, payload),
-            None,
+            (vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE, payload.clone()),
+            Some((vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE, payload)),
         )
         .await?;
         record.get("cleartext").cloned().unwrap_or(Value::Null)
