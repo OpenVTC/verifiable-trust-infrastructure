@@ -205,19 +205,13 @@ async fn act_and_send_newest(
         Ok(completed) => {
             let principal = completed.principal.to_string();
             let document = serde_json::to_value(&completed.document)?;
-            match target.client().send_signed_room_document(&document).await {
-                Ok(reply) => return Ok((principal, reply, true)),
-                Err(e)
-                    if vtc_client::git_ns::task_error(&e)
-                        .is_some_and(|(code, _)| code == "unsupportedType") =>
-                {
-                    fall_back(format!(
-                        "the room's host does not serve `{new_type}`, which this record needs: \
+            match newest_answer(target.client().send_signed_room_document(&document).await)? {
+                Some(reply) => return Ok((principal, reply, true)),
+                None => fall_back(format!(
+                    "the room's host does not serve `{new_type}`, which this record needs: \
                          it predates it. Write the record without the members only that \
                          version carries, or ask the host's operator to upgrade."
-                    ))?
-                }
-                Err(e) => return Err(e.into()),
+                ))?,
             }
         }
         Err(VtaError::UnsupportedTaskType { .. }) => fall_back(format!(
@@ -228,6 +222,24 @@ async fn act_and_send_newest(
     };
     let (principal, reply) = act_and_send(client, target, old_type, old_payload).await?;
     Ok((principal, reply, false))
+}
+
+/// What the host's answer to the newest version means: its reply, `None` when the host does
+/// not serve that version (`unsupportedType`, and only that — the one refusal an older
+/// version can answer differently), or the refusal itself, which is the answer.
+fn newest_answer(
+    sent: Result<Value, vtc_client::VtcError>,
+) -> Result<Option<Value>, vtc_client::VtcError> {
+    match sent {
+        Ok(reply) => Ok(Some(reply)),
+        Err(e)
+            if vtc_client::git_ns::task_error(&e)
+                .is_some_and(|(code, _)| code == "unsupportedType") =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// A `rooms/keys/act` refusal, with what the operator can do about it.
@@ -484,3 +496,74 @@ pub use offers::*;
 pub use owner::*;
 pub use records::*;
 pub use watch::*;
+
+#[cfg(test)]
+mod newest_version_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn refusal(code: &str) -> vtc_client::VtcError {
+        vtc_client::VtcError::Refused {
+            document: json!({
+                "type": "https://trusttasks.org/spec/trust-task-error/0.6",
+                "payload": { "code": code, "message": "no" },
+            })
+            .to_string(),
+        }
+    }
+
+    /// The newest version's reply is the answer; only `unsupportedType` sends the read to
+    /// the older version, and every other refusal is the answer itself — never retried at
+    /// an older version that might answer it differently.
+    #[test]
+    fn only_an_unserved_version_falls_back() {
+        let reply = json!({ "key": "k", "version": 3 });
+        assert_eq!(newest_answer(Ok(reply.clone())).unwrap(), Some(reply));
+        assert_eq!(
+            newest_answer(Err(refusal("unsupportedType"))).unwrap(),
+            None
+        );
+        for code in [
+            "permissionDenied",
+            "notFound",
+            "rooms/records/get:recordNotFound",
+        ] {
+            let err = newest_answer(Err(refusal(code))).unwrap_err();
+            assert_eq!(
+                vtc_client::git_ns::task_error(&err).map(|(c, _)| c),
+                Some(code.to_string())
+            );
+        }
+    }
+
+    /// A file read asks get/0.3 and falls back to get/0.2; each answer is read as its own
+    /// version's generated type, and get/0.3's host times do not stop the file members
+    /// being read.
+    #[test]
+    #[allow(deprecated)] // get/0.2 and 0.3 are still served
+    fn a_record_reads_as_the_version_that_answered() {
+        let v2 = json!({
+            "key": "k1", "version": 4, "author": "did:example:alice",
+            "cleartext": { "file": { "name": "a.txt" } },
+            "blobs": ["zQmBLobRefer3nce123456789abcdefgh"],
+        });
+        let mut v3 = v2.clone();
+        v3["createdAt"] = json!("2026-11-25T00:00:00Z");
+        v3["createdBy"] = json!("did:example:alice");
+        v3["bodyStoredAt"] = json!("2026-11-25T00:00:01Z");
+
+        let r3: vti_specs::rooms::records::get::v0_3::Response =
+            parse_reply("rooms/records/get", v3.clone()).unwrap();
+        assert_eq!(r3.version.get(), 4);
+        assert!(r3.cleartext.get("file").is_some());
+        assert!(r3.sealed.is_none());
+        let r2: vtc_client::rooms::files::GetRecordV2Response =
+            parse_reply("rooms/records/get", v2).unwrap();
+        assert_eq!(r2.author.as_deref(), Some("did:example:alice"));
+        // A get/0.3 answer is never read as get/0.2: its host times are no member of 0.2.
+        assert!(
+            parse_reply::<vtc_client::rooms::files::GetRecordV2Response>("rooms/records/get", v3)
+                .is_err()
+        );
+    }
+}

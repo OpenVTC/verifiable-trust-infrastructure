@@ -1541,7 +1541,10 @@ to the persona, sets the persona as `issuer`, and signs for `authentication`
 with the persona's key. The CLI sends that document to the host unchanged. The
 host sees the persona — as presenter, signer and, on `attributed`, author —
 and nothing of the CLI or of the VTA. On a sealed record the ciphertext goes
-back to the VTA to open. A member who holds less than the action needs is
+back to the VTA to open. `get` and `file get` read the record at
+`rooms/records/get/0.3` through `rooms/keys/act/0.11`, and at 0.2 only when the
+host or the VTA does not serve that (`unsupportedType`). No `act` version
+relays get/0.4, whose one addition is a purpose of use these reads do not name. A member who holds less than the action needs is
 refused by their own VTA (`actionNotHeld`) rather than by the host; one who
 may act as several members of the room names the one they mean (`issuer`), or
 is asked to (`principalAmbiguous`).

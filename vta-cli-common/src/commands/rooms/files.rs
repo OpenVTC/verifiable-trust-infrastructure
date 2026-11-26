@@ -855,76 +855,96 @@ pub async fn cmd_rooms_file_get(
     use vti_rooms::files::{self, BlobManifest};
     use vti_specs::rooms::blobs::{chunk as blob_chunk, get as blob_get};
 
-    let (member, record) = act_and_send(
+    // The newest `rooms/records/get` a VTA relays (`rooms/keys/act/0.11`: get/0.3; no act
+    // version lists get/0.4, whose only addition is a purpose of use this read names none
+    // of), falling back to get/0.2 only on `unsupportedType`. Each answer is read as the
+    // generated type of the version that gave it.
+    let payload = serde_json::json!({ "roomId": target.room_id, "key": key });
+    let (member, reply, newest) = act_and_send_newest(
         client,
         &target,
-        vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE,
-        serde_json::json!({ "roomId": target.room_id, "key": key }),
+        (vti_rooms::wire::ROOMS_RECORDS_GET_V3_TYPE, payload.clone()),
+        Some((vti_rooms::wire::ROOMS_RECORDS_GET_V2_TYPE, payload)),
     )
     .await?;
-    let record: vtc_client::rooms::files::GetRecordV2Response =
-        parse_reply("rooms/records/get", record)?;
-    // An open room's record describes its file in the clear, key included
-    // (`rooms/records/put/0.4`); a sealed room's, inside the body its author signed.
-    let (file, author, carried) = match record.cleartext.get("file") {
-        Some(file) if record.sealed.is_none() => {
-            let file: files::FileManifest = serde_json::from_value(file.clone())
-                .map_err(|e| format!("the record's file manifest does not read: {e}"))?;
-            let key = file
-                .carried_key(true)?
-                .ok_or("an open room's file manifest carries no key")?;
-            let author = record
-                .author
-                .clone()
-                .unwrap_or_else(|| "an unnamed member".to_string());
-            (file, author, Some(key))
-        }
-        _ => {
-            let sealed = record.sealed.as_ref().ok_or(
-                "the record carries no file: it has neither a sealed body nor a `cleartext.file`, \
-                 or it has been retracted",
-            )?;
-            let sealed = SealedContent {
-                ciphertext: sealed.ciphertext.clone(),
-                nonce: sealed.nonce.clone(),
-                epoch: u32::try_from(sealed.epoch.get())
-                    .map_err(|_| "the record's epoch is beyond what this client can represent")?,
-                // The version the body was sealed at, where a curation moved the record past it
-                // (rooms `_shared/0.1` `SealedRecord.version`): opened and verified there, and a
-                // `sealed.version` above the record's own refused by `open_and_verify`.
-                version: sealed.version.map(std::num::NonZeroU64::get),
+    // get/0.3 is get/0.2 and the host's times, which this read does not use: the same
+    // members, read the same way from either generated type.
+    macro_rules! file_of {
+        ($record:expr) => {{
+            let record = $record;
+            // An open room's record describes its file in the clear, key included
+            // (`rooms/records/put/0.4`); a sealed room's, inside the body its author signed.
+            let (file, author, carried) = match record.cleartext.get("file") {
+                Some(file) if record.sealed.is_none() => {
+                    let file: files::FileManifest = serde_json::from_value(file.clone())
+                        .map_err(|e| format!("the record's file manifest does not read: {e}"))?;
+                    let key = file
+                        .carried_key(true)?
+                        .ok_or("an open room's file manifest carries no key")?;
+                    let author = record
+                        .author
+                        .clone()
+                        .unwrap_or_else(|| "an unnamed member".to_string());
+                    (file, author, Some(key))
+                }
+                _ => {
+                    let sealed = record.sealed.as_ref().ok_or(
+                        "the record carries no file: it has neither a sealed body nor a `cleartext.file`, \
+                         or it has been retracted",
+                    )?;
+                    let sealed = SealedContent {
+                        ciphertext: sealed.ciphertext.clone(),
+                        nonce: sealed.nonce.clone(),
+                        epoch: u32::try_from(sealed.epoch.get())
+                            .map_err(|_| "the record's epoch is beyond what this client can represent")?,
+                        // The version the body was sealed at, where a curation moved the record past it
+                        // (rooms `_shared/0.1` `SealedRecord.version`): opened and verified there, and a
+                        // `sealed.version` above the record's own refused by `open_and_verify`.
+                        version: sealed.version.map(std::num::NonZeroU64::get),
+                    };
+                    let verified = open_and_verify(
+                        client,
+                        &target,
+                        key,
+                        record.version.get(),
+                        &sealed,
+                        record.author.as_deref(),
+                    )
+                    .await?;
+                    let file = verified
+                        .body()
+                        .file
+                        .clone()
+                        .ok_or("the record carries no file")?;
+                    // A sealed room's key is derived; a manifest carrying one is refused.
+                    file.carried_key(false)?;
+                    (file, verified.body().author.clone(), None)
+                }
             };
-            let verified = open_and_verify(
-                client,
-                &target,
-                key,
-                record.version.get(),
-                &sealed,
-                record.author.as_deref(),
-            )
-            .await?;
-            let file = verified
-                .body()
-                .file
-                .clone()
-                .ok_or("the record carries no file")?;
-            // A sealed room's key is derived; a manifest carrying one is refused.
-            file.carried_key(false)?;
-            (file, verified.body().author.clone(), None)
-        }
-    };
-    let named = record
-        .blobs
-        .iter()
-        .flatten()
-        .any(|b| files::same_digest(&wire_str(b), &file.blob_ref));
-    if !named {
-        return Err(
-            "the host does not name the file's blob on this record; it may have been \
-                    released"
-                .into(),
-        );
+            let named = record
+                .blobs
+                .iter()
+                .flatten()
+                .any(|b| files::same_digest(&wire_str(b), &file.blob_ref));
+            if !named {
+                return Err(
+                    "the host does not name the file's blob on this record; it may have been \
+                            released"
+                        .into(),
+                );
+            }
+            (file, author, carried)
+        }};
     }
+    let (file, author, carried) = if newest {
+        let record: vti_specs::rooms::records::get::v0_3::Response =
+            parse_reply("rooms/records/get", reply)?;
+        file_of!(record)
+    } else {
+        let record: vtc_client::rooms::files::GetRecordV2Response =
+            parse_reply("rooms/records/get", reply)?;
+        file_of!(record)
+    };
 
     let (_, started) = act_and_send(
         client,
