@@ -936,21 +936,75 @@ pub(crate) fn any_transport_enabled(services: &vta_config::ServicesConfig) -> bo
 // in other feature combos so `cargo check -D warnings` stays clean.
 #[cfg_attr(not(feature = "webvh"), allow(unused_mut))]
 pub async fn run(
-    mut config: AppConfig,
+    config: AppConfig,
     store: Store,
     seed_store: Arc<dyn SeedStore>,
     storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
     allow_degraded: bool,
     // Recovery: when set (via `--flush-queues`), purge BOTH this DID's mediator
-    // inbox and its outbound (sender) queue before going live. The outbound
-    // purge is the piece the config-driven `drain_inbox_on_start` can't do — a
-    // message loop can fill the sender queue at the mediator (`limits.queue.
-    // sender`) so no new sends get through until it's cleared.
-    // Consumed by the DIDComm outbox/inbox drain below; a REST-only build has
-    // no queues to flush but keeps the parameter so callers are unconditional.
-    #[cfg_attr(not(feature = "didcomm"), allow(unused_variables))] flush_queues: bool,
+    // inbox and its outbound (sender) queue before going live. See
+    // [`RunOptions::flush_queues`].
+    flush_queues: bool,
 ) -> Result<(), AppError> {
+    run_with(
+        config,
+        store,
+        seed_store,
+        storage_encryption_key,
+        tee_context,
+        RunOptions {
+            allow_degraded,
+            flush_queues,
+            ..RunOptions::default()
+        },
+    )
+    .await
+}
+
+/// How [`run_with`] is hosted: the knobs that differ between the `vta` binary,
+/// which owns its process, and a front-end that embeds the VTA in a process of
+/// its own (an application running a personal VTA in-process).
+///
+/// [`Default`] is the binary's behaviour: OS signals stop the service, and REST
+/// binds `config.server.host:port` itself.
+#[derive(Debug, Default)]
+pub struct RunOptions {
+    /// Boot without a VTA identity or JWT key (TEE front-ends, which finish
+    /// their bootstrap after the service is up).
+    pub allow_degraded: bool,
+    /// Purge this DID's mediator inbox and outbound (sender) queue before
+    /// going live (`--flush-queues`).
+    pub flush_queues: bool,
+    /// Stop the service when this token is cancelled, **instead of** on
+    /// Ctrl-C / SIGTERM. When set, no OS signal handler is installed and
+    /// nothing in the service ends the process: the embedding application
+    /// owns its signals and its exit, and `run_with` returns once every
+    /// thread is joined and the store is flushed.
+    pub shutdown: Option<CancellationToken>,
+    /// A REST listener the caller has already bound, used instead of binding
+    /// `config.server.host:port`. An embedder binds `127.0.0.1:0` first so it
+    /// knows the port before the service starts, and so the port is never
+    /// raced. Ignored when REST is disabled.
+    pub rest_listener: Option<std::net::TcpListener>,
+}
+
+/// [`run`], with the hosting knobs of [`RunOptions`].
+pub async fn run_with(
+    mut config: AppConfig,
+    store: Store,
+    seed_store: Arc<dyn SeedStore>,
+    storage_encryption_key: Option<[u8; 32]>,
+    tee_context: Option<TeeContext>,
+    options: RunOptions,
+) -> Result<(), AppError> {
+    let RunOptions {
+        allow_degraded,
+        #[cfg_attr(not(feature = "didcomm"), allow(unused_variables))]
+        flush_queues,
+        shutdown: external_shutdown,
+        rest_listener: supplied_rest_listener,
+    } = options;
     // Fail fast on a broken config rather than booting a half-started
     // service that passes a port-liveness check but can't function (P0.9).
     config.validate()?;
@@ -1166,10 +1220,18 @@ pub async fn run(
         let raw = std::env::var_os(REST_VSOCK_PORT_ENV).map(|v| v.to_string_lossy().into_owned());
         match rest_ingress_mode(raw.as_deref()).map_err(AppError::Config)? {
             RestIngressMode::Tcp => {
-                let addr = format!("{}:{}", config.server.host, config.server.port);
-                let listener = std::net::TcpListener::bind(&addr).map_err(AppError::Io)?;
+                let listener = match supplied_rest_listener {
+                    Some(listener) => listener,
+                    None => {
+                        let addr = format!("{}:{}", config.server.host, config.server.port);
+                        std::net::TcpListener::bind(&addr).map_err(AppError::Io)?
+                    }
+                };
                 listener.set_nonblocking(true).map_err(AppError::Io)?;
-                info!("server listening addr={addr}");
+                match listener.local_addr() {
+                    Ok(addr) => info!("server listening addr={addr}"),
+                    Err(e) => warn!(error = %e, "server listening, address unknown"),
+                }
                 Some(RestListener::Tcp(listener))
             }
             #[cfg(feature = "vsock-store")]
@@ -1300,22 +1362,39 @@ pub async fn run(
         // a second signal forces an immediate exit so an operator can always
         // bail out if cleanup hangs (e.g., a mediator handshake that won't
         // complete before its timeout fires).
-        tokio::spawn({
+        //
+        // An embedding application passes its own token instead
+        // (`RunOptions::shutdown`): it owns its signals and its exit, so nothing
+        // here may call `process::exit` on its behalf.
+        if let Some(token) = external_shutdown.clone() {
             let shutdown_tx = shutdown_tx.clone();
             #[cfg(any(feature = "didcomm", feature = "tsp"))]
             let didcomm_shutdown = didcomm_shutdown.clone();
-            async move {
-                shutdown_signal().await;
-                info!("shutting down — press Ctrl-C again to force exit");
+            tokio::spawn(async move {
+                token.cancelled().await;
+                info!("shutting down — requested by the embedding application");
                 let _ = shutdown_tx.send(true);
                 #[cfg(any(feature = "didcomm", feature = "tsp"))]
                 didcomm_shutdown.cancel();
+            });
+        } else {
+            tokio::spawn({
+                let shutdown_tx = shutdown_tx.clone();
+                #[cfg(any(feature = "didcomm", feature = "tsp"))]
+                let didcomm_shutdown = didcomm_shutdown.clone();
+                async move {
+                    shutdown_signal().await;
+                    info!("shutting down — press Ctrl-C again to force exit");
+                    let _ = shutdown_tx.send(true);
+                    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+                    didcomm_shutdown.cancel();
 
-                shutdown_signal().await;
-                eprintln!("\nForcing exit.");
-                std::process::exit(130);
-            }
-        });
+                    shutdown_signal().await;
+                    eprintln!("\nForcing exit.");
+                    std::process::exit(130);
+                }
+            });
+        }
 
         // Gather storage thread inputs
         let storage_store = store.clone();

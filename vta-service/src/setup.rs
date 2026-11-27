@@ -1,29 +1,25 @@
-//! VTA setup flows — split into focused submodules:
+//! The VTA setup engine: everything first boot does, with no terminal.
 //!
-//! - [`interactive`]: prompt-driven `vta setup` wizard.
-//! - [`from_toml`]: non-interactive `vta setup --from <file>` loading a
-//!   [`WizardInputs`] TOML schema.
+//! - [`apply_inputs`] runs setup from a [`WizardInputs`] (store init, seed,
+//!   mediator + VTA DID minting, config write, optional admin seal).
+//! - [`from_toml`] holds the [`WizardInputs`] schema and `vta setup --from`.
 //!
-//! This file retains the small helpers both paths share (seed-context
-//! bootstrap, webvh-URL prompt, silent mnemonic generation) and
-//! re-exports the public entry points so callers keep importing from
-//! `crate::setup::*` — `main.rs` and `did_webvh.rs` don't need to know
-//! the internal layout.
+//! It lives in the library, not the `vta` binary, so an application that runs
+//! a VTA in its own process (`server::run_with`) can set one up the same way
+//! `vta setup` does. The prompt-driven wizard stays in the binary
+//! (`setup_wizard`) and drives this engine through [`SetupUi`].
 
 use std::path::{Path, PathBuf};
 
 use bip39::Mnemonic;
-use dialoguer::{Confirm, Input};
-use didwebvh_rs::url::WebVHURL;
 use rand::Rng;
 use serde_json::Value as JsonValue;
-use url::Url;
 
 use crate::contexts::{self, ContextRecord};
 use crate::store::KeyspaceHandle;
 
-mod from_toml;
-mod interactive;
+#[doc(hidden)]
+pub mod from_toml;
 
 /// UI seam between the shared setup engine ([`apply_inputs`]) and the two
 /// front-ends that drive it: the interactive `vta setup` wizard (real prompts)
@@ -81,11 +77,10 @@ pub use from_toml::{
     ExistingDataDirPolicy, MessagingInput, SecretsBackendInput, VtaDidInput, WizardInputs,
     apply_inputs, run_setup_from_file,
 };
-pub use interactive::run_setup_wizard;
 
 /// Create a seed application context and store it. Shared by both the
 /// interactive wizard and the non-interactive `--from <file>` path.
-pub(crate) async fn create_seed_context(
+pub async fn create_seed_context(
     contexts_ks: &KeyspaceHandle,
     id: &str,
     name: &str,
@@ -102,7 +97,7 @@ pub(crate) async fn create_seed_context(
 /// (`interactive::generate_mnemonic_with_confirmation`) so the operator
 /// must explicitly acknowledge they've recorded it before setup
 /// continues.
-pub(crate) fn generate_mnemonic_silent() -> Result<Mnemonic, Box<dyn std::error::Error>> {
+pub fn generate_mnemonic_silent() -> Result<Mnemonic, Box<dyn std::error::Error>> {
     let mut entropy = [0u8; 32];
     rand::rng().fill_bytes(&mut entropy);
     Ok(Mnemonic::from_entropy(&entropy)?)
@@ -111,7 +106,7 @@ pub(crate) fn generate_mnemonic_silent() -> Result<Mnemonic, Box<dyn std::error:
 /// Re-exported from the library, where the TEE first boot reads it too
 /// (`vta_service::tee_webs`): one rule for every path that mints the VTA's
 /// own document.
-pub(crate) use crate::operations::protocol::document::vta_additional_services as build_vta_additional_services;
+pub use crate::operations::protocol::document::vta_additional_services as build_vta_additional_services;
 
 /// Derive the mediator's WebSocket endpoint from its HTTP endpoint by
 /// swapping the scheme (`http`→`ws`, `https`→`wss`), trimming any
@@ -132,7 +127,7 @@ pub(crate) use crate::operations::protocol::document::vta_additional_services as
 ///
 /// Single source of truth shared by [`interactive`] and [`from_toml`]
 /// so the two derivations cannot drift (PR #339 introduced two copies).
-pub(crate) fn derive_ws_url(http_url: &str) -> Option<String> {
+pub fn derive_ws_url(http_url: &str) -> Option<String> {
     let scheme_swapped = if let Some(rest) = http_url.strip_prefix("https://") {
         format!("wss://{rest}")
     } else {
@@ -144,64 +139,9 @@ pub(crate) fn derive_ws_url(http_url: &str) -> Option<String> {
     Some(format!("{}/ws", scheme_swapped.trim_end_matches('/')))
 }
 
-/// Prompt the user for a URL (e.g. `https://example.com/dids/vta`) and
-/// convert it to a [`WebVHURL`]. Re-prompts on invalid input.
-///
-/// Shared between the interactive wizard (for the VTA DID / mediator
-/// DID URL) and `did_webvh.rs`'s standalone `vta create-did-webvh`
-/// CLI. Kept at the module root (not inside `interactive`) because the
-/// CLI is not conceptually part of the wizard flow.
-pub(crate) fn prompt_webvh_url(label: &str) -> Result<WebVHURL, Box<dyn std::error::Error>> {
-    eprintln!();
-    eprintln!("  Enter the URL where the {label} DID document will be hosted.");
-    eprintln!("  Examples:");
-    eprintln!("    https://example.com                -> did:webvh:{{SCID}}:example.com");
-    eprintln!("    https://example.com/dids/vta       -> did:webvh:{{SCID}}:example.com:dids:vta");
-    eprintln!("    http://localhost:8000               -> did:webvh:{{SCID}}:localhost%3A8000");
-    eprintln!();
-
-    loop {
-        let raw: String = Input::new()
-            .with_prompt(format!("{label} DID URL"))
-            .default("http://localhost:8000/".into())
-            .interact_text()?;
-
-        let parsed = match Url::parse(&raw) {
-            Ok(u) => u,
-            Err(e) => {
-                eprintln!("\x1b[31mInvalid URL: {e} — please try again.\x1b[0m");
-                continue;
-            }
-        };
-
-        match WebVHURL::parse_url(&parsed) {
-            Ok(webvh_url) => {
-                let did_display = webvh_url.to_string();
-                let http_url = webvh_url.get_http_url(None).map_err(|e| format!("{e}"))?;
-
-                eprintln!("  DID:  {did_display}");
-                eprintln!("  URL:  {http_url}");
-
-                if Confirm::new()
-                    .with_prompt("Is this correct?")
-                    .default(true)
-                    .interact()?
-                {
-                    return Ok(webvh_url);
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "\x1b[31mCould not convert to a webvh DID: {e} — please try again.\x1b[0m"
-                );
-            }
-        }
-    }
-}
-
 /// What resolving an operator-supplied mediator told us about TSP.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum MediatorTsp {
+pub enum MediatorTsp {
     /// Its DID document advertises a `TSPTransport` service.
     Carried,
     /// It resolved, and advertises no `TSPTransport` service.
@@ -218,7 +158,7 @@ pub(crate) enum MediatorTsp {
 /// mints is minted with `#tsp` when the VTA speaks it; one the operator brings is
 /// checked here instead. Matched on the service `type`, through the same matcher
 /// every transport choice uses, never on the `#id`.
-pub(crate) async fn existing_mediator_tsp(did: &str, resolver_url: Option<&str>) -> MediatorTsp {
+pub async fn existing_mediator_tsp(did: &str, resolver_url: Option<&str>) -> MediatorTsp {
     let resolver = match vta_sdk::resolver::shared_did_resolver(resolver_url).await {
         Ok(r) => r,
         Err(e) => return MediatorTsp::Unknown(format!("could not build a DID resolver: {e}")),
@@ -234,7 +174,7 @@ pub(crate) async fn existing_mediator_tsp(did: &str, resolver_url: Option<&str>)
 }
 
 /// The pure half of [`existing_mediator_tsp`].
-pub(crate) fn mediator_tsp_from_document(doc: &JsonValue) -> MediatorTsp {
+pub fn mediator_tsp_from_document(doc: &JsonValue) -> MediatorTsp {
     if vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(doc)
         .tsp
         .is_some()

@@ -18,11 +18,18 @@ pub use metrics_exporter_prometheus::PrometheusHandle;
 /// Returns a handle for rendering metrics. The global recorder is installed
 /// so all `counter!()` and `histogram!()` calls throughout the codebase
 /// are captured.
+/// Idempotent: the recorder is process-global and can be installed only once,
+/// so a second call (a VTA restarted in the same process, as an embedding
+/// application does) returns the handle the first installed.
 pub fn install() -> PrometheusHandle {
-    let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
-    builder
-        .install_recorder()
-        .expect("failed to install Prometheus recorder")
+    static HANDLE: std::sync::OnceLock<PrometheusHandle> = std::sync::OnceLock::new();
+    HANDLE
+        .get_or_init(|| {
+            metrics_exporter_prometheus::PrometheusBuilder::new()
+                .install_recorder()
+                .expect("failed to install Prometheus recorder")
+        })
+        .clone()
 }
 
 /// Axum middleware that records per-request metrics.

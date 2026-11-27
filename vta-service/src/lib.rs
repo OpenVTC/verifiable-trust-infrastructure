@@ -86,6 +86,10 @@ pub mod scid_floors;
 pub use vta_support::seal;
 pub use vta_support::sealed_nonce_store;
 pub mod server;
+/// The setup engine `vta setup` runs, usable by an application that runs a
+/// VTA in its own process (see [`server::run_with`]).
+#[cfg(feature = "setup")]
+pub mod setup;
 pub mod status;
 pub mod store;
 /// TEE bootstrap subsystem (attestation providers, KMS attest/decrypt, the
