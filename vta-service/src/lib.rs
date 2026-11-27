@@ -54,6 +54,8 @@ pub mod deprecation;
 /// crate and re-exported so every `crate::did_templates::…` path is unchanged.
 pub use vta_support::did_templates;
 pub mod didcomm_bridge;
+/// A VTA run inside another application's process ([`embedded::EmbeddedVta`]).
+pub mod embedded;
 pub mod error;
 /// Key management (master seed, BIP-32 derivation, wrapping, seed-store
 /// backends), extracted to the `vta-keys` crate. Re-exported as `crate::keys`
@@ -86,6 +88,10 @@ pub mod scid_floors;
 pub use vta_support::seal;
 pub use vta_support::sealed_nonce_store;
 pub mod server;
+/// The setup engine `vta setup` runs, usable by an application that runs a
+/// VTA in its own process (see [`server::run_with`]).
+#[cfg(feature = "setup")]
+pub mod setup;
 pub mod status;
 pub mod store;
 /// TEE bootstrap subsystem (attestation providers, KMS attest/decrypt, the

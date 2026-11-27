@@ -44,7 +44,7 @@ mod import_did;
 mod keys_cli;
 mod services_cli;
 #[cfg(feature = "setup")]
-mod setup;
+mod setup_wizard;
 #[cfg(feature = "tsp")]
 mod tsp_relationships_cli;
 mod vault_cli;
@@ -1778,8 +1778,8 @@ async fn main() {
             #[cfg(feature = "setup")]
             {
                 let result = match from {
-                    Some(path) => setup::run_setup_from_file(path).await,
-                    None => setup::run_setup_wizard(cli.config).await,
+                    Some(path) => vta_service::setup::run_setup_from_file(path).await,
+                    None => setup_wizard::run_setup_wizard(cli.config).await,
                 };
                 if let Err(e) = result {
                     eprintln!("Setup failed: {e}");

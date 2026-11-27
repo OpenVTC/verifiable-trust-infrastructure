@@ -14,7 +14,7 @@ use crate::config::AppConfig;
 use crate::keys::seed_store::create_seed_store;
 use crate::operations;
 use crate::operations::did_webvh::CreateDidWebvhParams;
-use crate::setup;
+use crate::setup_wizard;
 use crate::store::Store;
 use crate::webvh_cli::cli_super_admin;
 
@@ -79,7 +79,7 @@ pub async fn run_create_did_webvh(
             WebVHURL::parse_url(&parsed)
                 .map_err(|e| format!("invalid did:webvh hosting URL `{raw}`: {e}"))?
         }
-        None => setup::prompt_webvh_url(label)?,
+        None => setup_wizard::prompt_webvh_url(label)?,
     };
     let url_str = webvh_url
         .get_http_url(None)

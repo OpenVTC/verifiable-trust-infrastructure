@@ -1261,8 +1261,8 @@ jobs:
       # hand. Run them, don't just build them.
       - name: vta-service setup wizard under extra secrets backends
         run: |
-          cargo test -p vta-service --bin vta --features config-seed --no-fail-fast setup::interactive
-          cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets --no-fail-fast setup::interactive
+          cargo test -p vta-service --bin vta --features config-seed --no-fail-fast setup_wizard::interactive
+          cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets --no-fail-fast setup_wizard::interactive
 
       # ("The `cargo check` step above" below is `vta-service tee + webvh`, now in
       # `Feature combos (vta-service builds)`.)

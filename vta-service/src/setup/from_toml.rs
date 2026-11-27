@@ -45,7 +45,6 @@ use crate::keys::seeds::{SeedRecord, get_seed_record, save_seed_record, set_acti
 use crate::operations;
 use crate::operations::did_webvh::CreateDidWebvhParams;
 use crate::store::{KeyspaceHandle, Store};
-use crate::webvh_cli::cli_super_admin;
 
 use super::{SetupUi, SilentUi, create_seed_context, generate_mnemonic_silent};
 
@@ -1378,7 +1377,7 @@ pub async fn apply_inputs(
 /// The refusal for a `services.tsp = true` VTA whose existing mediator
 /// advertises no `TSPTransport`: every peer that prefers TSP would pick `#tsp`
 /// and fail, rather than fall back to DIDComm.
-pub(crate) fn mediator_lacks_tsp(did: &str) -> String {
+pub fn mediator_lacks_tsp(did: &str) -> String {
     format!(
         "services.tsp = true, but mediator {did} advertises no TSPTransport service, \
          so it does not route TSP and the VTA's `#tsp` would lead peers nowhere. Use a \
@@ -2047,7 +2046,11 @@ async fn create_simple_webvh_did(
         .map_err(|e| format!("{e}"))?
         .to_string();
 
-    let auth = cli_super_admin();
+    // Setup runs before any caller exists to authenticate: the process that
+    // holds the store and the seed is the operator (see the trust model on
+    // `unsafe_local_cli_super_admin`). The `setup` feature carries
+    // `vti-common/cli-synthesis` for exactly this, and enclave builds leave it off.
+    let auth = vti_common::auth::AuthClaims::unsafe_local_cli_super_admin("setup");
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
         Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());

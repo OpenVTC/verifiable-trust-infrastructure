@@ -74,7 +74,9 @@ tsp = [
     "vti-common/tsp",
 ]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest", "dep:urlencoding", "dep:vta-webvh", "vta-vault/webvh", "vta-keyspaces/webvh", "vta-backup/webvh"]
-setup = ["webvh", "dep:tempfile"]
+# The setup engine (`vta_service::setup`). Carries `vti-common/cli-synthesis`:
+# setup runs before any caller can authenticate, as the local operator.
+setup = ["webvh", "dep:tempfile", "vti-common/cli-synthesis"]
 # Creating, hosting and acting as did:webs persona, relationship and
 # integration DIDs (docs/05-design-notes/did-webs-in-the-vta.md). Alpha, and
 # off at runtime unless `[dids] webs_enabled`. Hosting goes through the
