@@ -137,6 +137,12 @@ pub enum Capability {
     /// conferring: a badge grants nothing (VTI-BDG-002). Giving a community badge out
     /// is its badge group's management ([`Capability::GroupsManage`] qualified by it).
     BadgesAdmin,
+    /// Running the community's events (`vtc/events/*`, VTI-EVT-013, VTI-EVT-070):
+    /// unqualified, the community's calendars and every event; qualified
+    /// `group:<groupId>`, that group's calendar and its events; qualified
+    /// `event:<eventId>`, hosting that one event by appointment. Not conferring: an
+    /// event, a registration or an attendance grants nothing (VTI-EVT-002).
+    EventsManage,
     /// A git namespace (qualified by namespace).
     GitNsAdmin,
     /// Repository create, adopt, archive, transfer.
@@ -147,7 +153,7 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 30] = [
+    pub const ALL: [Capability; 31] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -175,6 +181,7 @@ impl Capability {
         Capability::NotificationsRelay,
         Capability::BoardsManage,
         Capability::BadgesAdmin,
+        Capability::EventsManage,
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
@@ -210,6 +217,7 @@ impl Capability {
             Capability::NotificationsRelay => "vtc.notifications.relay",
             Capability::BoardsManage => "vtc.boards.manage",
             Capability::BadgesAdmin => "vtc.badges.admin",
+            Capability::EventsManage => "vtc.events.manage",
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",
@@ -268,6 +276,7 @@ impl Capability {
                 matches!(resource, Q::Group(_))
             }
             Capability::BoardsManage => matches!(resource, Q::Board(_)),
+            Capability::EventsManage => matches!(resource, Q::Group(_) | Q::Event(_)),
             Capability::GitRepoManage | Capability::GitCommitSign => {
                 matches!(resource, Q::GitNs(_) | Q::GitRepo(_))
             }
@@ -331,6 +340,8 @@ pub enum ResourceQualifier {
     Group(String),
     /// `board:<boardId>` — one community board (VTI-BRD-002).
     Board(String),
+    /// `event:<eventId>` — one community event (VTI-EVT-070).
+    Event(String),
 }
 
 impl ResourceQualifier {
@@ -361,6 +372,7 @@ impl fmt::Display for ResourceQualifier {
             ResourceQualifier::Criterion(v) => write!(f, "criterion:{v}"),
             ResourceQualifier::Group(v) => write!(f, "group:{v}"),
             ResourceQualifier::Board(v) => write!(f, "board:{v}"),
+            ResourceQualifier::Event(v) => write!(f, "event:{v}"),
         }
     }
 }
@@ -371,7 +383,7 @@ impl FromStr for ResourceQualifier {
         let bad = |why: &str| {
             AppError::Validation(format!(
                 "resource qualifier '{s}' {why} — expected git-ns:<namespace>, \
-                 git-repo:<repository-id>, policy:<purpose>, criterion:<id>, group:<id> or board:<id>"
+                 git-repo:<repository-id>, policy:<purpose>, criterion:<id>, group:<id>, board:<id> or event:<id>"
             ))
         };
         let (kind, value) = s.split_once(':').ok_or_else(|| bad("has no kind"))?;
@@ -384,6 +396,7 @@ impl FromStr for ResourceQualifier {
             "criterion" => Ok(ResourceQualifier::Criterion(value.to_string())),
             "group" => Ok(ResourceQualifier::Group(value.to_string())),
             "board" => Ok(ResourceQualifier::Board(value.to_string())),
+            "event" => Ok(ResourceQualifier::Event(value.to_string())),
             "policy" => serde_json::from_value::<PolicyPurpose>(serde_json::Value::String(
                 value.to_string(),
             ))

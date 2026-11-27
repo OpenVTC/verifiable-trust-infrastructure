@@ -2504,9 +2504,21 @@ pub(crate) async fn decide(
                 warn!(action = %rec.id, error = %e, "a declined review's board facilitator appointments could not be withdrawn now; the sweep will at the deadline");
             }
             if rec.act == Act::GrantsReview
+                && let Some(items) = event_review_items(&rec)
+                && let Err(e) = crate::community_events::hosts::withdraw_reviewed(
+                    state,
+                    rec.payload["granter"].as_str().unwrap_or_default(),
+                    &items,
+                )
+                .await
+            {
+                warn!(action = %rec.id, error = %e, "a declined review's event host appointments could not be withdrawn now; the sweep will at the deadline");
+            }
+            if rec.act == Act::GrantsReview
                 && git_review_items(&rec).is_none()
                 && group_review_items(&rec).is_none()
                 && board_review_items(&rec).is_none()
+                && event_review_items(&rec).is_none()
                 && let Err(e) = crate::acl::delegation::withdraw_reviewed(
                     state,
                     rec.payload["granter"].as_str().unwrap_or_default(),
@@ -3884,6 +3896,31 @@ pub(crate) async fn raise_board_grants_review(
     .await
 }
 
+/// [`raise_grants_review`] for the **event host appointments** a departed granter made (each
+/// a resource grant `vtc.events.manage` qualified `event:<eventId>`, VTI-EVT-074). The same
+/// item kind, approver set and outcome as a board grants review; the payload lists them under
+/// `eventGrants`.
+pub(crate) async fn raise_event_grants_review(
+    state: &AppState,
+    granter: &str,
+    items: &[crate::community_events::hosts::ReviewItem],
+    deadline: u64,
+) -> Result<Option<String>, AppError> {
+    let mut subjects: Vec<String> = items.iter().map(|i| i.subject.clone()).collect();
+    subjects.sort();
+    subjects.dedup();
+    let events = serde_json::to_value(items)
+        .map_err(|e| AppError::Internal(format!("event grants review: {e}")))?;
+    raise_review_item(
+        state,
+        granter,
+        &subjects,
+        Some(("eventGrants", events)),
+        deadline,
+    )
+    .await
+}
+
 async fn raise_review_item(
     state: &AppState,
     granter: &str,
@@ -4035,17 +4072,21 @@ async fn execute_grants_review(
         git_review_items(rec),
         group_review_items(rec),
         board_review_items(rec),
+        event_review_items(rec),
     ) {
-        (Some(items), _, _) => {
+        (Some(items), _, _, _) => {
             crate::git_ns::lifecycle::reaffirm(state, granter, &items, &approvers).await
         }
-        (None, Some(items), _) => {
+        (None, Some(items), _, _) => {
             crate::groups::managers::reaffirm(state, granter, &items, &approvers).await
         }
-        (None, None, Some(items)) => {
+        (None, None, Some(items), _) => {
             crate::boards::facilitators::reaffirm(state, granter, &items, &approvers).await
         }
-        (None, None, None) => {
+        (None, None, None, Some(items)) => {
+            crate::community_events::hosts::reaffirm(state, granter, &items, &approvers).await
+        }
+        (None, None, None, None) => {
             crate::acl::delegation::reaffirm(state, granter, &subjects, &approvers).await
         }
     };
@@ -4078,6 +4119,15 @@ fn group_review_items(rec: &ActionRecord) -> Option<Vec<crate::groups::managers:
 fn board_review_items(rec: &ActionRecord) -> Option<Vec<crate::boards::facilitators::ReviewItem>> {
     rec.payload
         .get("boardGrants")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
+/// The event host appointments a review item lists, when it is one for them.
+fn event_review_items(
+    rec: &ActionRecord,
+) -> Option<Vec<crate::community_events::hosts::ReviewItem>> {
+    rec.payload
+        .get("eventGrants")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
