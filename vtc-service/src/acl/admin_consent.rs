@@ -223,6 +223,10 @@ pub enum Act {
     /// of `vtc.vetting.manage` to keep the member or start their removal. The
     /// subject is the member.
     VettingReview,
+    /// A **queue** item: a member's report of a community event (`vtc/events/report`,
+    /// VTI-EVT-081), for a holder of `vtc.events.manage` (unqualified) to uphold — which
+    /// cancels the event as `vtc/events/cancel` would — or dismiss. The subject is the event.
+    EventReportReview,
     /// A **direct admission** the community's `admission` policy referred for
     /// approval: adding a member without a join request
     /// (`vtc/members/admit/0.1`), or making an existing ACL entry a
@@ -317,6 +321,7 @@ impl Act {
             Self::BreakGlassReview => "git-ns/right/ratify",
             Self::JoinReview => "vtc/join-requests/decide",
             Self::VettingReview => "vtc/vetting/revocations",
+            Self::EventReportReview => "VTI-EVT-081",
             // The community's own rule, not a fixed requirement: the
             // `admission` policy referred it.
             Self::DirectAdmission => "the admission policy",
@@ -338,6 +343,7 @@ impl Act {
             Self::BreakGlassReview => "namespace-administrators-except-subject",
             Self::JoinReview => "join-deciders",
             Self::VettingReview => "vetting-managers-except-subject",
+            Self::EventReportReview => "event-managers",
             Self::DirectAdmission => "member-managers-except-subject",
             // The member a change names, or every member of a group a
             // group-wide change reaches.
@@ -372,7 +378,10 @@ impl Act {
     pub(crate) fn is_queue(self) -> bool {
         matches!(
             self,
-            Self::BreakGlassReview | Self::JoinReview | Self::VettingReview
+            Self::BreakGlassReview
+                | Self::JoinReview
+                | Self::VettingReview
+                | Self::EventReportReview
         )
     }
 
@@ -404,6 +413,7 @@ impl Act {
             Self::BreakGlassReview => vec![CapRef::all(Capability::GitNsAdmin)],
             Self::JoinReview => vec![CapRef::all(Capability::JoinDecide)],
             Self::VettingReview => vec![CapRef::all(Capability::VettingManage)],
+            Self::EventReportReview => vec![CapRef::all(Capability::EventsManage)],
             Self::DirectAdmission => vec![CapRef::all(Capability::MembersManage)],
             Self::ChangeStorage => vec![CapRef::all(Capability::RoomsAdmin)],
             Self::ChangeTrustedWitnesses => vec![CapRef::all(Capability::ConfigAdmin)],
@@ -451,6 +461,7 @@ impl Act {
             Self::BreakGlassReview => s::KIND_BREAK_GLASS_REVIEW,
             Self::JoinReview => s::KIND_JOIN_REVIEW,
             Self::VettingReview => s::KIND_VETTING_REVIEW,
+            Self::EventReportReview => s::KIND_EVENT_REPORT_REVIEW,
             Self::DirectAdmission
                 if type_uri == crate::trust_tasks::admission_tasks::MAKE_MEMBERSHIP_TYPE =>
             {
@@ -1668,7 +1679,9 @@ pub(crate) fn requester_still_authorized(
         Act::GrantsReview => true,
         // Queue items are raised by the community about a record; their
         // requester is the party the record is about, and is never asked this.
-        Act::BreakGlassReview | Act::JoinReview | Act::VettingReview => true,
+        Act::BreakGlassReview | Act::JoinReview | Act::VettingReview | Act::EventReportReview => {
+            true
+        }
         // Admitting is `vtc.members.manage`'s; a role beyond `member` is
         // re-bounded by the handler when the action executes.
         Act::DirectAdmission => entry.admin.can(Capability::MembersManage, None),
@@ -1738,7 +1751,9 @@ pub(crate) async fn pin_for(
         Act::GrantsReview => json!(subject),
         // A queue item is settled against its record, never a pin
         // (`crate::admin_actions::queues::resolution`).
-        Act::BreakGlassReview | Act::JoinReview | Act::VettingReview => json!(subject),
+        Act::BreakGlassReview | Act::JoinReview | Act::VettingReview | Act::EventReportReview => {
+            json!(subject)
+        }
         // What the approvers were shown is a DID with this ACL entry (none, for
         // an add) and no live membership. Either moving — the entry granted,
         // changed or revoked, a member record written — means the admission

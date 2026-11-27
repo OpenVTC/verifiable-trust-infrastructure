@@ -4358,6 +4358,11 @@ pub(crate) async fn sign_requests(
             "Approving keeps the member; declining starts their removal, which applies its own \
              rules.",
         ),
+        Act::EventReportReview => (
+            "eventReportReview",
+            json!({ "eventId": rec.subject }),
+            "Approving upholds the report and cancels the event; declining dismisses it.",
+        ),
         Act::DirectAdmission => (
             "memberAdmission",
             json!({ "subject": rec.subject }),

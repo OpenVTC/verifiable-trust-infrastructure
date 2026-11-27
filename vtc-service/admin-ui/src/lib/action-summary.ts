@@ -66,6 +66,10 @@ export const JOIN_REVIEW_URI = "urn:openvtc:vtc:join:review";
  *  member, decline starts their removal. */
 export const KIND_VETTING_REVIEW = "vetting.withdrawal.review";
 export const VETTING_REVIEW_URI = "urn:openvtc:vtc:vetting:withdrawal-review";
+/** A member's report of a community event (VTI-EVT-081): approve cancels the
+ *  event, decline dismisses the report. */
+export const KIND_EVENT_REPORT_REVIEW = "events.report.review";
+export const EVENT_REPORT_REVIEW_URI = "urn:openvtc:vtc:events:report-review";
 
 /** A direct admission the community's `admission` policy referred for
  *  approval: adding a member without a join request. */
@@ -188,6 +192,9 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmaxhUVhRYpEsMxfAzJWuoHvzVKmcbKSmZ2JjG8kQaHzW1",
   [pinKey(KIND_VETTING_REVIEW, VETTING_REVIEW_URI)]:
     "zQmcUNShH782uKh8YFnXsQ322vCS2Hs6U9tJv8SLABeKmBV",
+  // A member's report of a community event (VTI-EVT-081).
+  [pinKey(KIND_EVENT_REPORT_REVIEW, EVENT_REPORT_REVIEW_URI)]:
+    "zQmVyH2yStmxBktDuF8xcNy6hLhZXBuHAYF39fivkCqryRh",
   // Direct admission, when the `admission` policy refers it for approval.
   [pinKey(KIND_MEMBER_ADMIT, MEMBERS_ADMIT_URI)]:
     "zQmbYVQV8iyGc9pCgXB3mD1s7dYXRYEBmHNyHcQnEkeaH6C",

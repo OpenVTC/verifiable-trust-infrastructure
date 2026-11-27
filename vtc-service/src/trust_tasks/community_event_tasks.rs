@@ -2299,6 +2299,13 @@ async fn handle_report(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
     };
     tri!(&doc, ce::put_report(ks, &report).await);
     drop(_guard);
+    // VTI-EVT-081: on the administrators' action list, one item per event. A failure here is
+    // made good by the events sweeper; the report itself is kept.
+    if let Err(e) =
+        crate::admin_actions::queues::raise_event_report(state, &report, &seen.ev.title).await
+    {
+        tracing::warn!(error = %e, "an event report could not be raised on the action list; the sweeper will");
+    }
     tri!(
         &doc,
         audit(
