@@ -2,6 +2,88 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.94.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.94.2...vta-sdk-v0.94.3) — 2026-11-27
+
+
+### Added
+
+- **vtc**: Vtc/directory/query/0.2 answers the member's entry ([#2827](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2827))
+
+* feat(vtc): vtc/directory/query/0.2 answers the member's entry
+
+  The portal names a room's authors by DID with vtc/directory/query, but every
+  other directory read is addressed by entry: the member's picture
+  (images/get), their entry with shared groups (entries/show), and their card
+  page. Without the entry it could name an author but not show their picture
+  or open their card.
+
+  query/0.2 (dtgwg-trust-tasks-tf #1383) is served beside 0.1 by the same
+  authority — any entry, or the member portal's delegated key as its member —
+  and answers `entryId`, the member's directory entry
+  (`directory::read::QueryAnswer`). It is answered only where 0.1 answers at
+  all: where the projection shows the caller the member's DID, to the member,
+  or to an administrator; everyone else gets the same notFound as no member,
+  with no entry. 0.1 is unchanged.
+
+  Pinned from a local build of the spec PR; re-pin from trusttasks.org once it
+  publishes.
+
+- **vtc**: Administrators set a community room's record members — replies and reactions ([#2824](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2824))
+
+* feat(vtc): administrators set a community room's record members — replies and reactions
+
+  A community-owned room's profile was written with its label and description
+  only, so a room meant as a conversation started with replies and reactions
+  off, and turning them on took a member holding `curate`. The community holds
+  `admin` in every room it owns; its administrators now set them.
+
+  Serves vtc/rooms/community create/0.6, update/0.5 and get/0.6 beside the
+  earlier versions (trustoverip/dtgwg-trust-tasks-tf#1373):
+
+  - create/0.6 `recordMembers` is written into the profile with the label and
+    description (item 12), echoed and audited; absent is none.
+  - update/0.5 `recordMembers` (the whole set) or `removeRecordMembers`; a set
+    compares as a set, and a record-members-only change re-writes the profile.
+    Neither given, the read-back's set is carried over as before.
+  - get/0.6 answers what the profile listed at the community's last write —
+    never a pending request's set (item 6).
+  - `rooms::community_profile` keeps a requested set in a new
+    `RecordMembersRecord` (`room-record-members:<room>`) until a write carries
+    it; a set requested while a write is in flight keeps the room pending.
+    Unknown values are never refused.
+
+  The console's room form gains a "Replies and reactions" box beside Watch
+  signals: ticked on create (sends kind, inReplyTo, writtenAt), shown and
+  editable on a room's page, sent on edit only when it changed and keeping any
+  other member a curator listed, with a note about members on an older reader.
+  `cnm rooms create|update` take `--replies-and-reactions`, `--record-member`
+  and (update) `--no-record-members`; `cnm rooms get` prints them.
+
+- **vtc**: The portal names a room's authors as the member directory shows them ([#2822](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2822))
+
+In a room used for chat, an author the wallet's reading gives no name was
+  shown by the last segment of their did:webvh (`airport-electric`), which reads
+  as a name but is only a path the DID's owner chose.
+
+  The portal now asks the community's directory about each such author
+  (`vtc/directory/query/0.1`, signed with the portal's delegated key, which
+  `vtc/directory` already covers) and shows the name the directory shows this
+  member. Where it shows none, the author is their shortened DID in monospace
+  with a DID tag. The name an author gave themselves in the room still comes
+  first, so the portal, the wallet's console and Keyring name them alike.
+
+  Each author's name opens a card on hover, focus or tap: initials, name,
+  nickname, pronouns, role and the full DID.
+
+  Authors are looked up only in `open` and `attributed` rooms, whose host
+  already sees who wrote what; asking about a private room's authors would tell
+  the community who writes there. Only the DID is sent, never the room.
+
+  The query task's generated types join `vta_sdk::openapi` and the console's
+  wire types.
+
+
+
 ## [0.94.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.94.1...vta-sdk-v0.94.2) — 2026-11-25
 
 

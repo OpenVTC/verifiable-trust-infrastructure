@@ -2,6 +2,36 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.49.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.49.0...vtc-client-v0.49.1) — 2026-11-27
+
+
+### Added
+
+- **vtc-client**: Room tasks ask the newest version the host serves ([#2834](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2834))
+
+`vtc-client` asked `rooms/records/put/0.3`, `get/0.3`, `list/0.6`,
+  `rooms/create/0.2` and `rooms/watch/0.1`, each superseded. It now asks
+  `put/0.5`, `get/0.4`, `list/0.8`, `create/0.3` and `watch/0.2`, and asks again at
+  the version before only when the host answers `unsupportedType` (one helper,
+  `room_task_newest`), so a host that predates a version still answers. Every
+  request still carries only what all those versions accept, so the
+  older answers mean the same.
+
+  `put_cleartext_record` is new: an open room's record checked against
+  `put/0.5`, so it may carry `kind`, `inReplyTo`, `writtenAt` and `editedAt`
+  (and 0.4's `file`). It falls back only to a version whose schema accepts the
+  record as given; a record that needs 0.5 gets an older host's refusal back
+  rather than being sent without its reply or kind. `put_cleartext_record_v3`
+  is deprecated in its favour. `put_sealed_record_with_blobs` asks the newest
+  put too; its answer is read against the version that gave it and returned as
+  the same published type, since every version answers the same members.
+
+  Read retries on `429` now also cover `get/0.4`, `list/0.8` and `info/0.4`
+  and `0.5` (the last two were missing). The admin-action test fixture names
+  `acl/change-role/0.2`, the version the VTC serves.
+
+
+
 ## [0.49.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.48.0...vtc-client-v0.49.0) — 2026-11-24
 
 
