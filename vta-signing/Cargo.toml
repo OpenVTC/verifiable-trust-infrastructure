@@ -2,7 +2,7 @@
 name = "vta-signing"
 description = "VTA signing core — Ed25519 and P-256 signatures, JWS and eddsa-jcs-2022 Data Integrity bytes, built in one place for the VTA and for anything that signs as it"
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 # Published, because `vta-service` is and depends on it, and because a service
 # that signs with its own keys (the agent gateway) depends on it directly. See
