@@ -54,6 +54,18 @@ repeat it.
 The whole programme, phased below. Paid tickets are **out of scope** (no payment rail exists and
 none is proposed).
 
+**Booking pages** ("book a meeting with me", decision 28)
+- A member publishes a page in a community where others book time with them: one or more
+  meeting types (30 minutes, an hour), weekly available hours with date exceptions, buffers,
+  minimum notice, how far ahead, a daily cap.
+- Different rules per tier: members of the community (narrowed by group, badge or role), people
+  known to the community (members of partner communities, holders of a relationship), and
+  guests from outside.
+- The host's other commitments, in this community and in others, block slots without anyone
+  learning what they are.
+- Booking, rescheduling and cancelling by the booker within the host's rules; approval where a
+  tier needs it; the booking lands in both people's calendars with reminders and a receipt.
+
 **Events**
 - Create, edit, publish, postpone, reschedule, cancel, end, archive; drafts.
 - Time: local start + IANA zone, duration or end, all-day, multi-day. Displayed in the viewer's
@@ -444,6 +456,55 @@ none is proposed).
       until it is archived on the retention schedule; no-shows are not removed, since removing
       them would announce who did not come.
 
+28. **Booking pages: "book a meeting with me"** *(proposed, 2026-11-27)*. A Calendly-like
+    service inside the community, built from what events already are.
+    - **The page.** A member (the *host*) creates a booking page in a community they belong
+      to: a name, a description, and one or more **meeting types**, each with a length, a
+      place (online link, in person, phone, released like access details, decision 11), its
+      own questions, and **availability**: weekly windows in the host's IANA zone with date
+      exceptions (RFC 7953 VAVAILABILITY's shape), buffers before and after, minimum notice,
+      how far ahead, a daily cap, and a per-booker limit. A page may be personal or a
+      **team** page over several hosts (round-robin or everyone), later.
+    - **Tiers.** Each meeting type says, per tier, whether the tier may book at all, which
+      windows it sees, its notice and horizon, whether a booking needs the host's approval,
+      and its limit:
+      - `members`: active members, optionally narrowed by the event audience language
+        (groups, so badges; roles; a rule) — the same check as VTI-EVT-020;
+      - `known`: people the community knows without their being members — members of a
+        partner community or network proving it by credential (as decision 19), or a party
+        with a relationship in force with the community;
+      - `guests`: anyone signing in with a wallet (decision 18), approval on by default,
+        always under the budget for senders without standing (VTI-TRN-029). A guest needs a
+        DID; e-mail-only booking is out of scope.
+      A booker is placed in the most trusted tier they prove, never one they assert.
+    - **Busy without disclosure.** The free slots offered are the host's windows minus their
+      bookings and events at this community, and minus **busy blocks their own VTA supplies**:
+      at the host's standing choice, the VTA computes coarse busy intervals (rounded to 15
+      minutes, no titles, no communities) from the host's calendar across every community
+      (`vta/calendar/*`, phase 3) and pushes them to the page. The community learns only
+      "busy then"; the booker learns only which slots are free. Without the VTA's blocks the
+      page still works from what this community knows.
+    - **A booking is an event.** Booking creates a `meeting` event in the host's calendar
+      (unlisted, roster hidden, audience the two parties, the host as its host) with the
+      booker registered `going` (or `pending` where the tier needs approval). Everything else
+      comes free: access details released on acceptance, the receipt (decision 21), reminders
+      fired by each party's VTA (decision 10), both parties' calendars via `mine/list`,
+      cancellation and the `sequence` on a change. Rescheduling is the booker moving their
+      own booking to another free slot, within the tier's minimum notice, answered with a new
+      receipt.
+    - **Holding a slot.** Two people may pick one slot together: `book` takes the slot under
+      the events write lock and refuses the second with `slotTaken`, offering the next free
+      slots. Nothing is held while a booker fills in the questions.
+    - **Links.** A page has a stable link on the community's site (a trigger link,
+      VTI-LNK, for the guest tier); a member's directory card may show "Book a meeting".
+    - **Privacy.** The page never says why a slot is not free. A booker sees the host as the
+      page presents them (its own name and picture, or the directory's projection for a
+      member viewer). The host sees bookers' answers; nobody else does.
+    - **Authority.** Any active member may create a page for themselves where the community's
+      settings allow it (`events` policy may require a group, a role, or turn pages off).
+      Nobody books themselves. A host's page goes when they leave the community, cancelling
+      their future bookings with notice to the bookers.
+
 ## Storage (VTC)
 
 A new keyspace `events` (`vtc-service/src/store/keyspaces.rs`, beside `BADGES`), backed up:
@@ -479,6 +540,10 @@ A new keyspace `events` (`vtc-service/src/store/keyspaces.rs`, beside `BADGES`),
 | `optouts/set`, `optouts/list` | the member |
 | `agenda/update`, `minutes/record`, `minutes/approve`, `actions/{add,update,list}`, `quorum/show`, `motions/open` | meetings: chair, secretary, hosts |
 | `polls/{create,show,answer,close}` | hosts; invitees answer |
+| `booking-pages/{create,update,delete,show,list}` | a member for their own page; `show`/`list` the tiers a page admits (decision 28) |
+| `booking-pages/slots/list` | a booker: the free slots their tier sees, for a range |
+| `bookings/{book,reschedule,cancel,list}` | a booker for their own; the host for every booking on their page |
+| `booking-pages/busy/put` | the host's own VTA: coarse busy intervals, replacing the last |
 | `announcements/send`, `announcements/list` | hosts; registrants read (decision 22) |
 | `calendars/{create,update,list}` | administrators, a group's managers; the audience lists (decision 20) |
 
@@ -492,6 +557,7 @@ A new keyspace `events` (`vtc-service/src/store/keyspaces.rs`, beside `BADGES`),
 | `alerts/{set,clear}` | per-event overrides |
 | `feeds/{create,list,revoke}` | private ICS feeds |
 | `export` | the member's events and receipts, as ICS plus the signed replies (decision 21) |
+| `busy/share` | at the member's standing choice per booking page, push coarse busy blocks to it (decision 28) |
 
 Each new task gets a `vta_sdk::retry_safety` classification, a `schema_index` pin and a
 conformance witness, as every family does.
@@ -528,8 +594,9 @@ conformance witness, as every family does.
 | **4 Identity, guests, tickets, the door** | optional **event identity** (`vtc-event` template, authority credential); **guests who are not members** (wallet sign-in, guest admission); **ticket credentials** and OpenID4VP check-in; check-in by nonce; `eventsAttended`; attendance badge offer; co-hosts held at the event's identity. |
 | **5 Anonymous registration, recurrence** | registration by PCS proof and tag, and persona registration (decision 17); recurring series (overrides, this-and-following). |
 | **6 Attachments and meetings** | event room via binding; board audience; agenda, chair, roll call, quorum, motions as elections, minutes, action items in the assignee's calendar; scheduling polls; public pages and public ICS on the community website. |
-| **7 Events hosted by a person** | `vta/events/*`: a member's VTA holds an event for their contacts (decision 24). |
-| **8 Later** | multi-session events (sessions, tracks, speakers, personal agenda); booking pages and office hours (VAVAILABILITY); find-a-time from members' VTAs as coarse busy blocks; bookable resources; feedback forms. |
+| **7 Booking pages** | "book a meeting with me" (decision 28): pages, meeting types, availability with exceptions, tiers for members, known parties and guests, free slots, book / reschedule / cancel, approval per tier, busy blocks from the host's VTA. Team pages (round-robin, everyone) after. |
+| **8 Events hosted by a person** | `vta/events/*`: a member's VTA holds an event for their contacts (decision 24). |
+| **9 Later** | multi-session events (sessions, tracks, speakers, personal agenda); find-a-time across several members' VTAs; bookable resources; feedback forms. |
 
 ## Settled (2026-11-27)
 
@@ -562,3 +629,7 @@ conformance witness, as every family does.
 - What a cancelled occurrence of a series does to registrations for the series.
 - The count threshold's default (5 is the usual k).
 - Whether an action item is its own record or a room record the calendar reads.
+- Booking pages (decision 28): which parties count as `known` beyond partner members and
+  relationships; whether a guest's booking may ever skip approval; whether team pages come in
+  phase 7 or after; whether a host's page may live in a community they do not belong to (as
+  written, it may not).
