@@ -16,6 +16,7 @@ import {
   BadgeCheck,
   Bell,
   BookUser,
+  CalendarDays,
   ClipboardList,
   Vote,
   DoorOpen,
@@ -49,6 +50,7 @@ import { Badges } from "@/plugins/badges";
 import { Boards } from "@/plugins/boards";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
+import { Events } from "@/plugins/events";
 import { Dashboard } from "@/plugins/dashboard";
 import { DATA_ROOMS_CAPABILITIES, DataRooms } from "@/plugins/dataRooms";
 import { Directory } from "@/plugins/directory";
@@ -166,6 +168,19 @@ export function registerBuiltinPlugins(): void {
     iconComponent: SquareKanban,
     reactComponent: Boards,
     capabilities: ["vtc.boards.manage"],
+  });
+
+  // Community events (docs/03-vtc/events.md): those who run a calendar (vtc.events.manage,
+  // unqualified or for a group) and appointed hosts (qualified to one event) make events,
+  // publish and cancel them, and decide registrations. Members register from the portal.
+  registerPlugin({
+    id: "events",
+    group: "governance",
+    label: "Events",
+    path: "/events",
+    iconComponent: CalendarDays,
+    reactComponent: Events,
+    capabilities: ["vtc.events.manage"],
   });
 
   // The community's groups: every administrator reads them; holders of

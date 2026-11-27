@@ -19,6 +19,7 @@ import { Home } from "./Home";
 import { ReposPage } from "./Repos";
 import { ElectionPage, ElectionsPage } from "./Elections";
 import { BadgePage, BadgesPage, MakeBadgePage } from "./Badges";
+import { EventPage, EventsPage } from "./Events";
 import { BoardPage, BoardsPage } from "./Boards";
 import { RoomPage, RoomsPage } from "./Rooms";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -45,12 +46,14 @@ async function fetchMe(): Promise<MemberMe | null> {
  *  `#/directory`, `#/directory/<entryId>`, `#/card`, `#/groups`,
  *  `#/groups/<groupId>`, `#/repos`, `#/elections`, `#/elections/<electionId>`,
  *  `#/boards`, `#/boards/<boardId>`, `#/badges`, `#/badges/new`,
- *  `#/badges/<badgeId>`, else home. */
+ *  `#/badges/<badgeId>`, `#/events`, `#/events/<eventId>`, else home. */
 export type Route =
   | { page: "home" }
   | { page: "badges" }
   | { page: "badge"; badgeId: string }
   | { page: "make-badge" }
+  | { page: "events" }
+  | { page: "event"; eventId: string }
   | { page: "rooms" }
   | { page: "room"; roomId: string }
   | { page: "directory" }
@@ -73,6 +76,9 @@ export function routeOf(hash: string): Route {
   const board = /^\/boards\/(brd_[A-Za-z0-9_-]{16,64})$/.exec(path);
   if (board) return { page: "board", boardId: board[1]! };
   if (path === "/badges") return { page: "badges" };
+  if (path === "/events") return { page: "events" };
+  const event = /^\/events\/(evt_[A-Za-z0-9_-]{16,64})$/.exec(path);
+  if (event) return { page: "event", eventId: event[1]! };
   if (path === "/badges/new") return { page: "make-badge" };
   const badge = /^\/badges\/(bdg_[A-Za-z0-9_-]{16,64})$/.exec(path);
   if (badge) return { page: "badge", badgeId: badge[1]! };
@@ -224,6 +230,8 @@ function SignedIn({ me, route }: { me: MemberMe; route: Route }) {
   if (route.page === "badges") return <BadgesPage />;
   if (route.page === "badge") return <BadgePage badgeId={route.badgeId} />;
   if (route.page === "make-badge") return <MakeBadgePage />;
+  if (route.page === "events") return <EventsPage />;
+  if (route.page === "event") return <EventPage eventId={route.eventId} />;
   // A board reads without the wallet; only its vote buttons need the community's DID.
   if (route.page === "board") return <BoardPage boardId={route.boardId} hostDid={host.data} member={me.did} />;
   if (!host.data) {

@@ -1197,7 +1197,21 @@ When adding a flow, add it here and a line to the root index.
   `events` policy only refuses. Audit `EventChanged` by reference, never an answer, a note or
   a report's text. Departure removes live registrations (and, on purge, answers) beside
   `groups::on_departure`.
-- **Not yet**: reports on the action list, invitations and the `event` notification kind,
+- **The pages**: the console plugin (`admin-ui/src/plugins/events.tsx` over `lib/events.ts`)
+  signs with the console key only; the portal (`admin-ui/src/members/Events.tsx` over
+  `members/events-api.ts`, styles `members/events.css`, home tile + `eventsStatus` /
+  `eventsAttention`) signs with `K_b` through `send`. Time and the `.ics` file are
+  `lib/event-time.ts`, which resolves a skipped local time forward a quarter hour at a time to
+  match `community_events::resolve_local` — keep the two in step. Never show an access detail,
+  answer or roster the API did not return. The Type URIs are spelled out in full in both API
+  modules (the list-limit census matches the literal) and listed in
+  `tests/it/trust_task_manifest.rs`; the console's wire types are the `Events*01` wrappers in
+  `vta_sdk::openapi`, listed in `routes::openapi_spec`.
+- **Reports** reach the action list as a queue item (`Act::EventReportReview`, kind
+  `events.report.review`, one per event while open, `admin_actions::queues::raise_event_report`):
+  approve upholds (`community_events::uphold_reports` cancels the event), decline dismisses;
+  the reporter is never on the item.
+- **Not yet**: invitations and the `event` notification kind,
   the VTA calendar (`vta/calendar/*`), check-in, meetings, booking pages — see the design note.
 - **Code**: `vtc-service/src/community_events/{mod,hosts,policy}.rs`,
   `vtc-service/src/trust_tasks/community_event_tasks.rs` (not `event_tasks.rs`, which is the

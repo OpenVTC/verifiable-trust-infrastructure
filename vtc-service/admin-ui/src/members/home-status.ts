@@ -3,7 +3,13 @@
 // over the answers the pages themselves read, so the home page and the pages
 // share one query each and never disagree.
 
-import type { BadgeMineListResponse, BoardListResponse, GroupListResponse } from "@/lib/wire-types";
+import type {
+  BadgeMineListResponse,
+  BoardListResponse,
+  EventMineListResponse,
+  GroupListResponse,
+} from "@/lib/wire-types";
+import { startOf } from "@/lib/event-time";
 
 import { phaseOf, PHASE_LABEL } from "./boards-api";
 import { DirectoryError } from "./directory-api";
@@ -182,6 +188,61 @@ export function badgesAttention(q: Read<BadgeMineListResponse>, href: string): A
   return waiting > 0
     ? [{ key: "badge-offers", text: `${plural(waiting, "badge")} offered to you: accept or decline`, href }]
     : [];
+}
+
+type MineEvents = EventMineListResponse["items"];
+
+/** Upcoming registrations still in play: going, maybe, waiting on the hosts, waitlisted. */
+function upcomingMine(items: MineEvents, now: number): MineEvents {
+  return items.filter(
+    (m) =>
+      m.event.status !== "cancelled" &&
+      ["going", "maybe", "pending", "waitlisted"].includes(m.registration.status) &&
+      startOf(m.event.when).getTime() > now,
+  );
+}
+
+/** The member's events: how many they are going to, and any waiting on the hosts. */
+export function eventsStatus(q: Read<MineEvents>, now: number = Date.now()): Status | "loading" {
+  const u = unanswered(q);
+  if (u) return u;
+  const live = upcomingMine(q.data!, now);
+  const going = live.filter((m) => m.registration.status === "going").length;
+  const waiting = live.filter(
+    (m) => m.registration.status === "pending" || m.registration.status === "waitlisted",
+  ).length;
+  if (going === 0 && waiting === 0) return muted("Nothing coming up");
+  const parts: string[] = [];
+  if (going > 0) parts.push(`Going to ${plural(going, "event")}`);
+  if (waiting > 0) parts.push(`${waiting} waiting`);
+  return { text: parts.join(" · "), tone: "ok" };
+}
+
+/** Registrations waiting on the hosts or a place, and the next event within a week. */
+export function eventsAttention(
+  q: Read<MineEvents>,
+  href: (eventId: string) => string,
+  now: number = Date.now(),
+): Attention[] {
+  if (!q.data) return [];
+  const live = upcomingMine(q.data, now);
+  const out: Attention[] = live
+    .filter((m) => m.registration.status === "pending" || m.registration.status === "waitlisted")
+    .map((m) => ({
+      key: `event-${m.event.eventId}`,
+      text:
+        m.registration.status === "pending"
+          ? `${m.event.title}: waiting for the hosts to confirm`
+          : `${m.event.title}: you're on the waitlist`,
+      href: href(m.event.eventId),
+    }));
+  const soon = live
+    .filter((m) => m.registration.status === "going" && startOf(m.event.when).getTime() - now < 7 * 86400_000)
+    .sort((a, b) => startOf(a.event.when).getTime() - startOf(b.event.when).getTime())[0];
+  if (soon) {
+    out.push({ key: `event-soon-${soon.event.eventId}`, text: `Coming up: ${soon.event.title}`, href: href(soon.event.eventId) });
+  }
+  return out;
 }
 
 /** The groups the member is in, and where they are waiting to be. */

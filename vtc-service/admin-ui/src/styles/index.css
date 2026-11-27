@@ -30,6 +30,7 @@
 @import "./plugins/members.css";
 @import "./plugins/groups.css";
 @import "./plugins/badges.css";
+@import "./plugins/events.css";
 @import "./plugins/recognition.css";
 @import "./plugins/dashboard.css";
 @import "./plugins/audit.css";
