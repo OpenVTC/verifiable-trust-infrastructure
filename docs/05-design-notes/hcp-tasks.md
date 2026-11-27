@@ -5,7 +5,7 @@
 [hcp-plan.md](hcp-plan.md) (the plan this is generated from). The demo week
 is [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-25
+**Last updated:** 2026-11-26
 
 V0 is task-level here; V1, V2 and V3 are milestone-level in
 [hcp-plan.md](hcp-plan.md) §3.4 and get their own pass when they start. Only
@@ -27,8 +27,10 @@ by raising a count or growing an allowlist.
 - [ ] **X0 — Freeze.**
   - Acceptance: every snapshot the plan names is re-checked and recorded; the
     cited VTI files are diffed against the snapshot the design read, and any
-    that moved are re-read; the suite commit is tagged; the local registry
-    lists the `hcp/*` tasks V0 pins and every fixture validates.
+    that moved are re-read; the dtgwg-trust-tasks-tf `main` commit the suite
+    is taken from is recorded (the suite is published and released, but
+    `draft`, so it may change in place); the published registry lists the
+    `hcp/*` tasks V0 pins at `0.1` and every fixture validates.
   - Verify: the demo contract records the heads, bundle digests and fixtures.
   - Deps: none.
 
@@ -61,9 +63,11 @@ by raising a count or growing an allowlist.
   - Deps: none; final text after A9.
 
 - [ ] **X2 — Editor questions.**
-  - Acceptance: N1–N10 ([hcp.md](hcp.md) §12) are written, each with the
-    HCP section it reads and the working assumption the suite takes; they are
-    sent with the working demo, not before.
+  - Acceptance: N1–N10 are already in the suite's
+    `specs/hcp/_shared/0.1/QUESTIONS.md` as questions 44–52 and 16
+    ([hcp.md](hcp.md) §12), each with the HCP section it reads and the
+    assumption the suite takes; the demo's evidence is attached to them and to
+    37, 46 and 56; they are sent with the working demo, not before.
   - Verify: the questions are linked from the demo contract.
   - Deps: none.
 
@@ -79,10 +83,14 @@ by raising a count or growing an allowlist.
 ## VTI
 
 - [ ] **A1 — Pin the suite in `vti-specs-hcp`.**
-  - Acceptance: the pinned bundles are byte-identical to the local registry's
-    and their digests equal the contract's; the lock's `registry` line reads
+  - Acceptance: the pinned bundles (`hcp/grants/{request,revoke,revoked}`,
+    `hcp/entries/{query,create}`, `hcp/audit/read`, `hcp/disclosures/summary`,
+    all `0.1`) are byte-identical to the published registry's and their
+    digests equal the contract's; the lock's `registry` line reads
     `https://trusttasks.org`; framework specs are not pinned here;
-    `trust-tasks-build` generates every pinned task; the generated tables of
+    `trust-tasks-build` generates every pinned task (checked first on
+    VTI's 0.2.2 pin; if it cannot, the 0.3.0 adoption of
+    [hcp-plan.md](hcp-plan.md) §5 comes first); the generated tables of
     the `vti-specs-*` crates stay disjoint.
   - Verify: `trust-tasks -C vti-specs-hcp check`;
     `cargo nextest run -p vti-specs --locked`.
@@ -96,9 +104,12 @@ by raising a count or growing an allowlist.
     `StubHcp` answers every fixture; revoked, expired and unknown tokens give
     `hcp:invalidToken`; a request outside the grant (wrong category or
     purpose) gives `permissionDenied` with one fixed message; a wrong-VID
-    token gives a `permissionDenied` that reveals nothing else; no
-    `scope-denied` or `invalid-token` is ever sent on this wire; a token's
-    expiry equals its grant's; `VerifiedGrant` can be built
+    token gives a `permissionDenied` that reveals nothing else; a
+    token-carrying request with no proof is refused; no
+    `scope-denied` or `invalid-token` is ever sent on this wire, and
+    `hcp:invalidToken` carries the meaning and `retryable: false` of the
+    suite's `CONVENTIONS.md` §1; `tokenExpiresAt` equals the grant's
+    `expiresAt`; `VerifiedGrant` can be built
     only by the per-request check; tokens are `Zeroizing` with a redacting
     `Debug`; the `subject.id` secret is reached only through key custody;
     `vta-hcp` does not depend on `vta-service`; a backup round trip keeps the
@@ -112,17 +123,24 @@ by raising a count or growing an allowlist.
 
 - [ ] **A3 — `hcp/grants/request` hold.**
   - Acceptance: a held request answers `trust-task-next-step` with
-    `continuation: resubmit`, never an error; the pending
+    `continuation: resubmit` and `hint.retryAfter` in whole seconds, never an
+    error; a document on the thread from another `issuer` gets
+    `permissionDenied` and leaves the hold unchanged; a resubmission with a
+    different payload gets `malformedRequest`; the pending
     `task-consent/request` is bound to the request's digest and to the admin
     DID, with the HCP 6.1.6 items as effects of the kinds published in
     [hcp.md](hcp.md) §5.1 (or a purpose choice where none was named), and with
     `parentThreadId` equal to the held request's `threadId`; approval gives a
-    grant and a token, both expiring 4 hours later; a replay within an hour
-    gives the same `grantId` and stores no token; a hold not approved in 300
+    grant and a token, both expiring 4 hours later; a resubmission within an
+    hour gives the same `grantId`, a newly minted token under it and no
+    second `grant.issued`, and stores no token; after the hour, or once the
+    grant is revoked, `permissionDenied`; a hold not approved in 300
     seconds is denied (VTA policy), and the next resubmission on that thread
     gets the same `permissionDenied` as a decline and an unknown person, with
     the thread never reopened; the client registration is recorded at
-    approval.
+    approval, with the `issuer` VID as its notice VID (the declared
+    divergence from the suite's refusal of an unregistered `issuer`, question
+    52).
   - Verify: `cargo nextest run -p vta-hcp --locked`; A9's hold cases.
   - Files: `vta-hcp/src/request.rs`; hooks in
     `vta-service/src/trust_tasks/hcp.rs` (through A8).
@@ -130,9 +148,11 @@ by raising a count or growing an allowlist.
 
 - [ ] **A4 — `hcp/entries/query` and `hcp/entries/create`.**
   - Acceptance: a created `person-declared` entry appears in the next query;
-    a `model-inferred` create is refused; a query returns at most 20 in the
-    declared order; `ref` differs per grant; `useUntil` is at most an hour
-    for a client with no notification endpoint.
+    a `model-inferred` create is refused; a create with no `accessToken` is
+    accepted only from the enrolled admin DID; a query returns at most the
+    lesser of `maxEntries` (default 5) and 20, in relevance order, with
+    `minimization.method` `lexical`; `ref` differs per grant; `useUntil` is
+    at most an hour for a client with no notification endpoint.
   - Verify: `cargo nextest run -p vta-hcp --locked`.
   - Files: `vta-hcp/src/{entries,query,refs}.rs`.
   - Deps: A2.
@@ -142,8 +162,11 @@ by raising a count or growing an allowlist.
     exemption is a code-level URI list with a census); attempts carry
     distinct `id` and `issuedAt` and the same `noticeId`; the client's
     acknowledgement, from a sender with no ACL entry, stops the retries and
-    records `revocation.notified`; a mediator handoff alone does not; nothing
-    is sent after 24 hours; the schedule extends `PushReissuer`'s, with no
+    records `revocation.notified`; a mediator handoff or a TSP delivery
+    receipt alone does not; a non-retryable error abandons; nothing is sent
+    after 24 hours; a client that holds no disclosed entry is not notified;
+    revoking a revoked grant succeeds with no second event or notice, and an
+    unknown `grantId` gets `permissionDenied`; the schedule extends `PushReissuer`'s, with no
     second retry loop.
   - Verify: `cargo nextest run -p vta-hcp --locked`; A9's revoke cases.
   - Files: `vta-hcp/src/{revoke,notify}.rs`; the exempt-URI list in
@@ -169,9 +192,10 @@ by raising a count or growing an allowlist.
     is not served; `hcp/*` over REST is refused; a missing proof is refused;
     the agent-sent tasks are admitted with no ACL entry only through
     `hcp::is_context_client_task`, after an ACL refusal, with zero authority;
-    governance tasks need the admin role through `act_scope()` and carry no
-    `accessToken`, and one whose proven `issuer` is not the enrolled admin DID
-    is refused `permissionDenied`; `vta_call` refuses `hcp/*`; no token
+    governance tasks and `hcp/entries/create` from Keyring need the admin
+    role through `act_scope()` and carry no `accessToken`, and one whose
+    proven `issuer` is not the enrolled admin DID is refused
+    `permissionDenied`; `vta_call` refuses `hcp/*`; no token
     appears in the accepted-document store, the idempotency cache, the
     duplicate-execution record or a log (a new census asserts it);
     `spec_pin_census`, `every_uri_is_classified`,

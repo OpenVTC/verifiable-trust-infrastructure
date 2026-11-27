@@ -8,7 +8,7 @@ Day 7.
 Keyring side, its screens and copy, is in the Keyring companion plan
 (keyring-wallet, `docs/plans/agent-connect-plan/2026-11-25-bam.md`).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-25
+**Last updated:** 2026-11-26
 
 ## Demo narrative
 
@@ -22,7 +22,9 @@ refused.
 
 The demo is `agent-connect-p0-hcp`: Keyring's P0 tier with its HCP increment
 and VTI's milestone V0. It runs from a branch on a fork, against the
-unpublished `hcp/*` suite as frozen at X0; nothing merges to `main`.
+`hcp/*` suite as frozen at X0: published and released (`trust-tasks-rs`
+0.42.0, `@openvtc/trust-tasks` 0.31.10), still `draft`, so pinned by digest;
+nothing merges to `main`.
 
 ---
 
@@ -51,7 +53,9 @@ unpublished `hcp/*` suite as frozen at X0; nothing merges to `main`.
 - MODE=tunnel: an HTTPS `did:webvh` VTA and a mediator with DIDComm and TSP,
   each behind a quick tunnel with no account needed.
 - The mediator session and TSP client patterns the agent client's receive
-  loop reuses.
+  loop reuses. The agent client speaks TSP 1.0 through
+  `@openvtc/trust-tasks-tsp` 0.2.0 or later (binding `tsp/0.3`); an older
+  package speaks only the Rev 2 draft and cannot reach the VTA.
 
 ## The delta
 
@@ -123,7 +127,8 @@ through the mediator to the VTA.
    person approves with a biometric.
 5. **The agent answers from context.** The CLI resubmits, receives its grant,
    asks a question and answers from the retrieved entries, printing each
-   entry's purpose and `useUntil`.
+   entry's purpose and `useUntil`. While the person decides, it waits the
+   next step's `hint.retryAfter` before each resubmission.
 6. **The person adds a memory.** In Keyring: "I'm vegetarian"
    (`hcp/entries/create`, `person-declared`).
 7. **The next answer uses it.** The CLI asks for a dinner suggestion; the
@@ -131,7 +136,11 @@ through the mediator to the VTA.
 8. **The person revokes.** Keyring shows "Telling…", then "was told at
    <time>".
 9. **The agent is told.** The CLI prints the notice, purges what it held and
-   stops; its next query, with the old token, is refused.
+   stops; its next query, with the old token, is refused `hcp:invalidToken`.
+
+The suite's own demos (dtgwg-trust-tasks-tf `examples/hcp-demo*/SCENARIO.md`)
+also show a decline and an expired hold, each answered `permissionDenied` on
+the next resubmission. They are not on stage here; A9 covers both.
 
 "What my agent saw" and "Answers on" are not in this script; they moved to P1
 with the work behind them.
@@ -178,7 +187,12 @@ transcript.
   hook, and its authority is the grant ([hcp.md](../docs/05-design-notes/hcp.md)
   §4.3).
 - **Keyring manages by DID-proven request** (admin DID, proof, ACL admin
-  role, no `accessToken`); management tokens come in V1.
+  role, no `accessToken`, as the suite allows on governance tasks and
+  `hcp/entries/create` pending HCP's answer to question 56); management
+  tokens come in V1.
+- **The agent is registered when the person approves**, a declared departure
+  from `hcp/grants/request`, which refuses an unregistered client (question
+  52).
 - **Temporary grants only**, 4 hours by default; persistent is never offered
   in the demo.
 - **`hcp/*` over TSP and DIDComm only**; REST is refused.
