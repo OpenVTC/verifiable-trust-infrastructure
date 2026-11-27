@@ -54,6 +54,8 @@ pub mod deprecation;
 /// crate and re-exported so every `crate::did_templates::…` path is unchanged.
 pub use vta_support::did_templates;
 pub mod didcomm_bridge;
+/// A VTA run inside another application's process ([`embedded::EmbeddedVta`]).
+pub mod embedded;
 pub mod error;
 /// Key management (master seed, BIP-32 derivation, wrapping, seed-store
 /// backends), extracted to the `vta-keys` crate. Re-exported as `crate::keys`
