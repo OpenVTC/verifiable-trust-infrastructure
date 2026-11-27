@@ -27,6 +27,7 @@
 //! forward) moves forward to the first time that exists; one it repeats takes the first.
 
 pub mod hosts;
+pub mod policy;
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -46,6 +47,49 @@ use crate::server::AppState;
 /// waitlist), so two registrations never both take the last place.
 pub static WRITE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// `[events]`: host configuration for the community's events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub struct EventsConfig {
+    /// Events on or off (VTI-EVT-007). Off, every event task answers as if no event existed,
+    /// and a change is refused `eventsOff`. Default on.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// The most reports one member may make in a day (VTI-EVT-081). Default 10.
+    #[serde(default = "ten")]
+    pub reports_per_day: u32,
+    /// Days after an event ends that registration answers are kept (VTI-EVT-090). Default 30.
+    #[serde(default = "thirty")]
+    pub answers_retention_days: u32,
+}
+
+fn yes() -> bool {
+    true
+}
+fn ten() -> u32 {
+    10
+}
+fn thirty() -> u32 {
+    30
+}
+
+impl Default for EventsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            reports_per_day: 10,
+            answers_retention_days: 30,
+        }
+    }
+}
+
+impl EventsConfig {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
 
 /// The count threshold when an event names none (VTI-EVT-054).
 pub const DEFAULT_COUNT_THRESHOLD: u32 = 5;
@@ -588,7 +632,10 @@ pub async fn calendars(ks: &KeyspaceHandle) -> Result<Vec<Calendar>, AppError> {
 ///
 /// # Errors
 /// A store failure.
-pub async fn group_calendar(ks: &KeyspaceHandle, group: &str) -> Result<Option<Calendar>, AppError> {
+pub async fn group_calendar(
+    ks: &KeyspaceHandle,
+    group: &str,
+) -> Result<Option<Calendar>, AppError> {
     let Some(id) = text(ks, calgrp_key(group)).await? else {
         return Ok(None);
     };
@@ -810,11 +857,7 @@ pub fn waitlist_position(regs: &[Registration], registration_id: &str) -> Option
 /// not (VTI-EVT-033). Joining a waitlist is consent to be moved. Returns the registrations
 /// changed; the caller stores them.
 #[must_use]
-pub fn promote(
-    ev: &EventRecord,
-    regs: &[Registration],
-    now: DateTime<Utc>,
-) -> Vec<Registration> {
+pub fn promote(ev: &EventRecord, regs: &[Registration], now: DateTime<Utc>) -> Vec<Registration> {
     let settings = ev.settings();
     let mut taken = places_taken(regs);
     let mut changed = Vec::new();
@@ -831,6 +874,103 @@ pub fn promote(
         }
     }
     changed
+}
+
+// ─── departure and retention ─────────────────────────────────────────────
+
+/// A member leaves the community (VTI-EVT-039): each registration still in play is removed,
+/// freeing its places for the waitlist; a purge also erases their answers. Their host
+/// appointments go with their access-control entry. Returns the registrations removed.
+///
+/// # Errors
+/// A store failure.
+pub async fn on_departure(
+    state: &AppState,
+    entry_id: &str,
+    erase: bool,
+) -> Result<usize, AppError> {
+    let _guard = WRITE_LOCK.lock().await;
+    let ks = &state.events_ks;
+    let now = Utc::now();
+    let mut removed = 0;
+    for mut reg in registrations_by(ks, entry_id).await? {
+        let live = reg.status.is_live();
+        if !live && !(erase && reg.answers.is_some()) {
+            continue;
+        }
+        if live {
+            reg.status = RegStatus::Removed;
+            reg.waitlisted_at = None;
+            reg.note = Some("Left the community.".into());
+            removed += 1;
+        }
+        if erase {
+            reg.answers = None;
+        }
+        reg.updated_at = now;
+        put_registration(ks, &reg).await?;
+        if live
+            && let Some(ev) = get_event(ks, &reg.event_id).await?
+            && ev.status == Lifecycle::Published
+            && !ev.ended(now)
+        {
+            let regs = registrations_of(ks, &ev.event_id).await?;
+            for moved in promote(&ev, &regs, now) {
+                put_registration(ks, &moved).await?;
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// One retention pass (VTI-EVT-090): answers to an event's questions are deleted
+/// `retention_days` after it ends; the registrations' statuses stay. Returns the
+/// registrations whose answers were deleted.
+///
+/// # Errors
+/// A store failure.
+pub async fn sweep_answers(state: &AppState, retention_days: u32) -> Result<usize, AppError> {
+    let ks = &state.events_ks;
+    let now = Utc::now();
+    let mut cleared = 0;
+    for ev in events(ks).await? {
+        let Ok((_, end)) = ev.interval() else {
+            continue;
+        };
+        if end + Duration::days(i64::from(retention_days)) > now {
+            continue;
+        }
+        let _guard = WRITE_LOCK.lock().await;
+        for mut reg in registrations_of(ks, &ev.event_id).await? {
+            if reg.answers.take().is_some() {
+                put_registration(ks, &reg).await?;
+                cleared += 1;
+            }
+        }
+    }
+    Ok(cleared)
+}
+
+/// The events sweeper: answers past their retention and host appointments whose granter
+/// departed (VTI-EVT-074, VTI-EVT-090), once an hour.
+pub fn spawn_sweeper(state: AppState, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    tokio::spawn(async move {
+        let mut wait = std::time::Duration::from_secs(60);
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => return,
+                _ = tokio::time::sleep(wait) => {}
+            }
+            wait = std::time::Duration::from_secs(3600);
+            let days = state.config.read().await.events.answers_retention_days;
+            if let Err(e) = sweep_answers(&state, days).await {
+                tracing::warn!(error = %e, "events retention sweep failed; it runs again within the hour");
+            }
+            if let Err(e) = hosts::sweep(&state).await {
+                tracing::warn!(error = %e, "event host review sweep failed; it runs again within the hour");
+            }
+        }
+    });
 }
 
 // ─── who is looking ──────────────────────────────────────────────────────
@@ -851,10 +991,21 @@ impl Viewer {
     /// A store failure.
     pub async fn read(state: &AppState, did: &str) -> Result<Self, AppError> {
         let entry = crate::acl::get_acl_entry(&state.acl_ks, did).await?;
-        let subject = crate::directory::read::subject_by_did(state, did).await?;
         let active_member = crate::member_portal::active::active_member(state, did)
             .await?
             .is_some();
+        let mut subject = crate::directory::read::subject_by_did(state, did).await?;
+        // An active member with no directory entry yet gets one, as groups and boards make it
+        // on a member's first act: the audience reads what the entry says of them.
+        if subject.is_none() && active_member {
+            let dir = &state.directory;
+            let own = entry
+                .as_ref()
+                .filter(|e| e.label_set_by_subject)
+                .and_then(|e| e.label.clone());
+            crate::directory::cards::ensure(dir.ks(), did, &dir.settings(), own.as_deref()).await?;
+            subject = crate::directory::read::subject_by_did(state, did).await?;
+        }
         let entry_id = match &subject {
             Some(s) => Some(s.card.entry_id.clone()),
             None => crate::directory::cards::entry_of(state.directory.ks(), did).await?,
@@ -888,7 +1039,8 @@ impl Viewer {
             return false;
         };
         let at = ResourceQualifier::Group(g.clone());
-        self.can(Capability::EventsManage, Some(&at)) || self.can(Capability::GroupsManage, Some(&at))
+        self.can(Capability::EventsManage, Some(&at))
+            || self.can(Capability::GroupsManage, Some(&at))
     }
 
     /// Runs `ev`: its calendar's runners, or a host by appointment (VTI-EVT-070).
@@ -923,7 +1075,12 @@ pub fn audience_admits(audience: &Value, subject: &Subject, schema: &[FieldDef])
         audience
             .get(k)
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let scope = match audience.get("scope").and_then(Value::as_str) {
@@ -1001,12 +1158,7 @@ pub fn count_for(ev: &EventRecord, going: u32, host: bool) -> Option<Value> {
 
 /// `Event` as the caller may see it.
 #[must_use]
-pub fn event_wire(
-    ev: &EventRecord,
-    host: bool,
-    regs: &[Registration],
-    hosts: &[String],
-) -> Value {
+pub fn event_wire(ev: &EventRecord, host: bool, regs: &[Registration], hosts: &[String]) -> Value {
     let mut o = Map::new();
     o.insert("eventId".into(), json!(ev.event_id));
     o.insert("calendarId".into(), json!(ev.calendar_id));
@@ -1267,7 +1419,11 @@ mod tests {
         // c (3 people) does not fit beside 2 going; d and e do, in order.
         let ids: Vec<&str> = moved.iter().map(|r| r.registration_id.as_str()).collect();
         assert_eq!(ids, ["d", "e"]);
-        assert!(moved.iter().all(|r| r.status == RegStatus::Going && r.event_sequence == 3));
+        assert!(
+            moved
+                .iter()
+                .all(|r| r.status == RegStatus::Going && r.event_sequence == 3)
+        );
     }
 
     /// VTI-EVT-054: hosts see the exact count; others only with `showCount`, and below the

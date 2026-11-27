@@ -1175,6 +1175,36 @@ When adding a flow, add it here and a line to the root index.
   `admin-ui/src/plugins/badges.tsx`, `admin-ui/src/members/Badges.tsx`.
 - **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.
 
+### VTC community events (`vtc/events/*`, VTI-EVT-001 – 095)
+- **What**: Calendars (the community's own, made on first need, and one per group), events
+  in them, registrations, hosts by appointment, and reports (`crate::community_events`,
+  records in the `events` keyspace, backed up). Phase 1 of `docs/05-design-notes/vtc-events.md`.
+- **Invariants to preserve**: the **roster setting is fixed at publish** — an update that
+  changes it on a published event is `rosterLocked`, never parked — and every registration
+  records the setting it was made under (VTI-EVT-051/052). **Access details are released, not
+  published**: never in `show`/`list`/notifications/feeds unless the host marked them
+  `public`; `access/show` answers only a registrant who is `going` (and hosts), from
+  `revealAt` (VTI-EVT-060/061). Capacity counts going + guests; the waitlist moves in order,
+  each that fits, under `community_events::WRITE_LOCK` (every read-modify-write of
+  registrations takes it). The audience is checked live; a held registration still lets its
+  holder see and change it; anything not visible is the same `notFound` (VTI-EVT-021/023).
+  Withdrawal is always allowed and never parked (VTI-EVT-037). Time is local + IANA zone +
+  duration, resolved on read (`When::interval`), never stored as an instant. The community
+  sends **no reminder** (VTI-EVT-040). Hosts are `acl::appointment` grants
+  (`Kind::EventHost`, `vtc.events.manage` at `event:<id>`), reviewed under `eventGrants` —
+  keep them on that module, never a list on the event. Member acts accept the portal key
+  (`vtc/events` in `PORTAL_SIGNING_SCOPE`); host acts go through `member_signer` only. The
+  `events` policy only refuses. Audit `EventChanged` by reference, never an answer, a note or
+  a report's text. Departure removes live registrations (and, on purge, answers) beside
+  `groups::on_departure`.
+- **Not yet**: reports on the action list, invitations and the `event` notification kind,
+  the VTA calendar (`vta/calendar/*`), check-in, meetings, booking pages — see the design note.
+- **Code**: `vtc-service/src/community_events/{mod,hosts,policy}.rs`,
+  `vtc-service/src/trust_tasks/community_event_tasks.rs` (not `event_tasks.rs`, which is the
+  console's live channel), `vtc-service/policies/default/events.rego`,
+  `vtc-service/tests/it/community_events.rs`.
+- **Docs**: `docs/03-vtc/events.md`, `docs/05-design-notes/vtc-events.md`.
+
 ### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)
 - **What**: The community as **originator** of the `election` kind — an election under a
   credential roll naming a member party is notified to that party once the ballot box has

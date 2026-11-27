@@ -126,6 +126,7 @@ async fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) 
         notifications_ks: store.keyspace("notifications").unwrap(),
         boards_ks: store.keyspace("boards").unwrap(),
         badges_ks: store.keyspace("badges").unwrap(),
+        events_ks: store.keyspace("events").unwrap(),
         badge_images_ks: store.keyspace("badge_images").unwrap(),
         oid4vp_keys_ks: store.keyspace("oid4vp_keys").unwrap(),
         oid4vp_signers: Arc::new(vtc_service::oid4vp::VerifierSigners::new()),

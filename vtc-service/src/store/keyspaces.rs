@@ -593,8 +593,9 @@ mod tests {
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
         // `AppState::elections` holds (`ELECTIONS`), plus the one
-        // `AppState::room_watches` holds (`ROOM_WATCHES`). 49 with `audit_index_ks`.
-        assert_eq!(ALL.len(), 62, "ALL must list every AppState keyspace");
+        // `AppState::room_watches` holds (`ROOM_WATCHES`). 49 with `audit_index_ks`; 50 with
+        // `events_ks`.
+        assert_eq!(ALL.len(), 63, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

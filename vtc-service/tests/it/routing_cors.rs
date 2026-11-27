@@ -60,6 +60,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         directory: Default::default(),
         voting: Default::default(),
         boards: Default::default(),
+        events: Default::default(),
         groups: None,
         dids: Default::default(),
         credentials: Default::default(),

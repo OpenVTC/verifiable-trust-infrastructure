@@ -115,7 +115,7 @@ pub const POLICY_SOURCE_MAX_BYTES: usize = 64 * 1024;
 ///   [`Self::CrossCommunityRoles`],
 ///   [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
 /// - **Hosting**: [`Self::Rooms`].
-/// - **Organising**: [`Self::Groups`].
+/// - **Organising**: [`Self::Groups`], [`Self::Events`].
 /// - **Vetting**: [`Self::VetterEligibility`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
@@ -177,6 +177,9 @@ pub enum PolicyPurpose {
     /// is an active member — are never its to relax. Not authority: a group
     /// confers authority only through a binding, whose consent is its own.
     Groups,
+    /// Community events (`vtc.events`, VTI-EVT-080): asked on an event's creation,
+    /// change and publication, after the community's own checks; may only refuse.
+    Events,
 }
 
 impl PolicyPurpose {
@@ -184,7 +187,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 16] = [
+    pub const ALL: [PolicyPurpose; 17] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -201,6 +204,7 @@ impl PolicyPurpose {
         PolicyPurpose::Admission,
         PolicyPurpose::DirectoryWrite,
         PolicyPurpose::Groups,
+        PolicyPurpose::Events,
     ];
 
     /// Whether this purpose decides **authority** — who becomes, stays or stops
@@ -267,6 +271,7 @@ impl PolicyPurpose {
             PolicyPurpose::Admission => "admission",
             PolicyPurpose::DirectoryWrite => "directoryWrite",
             PolicyPurpose::Groups => "groups",
+            PolicyPurpose::Events => "events",
         }
     }
 
@@ -310,6 +315,9 @@ impl PolicyPurpose {
             // Probed by a fixed package: a policy in any other package answers
             // nothing, which refuses every group creation and every join.
             PolicyPurpose::Groups => Some("vtc.groups"),
+            // Probed by a fixed package: a policy in any other package answers
+            // nothing, which refuses every event's creation, change and publication.
+            PolicyPurpose::Events => Some("vtc.events"),
             _ => None,
         }
     }
@@ -374,6 +382,7 @@ mod tests {
             (PolicyPurpose::Admission, json!("admission")),
             (PolicyPurpose::DirectoryWrite, json!("directoryWrite")),
             (PolicyPurpose::Groups, json!("groups")),
+            (PolicyPurpose::Events, json!("events")),
         ];
         for (purpose, wire) in cases {
             assert_eq!(serde_json::to_value(purpose).unwrap(), wire);
@@ -414,7 +423,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 16);
+        assert_eq!(PolicyPurpose::ALL.len(), 17);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

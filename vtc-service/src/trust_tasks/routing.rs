@@ -209,6 +209,7 @@ fn build() -> Routes {
     let routes = group_tasks::register(routes);
     let routes = board_tasks::register(routes);
     let routes = badge_tasks::register(routes);
+    let routes = community_event_tasks::register(routes);
     let routes = community_room_tasks::register(routes);
     let routes = room_admin_tasks::register(routes);
     let routes = role_tasks::register(routes);

@@ -47,6 +47,7 @@ const PURPOSE_ORDER: Record<Purpose, true> = {
   directory: true,
   directoryWrite: true,
   groups: true,
+  events: true,
   roleDefinitions: true,
   crossCommunityRoles: true,
   crossCommunityRelationships: true,

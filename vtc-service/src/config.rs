@@ -146,6 +146,15 @@ pub struct AppConfig {
         skip_serializing_if = "crate::boards::BoardsConfig::is_default"
     )]
     pub boards: crate::boards::BoardsConfig,
+    /// The community's events (`[events]`, the `vtc/events/*` tasks): whether they are on,
+    /// how many reports a member may make a day, and how long registration answers are kept
+    /// after an event ends (VTI-EVT-007, VTI-EVT-081, VTI-EVT-090). Absent: the defaults —
+    /// on, ten reports a day, thirty days.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::community_events::EventsConfig::is_default"
+    )]
+    pub events: crate::community_events::EventsConfig,
     /// The community's groups (`[groups]`, the `vtc/groups/*` tasks): where its VTA
     /// mints each group's identity, and how long the credentials it issues last.
     ///

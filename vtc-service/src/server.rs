@@ -1780,6 +1780,9 @@ pub async fn run(
     // Each dynamic group's members, recomputed from its rule (`vtc/groups/create`
     // item 6, `update` item 6). Always spawned: idle while no dynamic group exists.
     crate::groups::dynamic::spawn(state.clone(), shutdown_rx.clone());
+    // Community events: registration answers deleted past their retention, and event host
+    // appointments whose granter departed sent to review (VTI-EVT-074, VTI-EVT-090).
+    crate::community_events::spawn_sweeper(state.clone(), shutdown_rx.clone());
     // The profile of each room the community owns, written into the room by its VTA:
     // the one retry owner for a create or update that answered `roomProfile: pending`.
     crate::rooms::community_profile::spawn(state.clone(), shutdown_rx.clone());
