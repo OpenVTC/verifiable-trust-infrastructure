@@ -2593,11 +2593,11 @@ export interface components {
          *       [`Self::CrossCommunityRoles`],
          *       [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
          *     - **Hosting**: [`Self::Rooms`].
-         *     - **Organising**: [`Self::Groups`].
+         *     - **Organising**: [`Self::Groups`], [`Self::Events`].
          *     - **Vetting**: [`Self::VetterEligibility`].
          * @enum {string}
          */
-        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility" | "gitNamespace" | "admission" | "directoryWrite" | "groups";
+        PolicyPurpose: "join" | "removal" | "personhood" | "registry" | "directory" | "roleDefinitions" | "crossCommunityRoles" | "crossCommunityRelationships" | "relationships" | "roleChange" | "rooms" | "vetterEligibility" | "gitNamespace" | "admission" | "directoryWrite" | "groups" | "events";
         /**
          * @description The persisted profile plus the one field that is computed per request.
          *

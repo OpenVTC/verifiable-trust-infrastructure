@@ -219,6 +219,8 @@ How to operate and integrate against a VTC.
   awards, sharing outside the community.
 - **[Community boards](03-vtc/boards.md)** — ideas, notes, and an election
   per accepted idea.
+- **[Community events](03-vtc/events.md)** — calendars, events, registration
+  and the waitlist, the roster setting, hosts, reports.
 - **[Rooms the community owns](03-vtc/community-rooms.md)** — turning on
   community-owned data rooms and running one.
 - **[Room storage](03-vtc/room-storage.md)** — storage configs (local, S3,

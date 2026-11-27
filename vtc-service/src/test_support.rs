@@ -569,6 +569,9 @@ impl TestVtcBuilder {
         let badges_ks = store
             .keyspace(crate::store::keyspaces::BADGES)
             .expect("badges ks");
+        let events_ks = store
+            .keyspace(crate::store::keyspaces::EVENTS)
+            .expect("events ks");
         let badge_images_ks = store
             .keyspace(crate::store::keyspaces::BADGE_IMAGES)
             .expect("badge_images ks");
@@ -847,6 +850,7 @@ impl TestVtcBuilder {
             notifications_ks,
             boards_ks,
             badges_ks,
+            events_ks,
             badge_images_ks,
             oid4vp_signers: {
                 for record in &self.oid4vp_identities {

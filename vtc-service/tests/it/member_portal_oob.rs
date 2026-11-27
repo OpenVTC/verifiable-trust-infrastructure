@@ -47,6 +47,7 @@ fn portal_scope() -> Value {
         "vtc/groups",
         "vtc/boards",
         "vtc/badges",
+        "vtc/events",
         "git-ns/view",
         "git-ns/account/link-status"
     ])
@@ -2115,6 +2116,7 @@ async fn sign_in_delegating(f: &Fixture, scope: Option<Value>) -> (Browser, Part
             "vtc/groups",
             "vtc/boards",
             "vtc/badges",
+            "vtc/events",
             "git-ns/view",
             "git-ns/account/link-status"
         ])
@@ -2589,6 +2591,7 @@ async fn a_grant_widening_the_offered_scope_is_refused() {
             "vtc/groups",
             "vtc/boards",
             "vtc/badges",
+            "vtc/events",
             "git-ns/view",
             "git-ns/account/link-status",
             "vtc/rooms"

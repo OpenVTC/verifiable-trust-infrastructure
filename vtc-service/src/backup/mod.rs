@@ -709,6 +709,7 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == crate::store::keyspaces::NOTIFICATIONS => &state.notifications_ks,
         x if x == crate::store::keyspaces::BOARDS => &state.boards_ks,
         x if x == crate::store::keyspaces::BADGES => &state.badges_ks,
+        x if x == crate::store::keyspaces::EVENTS => &state.events_ks,
         x if x == crate::store::keyspaces::BADGE_IMAGES => &state.badge_images_ks,
         x if x == INVITATIONS => &state.invitations_ks,
         x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,

@@ -161,6 +161,17 @@ pub const BADGES: &str = "badges";
 /// the badges they belong to.
 pub const BADGE_IMAGES: &str = "badge_images";
 
+/// Community events (`crate::community_events`, VTI-EVT-*): calendars (`cal:<calendarId>`,
+/// the community's own named by `calcomm`, a group's by `calgrp:<groupId>`), events
+/// (`evt:<eventId>`), registrations (`reg:<eventId>:<entryId>`, indexed `rid:<registrationId>`
+/// and `mreg:<entryId>:<eventId>`) and reports (`rpt:<reportId>`, the open one per member
+/// and event `rptm:<eventId>:<entryId>`). Hosts are access-control appointments
+/// (`vtc.events.manage` at `event:<eventId>`), never stored here.
+///
+/// **Backed up**: who registered for what, and the community's calendars, are the
+/// community's own records.
+pub const EVENTS: &str = "events";
+
 /// Uploads and downloads in flight. Hours long at most, so **not backed up**: a restored
 /// host starts with none, and a client resumes from `begin`.
 pub use vti_rooms::blobs::ROOM_BLOB_TRANSFERS_KEYSPACE as ROOM_BLOB_TRANSFERS;
@@ -344,6 +355,7 @@ pub const ALL: &[&str] = &[
     BOARDS,
     BADGES,
     BADGE_IMAGES,
+    EVENTS,
     AUDIT,
     AUDIT_KEY,
     AUDIT_CHECKPOINT,
@@ -418,6 +430,8 @@ pub const BACKED_UP: &[&str] = &[
     // Badges, awards and holders' preferences; the pictures with them.
     BADGES,
     BADGE_IMAGES,
+    // Calendars, events, registrations and reports.
+    EVENTS,
     AUDIT,
     AUDIT_KEY,
     // Required, not optional: restoring the audit log without its
@@ -579,8 +593,9 @@ mod tests {
         // `AppState::community_rooms` holds (`COMMUNITY_ROOMS`), plus the one
         // `AppState::directory` holds (`DIRECTORY`), plus the one
         // `AppState::elections` holds (`ELECTIONS`), plus the one
-        // `AppState::room_watches` holds (`ROOM_WATCHES`). 49 with `audit_index_ks`.
-        assert_eq!(ALL.len(), 62, "ALL must list every AppState keyspace");
+        // `AppState::room_watches` holds (`ROOM_WATCHES`). 49 with `audit_index_ks`; 50 with
+        // `events_ks`.
+        assert_eq!(ALL.len(), 63, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

@@ -34,6 +34,7 @@ pub mod boards;
 pub mod capability_modules;
 pub mod ceremony;
 pub mod community;
+pub mod community_events;
 pub mod config;
 pub mod config_store;
 pub mod credentials;

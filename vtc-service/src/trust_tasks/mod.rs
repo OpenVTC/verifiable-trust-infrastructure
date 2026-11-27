@@ -174,6 +174,9 @@ pub(crate) mod offset_cursor;
 // Member badges (`vtc/badges/*`, VTI-BDG-*): badges backed by badge groups, awards accepted by
 // their holders, kudos between members, through `crate::badges`.
 pub(crate) mod badge_tasks;
+// Community events (`vtc/events/*`, VTI-EVT-*): calendars, events, registrations, hosts and
+// reports, through `crate::community_events`. (`event_tasks` is the console's live channel.)
+pub(crate) mod community_event_tasks;
 pub(crate) mod role_tasks;
 // `vtc/members/role/set/0.1` — the community-role move.
 pub mod member_role_tasks;

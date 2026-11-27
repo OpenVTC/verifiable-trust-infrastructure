@@ -159,6 +159,8 @@ pub struct AppState {
     pub boards_ks: KeyspaceHandle,
     /// Member badges: settings, badges, awards and holders' preferences (`crate::badges`).
     pub badges_ks: KeyspaceHandle,
+    /// Community events (`crate::community_events`, VTI-EVT-*).
+    pub events_ks: KeyspaceHandle,
     /// Badge pictures, re-encoded (`crate::badges`, over `crate::directory::images`).
     pub badge_images_ks: KeyspaceHandle,
     /// OpenID4VP verifier identities and their keys (`crate::oid4vp`).
@@ -572,6 +574,7 @@ pub async fn run(
     let notifications_ks = store.keyspace(keyspaces::NOTIFICATIONS)?;
     let boards_ks = store.keyspace(keyspaces::BOARDS)?;
     let badges_ks = store.keyspace(keyspaces::BADGES)?;
+    let events_ks = store.keyspace(keyspaces::EVENTS)?;
     let badge_images_ks = store.keyspace(keyspaces::BADGE_IMAGES)?;
     let oid4vp_keys_ks = store.keyspace(keyspaces::OID4VP_KEYS)?;
     let oid4vp_sessions_ks = store.keyspace(keyspaces::OID4VP_SESSIONS)?;
@@ -1145,6 +1148,7 @@ pub async fn run(
         notifications_ks,
         boards_ks,
         badges_ks,
+        events_ks,
         badge_images_ks,
         oid4vp_keys_ks,
         oid4vp_signers,
@@ -1776,6 +1780,9 @@ pub async fn run(
     // Each dynamic group's members, recomputed from its rule (`vtc/groups/create`
     // item 6, `update` item 6). Always spawned: idle while no dynamic group exists.
     crate::groups::dynamic::spawn(state.clone(), shutdown_rx.clone());
+    // Community events: registration answers deleted past their retention, and event host
+    // appointments whose granter departed sent to review (VTI-EVT-074, VTI-EVT-090).
+    crate::community_events::spawn_sweeper(state.clone(), shutdown_rx.clone());
     // The profile of each room the community owns, written into the room by its VTA:
     // the one retry owner for a create or update that answered `roomProfile: pending`.
     crate::rooms::community_profile::spawn(state.clone(), shutdown_rx.clone());

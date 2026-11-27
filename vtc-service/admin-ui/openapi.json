@@ -4457,7 +4457,7 @@
       },
       "PolicyPurpose": {
         "type": "string",
-        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nThe workspace ships twelve purposes (spec §7.1 names the first ten). They\nsplit into five groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`],\n  [`Self::DirectoryWrite`].\n- **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].\n- **Organising**: [`Self::Groups`].\n- **Vetting**: [`Self::VetterEligibility`].",
+        "description": "What a policy decides. The keyspace `active_policies:<purpose>`\nhas at most one row per variant; the active pointer is a\nper-purpose singleton.\n\nWire shape is `camelCase` ASCII (`join`, `removal`,\n`crossCommunityRoles`) — operators wire purposes into REST\npayloads + the policies CLI verbs.\n\nThe workspace ships twelve purposes (spec §7.1 names the first ten). They\nsplit into five groups:\n- **Membership lifecycle**: [`Self::Join`], [`Self::Removal`],\n  [`Self::Personhood`].\n- **Discoverability**: [`Self::Registry`], [`Self::Directory`],\n  [`Self::DirectoryWrite`].\n- **Authorization**: [`Self::RoleDefinitions`], [`Self::RoleChange`],\n  [`Self::CrossCommunityRoles`],\n  [`Self::CrossCommunityRelationships`], [`Self::Relationships`].\n- **Hosting**: [`Self::Rooms`].\n- **Organising**: [`Self::Groups`], [`Self::Events`].\n- **Vetting**: [`Self::VetterEligibility`].",
         "enum": [
           "join",
           "removal",
@@ -4474,7 +4474,8 @@
           "gitNamespace",
           "admission",
           "directoryWrite",
-          "groups"
+          "groups",
+          "events"
         ]
       },
       "ProfileWithStatus": {

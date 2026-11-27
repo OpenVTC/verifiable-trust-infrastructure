@@ -76,6 +76,7 @@ pub(crate) const PORTAL_SIGNING_SCOPE: &[&str] = &[
     "vtc/groups",
     "vtc/boards",
     "vtc/badges",
+    "vtc/events",
     "git-ns/view",
     "git-ns/account/link-status",
 ];

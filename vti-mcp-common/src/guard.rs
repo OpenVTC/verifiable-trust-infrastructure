@@ -614,6 +614,9 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
 /// to `Mutating` without consulting it, so a runtime miss is safe and a
 /// census miss is loud.
 const MUTATING_VERBS: &[&str] = &[
+    // `vtc/events/hosts/appoint`: grants a member `vtc.events.manage` at one event, an
+    // appointment its granter answers for (VTI-EVT-070). Withdrawn by `hosts/remove`.
+    "appoint",
     // `notifications/notify`, `notifications/relay`: a counterparty's delivery, which may
     // be held — replacing a lower revision of the same notification, never anything else.
     "notify",

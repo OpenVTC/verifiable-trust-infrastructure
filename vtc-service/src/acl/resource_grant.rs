@@ -207,6 +207,10 @@ impl ResourceGrant {
             (Capability::GroupsManage, _) => exact && cap == Capability::GroupsManage,
             // A board facilitator's appointment: that board, nothing else (VTI-BRD-090).
             (Capability::BoardsManage, _) => exact && cap == Capability::BoardsManage,
+            // An event's or a group calendar's authority: that resource, nothing else
+            // (VTI-EVT-013, VTI-EVT-070). A group calendar's events are covered by the
+            // events module, which reads the calendar, never by the qualifier.
+            (Capability::EventsManage, _) => exact && cap == Capability::EventsManage,
             _ => false,
         }
     }

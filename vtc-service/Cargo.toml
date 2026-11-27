@@ -397,6 +397,7 @@ p256 = { workspace = true }
 hex = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 clap = { workspace = true }
 # Not only setup's: `did_log_install` verifies a delivered log in every build
 # (vtc/admin/did-log/install, Keyring VTI-35).

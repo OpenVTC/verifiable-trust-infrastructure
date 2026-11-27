@@ -7,6 +7,7 @@
 //! |---|---|---|
 //! | [`Kind::GroupManager`] | `vtc.groups.manage` qualified `group:<groupId>` | `vtc/groups/managers/*` |
 //! | [`Kind::BoardFacilitator`] | `vtc.boards.manage` qualified `board:<boardId>` | `vtc/boards/facilitators/*` (VTI-BRD-090 – 093) |
+//! | [`Kind::EventHost`] | `vtc.events.manage` qualified `event:<eventId>` | `vtc/events/hosts/*` (VTI-EVT-070 – 074) |
 //!
 //! An appointment is a delegation (VTI-ACL-071): it is bounded at write time by the
 //! signer's own holding, and when its granter departs the community, or no longer covers
@@ -36,6 +37,8 @@ pub enum Kind {
     GroupManager,
     /// A facilitator of one community board.
     BoardFacilitator,
+    /// A host of one community event (VTI-EVT-070).
+    EventHost,
 }
 
 impl Kind {
@@ -45,6 +48,7 @@ impl Kind {
         match self {
             Kind::GroupManager => Capability::GroupsManage,
             Kind::BoardFacilitator => Capability::BoardsManage,
+            Kind::EventHost => Capability::EventsManage,
         }
     }
 
@@ -54,6 +58,7 @@ impl Kind {
         match self {
             Kind::GroupManager => ResourceQualifier::Group(id.to_string()),
             Kind::BoardFacilitator => ResourceQualifier::Board(id.to_string()),
+            Kind::EventHost => ResourceQualifier::Event(id.to_string()),
         }
     }
 
@@ -65,7 +70,8 @@ impl Kind {
         }
         match (self, &g.resource) {
             (Kind::GroupManager, ResourceQualifier::Group(id))
-            | (Kind::BoardFacilitator, ResourceQualifier::Board(id)) => Some(id.as_str()),
+            | (Kind::BoardFacilitator, ResourceQualifier::Board(id))
+            | (Kind::EventHost, ResourceQualifier::Event(id)) => Some(id.as_str()),
             _ => None,
         }
     }
@@ -78,6 +84,7 @@ impl Kind {
         match self {
             Kind::GroupManager => "group manager",
             Kind::BoardFacilitator => "board facilitator",
+            Kind::EventHost => "event host",
         }
     }
 }

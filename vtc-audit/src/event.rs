@@ -684,6 +684,13 @@ pub enum AuditEvent {
     /// the award and the entries — never a note or a picture.
     BadgeChanged(BadgeChangedData),
 
+    /// A calendar was created or changed; an event was created, changed, published,
+    /// cancelled or deleted; a registration was made, changed, withdrawn, decided or
+    /// removed; a host was appointed or removed; an event was reported (`vtc/events/*`,
+    /// VTI-EVT-091). By reference — the calendar, the event, the registration and the entry —
+    /// never an answer, a note or a report's text.
+    EventChanged(EventChangedData),
+
     /// A member joined or left a community group, or a request to join one was
     /// made or decided (`vtc/groups/*`). By reference: the group and the
     /// member's entry, never their DID or a request's message.
@@ -1327,6 +1334,7 @@ impl AuditEvent {
             Self::GroupChanged(..) => "GroupChanged",
             Self::BoardChanged(..) => "BoardChanged",
             Self::BadgeChanged(..) => "BadgeChanged",
+            Self::EventChanged(..) => "EventChanged",
             Self::GroupMembershipChanged(..) => "GroupMembershipChanged",
             Self::GroupGrantsChanged(..) => "GroupGrantsChanged",
             Self::CommunityJoinDiscoveryUpdated(..) => "CommunityJoinDiscoveryUpdated",
@@ -3096,6 +3104,33 @@ pub struct BadgeChangedData {
     pub group_id: Option<String>,
 }
 
+/// Payload for [`AuditEvent::EventChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventChangedData {
+    /// The event the change concerns; absent for a calendar's own change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    /// The calendar, where the change is a calendar's or an event was created in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_id: Option<String>,
+    /// The registration the change concerns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_id: Option<String>,
+    /// The member the change concerns — the registrant or the host — by directory entry,
+    /// never a DID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<String>,
+    /// `calendarCreated`, `calendarUpdated`, `created`, `updated`, `published`,
+    /// `cancelled`, `deleted`, `registered`, `registrationChanged`, `withdrawn`,
+    /// `approved`, `declined`, `removed`, `promoted`, `hostAppointed`, `hostRemoved`,
+    /// `hostWithdrawn` or `reported`.
+    pub change: String,
+    /// The settings an update named, by name; a registration's new status.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+}
+
 /// Payload for [`AuditEvent::BoardChanged`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -4775,6 +4810,17 @@ mod tests {
                     group_id: None,
                 }),
                 "BadgeChanged",
+            ),
+            (
+                AuditEvent::EventChanged(EventChangedData {
+                    event_id: Some("evt_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                    calendar_id: None,
+                    registration_id: Some("reg_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                    entry_id: Some("dir_aaaaaaaaaaaaaaaa".into()),
+                    change: "registered".into(),
+                    fields: vec!["going".into()],
+                }),
+                "EventChanged",
             ),
             (
                 AuditEvent::GroupMembershipChanged(GroupMembershipChangedData {
