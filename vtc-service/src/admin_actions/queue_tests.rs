@@ -603,3 +603,150 @@ async fn members_filter_before_paging_and_count_the_matches() {
     members.sort();
     assert_eq!(seen, members);
 }
+
+// ─── event reports (VTI-EVT-081) ─────────────────────────────────────────
+
+/// A published event in the community's calendar, starting in a week, and an open report
+/// of it, raised on the action list.
+async fn reported_event(state: &AppState) -> (String, String) {
+    use crate::community_events as ce;
+    let now = Utc::now();
+    let start = (now + chrono::Duration::days(7)).format("%Y-%m-%dT%H:%M:%S");
+    let cal = ce::community_calendar(&state.events_ks).await.unwrap();
+    let ev = ce::EventRecord {
+        event_id: ce::new_event_id(),
+        calendar_id: cal.calendar_id,
+        kind: "event".into(),
+        status: ce::Lifecycle::Published,
+        title: "Soldering night".into(),
+        description: None,
+        when: ce::When {
+            start: start.to_string(),
+            time_zone: "Etc/UTC".into(),
+            duration: "PT2H".into(),
+            show_without_time: None,
+        },
+        place_summary: None,
+        access: None,
+        audience: json!({ "scope": "members" }),
+        registration: json!({ "mode": "open" }),
+        roster: ce::Roster::Hidden,
+        show_count: false,
+        count_threshold: None,
+        listed: true,
+        accessibility: None,
+        suggested_reminder_minutes: Vec::new(),
+        sequence: 0,
+        cancel_reason: None,
+        published_at: Some(now),
+        cancelled_at: None,
+        created_at: now,
+        updated_at: now,
+        created_by: "dir_creator0000000000".into(),
+    };
+    ce::put_event(&state.events_ks, &ev).await.unwrap();
+    for entry in ["dir_reporterA000000000", "dir_reporterB000000000"] {
+        let report = ce::Report {
+            report_id: ce::new_report_id(),
+            event_id: ev.event_id.clone(),
+            entry_id: entry.into(),
+            reason: "unsafe".into(),
+            note: None,
+            created_at: now,
+            closed: false,
+        };
+        ce::put_report(&state.events_ks, &report).await.unwrap();
+        super::queues::raise_event_report(state, &report, &ev.title)
+            .await
+            .unwrap();
+    }
+    (ev.event_id, ev.title)
+}
+
+/// VTI-EVT-081: reports reach the holders of `vtc.events.manage` as one queue item per
+/// event, never naming the reporter.
+#[tokio::test]
+async fn vti_evt_081_reports_raise_one_review_per_event() {
+    let vtc = vtc().await;
+    let a = admin(&vtc.state).await;
+    let (event_id, title) = reported_event(&vtc.state).await;
+    let items = items_of_kind(&vtc.state, super::summary::KIND_EVENT_REPORT_REVIEW).await;
+    assert_eq!(items.len(), 1, "two reports, one event, one item");
+    let rec = &items[0];
+    assert_eq!(rec.category, Category::Queue);
+    assert_eq!(rec.subject, event_id);
+    assert_eq!(rec.payload["title"], json!(title));
+    assert!(
+        !rec.payload.to_string().contains("dir_reporter"),
+        "the reporter is never on the item"
+    );
+    let deciders: Vec<&str> = rec.approvers.iter().map(|s| s.did.as_str()).collect();
+    assert_eq!(deciders, vec![a.did.as_str()]);
+}
+
+/// VTI-EVT-081: upholding a report cancels the event and closes every report of it.
+#[tokio::test]
+async fn vti_evt_081_upholding_a_report_cancels_the_event() {
+    let vtc = vtc().await;
+    let a = admin(&vtc.state).await;
+    let (event_id, _) = reported_event(&vtc.state).await;
+    let rec = items_of_kind(&vtc.state, super::summary::KIND_EVENT_REPORT_REVIEW)
+        .await
+        .remove(0);
+    let out = decide_as(&vtc.state, &a.did, &rec.id, true, Some("unsafe venue"))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            out,
+            Decided::Granted {
+                completed: true,
+                ..
+            }
+        ),
+        "{out:?}"
+    );
+    let ev = crate::community_events::get_event(&vtc.state.events_ks, &event_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ev.status, crate::community_events::Lifecycle::Cancelled);
+    assert_eq!(ev.cancel_reason.as_deref(), Some("unsafe venue"));
+    assert_eq!(ev.sequence, 1);
+    assert!(
+        crate::community_events::reports(&vtc.state.events_ks)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.closed)
+    );
+}
+
+/// VTI-EVT-081: dismissing closes the reports and leaves the event as it was; a later report
+/// raises a new item.
+#[tokio::test]
+async fn vti_evt_081_dismissing_a_report_leaves_the_event() {
+    let vtc = vtc().await;
+    let a = admin(&vtc.state).await;
+    let (event_id, _) = reported_event(&vtc.state).await;
+    let rec = items_of_kind(&vtc.state, super::summary::KIND_EVENT_REPORT_REVIEW)
+        .await
+        .remove(0);
+    let out = decide_as(&vtc.state, &a.did, &rec.id, false, None)
+        .await
+        .unwrap();
+    assert!(matches!(out, Decided::Denied { .. }), "{out:?}");
+    assert_eq!(item(&vtc.state, &rec.id).await.status, Status::Declined);
+    let ev = crate::community_events::get_event(&vtc.state.events_ks, &event_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ev.status, crate::community_events::Lifecycle::Published);
+    assert!(
+        crate::community_events::reports(&vtc.state.events_ks)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.closed)
+    );
+}

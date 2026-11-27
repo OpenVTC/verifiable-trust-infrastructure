@@ -966,11 +966,132 @@ pub fn spawn_sweeper(state: AppState, mut shutdown: tokio::sync::watch::Receiver
             if let Err(e) = sweep_answers(&state, days).await {
                 tracing::warn!(error = %e, "events retention sweep failed; it runs again within the hour");
             }
+            if let Err(e) = reconcile_reports(&state).await {
+                tracing::warn!(error = %e, "event reports could not be raised on the action list; the next pass tries again");
+            }
             if let Err(e) = hosts::sweep(&state).await {
                 tracing::warn!(error = %e, "event host review sweep failed; it runs again within the hour");
             }
         }
     });
+}
+
+// ─── reports ─────────────────────────────────────────────────────────────
+
+async fn close_reports(ks: &KeyspaceHandle, event_id: &str) -> Result<usize, AppError> {
+    let mut closed = 0;
+    for mut r in reports(ks).await? {
+        if r.event_id == event_id && !r.closed {
+            r.closed = true;
+            put_report(ks, &r).await?;
+            closed += 1;
+        }
+    }
+    Ok(closed)
+}
+
+async fn audit_as(
+    state: &AppState,
+    actor: &str,
+    event_id: &str,
+    change: &str,
+) -> Result<(), AppError> {
+    let writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::ServiceError {
+            status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            message: "audit writer not configured: event changes are refused rather than made \
+                      unaudited"
+                .into(),
+        })?;
+    writer
+        .write(
+            actor,
+            None,
+            vtc_audit::AuditEvent::EventChanged(vtc_audit::EventChangedData {
+                event_id: Some(event_id.to_string()),
+                calendar_id: None,
+                registration_id: None,
+                entry_id: None,
+                change: change.to_string(),
+                fields: Vec::new(),
+            }),
+        )
+        .await
+        .map(drop)
+}
+
+/// An administrator upholds the reports of `event_id` from the action list (VTI-EVT-081):
+/// the event is cancelled as `vtc/events/cancel` cancels it, and every open report closes.
+///
+/// # Errors
+/// A store failure, or an event that cannot be cancelled now (not published, or ended) —
+/// which leaves the item open.
+pub async fn uphold_reports(
+    state: &AppState,
+    event_id: &str,
+    decider: &str,
+    reason: Option<&str>,
+) -> Result<Value, AppError> {
+    let ks = &state.events_ks;
+    let now = Utc::now();
+    {
+        let _guard = WRITE_LOCK.lock().await;
+        let mut ev = get_event(ks, event_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("the event no longer exists".into()))?;
+        if ev.status != Lifecycle::Published || ev.ended(now) {
+            return Err(AppError::Conflict(
+                "only a published event that has not ended is cancelled; dismiss the report \
+                 instead"
+                    .into(),
+            ));
+        }
+        ev.status = Lifecycle::Cancelled;
+        ev.cancelled_at = Some(now);
+        ev.cancel_reason = Some(
+            reason
+                .map(str::to_string)
+                .unwrap_or_else(|| "Cancelled by the community's administrators.".into()),
+        );
+        ev.sequence += 1;
+        ev.updated_at = now;
+        put_event(ks, &ev).await?;
+    }
+    let closed = close_reports(ks, event_id).await?;
+    audit_as(state, decider, event_id, "cancelled").await?;
+    Ok(json!({ "eventId": event_id, "cancelled": true, "reportsClosed": closed }))
+}
+
+/// An administrator dismisses the reports of `event_id`: every open report closes and the
+/// event stands.
+///
+/// # Errors
+/// A store failure.
+pub async fn dismiss_reports(state: &AppState, event_id: &str) -> Result<Value, AppError> {
+    let closed = close_reports(&state.events_ks, event_id).await?;
+    Ok(json!({ "eventId": event_id, "cancelled": false, "reportsClosed": closed }))
+}
+
+/// Raise a review for every event with an open report and no open item (the crash between a
+/// report and its item, a restored backup).
+///
+/// # Errors
+/// A store failure.
+pub async fn reconcile_reports(state: &AppState) -> Result<(), AppError> {
+    let mut seen = BTreeSet::new();
+    for r in reports(&state.events_ks).await? {
+        if r.closed || !seen.insert(r.event_id.clone()) {
+            continue;
+        }
+        let title = get_event(&state.events_ks, &r.event_id)
+            .await?
+            .map(|e| e.title)
+            .unwrap_or_default();
+        crate::admin_actions::queues::raise_event_report(state, &r, &title).await?;
+    }
+    Ok(())
 }
 
 // ─── who is looking ──────────────────────────────────────────────────────

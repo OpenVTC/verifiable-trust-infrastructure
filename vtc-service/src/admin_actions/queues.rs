@@ -7,6 +7,7 @@
 //! | `gitNs.breakGlass.review` | a break-glass is recorded unratified | `git-ns/right/ratify` | `git-ns/right/revoke` |
 //! | `member.join.review` | a join request is referred for review (`admission: review`) | `vtc/join-requests/decide` `approved` | `… rejected` |
 //! | `vetting.withdrawal.review` | a withdrawn vetting statement leaves a current membership resting on it (`needsReview`) | keep the member | `vtc/members/admin-remove` |
+//! | `events.report.review` | a member reports a community event (`vtc/events/report`, VTI-EVT-081), one item per event while open | cancel the event | dismiss the reports |
 //!
 //! No wire task changes. Each item's `typeUri` names a **record type** — never
 //! sent, never dispatched, like a grants review's — and its payload is that
@@ -80,6 +81,7 @@ pub(crate) fn type_uri(act: Act) -> &'static str {
         Act::BreakGlassReview => summary::BREAK_GLASS_REVIEW_URI,
         Act::JoinReview => summary::JOIN_REVIEW_URI,
         Act::VettingReview => summary::VETTING_REVIEW_URI,
+        Act::EventReportReview => summary::EVENT_REPORT_REVIEW_URI,
         _ => "",
     }
 }
@@ -94,6 +96,10 @@ fn break_glass_key(resource: &str, right: &str, subject: &str, at: &str) -> Stri
 
 fn vetting_key(issuer: &str, statement_id: &str, member: &str) -> String {
     format!("vetting:{issuer}|{statement_id}|{member}")
+}
+
+fn event_report_key(event_id: &str) -> String {
+    format!("eventReport:{event_id}")
 }
 
 fn done_key(key: &str) -> String {
@@ -312,6 +318,22 @@ async fn resolution(state: &AppState, rec: &ActionRecord) -> Result<Resolution, 
             match crate::members::storage::get_member(&state.members_ks, &member).await? {
                 Some(m) if m.removed_at.is_none() => Resolution::Pending,
                 _ => Resolution::Gone(format!("{member} is no longer a member")),
+            }
+        }
+        Act::EventReportReview => {
+            use crate::community_events as ce;
+            let id = s("eventId");
+            let open = ce::reports(&state.events_ks)
+                .await?
+                .iter()
+                .any(|r| r.event_id == id && !r.closed);
+            match ce::get_event(&state.events_ks, &id).await? {
+                None => Resolution::Gone("the event no longer exists".into()),
+                Some(ev) if ev.status == ce::Lifecycle::Cancelled => {
+                    Resolution::Gone("the event was cancelled".into())
+                }
+                Some(_) if !open => Resolution::Gone("its reports were closed".into()),
+                Some(_) => Resolution::Pending,
             }
         }
         _ => Resolution::Pending,
@@ -580,8 +602,52 @@ async fn execute(
             serde_json::to_value(crate::members::ops::remove::RemoveResponse::from(outcome))
                 .map_err(|e| e.to_string())
         }
+        Act::EventReportReview => {
+            let id = p["eventId"].as_str().unwrap_or_default().to_string();
+            let outcome = if approve {
+                crate::community_events::uphold_reports(state, &id, decider, reason.as_deref())
+                    .await
+            } else {
+                crate::community_events::dismiss_reports(state, &id).await
+            };
+            outcome.map_err(|e| e.to_string())
+        }
         _ => Err("not a queue item".into()),
     }
+}
+
+// ─── event reports ───────────────────────────────────────────────────────
+
+/// Raise the review of `report`'s event, unless one is open for it already: one item per
+/// event, whatever number of members report it (VTI-EVT-081). The reporter is never named on
+/// the item; the record keeps them.
+pub(crate) async fn raise_event_report(
+    state: &AppState,
+    report: &crate::community_events::Report,
+    title: &str,
+) -> Result<Option<String>, AppError> {
+    let mut payload = json!({
+        "eventId": report.event_id,
+        "title": title,
+        "reason": report.reason,
+        "reportedAt": rfc3339(report.created_at.timestamp().max(0) as u64),
+    });
+    if let Some(n) = &report.note {
+        payload["note"] = json!(n);
+    }
+    raise(
+        state,
+        QueueSpec {
+            act: Act::EventReportReview,
+            key: event_report_key(&report.event_id),
+            requester: community_did(state).await,
+            subject: report.event_id.clone(),
+            stake: Act::EventReportReview.default_stake(),
+            payload,
+            summary: format!("Cancel {title} or dismiss the report"),
+        },
+    )
+    .await
 }
 
 // ─── closing by another route ────────────────────────────────────────────

@@ -36,6 +36,7 @@ import {
   KIND_GRANTS_REVIEW,
   KIND_JOIN_REVIEW,
   KIND_VETTING_REVIEW,
+  KIND_EVENT_REPORT_REVIEW,
   wireDigest,
 } from "./action-summary";
 import type { ActionSummaryWire } from "./action-summary";
@@ -617,6 +618,13 @@ export function decisionLabels(action: Pick<Action, "kind">): DecisionLabels {
         approve: "Keep member",
         decline: "Start removal",
         declineReason: "Why remove them? (optional; recorded with the removal)",
+        declineReasonRequired: false,
+      };
+    case KIND_EVENT_REPORT_REVIEW:
+      return {
+        approve: "Cancel the event",
+        decline: "Dismiss report",
+        declineReason: "Why dismiss it? (optional; kept in the audit record)",
         declineReasonRequired: false,
       };
     default:

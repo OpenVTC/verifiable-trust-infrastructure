@@ -94,6 +94,8 @@ pub const KIND_BREAK_GLASS_REVIEW: &str = "gitNs.breakGlass.review";
 pub const KIND_JOIN_REVIEW: &str = "member.join.review";
 /// A withdrawn vetting statement a current membership rests on.
 pub const KIND_VETTING_REVIEW: &str = "vetting.withdrawal.review";
+/// A member's report of a community event (VTI-EVT-081).
+pub const KIND_EVENT_REPORT_REVIEW: &str = "events.report.review";
 
 /// A direct admission the `admission` policy referred for approval: adding a
 /// member without a join request (`vtc/members/admit/0.1`).
@@ -123,6 +125,8 @@ pub const BREAK_GLASS_REVIEW_URI: &str = "urn:openvtc:vtc:git-ns:break-glass-rev
 pub const JOIN_REVIEW_URI: &str = "urn:openvtc:vtc:join:review";
 /// The record type a vetting withdrawal review is raised under.
 pub const VETTING_REVIEW_URI: &str = "urn:openvtc:vtc:vetting:withdrawal-review";
+/// The record type an event report review is raised under.
+pub const EVENT_REPORT_REVIEW_URI: &str = "urn:openvtc:vtc:events:report-review";
 
 /// `acl/change-role/0.1`, no longer served: the community role moves with
 /// `vtc/members/role/set/0.1` ([`MEMBERS_ROLE_SET`]). Its templates stay so a move
@@ -392,6 +396,12 @@ const VETTING_REVIEW_EFFECT: &str = "{issuer} withdrew the vetting statement {st
                                      {member}'s admission counted. Keeping the member records that \
                                      the admission stands; starting removal sends it through \
                                      vtc/members/admin-remove, which applies its own rules.";
+
+const EVENT_REPORT_REVIEW_EFFECT: &str = "A member reported the event {title} ({eventId}) as \
+                                         {reason}. Upholding the report cancels the event, \
+                                         as its hosts would, and its registrants see it \
+                                         cancelled; dismissing it leaves the event as it is. \
+                                         Who reported it is not shown here.";
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
@@ -1066,6 +1076,19 @@ pub const TEMPLATES: &[Template] = &[
         ],
     },
     Template {
+        kind: KIND_EVENT_REPORT_REVIEW,
+        type_uri: EVENT_REPORT_REVIEW_URI,
+        title: "Cancel {title} or dismiss the report",
+        effect: EVENT_REPORT_REVIEW_EFFECT,
+        fields: &[
+            f("eventId", "/eventId", "text"),
+            f("title", "/title", "text"),
+            f("reason", "/reason", "text"),
+            f("note", "/note", "text"),
+            f("reportedAt", "/reportedAt", "datetime"),
+        ],
+    },
+    Template {
         kind: KIND_MEMBER_ADMIT,
         type_uri: MEMBERS_ADMIT,
         title: "Add {subject} as a member, holding {role}",
@@ -1314,6 +1337,11 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_VETTING_REVIEW,
         VETTING_REVIEW_URI,
         "zQmcUNShH782uKh8YFnXsQ322vCS2Hs6U9tJv8SLABeKmBV",
+    ),
+    (
+        KIND_EVENT_REPORT_REVIEW,
+        EVENT_REPORT_REVIEW_URI,
+        "zQmVyH2yStmxBktDuF8xcNy6hLhZXBuHAYF39fivkCqryRh",
     ),
     (
         KIND_MEMBER_ADMIT,
