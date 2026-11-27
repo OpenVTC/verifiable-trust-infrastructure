@@ -3124,7 +3124,7 @@ pub struct EventChangedData {
     /// `calendarCreated`, `calendarUpdated`, `created`, `updated`, `published`,
     /// `cancelled`, `deleted`, `registered`, `registrationChanged`, `withdrawn`,
     /// `approved`, `declined`, `removed`, `promoted`, `hostAppointed`, `hostRemoved`,
-    /// `hostWithdrawn` or `reported`.
+    /// `hostWithdrawn`, `reported`, `invited`, `linkCreated`, `linkRevoked` or `announced`.
     pub change: String,
     /// The settings an update named, by name; a registration's new status.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -297,6 +297,12 @@ pub fn notify(topic: Topic) {
     if matches!(topic, Topic::Members | Topic::Directory) {
         crate::groups::dynamic::kick();
     }
+    // An event's audience reads the same facts, and group membership: a member coming into
+    // it is invited, one leaving it has their invitation withdrawn (VTI-EVT-101,
+    // VTI-NTF-065).
+    if matches!(topic, Topic::Members | Topic::Directory | Topic::Groups) {
+        crate::community_events::kick();
+    }
     let at = Utc::now();
     {
         let mut h = lock_history();

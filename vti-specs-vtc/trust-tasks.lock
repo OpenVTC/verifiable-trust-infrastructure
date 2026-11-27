@@ -753,6 +753,18 @@ type_uri = "https://trusttasks.org/spec/vtc/events/access/show/0.1"
 digest = "sha256:3890e52176f1cf86ea7abafbd33952560c4096c37f159a02b48e2668a73a7cfc"
 
 [[task]]
+slug = "vtc/events/announcements/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/announcements/list/0.1"
+digest = "sha256:fd64d43ed8682671510f1aa1d77a3d48aaa70a3b089008d81d00460609d76835"
+
+[[task]]
+slug = "vtc/events/announcements/send"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/announcements/send/0.1"
+digest = "sha256:018226c8b19d895810abfee7eafbc1c0289854079344d110cadd6457e83a3527"
+
+[[task]]
 slug = "vtc/events/calendars/create"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/events/calendars/create/0.1"
@@ -778,9 +790,9 @@ digest = "sha256:2c63d21d82ec4d32daca88c85d764203357fa98951ad66f086b54bf00cd47d0
 
 [[task]]
 slug = "vtc/events/create"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/create/0.1"
-digest = "sha256:692942ef5eac34389f110853c907eec9fab8656ddac531c2fa0881674266b398"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/create/0.2"
+digest = "sha256:1dd1fe3d2d79bb1289b69f6f2570fe140f3973fd18dd462c4c2b4956cbb06673"
 
 [[task]]
 slug = "vtc/events/delete"
@@ -807,16 +819,64 @@ type_uri = "https://trusttasks.org/spec/vtc/events/hosts/remove/0.1"
 digest = "sha256:d35a0df6fe96191b4695655614486ae4e6cba915d8f5ea4ea42c4b8b6e532e37"
 
 [[task]]
-slug = "vtc/events/list"
+slug = "vtc/events/invitations/links/create"
 version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/list/0.1"
-digest = "sha256:d118cb27abcfcd1564e18744c2e579d92b766ef4e2e55e65c9c1e3cc98393dcd"
+type_uri = "https://trusttasks.org/spec/vtc/events/invitations/links/create/0.1"
+digest = "sha256:ec02f7f7a2bc29f7ef4d95043b6dd022290ee0c7c1ff85a583de464ec13ced59"
+
+[[task]]
+slug = "vtc/events/invitations/links/redeem"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/invitations/links/redeem/0.1"
+digest = "sha256:5cf3840ac549c48eb7341395ad163f3d9a12babde19cf96dce0e196948de48a7"
+
+[[task]]
+slug = "vtc/events/invitations/links/revoke"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/invitations/links/revoke/0.1"
+digest = "sha256:97915fcb714f4feecca567b70ce1d99729f554982900eb8bfac22eb09eb85210"
+
+[[task]]
+slug = "vtc/events/invitations/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/invitations/list/0.1"
+digest = "sha256:441bafa46c7d3430eabdf149a7f3915413c78e318c8a4a469566690c4a96328e"
+
+[[task]]
+slug = "vtc/events/invitations/respond"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/invitations/respond/0.1"
+digest = "sha256:d96db7b16758092c826abc9c6e2a908ce4ab9b5679d034677936966e1b839f44"
+
+[[task]]
+slug = "vtc/events/invitations/send"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/invitations/send/0.1"
+digest = "sha256:2a81c60339381fdbb6ef4df3da3a0e1930dfb7f0796ed2c0e7d7016cff9f80fd"
+
+[[task]]
+slug = "vtc/events/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/list/0.2"
+digest = "sha256:bc4ebc0c71165d7be439f8684c63e7419c23e146111d35e2154176f410ee53f9"
 
 [[task]]
 slug = "vtc/events/mine/list"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/mine/list/0.2"
+digest = "sha256:7ec03da1d6cada645d8c568224f540d3e129b80dd8cd501e62f512be5e4a5db8"
+
+[[task]]
+slug = "vtc/events/optouts/list"
 version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/mine/list/0.1"
-digest = "sha256:6a79214049efbbcbe840239ea06cc0b337d93b5140655dc974e3e0cb3799bb45"
+type_uri = "https://trusttasks.org/spec/vtc/events/optouts/list/0.1"
+digest = "sha256:4fffd2039dcf8bbfb0fa4c5c01fda7a00af71474a84582d5fb466440ed3e4684"
+
+[[task]]
+slug = "vtc/events/optouts/set"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vtc/events/optouts/set/0.1"
+digest = "sha256:27d01e909aa86e8b32b8008571cd0feb693996270c7aceba9561f01a6ecb782b"
 
 [[task]]
 slug = "vtc/events/publish"
@@ -826,33 +886,33 @@ digest = "sha256:0e7737cbc1fe8882808fb07e955038ec882ab4d9be7b79f037d89ec0033b9b8
 
 [[task]]
 slug = "vtc/events/registrations/decide"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/registrations/decide/0.1"
-digest = "sha256:2c6f908f575042870e737e847e51ff4de9a8b98590b3952f39c67af6d01f111e"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/registrations/decide/0.2"
+digest = "sha256:7907e5a0a20a03395a2f26be5119ebc496f61284d0918389048848318dbfc3d3"
 
 [[task]]
 slug = "vtc/events/registrations/list"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/registrations/list/0.1"
-digest = "sha256:321b87425e44c62fe85c90d3ba0d530e4daabfd3900f38d870d0136046113767"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/registrations/list/0.2"
+digest = "sha256:3d06d441985ac1511dc0179cc9cd5c58465c7f542f1a6070b69aa133acb4e607"
 
 [[task]]
 slug = "vtc/events/registrations/register"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/registrations/register/0.1"
-digest = "sha256:9deb33a38002af09301e59b27684efe6be149c9ae9350bc00f73171f6e3ff387"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/registrations/register/0.2"
+digest = "sha256:9c9fcf23c963d53674941bef6c32203ab6630faf4c6bcf19de1cefc84ed52519"
 
 [[task]]
 slug = "vtc/events/registrations/remove"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/registrations/remove/0.1"
-digest = "sha256:681656f6f2b3d96c7494ab1bbe56e7e5cd14be2603f098e5920c8db6beb76fab"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/registrations/remove/0.2"
+digest = "sha256:28390bc9cbe267dcdbc61c468b6f23e1e698a8698492a1acea944a60a95c2c1d"
 
 [[task]]
 slug = "vtc/events/registrations/withdraw"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/registrations/withdraw/0.1"
-digest = "sha256:40408ab4e9fb035fb56acebde79789af492220a17199c6fcfc9c73ffc0cdd019"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/registrations/withdraw/0.2"
+digest = "sha256:bdebc36d017970ff83cd699bec71a1c35bcaaae54f9de96977c0749f6dfd752d"
 
 [[task]]
 slug = "vtc/events/report"
@@ -862,15 +922,15 @@ digest = "sha256:9ad4e2179dad400c6fb1709cee5adac73682ea36bbbc75ab461ba73e9e477c2
 
 [[task]]
 slug = "vtc/events/show"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/show/0.1"
-digest = "sha256:4b1b122d54baee7e3eebd0c3c383fc9581385d1048b1207497360befa1dd41aa"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/show/0.2"
+digest = "sha256:3d11000f2be148f192a72caab9fc49e5220903d64f318087fb8bff75c2980922"
 
 [[task]]
 slug = "vtc/events/update"
-version = "0.1"
-type_uri = "https://trusttasks.org/spec/vtc/events/update/0.1"
-digest = "sha256:17645b997dfb7cbae4af57c1edc45ce2c430df4db24db646dd4368b923b2fc37"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/vtc/events/update/0.2"
+digest = "sha256:88e97d2bcc241a91c1b85d645a81586d564398d1d9951f1c9ced5b18c2104975"
 
 [[task]]
 slug = "vtc/groups/bindings/add"

@@ -2356,91 +2356,91 @@ fn witnesses() -> Vec<Witness> {
             "vti_evt_013_calendars_are_run_by_their_authority"
         ),
         witness!(
-            s::events::create::v0_1::error_codes::EVENTS_OFF,
+            s::events::create::v0_2::error_codes::EVENTS_OFF,
             crate::trust_tasks::community_event_tasks::CREATE_ERR_EVENTS_OFF,
             "community_events.rs",
             "vti_evt_007_events_off_refuses_every_change"
         ),
         witness!(
-            s::events::create::v0_1::error_codes::CALENDAR_ARCHIVED,
+            s::events::create::v0_2::error_codes::CALENDAR_ARCHIVED,
             crate::trust_tasks::community_event_tasks::CREATE_ERR_CALENDAR_ARCHIVED,
             "community_events.rs",
             "vti_evt_014_an_archived_calendar_takes_no_events"
         ),
         witness!(
-            s::events::create::v0_1::error_codes::TIME_ZONE_UNKNOWN,
+            s::events::create::v0_2::error_codes::TIME_ZONE_UNKNOWN,
             crate::trust_tasks::community_event_tasks::CREATE_ERR_TIME_ZONE_UNKNOWN,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::create::v0_1::error_codes::WHEN_INVALID,
+            s::events::create::v0_2::error_codes::WHEN_INVALID,
             crate::trust_tasks::community_event_tasks::CREATE_ERR_WHEN_INVALID,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::create::v0_1::error_codes::AUDIENCE_INVALID,
+            s::events::create::v0_2::error_codes::AUDIENCE_INVALID,
             crate::trust_tasks::community_event_tasks::CREATE_ERR_AUDIENCE_INVALID,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::create::v0_1::error_codes::REGISTRATION_INVALID,
+            s::events::create::v0_2::error_codes::REGISTRATION_INVALID,
             crate::trust_tasks::community_event_tasks::CREATE_ERR_REGISTRATION_INVALID,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::create::v0_1::error_codes::POLICY_REFUSED,
+            s::events::create::v0_2::error_codes::POLICY_REFUSED,
             crate::trust_tasks::community_event_tasks::CREATE_ERR_POLICY_REFUSED,
             "community_events.rs",
             "vti_evt_080_the_events_policy_may_refuse"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::EVENTS_OFF,
+            s::events::update::v0_2::error_codes::EVENTS_OFF,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_EVENTS_OFF,
             "community_events.rs",
             "vti_evt_007_events_off_refuses_every_change"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::EVENT_CANCELLED,
+            s::events::update::v0_2::error_codes::EVENT_CANCELLED,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_EVENT_CANCELLED,
             "community_events.rs",
             "vti_evt_004_the_lifecycle"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::ROSTER_LOCKED,
+            s::events::update::v0_2::error_codes::ROSTER_LOCKED,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_ROSTER_LOCKED,
             "community_events.rs",
             "vti_evt_051_roster_is_fixed_at_publish"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::TIME_ZONE_UNKNOWN,
+            s::events::update::v0_2::error_codes::TIME_ZONE_UNKNOWN,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_TIME_ZONE_UNKNOWN,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::WHEN_INVALID,
+            s::events::update::v0_2::error_codes::WHEN_INVALID,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_WHEN_INVALID,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::AUDIENCE_INVALID,
+            s::events::update::v0_2::error_codes::AUDIENCE_INVALID,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_AUDIENCE_INVALID,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::REGISTRATION_INVALID,
+            s::events::update::v0_2::error_codes::REGISTRATION_INVALID,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_REGISTRATION_INVALID,
             "community_events.rs",
             "vti_evt_005_create_and_update_check_the_event"
         ),
         witness!(
-            s::events::update::v0_1::error_codes::POLICY_REFUSED,
+            s::events::update::v0_2::error_codes::POLICY_REFUSED,
             crate::trust_tasks::community_event_tasks::UPDATE_ERR_POLICY_REFUSED,
             "community_events.rs",
             "vti_evt_080_the_events_policy_may_refuse"
@@ -2506,7 +2506,7 @@ fn witnesses() -> Vec<Witness> {
             "vti_evt_004_the_lifecycle"
         ),
         witness!(
-            s::events::list::v0_1::error_codes::RANGE_INVALID,
+            s::events::list::v0_2::error_codes::RANGE_INVALID,
             crate::trust_tasks::community_event_tasks::LIST_ERR_RANGE_INVALID,
             "community_events.rs",
             "vti_evt_022_list_ranges_filters_and_order"
@@ -2530,103 +2530,103 @@ fn witnesses() -> Vec<Witness> {
             "vti_evt_060_access_details_are_released"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::NOT_OPEN,
+            s::events::registrations::register::v0_2::error_codes::NOT_OPEN,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_NOT_OPEN,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::EVENT_CANCELLED,
+            s::events::registrations::register::v0_2::error_codes::EVENT_CANCELLED,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_EVENT_CANCELLED,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::WINDOW_CLOSED,
+            s::events::registrations::register::v0_2::error_codes::WINDOW_CLOSED,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_WINDOW_CLOSED,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::FULL,
+            s::events::registrations::register::v0_2::error_codes::FULL,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_FULL,
             "community_events.rs",
             "vti_evt_033_capacity_waitlist_and_promotion"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::TOO_MANY_GUESTS,
+            s::events::registrations::register::v0_2::error_codes::TOO_MANY_GUESTS,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_TOO_MANY_GUESTS,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::ANSWERS_INVALID,
+            s::events::registrations::register::v0_2::error_codes::ANSWERS_INVALID,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_ANSWERS_INVALID,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::CODE_OF_CONDUCT_REQUIRED,
+            s::events::registrations::register::v0_2::error_codes::CODE_OF_CONDUCT_REQUIRED,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_CODE_OF_CONDUCT_REQUIRED,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::MAYBE_NOT_ACCEPTED,
+            s::events::registrations::register::v0_2::error_codes::MAYBE_NOT_ACCEPTED,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_MAYBE_NOT_ACCEPTED,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::register::v0_1::error_codes::HOST_DECIDED,
+            s::events::registrations::register::v0_2::error_codes::HOST_DECIDED,
             crate::trust_tasks::community_event_tasks::REGISTER_ERR_HOST_DECIDED,
             "community_events.rs",
             "vti_evt_031_register_refusals"
         ),
         witness!(
-            s::events::registrations::withdraw::v0_1::error_codes::NOT_REGISTERED,
+            s::events::registrations::withdraw::v0_2::error_codes::NOT_REGISTERED,
             crate::trust_tasks::community_event_tasks::WITHDRAW_ERR_NOT_REGISTERED,
             "community_events.rs",
             "vti_evt_037_withdrawal_is_always_allowed"
         ),
         witness!(
-            s::events::registrations::list::v0_1::error_codes::ROSTER_HIDDEN,
+            s::events::registrations::list::v0_2::error_codes::ROSTER_HIDDEN,
             crate::trust_tasks::community_event_tasks::REG_LIST_ERR_ROSTER_HIDDEN,
             "community_events.rs",
             "vti_evt_053_who_sees_the_roster"
         ),
         witness!(
-            s::events::registrations::list::v0_1::error_codes::NOT_REGISTERED,
+            s::events::registrations::list::v0_2::error_codes::NOT_REGISTERED,
             crate::trust_tasks::community_event_tasks::REG_LIST_ERR_NOT_REGISTERED,
             "community_events.rs",
             "vti_evt_053_who_sees_the_roster"
         ),
         witness!(
-            s::events::registrations::list::v0_1::error_codes::FILTER_NOT_PERMITTED,
+            s::events::registrations::list::v0_2::error_codes::FILTER_NOT_PERMITTED,
             crate::trust_tasks::community_event_tasks::REG_LIST_ERR_FILTER_NOT_PERMITTED,
             "community_events.rs",
             "vti_evt_053_who_sees_the_roster"
         ),
         witness!(
-            s::events::registrations::decide::v0_1::error_codes::NOT_PENDING,
+            s::events::registrations::decide::v0_2::error_codes::NOT_PENDING,
             crate::trust_tasks::community_event_tasks::DECIDE_ERR_NOT_PENDING,
             "community_events.rs",
             "vti_evt_073_hosts_decide_and_remove"
         ),
         witness!(
-            s::events::registrations::decide::v0_1::error_codes::FULL,
+            s::events::registrations::decide::v0_2::error_codes::FULL,
             crate::trust_tasks::community_event_tasks::DECIDE_ERR_FULL,
             "community_events.rs",
             "vti_evt_073_hosts_decide_and_remove"
         ),
         witness!(
-            s::events::registrations::decide::v0_1::error_codes::EVENT_CANCELLED,
+            s::events::registrations::decide::v0_2::error_codes::EVENT_CANCELLED,
             crate::trust_tasks::community_event_tasks::DECIDE_ERR_EVENT_CANCELLED,
             "community_events.rs",
             "vti_evt_073_hosts_decide_and_remove"
         ),
         witness!(
-            s::events::registrations::remove::v0_1::error_codes::EVENT_ENDED,
+            s::events::registrations::remove::v0_2::error_codes::EVENT_ENDED,
             crate::trust_tasks::community_event_tasks::REMOVE_ERR_EVENT_ENDED,
             "community_events.rs",
             "vti_evt_073_hosts_decide_and_remove"
@@ -2672,6 +2672,162 @@ fn witnesses() -> Vec<Witness> {
             crate::trust_tasks::community_event_tasks::REPORT_ERR_LIMIT_REACHED,
             "community_events.rs",
             "vti_evt_081_reports"
+        ),
+        witness!(
+            s::events::invitations::send::v0_1::error_codes::NOT_PUBLISHED,
+            crate::trust_tasks::community_event_tasks::SEND_ERR_NOT_PUBLISHED,
+            "community_events.rs",
+            "vti_evt_103_host_and_member_invitations"
+        ),
+        witness!(
+            s::events::invitations::send::v0_1::error_codes::EVENT_CANCELLED,
+            crate::trust_tasks::community_event_tasks::SEND_ERR_EVENT_CANCELLED,
+            "community_events.rs",
+            "vti_evt_103_host_and_member_invitations"
+        ),
+        witness!(
+            s::events::invitations::send::v0_1::error_codes::NOT_ELIGIBLE,
+            crate::trust_tasks::community_event_tasks::SEND_ERR_NOT_ELIGIBLE,
+            "community_events.rs",
+            "vti_evt_103_host_and_member_invitations"
+        ),
+        witness!(
+            s::events::invitations::send::v0_1::error_codes::NOT_IN_AUDIENCE,
+            crate::trust_tasks::community_event_tasks::SEND_ERR_NOT_IN_AUDIENCE,
+            "community_events.rs",
+            "vti_evt_103_host_and_member_invitations"
+        ),
+        witness!(
+            s::events::invitations::send::v0_1::error_codes::MEMBERS_MAY_NOT_INVITE,
+            crate::trust_tasks::community_event_tasks::SEND_ERR_MEMBERS_MAY_NOT_INVITE,
+            "community_events.rs",
+            "vti_evt_103_host_and_member_invitations"
+        ),
+        witness!(
+            s::events::invitations::send::v0_1::error_codes::LIMIT_REACHED,
+            crate::trust_tasks::community_event_tasks::SEND_ERR_LIMIT_REACHED,
+            "community_events.rs",
+            "vti_evt_103_host_and_member_invitations"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::NOT_INVITED,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_NOT_INVITED,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::EVENT_CANCELLED,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_EVENT_CANCELLED,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::NOT_OPEN,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_NOT_OPEN,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::WINDOW_CLOSED,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_WINDOW_CLOSED,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::FULL,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_FULL,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::TOO_MANY_GUESTS,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_TOO_MANY_GUESTS,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::ANSWERS_INVALID,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_ANSWERS_INVALID,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::CODE_OF_CONDUCT_REQUIRED,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_CODE_OF_CONDUCT_REQUIRED,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::MAYBE_NOT_ACCEPTED,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_MAYBE_NOT_ACCEPTED,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::respond::v0_1::error_codes::HOST_DECIDED,
+            crate::trust_tasks::community_event_tasks::RESPOND_ERR_HOST_DECIDED,
+            "community_events.rs",
+            "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::links::create::v0_1::error_codes::EVENT_CANCELLED,
+            crate::trust_tasks::community_event_tasks::LINKS_CREATE_ERR_EVENT_CANCELLED,
+            "community_events.rs",
+            "vti_evt_107_invitation_links"
+        ),
+        witness!(
+            s::events::invitations::links::create::v0_1::error_codes::EXPIRY_INVALID,
+            crate::trust_tasks::community_event_tasks::LINKS_CREATE_ERR_EXPIRY_INVALID,
+            "community_events.rs",
+            "vti_evt_107_invitation_links"
+        ),
+        witness!(
+            s::events::invitations::links::revoke::v0_1::error_codes::LINK_NOT_FOUND,
+            crate::trust_tasks::community_event_tasks::LINKS_REVOKE_ERR_LINK_NOT_FOUND,
+            "community_events.rs",
+            "vti_evt_107_invitation_links"
+        ),
+        witness!(
+            s::events::invitations::links::revoke::v0_1::error_codes::ALREADY_REVOKED,
+            crate::trust_tasks::community_event_tasks::LINKS_REVOKE_ERR_ALREADY_REVOKED,
+            "community_events.rs",
+            "vti_evt_107_invitation_links"
+        ),
+        witness!(
+            s::events::invitations::links::redeem::v0_1::error_codes::LINK_INVALID,
+            crate::trust_tasks::community_event_tasks::LINKS_REDEEM_ERR_LINK_INVALID,
+            "community_events.rs",
+            "vti_evt_107_invitation_links"
+        ),
+        witness!(
+            s::events::announcements::send::v0_1::error_codes::NOT_PUBLISHED,
+            crate::trust_tasks::community_event_tasks::ANN_SEND_ERR_NOT_PUBLISHED,
+            "community_events.rs",
+            "vti_evt_120_announcements"
+        ),
+        witness!(
+            s::events::announcements::send::v0_1::error_codes::LIMIT_REACHED,
+            crate::trust_tasks::community_event_tasks::ANN_SEND_ERR_LIMIT_REACHED,
+            "community_events.rs",
+            "vti_evt_120_announcements"
+        ),
+        witness!(
+            s::events::announcements::list::v0_1::error_codes::NOT_REGISTERED,
+            crate::trust_tasks::community_event_tasks::ANN_LIST_ERR_NOT_REGISTERED,
+            "community_events.rs",
+            "vti_evt_120_announcements"
+        ),
+        witness!(
+            s::events::create::v0_2::error_codes::PARTNER_INVALID,
+            crate::trust_tasks::community_event_tasks::CREATE_ERR_PARTNER_INVALID,
+            "community_events.rs",
+            "vti_evt_130_partners_are_checked"
+        ),
+        witness!(
+            s::events::update::v0_2::error_codes::PARTNER_INVALID,
+            crate::trust_tasks::community_event_tasks::UPDATE_ERR_PARTNER_INVALID,
+            "community_events.rs",
+            "vti_evt_130_partners_are_checked"
         ),
         witness!(
             s::boards::delete::v0_1::error_codes::NOT_FOUND,

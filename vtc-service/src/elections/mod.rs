@@ -26,7 +26,8 @@ pub mod store;
 
 #[cfg(feature = "voting")]
 pub mod ops;
-#[cfg(feature = "voting")]
+// Built in every build: community events verify a partner member's presentation the same way
+// (VTI-EVT-132), and it needs nothing of the voting stack.
 pub mod presentation;
 #[cfg(feature = "voting")]
 pub mod roll;

@@ -32,24 +32,41 @@ import type {
   EventShowResponse,
   EventUpdatePayload,
   EventUpdateResponse,
+  EventInvitationsSendResponse,
+  EventInvitationsListResponse,
+  EventInvitationLinksCreateResponse,
+  EventInvitationLinksRevokeResponse,
+  EventAnnouncementsSendResponse,
+  EventAnnouncementsListResponse,
+  EventInvitation,
+  EventInvitationLink,
+  EventAnnouncement,
 } from "./wire-types";
+
+export type { EventInvitation, EventInvitationLink, EventAnnouncement };
 
 export const CALENDARS_CREATE = "https://trusttasks.org/spec/vtc/events/calendars/create/0.1";
 export const CALENDARS_UPDATE = "https://trusttasks.org/spec/vtc/events/calendars/update/0.1";
 export const CALENDARS_LIST = "https://trusttasks.org/spec/vtc/events/calendars/list/0.1";
-export const CREATE = "https://trusttasks.org/spec/vtc/events/create/0.1";
-export const UPDATE = "https://trusttasks.org/spec/vtc/events/update/0.1";
+export const CREATE = "https://trusttasks.org/spec/vtc/events/create/0.2";
+export const UPDATE = "https://trusttasks.org/spec/vtc/events/update/0.2";
 export const PUBLISH = "https://trusttasks.org/spec/vtc/events/publish/0.1";
 export const CANCEL = "https://trusttasks.org/spec/vtc/events/cancel/0.1";
 export const DELETE = "https://trusttasks.org/spec/vtc/events/delete/0.1";
-export const SHOW = "https://trusttasks.org/spec/vtc/events/show/0.1";
-export const LIST = "https://trusttasks.org/spec/vtc/events/list/0.1";
-export const REGISTRATIONS_LIST = "https://trusttasks.org/spec/vtc/events/registrations/list/0.1";
-export const REGISTRATIONS_DECIDE = "https://trusttasks.org/spec/vtc/events/registrations/decide/0.1";
-export const REGISTRATIONS_REMOVE = "https://trusttasks.org/spec/vtc/events/registrations/remove/0.1";
+export const SHOW = "https://trusttasks.org/spec/vtc/events/show/0.2";
+export const LIST = "https://trusttasks.org/spec/vtc/events/list/0.2";
+export const REGISTRATIONS_LIST = "https://trusttasks.org/spec/vtc/events/registrations/list/0.2";
+export const REGISTRATIONS_DECIDE = "https://trusttasks.org/spec/vtc/events/registrations/decide/0.2";
+export const REGISTRATIONS_REMOVE = "https://trusttasks.org/spec/vtc/events/registrations/remove/0.2";
 export const HOSTS_APPOINT = "https://trusttasks.org/spec/vtc/events/hosts/appoint/0.1";
 export const HOSTS_REMOVE = "https://trusttasks.org/spec/vtc/events/hosts/remove/0.1";
 export const HOSTS_LIST = "https://trusttasks.org/spec/vtc/events/hosts/list/0.1";
+export const INVITATIONS_SEND = "https://trusttasks.org/spec/vtc/events/invitations/send/0.1";
+export const INVITATIONS_LIST = "https://trusttasks.org/spec/vtc/events/invitations/list/0.1";
+export const LINKS_CREATE = "https://trusttasks.org/spec/vtc/events/invitations/links/create/0.1";
+export const LINKS_REVOKE = "https://trusttasks.org/spec/vtc/events/invitations/links/revoke/0.1";
+export const ANNOUNCEMENTS_SEND = "https://trusttasks.org/spec/vtc/events/announcements/send/0.1";
+export const ANNOUNCEMENTS_LIST = "https://trusttasks.org/spec/vtc/events/announcements/list/0.1";
 
 /** Runs the community's calendars and every event (qualified: a group's calendar, or one event). */
 export const EVENTS_MANAGE = "vtc.events.manage";
@@ -187,6 +204,48 @@ export const appointHost = (eventId: string, entryId: string) =>
 
 export const removeHost = (eventId: string, entryId: string) =>
   postSignedTrustTask<EventHostsRemoveResponse>(HOSTS_REMOVE, { eventId, entryId }).then((r) => r.hosts);
+
+// ── Invitations, links and announcements (VTI-EVT-103 – 107, 120) ─────────
+
+const INV_PAGE = 100;
+
+export const sendInvitations = (eventId: string, entryIds: string[]) =>
+  postSignedTrustTask<EventInvitationsSendResponse>(INVITATIONS_SEND, { eventId, entryIds }).then((r) => r.invitations);
+
+/** Every invitation to `eventId`, oldest first: the hosts' view (VTI-EVT-106). */
+export async function listInvitations(eventId: string): Promise<EventInvitation[]> {
+  const out: EventInvitation[] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const page = await postSignedRead<EventInvitationsListResponse>(INVITATIONS_LIST, {
+      eventId,
+      limit: INV_PAGE,
+      ...(cursor ? { cursor } : {}),
+    });
+    out.push(...page.items.map((x) => x.invitation));
+    cursor = page.nextCursor;
+    if (!cursor) break;
+  }
+  return out;
+}
+
+/** A link and its code — the code answered this once and never again (VTI-EVT-107). */
+export const createLink = (eventId: string, maxRedemptions: number, expiresAt: string, label?: string) =>
+  postSignedTrustTask<EventInvitationLinksCreateResponse>(LINKS_CREATE, {
+    eventId,
+    maxRedemptions,
+    expiresAt,
+    ...(label ? { label } : {}),
+  });
+
+export const revokeLink = (eventId: string, linkId: string) =>
+  postSignedTrustTask<EventInvitationLinksRevokeResponse>(LINKS_REVOKE, { eventId, linkId }).then((r) => r.link);
+
+export const sendAnnouncement = (eventId: string, text: string) =>
+  postSignedTrustTask<EventAnnouncementsSendResponse>(ANNOUNCEMENTS_SEND, { eventId, text }).then((r) => r.announcement);
+
+export const listAnnouncements = (eventId: string) =>
+  postSignedRead<EventAnnouncementsListResponse>(ANNOUNCEMENTS_LIST, { eventId, limit: INV_PAGE }).then((r) => r.items);
 
 // ── Time ─────────────────────────────────────────────────────────────────
 

@@ -27,6 +27,7 @@
 //! forward) moves forward to the first time that exists; one it repeats takes the first.
 
 pub mod hosts;
+pub mod invitations;
 pub mod policy;
 
 use std::collections::BTreeSet;
@@ -62,6 +63,18 @@ pub struct EventsConfig {
     /// Days after an event ends that registration answers are kept (VTI-EVT-090). Default 30.
     #[serde(default = "thirty")]
     pub answers_retention_days: u32,
+    /// The most invitations one member may make in a day, where an event lets members invite
+    /// (VTI-EVT-105). Default 20.
+    #[serde(default = "twenty")]
+    pub invitations_per_day: u32,
+    /// The most announcements an event's hosts may post to it in a day (VTI-EVT-120).
+    /// Default 10.
+    #[serde(default = "ten")]
+    pub announcements_per_day: u32,
+}
+
+fn twenty() -> u32 {
+    20
 }
 
 fn yes() -> bool {
@@ -80,6 +93,8 @@ impl Default for EventsConfig {
             enabled: true,
             reports_per_day: 10,
             answers_retention_days: 30,
+            invitations_per_day: 20,
+            announcements_per_day: 10,
         }
     }
 }
@@ -104,6 +119,12 @@ fn new_id(prefix: &str) -> String {
         "{prefix}_{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
     )
+}
+
+/// A new identifier with `prefix`, for the records of this module's submodules.
+#[must_use]
+pub fn new_id_with(prefix: &str) -> String {
+    new_id(prefix)
 }
 
 #[must_use]
@@ -347,6 +368,12 @@ pub struct EventRecord {
     pub accessibility: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suggested_reminder_minutes: Vec<u32>,
+    /// How it invites its audience (VTI-EVT-100).
+    #[serde(default)]
+    pub invite: invitations::InviteMode,
+    /// Members of the audience may invite other members of it (VTI-EVT-105).
+    #[serde(default)]
+    pub members_may_invite: bool,
     pub sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancel_reason: Option<String>,
@@ -514,7 +541,12 @@ impl RegStatus {
 pub struct Registration {
     pub registration_id: String,
     pub event_id: String,
+    /// The member's directory entry — or, for a partner's member (VTI-EVT-134), the DID they
+    /// presented as, which is also `registrant_did`. The registration's key either way.
     pub entry_id: String,
+    /// A registrant who is not a member: a partner's member, by the DID they presented as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registrant_did: Option<String>,
     pub status: RegStatus,
     pub guests: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -951,17 +983,34 @@ pub async fn sweep_answers(state: &AppState, retention_days: u32) -> Result<usiz
     Ok(cleared)
 }
 
+/// Wakes the events sweeper now: an event published, changed or cancelled, an invitation
+/// made or revoked, a member's standing moved.
+static KICK: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+/// Wake the events sweeper, so invitations and their notifications follow a change at once.
+pub fn kick() {
+    KICK.notify_one();
+}
+
 /// The events sweeper: answers past their retention and host appointments whose granter
 /// departed (VTI-EVT-074, VTI-EVT-090), once an hour.
 pub fn spawn_sweeper(state: AppState, mut shutdown: tokio::sync::watch::Receiver<bool>) {
     tokio::spawn(async move {
-        let mut wait = std::time::Duration::from_secs(60);
+        let mut last_hourly: Option<std::time::Instant> = None;
         loop {
             tokio::select! {
                 _ = shutdown.changed() => return,
-                _ = tokio::time::sleep(wait) => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
+                _ = KICK.notified() => {}
             }
-            wait = std::time::Duration::from_secs(3600);
+            // Invitations and their notifications: the one sender (VTI-EVT-102).
+            if let Err(e) = invitations::settle(&state, Utc::now()).await {
+                tracing::warn!(error = %e, "event invitations could not be settled; the next pass tries again");
+            }
+            if last_hourly.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3600)) {
+                continue;
+            }
+            last_hourly = Some(std::time::Instant::now());
             let days = state.config.read().await.events.answers_retention_days;
             if let Err(e) = sweep_answers(&state, days).await {
                 tracing::warn!(error = %e, "events retention sweep failed; it runs again within the hour");
@@ -1104,6 +1153,10 @@ pub struct Viewer {
     pub active_member: bool,
     /// What the community's records say of them, for the audience (VTI-EVT-020).
     pub subject: Option<Subject>,
+    /// For a party who is not a member: the partner community whose membership credential
+    /// they presented with this request, verified before any event was looked up
+    /// (VTI-EVT-132, VTI-EVT-133). Never kept beyond the request.
+    pub partner: Option<String>,
     entry: Option<VtcAclEntry>,
 }
 
@@ -1136,8 +1189,21 @@ impl Viewer {
             entry_id,
             active_member,
             subject,
+            partner: None,
             entry,
         })
+    }
+
+    /// Whether the partner they proved, if any, is one `audience` names (VTI-EVT-132).
+    #[must_use]
+    pub fn partner_admitted(&self, audience: &Value) -> bool {
+        let Some(p) = &self.partner else {
+            return false;
+        };
+        audience
+            .get("partners")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().any(|x| x.as_str() == Some(p)))
     }
 
     fn can(&self, cap: Capability, at: Option<&ResourceQualifier>) -> bool {
@@ -1324,6 +1390,12 @@ pub fn event_wire(ev: &EventRecord, host: bool, regs: &[Registration], hosts: &[
     if !hosts.is_empty() {
         o.insert("hosts".into(), json!(hosts));
     }
+    if ev.invite != invitations::InviteMode::None {
+        o.insert("invite".into(), json!(ev.invite.as_str()));
+    }
+    if ev.members_may_invite {
+        o.insert("membersMayInvite".into(), json!(true));
+    }
     let going = places_taken(regs);
     if let Some(c) = count_for(ev, going, host) {
         o.insert("goingCount".into(), c);
@@ -1353,7 +1425,10 @@ pub fn registration_wire(reg: &Registration, regs: &[Registration]) -> Value {
     let mut o = Map::new();
     o.insert("registrationId".into(), json!(reg.registration_id));
     o.insert("eventId".into(), json!(reg.event_id));
-    o.insert("entryId".into(), json!(reg.entry_id));
+    match &reg.registrant_did {
+        Some(did) => o.insert("registrantDid".into(), json!(did)),
+        None => o.insert("entryId".into(), json!(reg.entry_id)),
+    };
     o.insert("status".into(), json!(reg.status.as_str()));
     o.insert("guests".into(), json!(reg.guests));
     if let Some(a) = &reg.answers {
@@ -1479,6 +1554,7 @@ mod tests {
             registration_id: id.into(),
             event_id: "evt_x".into(),
             entry_id: format!("dir_{id}"),
+            registrant_did: None,
             status,
             guests,
             answers: None,
@@ -1512,6 +1588,8 @@ mod tests {
             listed: true,
             accessibility: None,
             suggested_reminder_minutes: Vec::new(),
+            invite: Default::default(),
+            members_may_invite: false,
             sequence: 3,
             cancel_reason: None,
             published_at: None,

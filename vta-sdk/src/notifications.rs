@@ -44,11 +44,18 @@ pub const KIND_ELECTION: &str = "election";
 /// The task that opens a notified election (VTI-NTF-060).
 pub const ELECTION_OPEN_WITH: &str = "https://trusttasks.org/spec/vtc/elections/show/0.6";
 
+/// The registered notification kind for a community event (Appendix G, VTI-NTF-064): an
+/// invitation to it, or its reaching a partner community.
+pub const KIND_EVENT: &str = "event";
+
+/// The task that opens a notified event (VTI-NTF-064).
+pub const EVENT_OPEN_WITH: &str = "https://trusttasks.org/spec/vtc/events/show/0.2";
+
 /// Whether this build recognises `kind` (VTI-NTF-012): a recipient does nothing with an
 /// unrecognised kind beyond holding, listing and discarding it.
 #[must_use]
 pub fn is_recognised_kind(kind: &str) -> bool {
-    kind == KIND_ELECTION
+    kind == KIND_ELECTION || kind == KIND_EVENT
 }
 
 /// Whether a registered kind's definition lets it be relayed (Appendix G). An unregistered
@@ -72,6 +79,10 @@ pub fn relay_disclosure(kind: &str) -> Option<&'static str> {
             "Relaying this notification shows each party it is relayed to that you are a \
              member of the community holding the election — which your own listing in that \
              community's directory may otherwise keep from them (VTI-NTF-046, VTI-DIR-040).",
+        ),
+        KIND_EVENT => Some(
+            "Relaying this notification shows each party it is relayed to that you are a \
+             member of the community holding the event, or a partner it named (VTI-NTF-066).",
         ),
         _ => None,
     }

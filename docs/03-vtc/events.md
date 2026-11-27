@@ -7,11 +7,12 @@ each change with a signed reply the member's own agent keeps as a receipt. Event
 authority: nothing about an event, a registration or an attendance is read by an
 authorization decision.
 
-Specification: the VTI Community Events chapter (VTI-EVT-001 – 095). Wire: the
-`vtc/events/*` 0.1 Trust Tasks. Design: [`vtc-events.md`](../05-design-notes/vtc-events.md),
-which also describes the later phases (invitations and the `event` notification, the
-member's calendar across communities in their VTA, check-in and tickets, meetings, booking
-pages).
+Specification: the VTI Community Events chapter (VTI-EVT-001 – 135) and the `event`
+notification kind (VTI-NTF-064 – 067). Wire: the `vtc/events/*` Trust Tasks — `create`,
+`update`, `show`, `list`, `mine/list` and `registrations/*` at 0.2 (the 0.1 versions are no
+longer served), the rest at 0.1. Design: [`vtc-events.md`](../05-design-notes/vtc-events.md),
+which also describes the later phases (the member's calendar across communities in their VTA,
+check-in and tickets, meetings, booking pages).
 
 ## Who runs what
 
@@ -82,16 +83,82 @@ badges, or roles with an optional rule, registration settings, questions, code o
 accessibility, the roster setting — offered on a draft with a warning that publishing locks it,
 and shown fixed after — the count, listing and suggested reminders); *Publish*, *Cancel* with a
 reason, *Delete draft*; *Registrations* (approve or decline pending, remove, waitlist positions,
-guests and answers); *Hosts* (appoint, remove). Signed with the console key only.
+guests and answers); *Invitations* (who is invited and how they answered, invite a member,
+make and revoke links — the link is shown once, when made — and post announcements); *Hosts*
+(appoint, remove). The editor also sets the invite mode, whether members may invite, and partner
+communities. Signed with the console key only.
 
 **The member portal** (`#/events`, a home tile and attention lines for registrations waiting on
 the hosts or a place, and the next event within a week): *Upcoming*, *Mine* and *Month*, with
-calendar chips; each event in the viewer's own zone with the event's beside it, the roster
+calendar chips, and *Invitations* (answer going, maybe or decline; undo an opt-out); each event in the viewer's own zone with the event's beside it, the roster
 setting and the count as the event shows it. One event: register (going or maybe, guests,
 answers, the code of conduct), change or withdraw, where it happens once going (or when it will
 be released), who else is going on a visible roster only, *Add to calendar* (an `.ics` file
-built in the browser from what the community answered — no route), and *Report this event*.
+built in the browser from what the community answered — no route), the hosts' announcements,
+*Don't invite me to this*, and *Report this event*. `#/events/join/<code>` redeems an invitation
+link and offers the event.
 Signed with the portal key the member delegated `vtc/events` to.
+
+## Invitations
+
+An invitation tells a member about an event; it never registers them. Each member has at most
+one invitation per event, which carries their **answer** — `going` and `maybe` register them
+(through the same checks as `registrations/register`), `decline` registers nothing, and a later
+answer replaces an earlier one (`vtc/events/invitations/respond`, VTI-EVT-104).
+
+- **The audience** (VTI-EVT-100 – 102): an event's `invite` is `none` (the default), `notify`
+  or `expect` (a reply is expected). Once the event is published, the events sweeper invites
+  every active member of the audience who is not registered, not yet invited and has not opted
+  out, and keeps going as the audience grows.
+- **Hosts and members** (`vtc/events/invitations/send`, VTI-EVT-103): a host invites any
+  active member, even one outside the audience — the invitation lets them see the event and
+  register. With `membersMayInvite`, a registered member may invite members of the audience.
+  Within `[events] invitations_per_day` per inviter.
+- **Links** (`vtc/events/invitations/links/*`, VTI-EVT-107): a host makes a link with a use
+  limit and an expiry. Its code (256 random bits) is answered once by `create` and never again —
+  the community keeps only its SHA-256 digest, and the response is not kept for a redelivery.
+  An active member who redeems it is invited as a host would invite them. Every reason a code
+  does not work (unknown, expired, used up, revoked, already used by this member) is the one
+  `linkInvalid`. The portal's page for a link is `#/events/join/<code>`.
+- **Opt-outs** (`vtc/events/optouts/{set,list}`, VTI-EVT-110): a member stops invitations to
+  one event or from one calendar; the sweeper and members' invitations skip them. A host's
+  invitation is not stopped by an opt-out from the audience.
+
+Every invitation is delivered as an `event` **notification** to the member's DID (below).
+
+## Notifications
+
+The community originates the `event` kind (VTI-NTF-064 – 067), as it does `election`: the
+notice row is written first, and the events sweeper is its only sender, through the durable
+member push (`notifications::push_signed`). A notification names the community, the event id,
+`vtc/events/show/0.2`, the audience (one member's DID, or a partner community's DID) and the
+event's period — never its title, place, text or an announcement. A change of time or place
+(the event's `sequence`) sends a new revision; cancelling, an invitation revoked, or the member
+leaving the audience sends a withdrawal. Before each offering revision the sweeper re-checks
+that the invitee is still an active member who may see the event. Membership, directory and
+group changes kick the sweeper.
+
+## Announcements
+
+A host posts an announcement to an event's registrants (`vtc/events/announcements/send`,
+VTI-EVT-120 – 122), within `[events] announcements_per_day` per event. Announcements never
+change the time or place — the event's `sequence` is unchanged — but mark it changed, so a
+member's agent reading `show` sees something new. Their text is never in a notification.
+Hosts and live registrants read them with `announcements/list`; anyone else is
+`notRegistered`.
+
+## Partners
+
+An event's audience may name **partner communities** (`audience.partners`, VTI-EVT-130 – 135):
+each must be an active member party of this community holding a current membership credential,
+or a counterparty in a relationship in force — else `partnerInvalid`. A partner community gets
+one `event` notification at its own DID, to relay to its members as it decides. A partner's
+member shows the event and registers by carrying a presentation of their membership of that
+partner; it is verified **before** the event is looked up (the check `vtc/elections` uses), and
+an unobtainable DID document or status list is the standard `indeterminate`, the same whatever
+the event. A partner's member registers under their DID, is never on the roster (the roster
+says only how many others are going), and receives no access detail they are not otherwise
+entitled to.
 
 ## Configuration
 
@@ -99,6 +166,8 @@ Signed with the portal key the member delegated `vtc/events` to.
 [events]
 enabled = true                # off: every event read is notFound, every change eventsOff
 reports_per_day = 10          # vtc/events/report, per member
+invitations_per_day = 20      # vtc/events/invitations/send, per inviter
+announcements_per_day = 10    # vtc/events/announcements/send, per event
 answers_retention_days = 30   # registration answers kept after an event ends
 ```
 

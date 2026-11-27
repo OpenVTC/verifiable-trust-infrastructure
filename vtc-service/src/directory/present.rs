@@ -154,8 +154,8 @@ fn base_did(did: &str) -> &str {
 /// document's `id` and this community. Used where a task still requires the
 /// presentation's own `nonce` and `domain` (`vtc/elections/*`). Card present
 /// accepts either placement, which the presentation verifier's
-/// `check_di_binding` enforces.
-#[cfg(feature = "voting")]
+/// `check_di_binding` enforces. Community events' partner presentations use it too
+/// (VTI-EVT-132), in every build.
 pub(crate) fn proof_options_agree(vp: &Value, document_id: &str, community: &str) -> bool {
     let proofs: Vec<&Value> = match vp.get("proof") {
         Some(Value::Array(a)) => a.iter().collect(),
@@ -381,7 +381,6 @@ mod tests {
         assert_eq!(kb_jwt_kid("issuer.jwt.sig~disc~"), None);
     }
 
-    #[cfg(feature = "voting")]
     #[test]
     fn a_proof_naming_another_challenge_is_refused() {
         let vp = json!({ "proof": { "challenge": "urn:uuid:1", "domain": "did:example:c" } });

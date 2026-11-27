@@ -27,23 +27,34 @@ use vtc_audit::{AuditEvent, EventChangedData};
 use vti_common::error::AppError;
 use vti_specs::vtc::events::{
     access::show::v0_1 as access_show,
+    announcements::{list::v0_1 as ann_list, send::v0_1 as ann_send},
     calendars::{create::v0_1 as cal_create, list::v0_1 as cal_list, update::v0_1 as cal_update},
     cancel::v0_1 as ev_cancel,
-    create::v0_1 as ev_create,
+    create::v0_2 as ev_create,
     delete::v0_1 as ev_delete,
     hosts::{
         appoint::v0_1 as hosts_appoint, list::v0_1 as hosts_list, remove::v0_1 as hosts_remove,
     },
-    list::v0_1 as ev_list,
-    mine::list::v0_1 as mine_list,
+    invitations::{
+        links::{
+            create::v0_1 as links_create, redeem::v0_1 as links_redeem,
+            revoke::v0_1 as links_revoke,
+        },
+        list::v0_1 as inv_list,
+        respond::v0_1 as inv_respond,
+        send::v0_1 as inv_send,
+    },
+    list::v0_2 as ev_list,
+    mine::list::v0_2 as mine_list,
+    optouts::{list::v0_1 as opt_list, set::v0_1 as opt_set},
     publish::v0_1 as ev_publish,
     registrations::{
-        decide::v0_1 as reg_decide, list::v0_1 as reg_list, register::v0_1 as reg_register,
-        remove::v0_1 as reg_remove, withdraw::v0_1 as reg_withdraw,
+        decide::v0_2 as reg_decide, list::v0_2 as reg_list, register::v0_2 as reg_register,
+        remove::v0_2 as reg_remove, withdraw::v0_2 as reg_withdraw,
     },
     report::v0_1 as ev_report,
-    show::v0_1 as ev_show,
-    update::v0_1 as ev_update,
+    show::v0_2 as ev_show,
+    update::v0_2 as ev_update,
 };
 
 use super::admin_tasks::member_signer;
@@ -80,6 +91,7 @@ codes! {
     CREATE_ERR_AUDIENCE_INVALID = ev_create::AUDIENCE_INVALID;
     CREATE_ERR_REGISTRATION_INVALID = ev_create::REGISTRATION_INVALID;
     CREATE_ERR_POLICY_REFUSED = ev_create::POLICY_REFUSED;
+    CREATE_ERR_PARTNER_INVALID = ev_create::PARTNER_INVALID;
     UPDATE_ERR_EVENTS_OFF = ev_update::EVENTS_OFF;
     UPDATE_ERR_EVENT_CANCELLED = ev_update::EVENT_CANCELLED;
     UPDATE_ERR_ROSTER_LOCKED = ev_update::ROSTER_LOCKED;
@@ -88,6 +100,7 @@ codes! {
     UPDATE_ERR_AUDIENCE_INVALID = ev_update::AUDIENCE_INVALID;
     UPDATE_ERR_REGISTRATION_INVALID = ev_update::REGISTRATION_INVALID;
     UPDATE_ERR_POLICY_REFUSED = ev_update::POLICY_REFUSED;
+    UPDATE_ERR_PARTNER_INVALID = ev_update::PARTNER_INVALID;
     PUBLISH_ERR_EVENTS_OFF = ev_publish::EVENTS_OFF;
     PUBLISH_ERR_NOT_DRAFT = ev_publish::NOT_DRAFT;
     PUBLISH_ERR_CALENDAR_ARCHIVED = ev_publish::CALENDAR_ARCHIVED;
@@ -126,7 +139,69 @@ codes! {
     HOSTS_REMOVE_ERR_LAST_HOST = hosts_remove::LAST_HOST;
     REPORT_ERR_ALREADY_REPORTED = ev_report::ALREADY_REPORTED;
     REPORT_ERR_LIMIT_REACHED = ev_report::LIMIT_REACHED;
+    SEND_ERR_NOT_PUBLISHED = inv_send::NOT_PUBLISHED;
+    SEND_ERR_EVENT_CANCELLED = inv_send::EVENT_CANCELLED;
+    SEND_ERR_NOT_ELIGIBLE = inv_send::NOT_ELIGIBLE;
+    SEND_ERR_NOT_IN_AUDIENCE = inv_send::NOT_IN_AUDIENCE;
+    SEND_ERR_MEMBERS_MAY_NOT_INVITE = inv_send::MEMBERS_MAY_NOT_INVITE;
+    SEND_ERR_LIMIT_REACHED = inv_send::LIMIT_REACHED;
+    RESPOND_ERR_NOT_INVITED = inv_respond::NOT_INVITED;
+    RESPOND_ERR_EVENT_CANCELLED = inv_respond::EVENT_CANCELLED;
+    RESPOND_ERR_NOT_OPEN = inv_respond::NOT_OPEN;
+    RESPOND_ERR_WINDOW_CLOSED = inv_respond::WINDOW_CLOSED;
+    RESPOND_ERR_FULL = inv_respond::FULL;
+    RESPOND_ERR_TOO_MANY_GUESTS = inv_respond::TOO_MANY_GUESTS;
+    RESPOND_ERR_ANSWERS_INVALID = inv_respond::ANSWERS_INVALID;
+    RESPOND_ERR_CODE_OF_CONDUCT_REQUIRED = inv_respond::CODE_OF_CONDUCT_REQUIRED;
+    RESPOND_ERR_MAYBE_NOT_ACCEPTED = inv_respond::MAYBE_NOT_ACCEPTED;
+    RESPOND_ERR_HOST_DECIDED = inv_respond::HOST_DECIDED;
+    LINKS_CREATE_ERR_EVENT_CANCELLED = links_create::EVENT_CANCELLED;
+    LINKS_CREATE_ERR_EXPIRY_INVALID = links_create::EXPIRY_INVALID;
+    LINKS_REVOKE_ERR_LINK_NOT_FOUND = links_revoke::LINK_NOT_FOUND;
+    LINKS_REVOKE_ERR_ALREADY_REVOKED = links_revoke::ALREADY_REVOKED;
+    LINKS_REDEEM_ERR_LINK_INVALID = links_redeem::LINK_INVALID;
+    ANN_SEND_ERR_NOT_PUBLISHED = ann_send::NOT_PUBLISHED;
+    ANN_SEND_ERR_LIMIT_REACHED = ann_send::LIMIT_REACHED;
+    ANN_LIST_ERR_NOT_REGISTERED = ann_list::NOT_REGISTERED;
 }
+
+/// The refusal codes a registration answers with, by the task it arrives as: `register`
+/// itself, or `invitations/respond`, which registers the same way (VTI-EVT-104).
+struct RegCodes {
+    event_cancelled: &'static str,
+    not_open: &'static str,
+    window_closed: &'static str,
+    full: &'static str,
+    too_many_guests: &'static str,
+    answers_invalid: &'static str,
+    code_of_conduct_required: &'static str,
+    maybe_not_accepted: &'static str,
+    host_decided: &'static str,
+}
+
+const REGISTER_CODES: RegCodes = RegCodes {
+    event_cancelled: REGISTER_ERR_EVENT_CANCELLED,
+    not_open: REGISTER_ERR_NOT_OPEN,
+    window_closed: REGISTER_ERR_WINDOW_CLOSED,
+    full: REGISTER_ERR_FULL,
+    too_many_guests: REGISTER_ERR_TOO_MANY_GUESTS,
+    answers_invalid: REGISTER_ERR_ANSWERS_INVALID,
+    code_of_conduct_required: REGISTER_ERR_CODE_OF_CONDUCT_REQUIRED,
+    maybe_not_accepted: REGISTER_ERR_MAYBE_NOT_ACCEPTED,
+    host_decided: REGISTER_ERR_HOST_DECIDED,
+};
+
+const RESPOND_CODES: RegCodes = RegCodes {
+    event_cancelled: RESPOND_ERR_EVENT_CANCELLED,
+    not_open: RESPOND_ERR_NOT_OPEN,
+    window_closed: RESPOND_ERR_WINDOW_CLOSED,
+    full: RESPOND_ERR_FULL,
+    too_many_guests: RESPOND_ERR_TOO_MANY_GUESTS,
+    answers_invalid: RESPOND_ERR_ANSWERS_INVALID,
+    code_of_conduct_required: RESPOND_ERR_CODE_OF_CONDUCT_REQUIRED,
+    maybe_not_accepted: RESPOND_ERR_MAYBE_NOT_ACCEPTED,
+    host_decided: RESPOND_ERR_HOST_DECIDED,
+};
 
 /// Register every task this family serves.
 pub(super) fn register(routes: Routes) -> Routes {
@@ -163,12 +238,39 @@ pub(super) fn register(routes: Routes) -> Routes {
     let routes = on!(routes, hosts_remove::Payload => |state, ctx, doc| handle_hosts_remove(state, ctx, doc));
     let routes =
         on!(routes, hosts_list::Payload => |state, ctx, doc| handle_hosts_list(state, ctx, doc));
-    on!(routes, ev_report::Payload => |state, ctx, doc| handle_report(state, ctx, doc))
+    let routes =
+        on!(routes, ev_report::Payload => |state, ctx, doc| handle_report(state, ctx, doc));
+    let routes = on!(routes, inv_send::Payload => |state, ctx, doc| handle_invite(state, ctx, doc));
+    let routes =
+        on!(routes, inv_list::Payload => |state, ctx, doc| handle_invitations(state, ctx, doc));
+    let routes =
+        on!(routes, inv_respond::Payload => |state, ctx, doc| handle_respond(state, ctx, doc));
+    let routes =
+        on!(routes, links_create::Payload => |state, ctx, doc| handle_link_create(state, ctx, doc));
+    let routes =
+        on!(routes, links_revoke::Payload => |state, ctx, doc| handle_link_revoke(state, ctx, doc));
+    let routes =
+        on!(routes, links_redeem::Payload => |state, ctx, doc| handle_link_redeem(state, ctx, doc));
+    let routes =
+        on!(routes, opt_set::Payload => |state, ctx, doc| handle_optout_set(state, ctx, doc));
+    let routes =
+        on!(routes, opt_list::Payload => |state, ctx, doc| handle_optout_list(state, ctx, doc));
+    let routes =
+        on!(routes, ann_send::Payload => |state, ctx, doc| handle_announce(state, ctx, doc));
+    on!(routes, ann_list::Payload => |state, ctx, doc| handle_announcements(state, ctx, doc))
 }
 
 // ─── shared ──────────────────────────────────────────────────────────────
 
 type Doc = TrustTask<Value>;
+
+pub(crate) const LINKS_CREATE_TYPE: &str =
+    <links_create::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Tasks whose response carries an invitation link's code, answered once: the
+/// community keeps only its digest (VTI-EVT-107), and the duplicate-execution
+/// record keeps no copy either. A redelivery is answered `204`.
+pub(crate) const SECRET_RESPONSES: &[&str] = &[LINKS_CREATE_TYPE];
 
 fn declared(doc: &Doc, code: &str, message: impl Into<String>) -> TrustTaskOutcome {
     reject_with_code(doc, extended_code(code), message, None)
@@ -245,6 +347,33 @@ async fn member(
     Viewer::read(state, &did)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))
+}
+
+/// A member's act, or — where the request carries a presentation — a party who is not a member
+/// presenting a partner's membership credential (VTI-EVT-132). The presentation is verified
+/// here, before any event is looked up (VTI-EVT-133); without one that passes, the caller sees
+/// only what a stranger would: nothing.
+async fn member_or_partner(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &Doc,
+) -> Result<Viewer, TrustTaskOutcome> {
+    let mut who = match member(state, ctx, doc).await {
+        Ok(w) => w,
+        Err(refusal) => {
+            let (Some(signer), Some(_)) = (
+                ctx.verified_signer.as_deref(),
+                doc.payload.get("presentation"),
+            ) else {
+                return Err(refusal);
+            };
+            Viewer::read(state, signer)
+                .await
+                .map_err(|e| app_error_to_reject(doc, &e))?
+        }
+    };
+    partner_presentation(state, &mut who, doc).await?;
+    Ok(who)
 }
 
 /// A host's act: the signer's own key only — never the portal's delegated key (VTI-EVT-095).
@@ -386,9 +515,10 @@ async fn visible_event(state: &AppState, who: &Viewer, id: &str) -> Result<Optio
     };
     let cal = ce::get_calendar(ks, &ev.calendar_id).await?;
     let host = who.hosts(&ev, cal.as_ref());
-    let own = match &who.entry_id {
-        Some(e) => ce::get_registration(ks, id, e).await?,
-        None => None,
+    let own = match (&who.entry_id, &who.partner) {
+        (Some(e), _) => ce::get_registration(ks, id, e).await?,
+        (None, Some(_)) => ce::get_registration(ks, id, &who.did).await?,
+        (None, None) => None,
     };
     if host {
         return Ok(Some(Seen { ev, cal, host, own }));
@@ -396,9 +526,71 @@ async fn visible_event(state: &AppState, who: &Viewer, id: &str) -> Result<Optio
     if ev.status == Lifecycle::Draft {
         return Ok(None);
     }
+    // A party who is not a member sees an event only on a presentation that passed, naming a
+    // partner this audience names — a registration they hold is not enough (VTI-EVT-132,
+    // VTI-EVT-135).
+    if !who.active_member && who.partner.is_some() {
+        return Ok(who
+            .partner_admitted(&ev.audience)
+            .then_some(Seen { ev, cal, host, own }));
+    }
     let schema = schema(state).await?;
-    let sees = own.is_some() || who.in_audience(&ev.audience, &schema);
+    // A standing host or link invitation puts its invitee in the audience (VTI-EVT-103).
+    let invited = match &who.entry_id {
+        Some(e) => ce::invitations::get_invitation(ks, id, e)
+            .await?
+            .is_some_and(|i| i.widens()),
+        None => false,
+    };
+    let sees =
+        own.is_some() || (who.active_member && invited) || who.in_audience(&ev.audience, &schema);
     Ok(sees.then_some(Seen { ev, cal, host, own }))
+}
+
+/// Verify a partner member's presentation, if the request carries one, before any event is
+/// looked up and without reference to one (VTI-EVT-133), and note the partner it proves on
+/// `who`. A member's presentation is ignored: they are admitted as members. `Err` answers the
+/// standard `indeterminate` when what the check needs cannot be obtained now.
+async fn partner_presentation(
+    state: &AppState,
+    who: &mut Viewer,
+    doc: &Doc,
+) -> Result<(), TrustTaskOutcome> {
+    use crate::elections::presentation::{Outcome, check};
+    let Some(p) = doc.payload.get("presentation") else {
+        return Ok(());
+    };
+    if who.active_member {
+        return Ok(());
+    }
+    let community = crate::notifications::own_did(state)
+        .await
+        .unwrap_or_default();
+    match check(
+        state,
+        p,
+        &doc.id.to_string(),
+        &community,
+        &who.did,
+        Utc::now(),
+    )
+    .await
+    {
+        Outcome::Passed(presented) => {
+            who.partner = Some(presented.issuer);
+            Ok(())
+        }
+        Outcome::Failed { .. } => Ok(()),
+        Outcome::Indeterminate { reference } => Err(reject_with_code(
+            doc,
+            "indeterminate"
+                .parse()
+                .expect("indeterminate is a standard code"),
+            "the presented credential could not be checked now; send the same document again \
+             later",
+            Some(json!({ "reference": reference })),
+        )),
+    }
 }
 
 /// The event as `seen` may see it, with its hosts.
@@ -406,6 +598,24 @@ async fn wire_for(state: &AppState, seen: &Seen) -> Result<Value, AppError> {
     let regs = ce::registrations_of(&state.events_ks, &seen.ev.event_id).await?;
     let hosts = hosts::entries(state, &seen.ev.event_id).await?;
     Ok(ce::event_wire(&seen.ev, seen.host, &regs, &hosts))
+}
+
+/// `publish/0.1` and `cancel/0.1` answer the 0.1 `Event`, which has no invitation mode, no
+/// members-may-invite and no partners; those are read with `show/0.2`.
+async fn event_answer_v01(state: &AppState, doc: &Doc, seen: &Seen) -> TrustTaskOutcome {
+    match wire_for(state, seen).await {
+        Ok(mut w) => {
+            if let Some(o) = w.as_object_mut() {
+                o.remove("invite");
+                o.remove("membersMayInvite");
+            }
+            if let Some(a) = w.get_mut("audience").and_then(Value::as_object_mut) {
+                a.remove("partners");
+            }
+            success_response(doc, json!({ "event": w }))
+        }
+        Err(e) => app_error_to_reject(doc, &e),
+    }
 }
 
 async fn event_answer(state: &AppState, doc: &Doc, seen: &Seen) -> TrustTaskOutcome {
@@ -558,6 +768,27 @@ async fn policy_refusal(
         },
     )
     .await
+}
+
+/// The first partner `audience` names that is neither a member of this community nor a party
+/// it holds a relationship in force with (VTI-EVT-130), if any.
+async fn partner_problem(state: &AppState, audience: &Value) -> Result<Option<String>, AppError> {
+    let named: Vec<String> = audience
+        .get("partners")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    for p in named {
+        if !ce::invitations::partner_valid(state, &p).await? {
+            return Ok(Some(p));
+        }
+    }
+    Ok(None)
 }
 
 fn reminders(v: &Value, key: &str) -> Option<Vec<u32>> {
@@ -949,6 +1180,13 @@ async fn handle_create(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
         accessibility: p.get("accessibility").cloned(),
         suggested_reminder_minutes: reminders(p, "suggestedReminderMinutes")
             .unwrap_or_else(|| cal.default_reminder_minutes.clone()),
+        invite: str_of(p, "invite")
+            .and_then(ce::invitations::InviteMode::parse)
+            .unwrap_or_default(),
+        members_may_invite: p
+            .get("membersMayInvite")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         sequence: 0,
         cancel_reason: None,
         published_at: None,
@@ -958,6 +1196,15 @@ async fn handle_create(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
         created_by: entry,
     };
     // VTI-EVT-080, asked last.
+    if let Some(bad) = tri!(&doc, partner_problem(state, &ev.audience).await) {
+        return declared_with(
+            &doc,
+            CREATE_ERR_PARTNER_INVALID,
+            "A partner is a community that is a member of this one, or with which it holds a \
+             relationship in force.",
+            json!({ "partner": bad }),
+        );
+    }
     if let Some(why) = tri!(
         &doc,
         policy_refusal(state, &who, "create", &cal, &ev, "").await
@@ -1113,6 +1360,25 @@ async fn handle_update(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
         ev.suggested_reminder_minutes = r;
         fields.push("suggestedReminderMinutes".into());
     }
+    // VTI-EVT-108: `none` to `notify` / `expect` invites the audience (the sweeper, kicked
+    // below); to `none` withdraws nothing already sent.
+    if let Some(m) = str_of(&p, "invite").and_then(ce::invitations::InviteMode::parse) {
+        ev.invite = m;
+        fields.push("invite".into());
+    }
+    if let Some(b) = p.get("membersMayInvite").and_then(Value::as_bool) {
+        ev.members_may_invite = b;
+        fields.push("membersMayInvite".into());
+    }
+    if let Some(bad) = tri!(&doc, partner_problem(state, &ev.audience).await) {
+        return declared_with(
+            &doc,
+            UPDATE_ERR_PARTNER_INVALID,
+            "A partner is a community that is a member of this one, or with which it holds a \
+             relationship in force.",
+            json!({ "partner": bad }),
+        );
+    }
     let schema = tri!(&doc, schema(state).await);
     let checked = check_when(&ev.when)
         .and(check_registration(&ev.registration))
@@ -1145,6 +1411,7 @@ async fn handle_update(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
     }
     ev.updated_at = Utc::now();
     tri!(&doc, ce::put_event(&state.events_ks, &ev).await);
+    ce::kick();
     // A larger capacity moves the waitlist (VTI-EVT-033).
     if ev.settings().capacity != capacity_before {
         let regs = tri!(
@@ -1238,6 +1505,8 @@ async fn handle_publish(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustT
     ev.updated_at = now;
     tri!(&doc, ce::put_event(&state.events_ks, &ev).await);
     drop(_guard);
+    // Invitations go out, or their notifications are withdrawn (VTI-EVT-101, VTI-NTF-065).
+    ce::kick();
     tri!(
         &doc,
         audit(state, &who.did, event_change(&ev.event_id, "published")).await
@@ -1248,7 +1517,7 @@ async fn handle_publish(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustT
         host: true,
         own: None,
     };
-    event_answer(state, &doc, &seen).await
+    event_answer_v01(state, &doc, &seen).await
 }
 
 async fn handle_cancel(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
@@ -1294,6 +1563,8 @@ async fn handle_cancel(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
     ev.updated_at = now;
     tri!(&doc, ce::put_event(&state.events_ks, &ev).await);
     drop(_guard);
+    // Invitations go out, or their notifications are withdrawn (VTI-EVT-101, VTI-NTF-065).
+    ce::kick();
     tri!(
         &doc,
         audit(state, &who.did, event_change(&ev.event_id, "cancelled")).await
@@ -1304,7 +1575,7 @@ async fn handle_cancel(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
         host: true,
         own: None,
     };
-    event_answer(state, &doc, &seen).await
+    event_answer_v01(state, &doc, &seen).await
 }
 
 async fn handle_delete(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
@@ -1347,7 +1618,7 @@ async fn handle_delete(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
 }
 
 async fn handle_show(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
-    let who = match member(state, ctx, &doc).await {
+    let who = match member_or_partner(state, ctx, &doc).await {
         Ok(w) => w,
         Err(r) => return r,
     };
@@ -1633,7 +1904,7 @@ fn receipt(reg: &Registration, regs: &[Registration], ev: &EventRecord) -> Value
 }
 
 async fn handle_register(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
-    let who = match member(state, ctx, &doc).await {
+    let who = match member_or_partner(state, ctx, &doc).await {
         Ok(w) => w,
         Err(r) => return r,
     };
@@ -1646,90 +1917,147 @@ async fn handle_register(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> Trust
     let Some(seen) = tri!(&doc, visible_event(state, &who, id).await) else {
         return not_found(&doc, "event");
     };
-    let ev = &seen.ev;
-    if ev.status == Lifecycle::Draft {
-        return not_found(&doc, "event");
-    }
-    if ev.status == Lifecycle::Cancelled {
-        return declared(
-            &doc,
-            REGISTER_ERR_EVENT_CANCELLED,
-            "This event was cancelled.",
-        );
-    }
-    // VTI-EVT-021: the audience, live — a registration held already lets them change it.
-    let schema = tri!(&doc, schema(state).await);
-    if seen.own.is_none() && !who.in_audience(&ev.audience, &schema) {
-        return denied(&doc, "this event is for its audience");
-    }
-    let settings = ev.settings();
-    if settings.mode == Mode::Closed {
-        return declared(
-            &doc,
-            REGISTER_ERR_NOT_OPEN,
-            "This event takes no registrations.",
-        );
-    }
-    let now = Utc::now();
-    // VTI-EVT-038.
-    if settings.opens_at.is_some_and(|o| now < o) || ev.closes_at().is_some_and(|c| now >= c) {
-        return declared(
-            &doc,
-            REGISTER_ERR_WINDOW_CLOSED,
-            "Registrations are not open now.",
-        );
-    }
-    if let Some(own) = &seen.own
-        && matches!(own.status, RegStatus::Declined | RegStatus::Removed)
-    {
-        return declared_with(
-            &doc,
-            REGISTER_ERR_HOST_DECIDED,
-            "A host decided this registration; it is not re-opened by the registrant.",
-            json!({ "status": own.status.as_str() }),
-        );
-    }
     let wanted = match str_of(&p, "status") {
         Some("maybe") => RegStatus::Maybe,
         _ => RegStatus::Going,
     };
+    let (reg, regs, created) =
+        match register_as(state, &doc, &who, &seen, wanted, &p, &REGISTER_CODES).await {
+            Ok(x) => x,
+            Err(r) => return r,
+        };
+    drop(_guard);
+    let mut body = receipt(&reg, &regs, &seen.ev);
+    body["wasCreated"] = json!(created);
+    success_response(&doc, body)
+}
+
+/// Whether `who` may register for `seen`'s event: a registration they hold already, the
+/// audience (checked live, VTI-EVT-021), a standing host or link invitation (VTI-EVT-103), or
+/// a partner the audience names, proven with this request (VTI-EVT-132).
+async fn may_register(state: &AppState, who: &Viewer, seen: &Seen) -> Result<bool, AppError> {
+    if seen.own.is_some() {
+        return Ok(true);
+    }
+    if !who.active_member {
+        return Ok(who.partner_admitted(&seen.ev.audience));
+    }
+    let schema = schema(state).await?;
+    if who.in_audience(&seen.ev.audience, &schema) {
+        return Ok(true);
+    }
+    Ok(match &who.entry_id {
+        Some(e) => ce::invitations::get_invitation(&state.events_ks, &seen.ev.event_id, e)
+            .await?
+            .is_some_and(|i| i.widens()),
+        None => false,
+    })
+}
+
+/// Register `who` for `seen`'s event as `wanted`, from `p`'s guests, answers and code of
+/// conduct acknowledgement (VTI-EVT-030 – 038), refusing with `codes` — `register`'s, or
+/// `invitations/respond`'s (VTI-EVT-104). The caller holds `community_events::WRITE_LOCK`.
+/// Returns the registration, every registration of the event after it, and whether it is new.
+async fn register_as(
+    state: &AppState,
+    doc: &Doc,
+    who: &Viewer,
+    seen: &Seen,
+    wanted: RegStatus,
+    p: &Value,
+    codes: &RegCodes,
+) -> Result<(Registration, Vec<Registration>, bool), TrustTaskOutcome> {
+    let ev = &seen.ev;
+    let id = ev.event_id.as_str();
+    if ev.status == Lifecycle::Draft {
+        return Err(not_found(doc, "event"));
+    }
+    if ev.status == Lifecycle::Cancelled {
+        return Err(declared(
+            doc,
+            codes.event_cancelled,
+            "This event was cancelled.",
+        ));
+    }
+    match may_register(state, who, seen).await {
+        Ok(true) => {}
+        Ok(false) => return Err(denied(doc, "this event is for its audience")),
+        Err(e) => return Err(app_error_to_reject(doc, &e)),
+    }
+    let settings = ev.settings();
+    if settings.mode == Mode::Closed {
+        return Err(declared(
+            doc,
+            codes.not_open,
+            "This event takes no registrations.",
+        ));
+    }
+    let now = Utc::now();
+    // VTI-EVT-038.
+    if settings.opens_at.is_some_and(|o| now < o) || ev.closes_at().is_some_and(|c| now >= c) {
+        return Err(declared(
+            doc,
+            codes.window_closed,
+            "Registrations are not open now.",
+        ));
+    }
+    if let Some(own) = &seen.own
+        && matches!(own.status, RegStatus::Declined | RegStatus::Removed)
+    {
+        return Err(declared_with(
+            doc,
+            codes.host_decided,
+            "A host decided this registration; it is not re-opened by the registrant.",
+            json!({ "status": own.status.as_str() }),
+        ));
+    }
     if wanted == RegStatus::Maybe && settings.mode == Mode::Approval {
-        return declared(
-            &doc,
-            REGISTER_ERR_MAYBE_NOT_ACCEPTED,
+        return Err(declared(
+            doc,
+            codes.maybe_not_accepted,
             "This event's hosts decide each registration; say going, or nothing.",
-        );
+        ));
     }
     let guests = p.get("guests").and_then(Value::as_u64).unwrap_or(0) as u32;
     if guests > settings.plus_ones {
-        return declared_with(
-            &doc,
-            REGISTER_ERR_TOO_MANY_GUESTS,
+        return Err(declared_with(
+            doc,
+            codes.too_many_guests,
             format!(
                 "This event admits at most {} guests each.",
                 settings.plus_ones
             ),
             json!({ "plusOnes": settings.plus_ones }),
-        );
+        ));
     }
     if let Some(problem) = answers_problem(&settings.questions, p.get("answers")) {
-        return declared(&doc, REGISTER_ERR_ANSWERS_INVALID, problem);
+        return Err(declared(doc, codes.answers_invalid, problem));
     }
     // VTI-EVT-035.
-    let acknowledged = str_of(&p, "codeOfConductAcknowledged").map(str::to_string);
+    let acknowledged = str_of(p, "codeOfConductAcknowledged").map(str::to_string);
     if let Some(sha) = &settings.code_of_conduct
         && acknowledged.as_deref() != Some(sha.as_str())
     {
-        return declared_with(
-            &doc,
-            REGISTER_ERR_CODE_OF_CONDUCT_REQUIRED,
+        return Err(declared_with(
+            doc,
+            codes.code_of_conduct_required,
             "Read and acknowledge the code of conduct to register.",
             json!({ "sha256": sha }),
-        );
+        ));
     }
     let ks = &state.events_ks;
-    let mut regs = tri!(&doc, ce::registrations_of(ks, id).await);
-    let entry = tri!(&doc, own_entry(state, &who).await);
+    let mut regs = ce::registrations_of(ks, id)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    // A partner's member is named by the DID they presented as (VTI-EVT-134).
+    let partner = !who.active_member && who.partner.is_some();
+    let entry = if partner {
+        who.did.clone()
+    } else {
+        own_entry(state, who)
+            .await
+            .map_err(|e| app_error_to_reject(doc, &e))?
+    };
     let previous = regs.iter().position(|r| r.entry_id == entry);
     let others: Vec<Registration> = regs
         .iter()
@@ -1750,9 +2078,7 @@ async fn handle_register(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> Trust
             }
             _ if ce::fits(&settings, &others, 1 + guests) => RegStatus::Going,
             _ if settings.waitlist => RegStatus::Waitlisted,
-            _ => {
-                return declared(&doc, REGISTER_ERR_FULL, "This event is full.");
-            }
+            _ => return Err(declared(doc, codes.full, "This event is full.")),
         },
     };
     let reg = Registration {
@@ -1760,7 +2086,8 @@ async fn handle_register(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> Trust
             .as_ref()
             .map_or_else(ce::new_registration_id, |r| r.registration_id.clone()),
         event_id: id.to_string(),
-        entry_id: entry,
+        entry_id: entry.clone(),
+        registrant_did: partner.then(|| who.did.clone()),
         status,
         guests,
         answers: p.get("answers").cloned(),
@@ -1778,35 +2105,45 @@ async fn handle_register(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> Trust
         created_at: prior.as_ref().map_or(now, |r| r.created_at),
         updated_at: now,
     };
-    tri!(&doc, ce::put_registration(ks, &reg).await);
+    let fail = |e: AppError| app_error_to_reject(doc, &e);
+    ce::put_registration(ks, &reg).await.map_err(fail)?;
     match previous {
         Some(i) => regs[i] = reg.clone(),
         None => regs.push(reg.clone()),
     }
+    // An invitation held is answered by registering (VTI-EVT-104).
+    if !partner {
+        let answer = if status == RegStatus::Maybe {
+            ce::invitations::Answer::Maybe
+        } else {
+            ce::invitations::Answer::Going
+        };
+        ce::invitations::record_answer(ks, id, &entry, answer, now)
+            .await
+            .map_err(fail)?;
+    }
     // Going to maybe, or fewer guests, frees places (VTI-EVT-033).
     for moved in ce::promote(ev, &regs, now) {
-        tri!(&doc, ce::put_registration(ks, &moved).await);
+        ce::put_registration(ks, &moved).await.map_err(fail)?;
         if let Some(r) = regs
             .iter_mut()
             .find(|r| r.registration_id == moved.registration_id)
         {
             *r = moved.clone();
         }
-        tri!(
-            &doc,
-            audit(state, &who.did, reg_change(&moved, "promoted")).await
-        );
+        audit(state, &who.did, reg_change(&moved, "promoted"))
+            .await
+            .map_err(fail)?;
     }
-    drop(_guard);
     let what = if prior.is_some() {
         "registrationChanged"
     } else {
         "registered"
     };
-    tri!(&doc, audit(state, &who.did, reg_change(&reg, what)).await);
-    let mut body = receipt(&reg, &regs, ev);
-    body["wasCreated"] = json!(prior.is_none());
-    success_response(&doc, body)
+    audit(state, &who.did, reg_change(&reg, what))
+        .await
+        .map_err(fail)?;
+    Ok((reg, regs, prior.is_none()))
 }
 
 async fn handle_withdraw(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
@@ -1938,9 +2275,17 @@ async fn handle_registrations(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> 
             "The roster is shown to registrants who are going or maybe.",
         );
     }
+    // VTI-EVT-134: a partner's member is counted, never named, on the roster.
+    let live = |r: &&Registration| matches!(r.status, RegStatus::Going | RegStatus::Maybe);
+    let others_going = regs
+        .iter()
+        .filter(live)
+        .filter(|r| r.registrant_did.is_some())
+        .count();
     let mut all: Vec<Registration> = regs
         .iter()
-        .filter(|r| matches!(r.status, RegStatus::Going | RegStatus::Maybe))
+        .filter(live)
+        .filter(|r| r.registrant_did.is_none())
         .cloned()
         .collect();
     all.sort_by(|a, b| a.entry_id.cmp(&b.entry_id));
@@ -1953,6 +2298,7 @@ async fn handle_registrations(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> 
         "eventId": id,
         "view": "roster",
         "roster": page_items.iter().map(ce::roster_item).collect::<Vec<_>>(),
+        "othersGoing": others_going,
     });
     if let Some(n) = next {
         body["nextCursor"] = json!(n);
@@ -2320,4 +2666,616 @@ async fn handle_report(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
         .await
     );
     success_response(&doc, json!({ "reportId": report.report_id }))
+}
+
+// ─── invitations (VTI-EVT-100 – 108) ─────────────────────────────────────
+
+use crate::community_events::invitations::{self as inv, Answer, Inviter};
+
+fn day_limit_reached(made: usize, adding: usize, limit: u32) -> bool {
+    made + adding > limit as usize
+}
+
+async fn handle_invite(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match member(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<inv_send::Payload>(&doc) {
+        return r;
+    }
+    let p = doc.payload.clone();
+    let id = str_of(&p, "eventId").unwrap_or_default();
+    let _guard = ce::WRITE_LOCK.lock().await;
+    let Some(seen) = tri!(&doc, visible_event(state, &who, id).await) else {
+        return not_found(&doc, "event");
+    };
+    let ev = &seen.ev;
+    match ev.status {
+        Lifecycle::Draft => {
+            return declared(
+                &doc,
+                SEND_ERR_NOT_PUBLISHED,
+                "A draft invites nobody; publish it first.",
+            );
+        }
+        Lifecycle::Cancelled => {
+            return declared(&doc, SEND_ERR_EVENT_CANCELLED, "This event was cancelled.");
+        }
+        Lifecycle::Published => {}
+    }
+    let schema = tri!(&doc, schema(state).await);
+    // VTI-EVT-103 (a host, any member) or VTI-EVT-105 (a member of the audience, within it).
+    let by = if seen.host {
+        Inviter::Host
+    } else {
+        if !ev.members_may_invite {
+            return declared(
+                &doc,
+                SEND_ERR_MEMBERS_MAY_NOT_INVITE,
+                "This event's hosts invite; its members do not.",
+            );
+        }
+        if !who.in_audience(&ev.audience, &schema) {
+            return denied(&doc, "members of this event's audience invite others to it");
+        }
+        Inviter::Member
+    };
+    let entries: Vec<String> = p
+        .get("entryIds")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let ks = &state.events_ks;
+    let now = Utc::now();
+    let inviter = tri!(&doc, own_entry(state, &who).await);
+    if by == Inviter::Member {
+        let limit = state.config.read().await.events.invitations_per_day;
+        let made = tri!(
+            &doc,
+            inv::member_invitations_since(ks, &inviter, inv::a_day_before(now)).await
+        );
+        if day_limit_reached(made, entries.len(), limit) {
+            return declared(
+                &doc,
+                SEND_ERR_LIMIT_REACHED,
+                format!("You may invite {limit} members a day."),
+            );
+        }
+    }
+    // Every invitee checked before anything is written.
+    let mut subjects = Vec::with_capacity(entries.len());
+    for e in &entries {
+        let subject = tri!(
+            &doc,
+            crate::directory::read::subject_by_entry(state, e).await
+        );
+        let Some(subject) = subject.filter(|s| s.active) else {
+            return declared_with(
+                &doc,
+                SEND_ERR_NOT_ELIGIBLE,
+                "Invitations go to active members.",
+                json!({ "entryId": e }),
+            );
+        };
+        if by == Inviter::Member && !ce::audience_admits(&ev.audience, &subject, &schema) {
+            return declared_with(
+                &doc,
+                SEND_ERR_NOT_IN_AUDIENCE,
+                "A member's invitation reaches only the event's audience.",
+                json!({ "entryId": e }),
+            );
+        }
+        subjects.push(subject);
+    }
+    let mut out = Vec::with_capacity(subjects.len());
+    for s in &subjects {
+        let (invitation, new) = tri!(
+            &doc,
+            inv::invite(
+                ks,
+                ev,
+                &s.card.entry_id,
+                &s.card.did,
+                by,
+                Some(&inviter),
+                now
+            )
+            .await
+        );
+        if new {
+            tri!(
+                &doc,
+                audit(
+                    state,
+                    &who.did,
+                    EventChangedData {
+                        entry_id: Some(s.card.entry_id.clone()),
+                        fields: vec![by.as_str().into()],
+                        ..event_change(id, "invited")
+                    }
+                )
+                .await
+            );
+        }
+        out.push(inv::invitation_wire(&invitation, seen.host));
+    }
+    drop(_guard);
+    ce::kick();
+    success_response(&doc, json!({ "invitations": out }))
+}
+
+async fn handle_invitations(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match member(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<inv_list::Payload>(&doc) {
+        return r;
+    }
+    let p = &doc.payload;
+    let answers: Option<Vec<String>> = p.get("answers").and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    });
+    let keep = |i: &inv::Invitation| {
+        answers
+            .as_ref()
+            .is_none_or(|a| a.iter().any(|x| x == i.answer.as_str()))
+    };
+    let ks = &state.events_ks;
+    let mine = who.entry_id.clone().unwrap_or_default();
+    let (rows, host_view, binding): (Vec<(inv::Invitation, Option<Value>)>, bool, String) =
+        match str_of(p, "eventId") {
+            Some(id) => {
+                let Some(seen) = tri!(&doc, visible_event(state, &who, id).await) else {
+                    return not_found(&doc, "event");
+                };
+                let mut all: Vec<inv::Invitation> = if seen.host {
+                    // VTI-EVT-106: the hosts list them all, oldest first.
+                    tri!(&doc, inv::invitations_of(ks, id).await)
+                } else {
+                    tri!(&doc, inv::get_invitation(ks, id, &mine).await)
+                        .into_iter()
+                        .collect()
+                };
+                all.retain(&keep);
+                all.sort_by(|a, b| {
+                    (a.created_at, &a.invitation_id).cmp(&(b.created_at, &b.invitation_id))
+                });
+                let r = ce::event_ref(&seen.ev);
+                let host = seen.host;
+                let rows = all
+                    .into_iter()
+                    .map(|i| (i, (!host).then(|| r.clone())))
+                    .collect();
+                (
+                    rows,
+                    host,
+                    format!("invitations|{}|{id}|{answers:?}", who.did),
+                )
+            }
+            None => {
+                // The caller's own across the community, newest first.
+                let mut all = tri!(&doc, inv::invitations_by(ks, &mine).await);
+                all.retain(&keep);
+                all.sort_by(|a, b| {
+                    (b.created_at, &b.invitation_id).cmp(&(a.created_at, &a.invitation_id))
+                });
+                let mut rows = Vec::with_capacity(all.len());
+                for i in all {
+                    if let Some(ev) = tri!(&doc, ce::get_event(ks, &i.event_id).await) {
+                        rows.push((i, Some(ce::event_ref(&ev))));
+                    }
+                }
+                (
+                    rows,
+                    false,
+                    format!("invitations|{}|mine|{answers:?}", who.did),
+                )
+            }
+        };
+    let (rows, next) = match page(state, &doc, &binding, &rows, 100).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|(i, e)| {
+            let mut item = json!({ "invitation": inv::invitation_wire(i, host_view) });
+            if let Some(e) = e {
+                item["event"] = e.clone();
+            }
+            item
+        })
+        .collect();
+    let mut body = json!({ "items": items });
+    if let Some(n) = next {
+        body["nextCursor"] = json!(n);
+    }
+    success_response(&doc, body)
+}
+
+async fn handle_respond(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match member(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<inv_respond::Payload>(&doc) {
+        return r;
+    }
+    let p = doc.payload.clone();
+    let id = str_of(&p, "eventId").unwrap_or_default();
+    let _guard = ce::WRITE_LOCK.lock().await;
+    let Some(seen) = tri!(&doc, visible_event(state, &who, id).await) else {
+        return not_found(&doc, "event");
+    };
+    let ks = &state.events_ks;
+    let entry = who.entry_id.clone().unwrap_or_default();
+    let Some(invitation) =
+        tri!(&doc, inv::get_invitation(ks, id, &entry).await).filter(|i| !i.revoked)
+    else {
+        return declared(
+            &doc,
+            RESPOND_ERR_NOT_INVITED,
+            "You hold no invitation to this event.",
+        );
+    };
+    if seen.ev.status == Lifecycle::Cancelled {
+        return declared(
+            &doc,
+            RESPOND_ERR_EVENT_CANCELLED,
+            "This event was cancelled.",
+        );
+    }
+    let now = Utc::now();
+    let mut body = match str_of(&p, "answer") {
+        // VTI-EVT-104: recorded on the invitation, registering nothing.
+        Some("decline") => {
+            let invitation = tri!(
+                &doc,
+                inv::record_answer(ks, id, &entry, Answer::Declined, now).await
+            )
+            .unwrap_or(invitation);
+            json!({ "invitation": inv::invitation_wire(&invitation, false) })
+        }
+        answer => {
+            let wanted = if answer == Some("maybe") {
+                RegStatus::Maybe
+            } else {
+                RegStatus::Going
+            };
+            let (reg, regs, _) =
+                match register_as(state, &doc, &who, &seen, wanted, &p, &RESPOND_CODES).await {
+                    Ok(x) => x,
+                    Err(r) => return r,
+                };
+            let invitation =
+                tri!(&doc, inv::get_invitation(ks, id, &entry).await).unwrap_or(invitation);
+            json!({
+                "invitation": inv::invitation_wire(&invitation, false),
+                "registration": ce::registration_wire(&reg, &regs),
+            })
+        }
+    };
+    drop(_guard);
+    body["event"] = ce::event_ref(&seen.ev);
+    success_response(&doc, body)
+}
+
+// ── links (VTI-EVT-107) ──
+
+async fn handle_link_create(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match host_signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<links_create::Payload>(&doc) {
+        return r;
+    }
+    let seen = match hosted(state, &who, &doc).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if seen.ev.status == Lifecycle::Cancelled {
+        return declared(
+            &doc,
+            LINKS_CREATE_ERR_EVENT_CANCELLED,
+            "This event was cancelled.",
+        );
+    }
+    let p = &doc.payload;
+    let now = Utc::now();
+    let expires = str_of(p, "expiresAt")
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Utc));
+    let end = seen.ev.interval().ok().map(|(_, e)| e);
+    let Some(expires) = expires.filter(|t| *t > now && end.is_none_or(|e| *t <= e)) else {
+        return declared(
+            &doc,
+            LINKS_CREATE_ERR_EXPIRY_INVALID,
+            "A link expires in the future, and no later than the event ends.",
+        );
+    };
+    let code = inv::new_code();
+    let link = inv::Link {
+        link_id: ce::new_id_with("lnk"),
+        event_id: seen.ev.event_id.clone(),
+        label: str_of(p, "label").map(str::to_string),
+        max_redemptions: p.get("maxRedemptions").and_then(Value::as_u64).unwrap_or(1) as u32,
+        redemptions: 0,
+        expires_at: expires,
+        revoked_at: None,
+        created_at: now,
+        digest: inv::code_digest(&code),
+    };
+    tri!(&doc, inv::put_link(&state.events_ks, &link).await);
+    tri!(
+        &doc,
+        audit(state, &who.did, event_change(&link.event_id, "linkCreated")).await
+    );
+    // The code is answered this once and never kept (VTI-EVT-107).
+    success_response(&doc, json!({ "link": inv::link_wire(&link), "code": code }))
+}
+
+async fn handle_link_revoke(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match host_signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<links_revoke::Payload>(&doc) {
+        return r;
+    }
+    let seen = match hosted(state, &who, &doc).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let ks = &state.events_ks;
+    let link_id = str_of(&doc.payload, "linkId").unwrap_or_default();
+    let Some(mut link) =
+        tri!(&doc, inv::get_link(ks, link_id).await).filter(|l| l.event_id == seen.ev.event_id)
+    else {
+        return declared(
+            &doc,
+            LINKS_REVOKE_ERR_LINK_NOT_FOUND,
+            "This event has no such link.",
+        );
+    };
+    if link.revoked_at.is_some() {
+        return declared(
+            &doc,
+            LINKS_REVOKE_ERR_ALREADY_REVOKED,
+            "This link was revoked already.",
+        );
+    }
+    link.revoked_at = Some(Utc::now());
+    tri!(&doc, inv::put_link(ks, &link).await);
+    tri!(
+        &doc,
+        audit(state, &who.did, event_change(&link.event_id, "linkRevoked")).await
+    );
+    success_response(&doc, json!({ "link": inv::link_wire(&link) }))
+}
+
+async fn handle_link_redeem(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match member(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<links_redeem::Payload>(&doc) {
+        return r;
+    }
+    // One refusal for every way a code fails, so a refusal says nothing (VTI-EVT-107).
+    let invalid = |doc: &Doc| {
+        declared(
+            doc,
+            LINKS_REDEEM_ERR_LINK_INVALID,
+            "This invitation link cannot be used.",
+        )
+    };
+    if !who.active_member || !events_on(state).await {
+        return invalid(&doc);
+    }
+    let ks = &state.events_ks;
+    let now = Utc::now();
+    let code = str_of(&doc.payload, "code").unwrap_or_default();
+    let _guard = ce::WRITE_LOCK.lock().await;
+    let Some(mut link) = tri!(&doc, inv::link_for_code(ks, code).await) else {
+        return invalid(&doc);
+    };
+    let entry = tri!(&doc, own_entry(state, &who).await);
+    let Some(ev) = tri!(&doc, ce::get_event(ks, &link.event_id).await) else {
+        return invalid(&doc);
+    };
+    if link.revoked_at.is_some()
+        || link.expires_at <= now
+        || link.redemptions >= link.max_redemptions
+        || ev.status != Lifecycle::Published
+        || ev.ended(now)
+        || tri!(&doc, inv::redeemed(ks, &link.link_id, &entry).await)
+    {
+        return invalid(&doc);
+    }
+    let (invitation, new) = tri!(
+        &doc,
+        inv::invite(ks, &ev, &entry, &who.did, Inviter::Link, None, now).await
+    );
+    tri!(&doc, inv::record_redemption(ks, &mut link, &entry).await);
+    drop(_guard);
+    if new {
+        tri!(
+            &doc,
+            audit(
+                state,
+                &who.did,
+                EventChangedData {
+                    entry_id: Some(entry),
+                    fields: vec!["link".into()],
+                    ..event_change(&ev.event_id, "invited")
+                }
+            )
+            .await
+        );
+    }
+    ce::kick();
+    success_response(
+        &doc,
+        json!({
+            "invitation": inv::invitation_wire(&invitation, false),
+            "event": ce::event_ref(&ev),
+        }),
+    )
+}
+
+// ─── opt-outs (VTI-EVT-110) ──────────────────────────────────────────────
+
+async fn handle_optout_set(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match member(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<opt_set::Payload>(&doc) {
+        return r;
+    }
+    let p = &doc.payload;
+    let scope = str_of(p, "scope").unwrap_or_default();
+    let key = if scope == "event" {
+        "eventId"
+    } else {
+        "calendarId"
+    };
+    let Some(target) = str_of(p, key) else {
+        return malformed(&doc, &format!("`{key}` is required for this scope"));
+    };
+    let out = p.get("optedOut").and_then(Value::as_bool).unwrap_or(true);
+    let entry = tri!(&doc, own_entry(state, &who).await);
+    let o = tri!(
+        &doc,
+        inv::set_opt_out(&state.events_ks, &entry, scope, target, out, Utc::now()).await
+    );
+    let mut body = json!({ "optedOut": o.is_some() });
+    if let Some(o) = &o {
+        body["optOut"] = inv::opt_out_wire(o);
+    }
+    success_response(&doc, body)
+}
+
+async fn handle_optout_list(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match member(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<opt_list::Payload>(&doc) {
+        return r;
+    }
+    let mut all = match &who.entry_id {
+        Some(e) => tri!(&doc, inv::opt_outs(&state.events_ks, e).await),
+        None => Vec::new(),
+    };
+    all.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
+    let binding = format!("optouts|{}", who.did);
+    let (rows, next) = match page(state, &doc, &binding, &all, 100).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    let mut body = json!({ "items": rows.iter().map(inv::opt_out_wire).collect::<Vec<_>>() });
+    if let Some(n) = next {
+        body["nextCursor"] = json!(n);
+    }
+    success_response(&doc, body)
+}
+
+// ─── announcements (VTI-EVT-120, 121) ────────────────────────────────────
+
+async fn handle_announce(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match host_signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<ann_send::Payload>(&doc) {
+        return r;
+    }
+    let _guard = ce::WRITE_LOCK.lock().await;
+    let Seen { mut ev, .. } = match hosted(state, &who, &doc).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if ev.status == Lifecycle::Draft {
+        return declared(
+            &doc,
+            ANN_SEND_ERR_NOT_PUBLISHED,
+            "A draft has no registrants to tell.",
+        );
+    }
+    let ks = &state.events_ks;
+    let now = Utc::now();
+    let limit = state.config.read().await.events.announcements_per_day;
+    let today = tri!(&doc, inv::announcements_of(ks, &ev.event_id).await)
+        .iter()
+        .filter(|a| a.created_at >= inv::a_day_before(now))
+        .count();
+    if day_limit_reached(today, 1, limit) {
+        return declared(
+            &doc,
+            ANN_SEND_ERR_LIMIT_REACHED,
+            format!("An event takes {limit} announcements a day."),
+        );
+    }
+    let a = inv::Announcement {
+        announcement_id: ce::new_id_with("ann"),
+        event_id: ev.event_id.clone(),
+        text: str_of(&doc.payload, "text").unwrap_or_default().to_string(),
+        posted_by: who.entry_id.clone(),
+        created_at: now,
+    };
+    tri!(&doc, inv::put_announcement(ks, &a).await);
+    // VTI-EVT-121: the event is marked changed for registrants' agents, its sequence untouched.
+    ev.updated_at = now;
+    tri!(&doc, ce::put_event(ks, &ev).await);
+    drop(_guard);
+    tri!(
+        &doc,
+        audit(state, &who.did, event_change(&ev.event_id, "announced")).await
+    );
+    success_response(&doc, json!({ "announcement": inv::announcement_wire(&a) }))
+}
+
+async fn handle_announcements(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match member(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<ann_list::Payload>(&doc) {
+        return r;
+    }
+    let id = str_of(&doc.payload, "eventId").unwrap_or_default();
+    let Some(seen) = tri!(&doc, visible_event(state, &who, id).await) else {
+        return not_found(&doc, "event");
+    };
+    // VTI-EVT-120: hosts, and registrants going, maybe, pending or waitlisted.
+    if !seen.host && !seen.own.as_ref().is_some_and(|r| r.status.is_live()) {
+        return declared(
+            &doc,
+            ANN_LIST_ERR_NOT_REGISTERED,
+            "Announcements are read by this event's registrants.",
+        );
+    }
+    let all = tri!(&doc, inv::announcements_of(&state.events_ks, id).await);
+    let binding = format!("announcements|{}|{id}", who.did);
+    let (rows, next) = match page(state, &doc, &binding, &all, 100).await {
+        Ok(x) => x,
+        Err(r) => return r,
+    };
+    let mut body = json!({ "items": rows.iter().map(inv::announcement_wire).collect::<Vec<_>>() });
+    if let Some(n) = next {
+        body["nextCursor"] = json!(n);
+    }
+    success_response(&doc, body)
 }
