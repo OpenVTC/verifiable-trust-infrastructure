@@ -61,6 +61,10 @@ const BADGES_AWARDS = `${T}/vtc/badges/awards/list/0.1`;
 const BADGES_CLAIMS = `${T}/vtc/badges/claims/list/0.1`;
 const BADGES_HOLDERS = `${T}/vtc/badges/holders/list/0.1`;
 const BADGES_KUDOS = `${T}/vtc/badges/kudos/list/0.1`;
+const EVENTS_LIST = `${T}/vtc/events/list/0.1`;
+const EVENTS_CALENDARS = `${T}/vtc/events/calendars/list/0.1`;
+const EVENTS_MINE = `${T}/vtc/events/mine/list/0.1`;
+const EVENTS_REGISTRATIONS = `${T}/vtc/events/registrations/list/0.1`;
 const NETWORKS_LIST = `${T}/vtc/networks/list/0.2`;
 const BOARDS_SHOW = `${T}/vtc/boards/show/0.1`;
 const BOARDS_NOTES = `${T}/vtc/boards/notes/list/0.1`;
@@ -127,6 +131,15 @@ const SITES: Site[] = [
   { file: "members/badges-api.ts", site: "(BADGES_LIST_TASK, { limit: 200", uri: BADGES_LIST, from: ["200"] },
   { file: "members/badges-api.ts", site: "{ badgeId, limit: 200 }", uri: BADGES_HOLDERS, from: ["200"] },
   { file: "members/badges-api.ts", site: "{ direction, limit: 200 }", uri: BADGES_KUDOS, from: ["200"] },
+  // The console's events: every calendar, every event in the filters, an event's registrations.
+  { file: "lib/events.ts", site: "includeArchived,\n      limit: PAGE", uri: EVENTS_CALENDARS, from: ["PAGE"] },
+  { file: "lib/events.ts", site: "...filters,\n      limit: PAGE", uri: EVENTS_LIST, from: ["PAGE"] },
+  { file: "lib/events.ts", site: "limit: REG_PAGE", uri: EVENTS_REGISTRATIONS, from: ["REG_PAGE"] },
+  // The member portal's events: one page of calendars, of events, of the member's registrations, of a roster.
+  { file: "members/events-api.ts", site: "(EVENTS_CALENDARS_TASK, { limit: 200 }", uri: EVENTS_CALENDARS, from: ["200"] },
+  { file: "members/events-api.ts", site: "{ ...filters, limit: 200 }", uri: EVENTS_LIST, from: ["200"] },
+  { file: "members/events-api.ts", site: "(EVENTS_MINE_TASK, { limit: 100 }", uri: EVENTS_MINE, from: ["100"] },
+  { file: "members/events-api.ts", site: "{ eventId, limit: 100 }", uri: EVENTS_REGISTRATIONS, from: ["100"] },
   // The badge pages name members through one page of directory entries.
   { file: "members/Badges.tsx", site: "listEntries({ limit: 100 })", uri: DIRECTORY_ENTRIES, uriFile: "members/directory-api.ts", from: ["100"] },
   { file: "members/Badges.tsx", site: "listEntries({ limit: 100, ...(query", uri: DIRECTORY_ENTRIES, uriFile: "members/directory-api.ts", from: ["100"] },

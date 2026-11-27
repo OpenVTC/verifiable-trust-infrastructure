@@ -10,6 +10,7 @@ import {
   Award,
   BellRing,
   Boxes,
+  CalendarDays,
   Check,
   ChevronRight,
   Copy,
@@ -26,6 +27,7 @@ import {
 import { vtcDid, type MemberMe } from "./api";
 import { badgesHref, listMine } from "./badges-api";
 import { listAllBoards } from "./boards-api";
+import { eventHref, eventsHref, listMine as listMyEvents } from "./events-api";
 import { boardHref } from "./Boards";
 import { listFields, showCard } from "./directory-api";
 import { electionHref } from "./Elections";
@@ -38,6 +40,8 @@ import {
   boardsStatus,
   electionsAttention,
   electionsStatus,
+  eventsAttention,
+  eventsStatus,
   groupsStatus,
   reposStatus,
   roomsAttention,
@@ -89,6 +93,7 @@ export function Home({ me }: { me: MemberMe }) {
   const boards = useQuery({ queryKey: ["boards"], queryFn: listAllBoards, retry: false, staleTime: STALE });
   const groups = useQuery({ queryKey: ["groups", "list"], queryFn: listGroups, retry: false, staleTime: STALE });
   const badges = useQuery({ queryKey: ["badges", "mine"], queryFn: listMine, retry: false, staleTime: STALE });
+  const events = useQuery({ queryKey: ["events", "mine"], queryFn: listMyEvents, retry: false, staleTime: STALE });
   const git = useQuery({ queryKey: ["git", "view"], queryFn: viewRepos, retry: false, staleTime: STALE });
 
   const c = card.data?.card;
@@ -103,6 +108,7 @@ export function Home({ me }: { me: MemberMe }) {
     ...electionsAttention(elections, electionHref),
     ...boardsAttention(boards, boardHref),
     ...badgesAttention(badges, badgesHref),
+    ...eventsAttention(events, eventHref),
   ];
 
   return (
@@ -190,6 +196,9 @@ export function Home({ me }: { me: MemberMe }) {
           </Tile>
           <Tile href={badgesHref} icon={Award} title="Badges" status={badgesStatus(badges)}>
             Badges you earned and show on your card, and kudos you give other members.
+          </Tile>
+          <Tile href={eventsHref} icon={CalendarDays} title="Events" status={eventsStatus(events)}>
+            What's on, what you registered for, and a month at a glance.
           </Tile>
           <Tile href="#/boards" icon={SquareKanban} title="Boards" status={boardsStatus(boards)}>
             Propose ideas, leave notes and vote on what happens next.

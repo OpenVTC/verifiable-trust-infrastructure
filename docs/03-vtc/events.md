@@ -72,6 +72,27 @@ than". **Where it happens** — places, join links, door codes — is released b
 the host marks it public. The community sends no reminders: the hosts suggest them, and the
 member's own agent fires them.
 
+## Pages
+
+**The console** (*Events*, shown to holders of `vtc.events.manage` at any qualifier): every
+event the viewer runs, filtered by calendar, status and range; *Calendars* to make, change and
+archive the community's and groups' calendars; the editor (time with an IANA zone picker,
+place summary, access details with *public* and *release from*, audience by members, groups or
+badges, or roles with an optional rule, registration settings, questions, code of conduct,
+accessibility, the roster setting — offered on a draft with a warning that publishing locks it,
+and shown fixed after — the count, listing and suggested reminders); *Publish*, *Cancel* with a
+reason, *Delete draft*; *Registrations* (approve or decline pending, remove, waitlist positions,
+guests and answers); *Hosts* (appoint, remove). Signed with the console key only.
+
+**The member portal** (`#/events`, a home tile and attention lines for registrations waiting on
+the hosts or a place, and the next event within a week): *Upcoming*, *Mine* and *Month*, with
+calendar chips; each event in the viewer's own zone with the event's beside it, the roster
+setting and the count as the event shows it. One event: register (going or maybe, guests,
+answers, the code of conduct), change or withdraw, where it happens once going (or when it will
+be released), who else is going on a visible roster only, *Add to calendar* (an `.ics` file
+built in the browser from what the community answered — no route), and *Report this event*.
+Signed with the portal key the member delegated `vtc/events` to.
+
 ## Configuration
 
 ```toml
@@ -88,8 +109,12 @@ shipped default allows; see `vtc-service/policies/default/events.rego` for its i
 ## Reports
 
 Any member of an event's audience may report it once (`vtc/events/report`), within the
-daily limit. Reports are kept in the `events` keyspace by reference; surfacing them on the
-administrators' action list is the next step of this programme.
+daily limit. Each reported event appears once on the administrators' action list (kind
+`events.report.review`, decided by holders of `vtc.events.manage`), never naming who
+reported it. **Cancel the event** upholds the reports: the event is cancelled as its hosts
+would cancel it, and its registrants see it cancelled. **Dismiss report** closes them and
+leaves the event. A later report raises a new item. The events sweeper re-raises any report
+whose item was lost.
 
 ## Departure
 

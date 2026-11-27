@@ -62,6 +62,7 @@ use vti_specs::vtc::boards;
 use vti_specs::vtc::config;
 use vti_specs::vtc::directory;
 use vti_specs::vtc::endorsement_types;
+use vti_specs::vtc::events;
 use vti_specs::vtc::groups;
 use vti_specs::vtc::invitations::deliver as invitation_deliver;
 use vti_specs::vtc::join_requests::manifest;
@@ -608,6 +609,90 @@ spec_types! {
     BadgesHoldersList01Payload(badges::holders::list::v0_1::Payload);
     /// `vtc/badges/holders/list/0.1#response`.
     BadgesHoldersList01Response(badges::holders::list::v0_1::Response);
+    /// `vtc/events/calendars/create/0.1` payload — a calendar made.
+    EventsCalendarsCreate01Payload(events::calendars::create::v0_1::Payload);
+    /// `vtc/events/calendars/create/0.1#response`.
+    EventsCalendarsCreate01Response(events::calendars::create::v0_1::Response);
+    /// `vtc/events/calendars/update/0.1` payload — a calendar changed or archived.
+    EventsCalendarsUpdate01Payload(events::calendars::update::v0_1::Payload);
+    /// `vtc/events/calendars/update/0.1#response`.
+    EventsCalendarsUpdate01Response(events::calendars::update::v0_1::Response);
+    /// `vtc/events/calendars/list/0.1` payload — the calendars the signer may see.
+    EventsCalendarsList01Payload(events::calendars::list::v0_1::Payload);
+    /// `vtc/events/calendars/list/0.1#response`.
+    EventsCalendarsList01Response(events::calendars::list::v0_1::Response);
+    /// `vtc/events/create/0.1` payload — a draft event.
+    EventsCreate01Payload(events::create::v0_1::Payload);
+    /// `vtc/events/create/0.1#response`.
+    EventsCreate01Response(events::create::v0_1::Response);
+    /// `vtc/events/update/0.1` payload — an event changed.
+    EventsUpdate01Payload(events::update::v0_1::Payload);
+    /// `vtc/events/update/0.1#response`.
+    EventsUpdate01Response(events::update::v0_1::Response);
+    /// `vtc/events/publish/0.1` payload — a draft published.
+    EventsPublish01Payload(events::publish::v0_1::Payload);
+    /// `vtc/events/publish/0.1#response`.
+    EventsPublish01Response(events::publish::v0_1::Response);
+    /// `vtc/events/cancel/0.1` payload — a published event cancelled.
+    EventsCancel01Payload(events::cancel::v0_1::Payload);
+    /// `vtc/events/cancel/0.1#response`.
+    EventsCancel01Response(events::cancel::v0_1::Response);
+    /// `vtc/events/delete/0.1` payload — a draft deleted.
+    EventsDelete01Payload(events::delete::v0_1::Payload);
+    /// `vtc/events/delete/0.1#response`.
+    EventsDelete01Response(events::delete::v0_1::Response);
+    /// `vtc/events/show/0.1` payload — one event as the signer may see it.
+    EventsShow01Payload(events::show::v0_1::Payload);
+    /// `vtc/events/show/0.1#response`.
+    EventsShow01Response(events::show::v0_1::Response);
+    /// `vtc/events/list/0.1` payload — the events the signer may see.
+    EventsList01Payload(events::list::v0_1::Payload);
+    /// `vtc/events/list/0.1#response`.
+    EventsList01Response(events::list::v0_1::Response);
+    /// `vtc/events/mine/list/0.1` payload — the signer's own registrations.
+    EventsMineList01Payload(events::mine::list::v0_1::Payload);
+    /// `vtc/events/mine/list/0.1#response`.
+    EventsMineList01Response(events::mine::list::v0_1::Response);
+    /// `vtc/events/access/show/0.1` payload — where an event happens, to a registrant going.
+    EventsAccessShow01Payload(events::access::show::v0_1::Payload);
+    /// `vtc/events/access/show/0.1#response`.
+    EventsAccessShow01Response(events::access::show::v0_1::Response);
+    /// `vtc/events/registrations/register/0.1` payload — registering, or changing a registration.
+    EventsRegistrationsRegister01Payload(events::registrations::register::v0_1::Payload);
+    /// `vtc/events/registrations/register/0.1#response`.
+    EventsRegistrationsRegister01Response(events::registrations::register::v0_1::Response);
+    /// `vtc/events/registrations/withdraw/0.1` payload — withdrawing a registration.
+    EventsRegistrationsWithdraw01Payload(events::registrations::withdraw::v0_1::Payload);
+    /// `vtc/events/registrations/withdraw/0.1#response`.
+    EventsRegistrationsWithdraw01Response(events::registrations::withdraw::v0_1::Response);
+    /// `vtc/events/registrations/list/0.1` payload — an event's registrations or roster.
+    EventsRegistrationsList01Payload(events::registrations::list::v0_1::Payload);
+    /// `vtc/events/registrations/list/0.1#response`.
+    EventsRegistrationsList01Response(events::registrations::list::v0_1::Response);
+    /// `vtc/events/registrations/decide/0.1` payload — a host decides a pending registration.
+    EventsRegistrationsDecide01Payload(events::registrations::decide::v0_1::Payload);
+    /// `vtc/events/registrations/decide/0.1#response`.
+    EventsRegistrationsDecide01Response(events::registrations::decide::v0_1::Response);
+    /// `vtc/events/registrations/remove/0.1` payload — a host removes a registration.
+    EventsRegistrationsRemove01Payload(events::registrations::remove::v0_1::Payload);
+    /// `vtc/events/registrations/remove/0.1#response`.
+    EventsRegistrationsRemove01Response(events::registrations::remove::v0_1::Response);
+    /// `vtc/events/hosts/appoint/0.1` payload — appointing a host.
+    EventsHostsAppoint01Payload(events::hosts::appoint::v0_1::Payload);
+    /// `vtc/events/hosts/appoint/0.1#response`.
+    EventsHostsAppoint01Response(events::hosts::appoint::v0_1::Response);
+    /// `vtc/events/hosts/remove/0.1` payload — removing a host.
+    EventsHostsRemove01Payload(events::hosts::remove::v0_1::Payload);
+    /// `vtc/events/hosts/remove/0.1#response`.
+    EventsHostsRemove01Response(events::hosts::remove::v0_1::Response);
+    /// `vtc/events/hosts/list/0.1` payload — an event's hosts.
+    EventsHostsList01Payload(events::hosts::list::v0_1::Payload);
+    /// `vtc/events/hosts/list/0.1#response`.
+    EventsHostsList01Response(events::hosts::list::v0_1::Response);
+    /// `vtc/events/report/0.1` payload — a member reports an event.
+    EventsReport01Payload(events::report::v0_1::Payload);
+    /// `vtc/events/report/0.1#response`.
+    EventsReport01Response(events::report::v0_1::Response);
     /// `vtc/badges/wall/show/0.1` payload — a member's badge wall.
     BadgesWallShow01Payload(badges::wall::show::v0_1::Payload);
     /// `vtc/badges/wall/show/0.1#response`.
@@ -1195,6 +1280,48 @@ mod tests {
         check::<BadgesAwardsList01Response>();
         check::<BadgesHoldersList01Payload>();
         check::<BadgesHoldersList01Response>();
+        check::<EventsCalendarsCreate01Payload>();
+        check::<EventsCalendarsCreate01Response>();
+        check::<EventsCalendarsUpdate01Payload>();
+        check::<EventsCalendarsUpdate01Response>();
+        check::<EventsCalendarsList01Payload>();
+        check::<EventsCalendarsList01Response>();
+        check::<EventsCreate01Payload>();
+        check::<EventsCreate01Response>();
+        check::<EventsUpdate01Payload>();
+        check::<EventsUpdate01Response>();
+        check::<EventsPublish01Payload>();
+        check::<EventsPublish01Response>();
+        check::<EventsCancel01Payload>();
+        check::<EventsCancel01Response>();
+        check::<EventsDelete01Payload>();
+        check::<EventsDelete01Response>();
+        check::<EventsShow01Payload>();
+        check::<EventsShow01Response>();
+        check::<EventsList01Payload>();
+        check::<EventsList01Response>();
+        check::<EventsMineList01Payload>();
+        check::<EventsMineList01Response>();
+        check::<EventsAccessShow01Payload>();
+        check::<EventsAccessShow01Response>();
+        check::<EventsRegistrationsRegister01Payload>();
+        check::<EventsRegistrationsRegister01Response>();
+        check::<EventsRegistrationsWithdraw01Payload>();
+        check::<EventsRegistrationsWithdraw01Response>();
+        check::<EventsRegistrationsList01Payload>();
+        check::<EventsRegistrationsList01Response>();
+        check::<EventsRegistrationsDecide01Payload>();
+        check::<EventsRegistrationsDecide01Response>();
+        check::<EventsRegistrationsRemove01Payload>();
+        check::<EventsRegistrationsRemove01Response>();
+        check::<EventsHostsAppoint01Payload>();
+        check::<EventsHostsAppoint01Response>();
+        check::<EventsHostsRemove01Payload>();
+        check::<EventsHostsRemove01Response>();
+        check::<EventsHostsList01Payload>();
+        check::<EventsHostsList01Response>();
+        check::<EventsReport01Payload>();
+        check::<EventsReport01Response>();
         check::<BadgesWallShow01Payload>();
         check::<BadgesWallShow01Response>();
         check::<BadgesMineList01Payload>();
