@@ -347,6 +347,19 @@ Others:
   the external recovery key, preview-bound approval, and passkeys as
   `authenticator` keys on a person's identity only. Each step is mapped to the
   VTI-KEY requirements it satisfies and the Appendix F rows it closes.
+- **[The Human Context Protocol in the VTA — design](05-design-notes/hcp.md)** —
+  proposed: the VTA as an HCP 2.0-draft-3 Provider carried by the `hcp/*` Trust Tasks,
+  with Keyring as the person's consent surface and an agent client admitted
+  with no ACL entry; consent through task-consent, sender-bound hashed tokens,
+  fail-closed audit, revocation with acknowledged notices, an optional OAuth
+  sidecar that never holds a token, and the divergences and where each is
+  recorded.
+- **[The Human Context Protocol in the VTA — implementation plan](05-design-notes/hcp-plan.md)** —
+  milestones V0 (a demo) to V3 aligned with Keyring's agent-connect tiers, each
+  with a runnable demo and an exit check; what runs in parallel, the
+  cross-repository dependencies (the `hcp/*` suite's release, Keyring, the DTG
+  registry's purpose IRIs), the risks, and the path from an aligned pilot to
+  the First-Party claim and Provider Interop.
 - **[Application-state store](05-design-notes/appstate-store.md)** — the
   proposed third store (beside the secrets and credential vaults) for
   versioned, namespaced, per-context application JSON: why agent memory
