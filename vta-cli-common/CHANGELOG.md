@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.68.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.67.0...vta-cli-common-v0.68.0) — 2026-11-27
+
+
+### Fixed
+
+- **rooms**: Pnm reads a room's file at rooms/records/get/0.3, as its other reads do ([#2837](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2837))
+
+`pnm rooms file get` asked only rooms/records/get/0.2. It now asks get/0.3
+  through rooms/keys/act/0.11 and falls back to get/0.2 only when the host or the
+  VTA answers unsupportedType, and the member-name read gains the same fallback.
+  Every answer is read as the generated type of the version that gave it.
+
+  get/0.4 is not asked: no published rooms/keys/act version (0.8–0.12) lists it,
+  so a VTA cannot relay it, and its one addition is a purpose of use these reads
+  do not name.
+
+  The "only unsupportedType falls back" decision is now one function,
+  `newest_answer`, under test.
+
+
+
 ## [0.67.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.66.0...vta-cli-common-v0.67.0) — 2026-11-24
 
 

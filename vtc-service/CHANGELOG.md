@@ -2,6 +2,250 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.35.2...vtc-service-v0.36.0) — 2026-11-27
+
+
+### Added
+
+- **vtc**: The room's member card shows the member's picture and opens their directory card ([#2829](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2829))
+
+The portal now asks the directory about a room's authors at
+  vtc/directory/query/0.2, whose answer names the member's directory entry.
+  With it the room's member card shows their picture (read through the
+  projection by entry with images/get and checked against its digest, never a
+  URL), the start of their bio (text only), the badges on their card (one
+  badges/wall/show read, made only when the card opens, and nothing when badges
+  are off) and "Open card", which links their full directory card. The chat's
+  avatar beside their messages is the same picture; initials remain the
+  fallback.
+
+  A community that predates query 0.2 answers unsupportedType, and the portal
+  asks again at 0.1, for a card with a name but no picture or link. Private
+  rooms are still never looked up.
+
+- **vtc**: Vtc/directory/query/0.2 answers the member's entry ([#2827](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2827))
+
+* feat(vtc): vtc/directory/query/0.2 answers the member's entry
+
+  The portal names a room's authors by DID with vtc/directory/query, but every
+  other directory read is addressed by entry: the member's picture
+  (images/get), their entry with shared groups (entries/show), and their card
+  page. Without the entry it could name an author but not show their picture
+  or open their card.
+
+  query/0.2 (dtgwg-trust-tasks-tf #1383) is served beside 0.1 by the same
+  authority — any entry, or the member portal's delegated key as its member —
+  and answers `entryId`, the member's directory entry
+  (`directory::read::QueryAnswer`). It is answered only where 0.1 answers at
+  all: where the projection shows the caller the member's DID, to the member,
+  or to an administrator; everyone else gets the same notFound as no member,
+  with no entry. 0.1 is unchanged.
+
+  Pinned from a local build of the spec PR; re-pin from trusttasks.org once it
+  publishes.
+
+- **vtc**: Reply, react and live updates in the member portal's room chat ([#2828](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2828))
+
+The portal's chat could only send a plain message, and a member had to press
+  refresh to see anyone else's. The wallet now replies, reacts and watches a room
+  (OpenVTC/vta-browser-plugin#454); the portal uses all three, feature-detected,
+  so an older wallet keeps today's chat.
+
+  - Reply: a message's actions (hover or focus; a tap on a phone) offer Reply;
+    the composer names what is answered and sends it as `putMessage`'s
+    `replyTo`.
+  - React: a small picker of reactions; a reaction chip the member added is
+    theirs to take back (`unreact`). Counts, authors and "yours" are the
+    wallet's reading; the page counts nothing. The wallet confirms each one.
+  - A room whose profile does not list what a reply or reaction needs answers
+    `recordMembersNotListed` and writes nothing: the page says so, stops
+    offering both, and offers the words as a plain message.
+  - Live: `room-live.ts` watches the room through the wallet, reads it again
+    when told it moved and tells the watch what it read; while the wallet
+    cannot watch it reads on a 20-second timer while the tab is visible, and
+    watches again with backoff after a close. "Live" is derived from the latest
+    event and drops the moment any other arrives (R6.2); a wallet without
+    `watch` keeps the refresh button.
+
+- **vtc**: Administrators set a community room's record members — replies and reactions ([#2824](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2824))
+
+* feat(vtc): administrators set a community room's record members — replies and reactions
+
+  A community-owned room's profile was written with its label and description
+  only, so a room meant as a conversation started with replies and reactions
+  off, and turning them on took a member holding `curate`. The community holds
+  `admin` in every room it owns; its administrators now set them.
+
+  Serves vtc/rooms/community create/0.6, update/0.5 and get/0.6 beside the
+  earlier versions (trustoverip/dtgwg-trust-tasks-tf#1373):
+
+  - create/0.6 `recordMembers` is written into the profile with the label and
+    description (item 12), echoed and audited; absent is none.
+  - update/0.5 `recordMembers` (the whole set) or `removeRecordMembers`; a set
+    compares as a set, and a record-members-only change re-writes the profile.
+    Neither given, the read-back's set is carried over as before.
+  - get/0.6 answers what the profile listed at the community's last write —
+    never a pending request's set (item 6).
+  - `rooms::community_profile` keeps a requested set in a new
+    `RecordMembersRecord` (`room-record-members:<room>`) until a write carries
+    it; a set requested while a write is in flight keeps the room pending.
+    Unknown values are never refused.
+
+  The console's room form gains a "Replies and reactions" box beside Watch
+  signals: ticked on create (sends kind, inReplyTo, writtenAt), shown and
+  editable on a room's page, sent on edit only when it changed and keeping any
+  other member a curator listed, with a note about members on an older reader.
+  `cnm rooms create|update` take `--replies-and-reactions`, `--record-member`
+  and (update) `--no-record-members`; `cnm rooms get` prints them.
+
+- **vtc**: The member portal's room reads as a chat ([#2826](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2826))
+
+A room used for chat was a card titled "Conversation" beside an "Add to this
+  room" panel, under the room's DID, epoch and storage meters. It now reads as a
+  chat, in the portal's own tokens, light and dark, down to a phone's width.
+
+  - The chat is the page: a window-high card whose header carries the room's
+    name, its tier and what the community sees, with a back arrow. The room's
+    DID, epoch, storage and who the member posts as are folded under
+    "About this room".
+  - Messages: another author's on the left under their name and initials once
+    per run, the member's own on the right in the brand's tint. A run is
+    consecutive messages by one author within five minutes
+    (`conversation::runsOf`, layout only: the wallet's order, nothing merged).
+    Times are small inside the bubble, the full time on hover; replies are a
+    compact quote; reactions are chips under the bubble.
+  - Notes and files are small cards that open in a drawer beside the chat (a
+    sheet over it on a phone; Escape closes it) instead of replacing the
+    composer.
+  - The composer is docked under the messages: Enter sends, Shift+Enter starts
+    a new line, a note sits behind its toggle and a file behind the paperclip.
+    It starts on a message only when the wallet has `putMessage`; an older
+    wallet is offered only a note. Every write still goes through the wallet,
+    which shows it to the member first.
+  - Every name in the chat goes through `speakerOf` and the directory's cards:
+    messages, reactions, rewrites, the drawer's "By", and "you post as" (the
+    member's own DID is now looked up too).
+  - The member card no longer says "As the community's directory shows them to
+    you". It adds a copy button for the DID, and opens upward when there is no
+    room below, kept inside the window.
+
+  A room of notes and files keeps the records list and its Add panel.
+
+- **vtc**: The portal names a room's authors as the member directory shows them ([#2822](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2822))
+
+In a room used for chat, an author the wallet's reading gives no name was
+  shown by the last segment of their did:webvh (`airport-electric`), which reads
+  as a name but is only a path the DID's owner chose.
+
+  The portal now asks the community's directory about each such author
+  (`vtc/directory/query/0.1`, signed with the portal's delegated key, which
+  `vtc/directory` already covers) and shows the name the directory shows this
+  member. Where it shows none, the author is their shortened DID in monospace
+  with a DID tag. The name an author gave themselves in the room still comes
+  first, so the portal, the wallet's console and Keyring name them alike.
+
+  Each author's name opens a card on hover, focus or tap: initials, name,
+  nickname, pronouns, role and the full DID.
+
+  Authors are looked up only in `open` and `attributed` rooms, whose host
+  already sees who wrote what; asking about a private room's authors would tell
+  the community who writes there. Only the DID is sent, never the room.
+
+  The query task's generated types join `vta_sdk::openapi` and the console's
+  wire types.
+
+- **vtc**: The member portal sends chat messages in a room, and the conversation scrolls ([#2820](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2820))
+
+A member could add only notes to a room from the portal: the compose panel
+  took a title and a note, and refused an empty title. Keyring shows a room
+  record with text and no title as an ordinary chat message, so a portal
+  member could not answer a conversation going on in Keyring.
+
+  The compose panel now has a Note / Message switch. It starts on Note, as
+  asked, and remembers the member's last choice in this browser. Message is
+  one box: Enter sends, Shift+Enter starts a new line. It writes through the
+  wallet's new rooms.putMessage (OpenVTC/vta-browser-plugin#453), which
+  writes the text with no title and kind "message" where the room takes it,
+  confirmed in the wallet's window like any write. A wallet without
+  putMessage is offered notes only.
+
+  The conversation scrolls in its own window, sized to the screen and
+  opened at the newest message. It follows new messages while the member is
+  at the bottom, or when the newest one is their own, and never pulls them
+  down from something older they scrolled up to read. Only the layout
+  changes: the order is still the wallet's, so the portal, the wallet and
+  Keyring show the room alike.
+
+
+
+### Documentation
+
+- **vtc**: The portal's room chat may write without a window under the wallet's session grant ([#2836](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2836))
+
+OpenVTC/vta-browser-plugin#457 adds a second bounded exception to "every page
+  write is confirmed": messages and reactions while the one page holds the room
+  open through its watch. The portal needs no code change (the page contract is
+  unchanged); the portal-rooms rule now names the grant and says to keep the
+  watch held for exactly as long as the room is shown, since its closing ends the
+  grant.
+
+- **vtc**: The portal's reactions may run under the wallet's reaction grant ([#2833](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2833))
+
+OpenVTC/vta-browser-plugin#455 lets a member grant a portal, in a reaction's
+  own confirm, 30 minutes of reacting in one room without a window. The portal
+  rooms entry said the wallet confirms every reaction; it now says so except
+  under that grant, which the page can neither request nor see.
+
+
+
+### Fixed
+
+- **vtc**: The portal's room stops re-reading itself in a loop ([#2835](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2835))
+
+In a live room the page re-read the conversation over and over. After each
+  change the page told the wallet's watch the highest version it had read — the
+  highest record it shows. But the page's records are not every record:
+  reactions, member names, edits and withdrawals are folded into the messages
+  they concern. Once the room's newest record was one of those (a reaction, say),
+  the version acknowledged sat below the room's, the host fired again at once for
+  a room already past it, and the page read, acknowledged the same stale version,
+  and was fired again — forever.
+
+  The watch's `changed` event carries the room's `latestVersion`. The page now
+  acknowledges the highest of that, what it read and what it holds, and starts a
+  renewed watch from it too.
+
+- **vtc**: The portal's live room keeps reading while its watch says it is armed ([#2830](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2830))
+
+"Live" in a portal room is derived from the wallet's watch events and drops
+  on any other event (R6.2). But a watch can stop delivering without saying so
+  — a wedged mediator session in the wallet, a host that lost the watch — and
+  then the page showed "Live" and missed updates for up to the watch's one-day
+  lease. A hidden tab's timers are also throttled to about once a minute, which
+  lets the wallet's service worker be put to sleep between pings.
+
+  While the watch reports itself armed, the page now also reads the room every
+  five minutes, and at once when the tab is seen again, and tells the watch
+  what it read. A broken delivery costs minutes, never the lease.
+
+- **vtc**: The portal key may look a member up by DID, so a room's authors get their names ([#2825](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2825))
+
+The member portal names a room's authors with vtc/directory/query/0.1 ([#2822](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2822)),
+  signed with the key the member delegated `vtc/directory` to at sign-in. The
+  other directory reads accept that key as its member; this one did not. It
+  was handled beside the community's other reads through `member_signer`,
+  which knows only ACL entries, so the portal key was refused with
+  permissionDenied ("the signer holds no entry in this community"). The portal
+  reads a refusal as "no name", so every author stayed a DID, even one whose
+  card the viewer could open.
+
+  The handler now accepts the delegated key as its member while the session
+  lives (`member_portal::delegation::accept`, as `directory_tasks` does), and
+  authorizes any other signer as before. The projection, and so what the
+  answer may show, is the member's own.
+
+
+
 ## [0.35.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-service-v0.35.1...vtc-service-v0.35.2) — 2026-11-25
 
 
