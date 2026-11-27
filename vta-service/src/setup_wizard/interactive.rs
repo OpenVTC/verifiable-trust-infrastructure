@@ -643,7 +643,7 @@ fn prompt_azure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr>
 /// happens at first seed-store call.
 #[cfg(feature = "vault-secrets")]
 fn prompt_vault_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr> {
-    use super::from_toml::{
+    use vti_secrets::config::{
         default_vault_approle_mount, default_vault_k8s_jwt_path, default_vault_k8s_mount,
     };
 
@@ -728,7 +728,7 @@ fn prompt_vault_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr>
 /// cluster connection happens at first seed-store call.
 #[cfg(feature = "k8s-secrets")]
 fn prompt_k8s_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr> {
-    use super::from_toml::default_k8s_secret_key;
+    use vti_secrets::config::default_k8s_secret_key;
 
     let secret_name = p.text(
         "Kubernetes Secret name",
