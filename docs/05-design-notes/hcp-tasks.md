@@ -1,11 +1,11 @@
 # The Human Context Protocol in the VTA: V0 task checklist
 
-**Status:** not started; 0 of 15 V0 tasks done.
+**Status:** in progress; 1 of 15 V0 tasks done (X0b).
 **Companion to:** [hcp.md](hcp.md) (the design) and
 [hcp-plan.md](hcp-plan.md) (the plan this is generated from). The demo week
 is [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-27
 
 V0 is task-level here; V1, V2 and V3 are milestone-level in
 [hcp-plan.md](hcp-plan.md) §3.4 and get their own pass when they start. Only
@@ -34,7 +34,7 @@ by raising a count or growing an allowlist.
   - Verify: the demo contract records the heads, bundle digests and fixtures.
   - Deps: none.
 
-- [ ] **X0b — Skeleton commit.**
+- [x] **X0b — Skeleton commit.**
   - Acceptance: empty `vti-specs-hcp` and `vta-hcp` crates (version `0.1.0`)
     are workspace members with `[lints] workspace = true`; `Dockerfile.nitro`
     copies them; the root `CLAUDE.md` crate table and `RELEASING.md` counts

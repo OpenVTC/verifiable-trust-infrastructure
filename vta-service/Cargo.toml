@@ -83,6 +83,11 @@ setup = ["webvh", "dep:tempfile", "vti-common/cli-synthesis"]
 # did-hosting client, so it needs `webvh`. The enclave opts in with its own
 # `webs` feature (a TEE VTA's own did:webs, `[tee.kms] vta_did_webs`).
 webs = ["webvh", "dep:affinidi-did-webs", "dep:affinidi-keri", "dep:affinidi-keri-core", "dep:affinidi-keri-crypto"]
+# The Human Context Protocol provider (docs/05-design-notes/hcp.md): the VTA as
+# HCP Provider and Authorization Service, in the `vta-hcp` subsystem crate. Off
+# by default, and empty until the HCP V0 tasks land
+# (docs/05-design-notes/hcp-tasks.md).
+hcp = ["dep:vta-hcp"]
 # BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381
 # curve (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by
 # default; the holder/verifier paths (receive, present, verify) build behind
@@ -256,6 +261,9 @@ vta-backup = { path = "../vta-backup", version = "0.49" }
 # TEE bootstrap subsystem (attestation, KMS, anchor MAC, DID autogen),
 # extracted and re-exported as crate::tee behind this crate's `tee` feature.
 vta-tee = { path = "../vta-tee", version = "0.49", optional = true }
+# The Human Context Protocol provider, behind this crate's `hcp` feature. It
+# does not depend on this crate.
+vta-hcp = { path = "../vta-hcp", version = "0.1", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
 vta-policy = { path = "../vta-policy", version = "0.45" }
@@ -530,5 +538,7 @@ type_complexity = "allow"
 
 # Not called from this crate: `affinidi-tdk-common` is a version floor (see its
 # entry above) that keeps a second resolver-cache copy out of the graph.
+# `vta-hcp` is the `hcp` feature's dependency, which nothing calls until the
+# HCP operations land in this crate (HCP V0 task A2).
 [package.metadata.cargo-machete]
-ignored = ["affinidi-tdk-common"]
+ignored = ["affinidi-tdk-common", "vta-hcp"]

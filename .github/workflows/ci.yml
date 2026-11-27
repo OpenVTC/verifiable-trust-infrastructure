@@ -1235,6 +1235,12 @@ jobs:
       - name: vta-service without tsp
         run: cargo clippy -p vta-service --no-default-features --features setup,keyring,rest,didcomm,cli-synthesis --all-targets -- -D warnings
 
+      # The Human Context Protocol provider (`vta-hcp`), off by default, so no
+      # other step compiles its `cfg(feature = "hcp")` code. `-D warnings` for
+      # the same reason as the steps above.
+      - name: vta-service hcp
+        run: cargo clippy -p vta-service --features hcp --all-targets -- -D warnings
+
   features-vta-service-tests:
     # The two vta-service steps that RUN tests under a non-default feature set.
     # ~10.5 min (setup wizard 5.8, TEE Mode B carve-out 4.6).

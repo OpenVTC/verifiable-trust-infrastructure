@@ -32,6 +32,7 @@ binaries (`vta-enclave`, etc.) forward relevant flags to
 | `k8s-secrets` | Kubernetes `Secret` seed storage (in-cluster SA or kubeconfig) | `kube`, `k8s-openapi` |
 | `vsock-store` | Vsock-proxied persistent storage (for enclaves) | `vti-common/vsock-store` |
 | `vsock-log` | Vsock-proxied log forwarding (for enclaves) | `vti-common/vsock-log` |
+| `hcp` | Human Context Protocol provider ([design](../05-design-notes/hcp.md)); off by default, and a skeleton until the HCP V0 tasks land | `vta-hcp` |
 
 **Default features:** `setup`, `keyring`, `rest`, `didcomm`
 
