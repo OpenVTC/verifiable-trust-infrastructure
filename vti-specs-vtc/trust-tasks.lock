@@ -810,7 +810,7 @@ digest = "sha256:0115ac02ee434fc9c2bd0722d98a8d8d09009d32439f7fa9caf696260f4b5a8
 slug = "vtc/events/checkin/record"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/events/checkin/record/0.1"
-digest = "sha256:d89d8012ba71d7ab6179ee263828018a3627cdca018a51aa363720e5c779a3e9"
+digest = "sha256:69fa2d8b858172ef870fed993cf60d76f8ea97289727b7302629280fe8ec8514"
 
 [[task]]
 slug = "vtc/events/create"
@@ -828,13 +828,13 @@ digest = "sha256:89ccb5d1ad10d2fe8fb9611736fa82d4e001f22c51465492fe75bcb1bfadab2
 slug = "vtc/events/guests/register"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/events/guests/register/0.1"
-digest = "sha256:78f6151bb7c19932219e3558f4f5b7d70e989c09696affb484a17e41d5bd9dc9"
+digest = "sha256:c22744184491423534647ff574cbc489219d4f4baa4d48e26650ba9886cc6435"
 
 [[task]]
 slug = "vtc/events/guests/withdraw"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/events/guests/withdraw/0.1"
-digest = "sha256:d5747dce1b1290cd5d1bd2d9c41ed618efa43f0712756b66a8dcdea841c3df9c"
+digest = "sha256:9db6c8f2c01b29929e3f03dbcc6b5d03dcaecfa9ff9a0085ebaada0422dd3c62"
 
 [[task]]
 slug = "vtc/events/hosts/appoint"
@@ -864,7 +864,7 @@ digest = "sha256:c532e4f02210a27d44fc3653e29479441b17688b93f2433ddb1cf559641cf49
 slug = "vtc/events/invitations/links/redeem"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/events/invitations/links/redeem/0.1"
-digest = "sha256:5cf3840ac549c48eb7341395ad163f3d9a12babde19cf96dce0e196948de48a7"
+digest = "sha256:b8b78d73301261a9f38c60573e9d973ca49f2f9f7c7ea8447ad3dc6680bce5e8"
 
 [[task]]
 slug = "vtc/events/invitations/links/revoke"
@@ -876,13 +876,13 @@ digest = "sha256:97915fcb714f4feecca567b70ce1d99729f554982900eb8bfac22eb09eb8521
 slug = "vtc/events/invitations/list"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/events/invitations/list/0.1"
-digest = "sha256:441bafa46c7d3430eabdf149a7f3915413c78e318c8a4a469566690c4a96328e"
+digest = "sha256:296a583654f6924d9ccf655e2847475ca764c502579b04b89fc1c278233ec294"
 
 [[task]]
 slug = "vtc/events/invitations/respond"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vtc/events/invitations/respond/0.1"
-digest = "sha256:d96db7b16758092c826abc9c6e2a908ce4ab9b5679d034677936966e1b839f44"
+digest = "sha256:8c00f61ac404efea3b43cd43164a6fce13bd748fbdd8c2fa8186367cc42de33c"
 
 [[task]]
 slug = "vtc/events/invitations/revoke"
@@ -906,7 +906,7 @@ digest = "sha256:23a58e01be1104bd47f72ef573458a4890c5e5e57876089d19240f61bcda1d0
 slug = "vtc/events/mine/list"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/events/mine/list/0.2"
-digest = "sha256:7ec03da1d6cada645d8c568224f540d3e129b80dd8cd501e62f512be5e4a5db8"
+digest = "sha256:0d6b80c0cbb72fdcb99f3a6459259b7001f10f4ad46284ce4ef4e234b14a0d02"
 
 [[task]]
 slug = "vtc/events/optouts/list"
@@ -930,7 +930,7 @@ digest = "sha256:7dac6fa08c0e4a1ff9cc557dc67c5490d0b625320a45961f7fa8ef095cda2bd
 slug = "vtc/events/registrations/decide"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/events/registrations/decide/0.2"
-digest = "sha256:7907e5a0a20a03395a2f26be5119ebc496f61284d0918389048848318dbfc3d3"
+digest = "sha256:ca74cf48929b8e9f62a0cfc2a32c1d7f97d4eccf39e54fd7d4e3b1230f11e49f"
 
 [[task]]
 slug = "vtc/events/registrations/list"
@@ -942,19 +942,19 @@ digest = "sha256:3d06d441985ac1511dc0179cc9cd5c58465c7f542f1a6070b69aa133acb4e60
 slug = "vtc/events/registrations/register"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/events/registrations/register/0.2"
-digest = "sha256:9c9fcf23c963d53674941bef6c32203ab6630faf4c6bcf19de1cefc84ed52519"
+digest = "sha256:5267f612c54d2b94450ef8638fc0c54b16c6fb27e3b812e7844d9b8aeda84925"
 
 [[task]]
 slug = "vtc/events/registrations/remove"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/events/registrations/remove/0.2"
-digest = "sha256:28390bc9cbe267dcdbc61c468b6f23e1e698a8698492a1acea944a60a95c2c1d"
+digest = "sha256:25b8c0b0db7cb53723ed0f80a6a7b4668865a8f5ed5ea2f19cf1e97eac80928a"
 
 [[task]]
 slug = "vtc/events/registrations/withdraw"
 version = "0.2"
 type_uri = "https://trusttasks.org/spec/vtc/events/registrations/withdraw/0.2"
-digest = "sha256:a64cae16993d99eef2c16f6d342695f86578fd4a473fa2bf5b360e5619e30f72"
+digest = "sha256:6c97b2b7c0a4567931c41be879f0459a6b2a555fd3f100a939ca5e022ec079d9"
 
 [[task]]
 slug = "vtc/events/report"

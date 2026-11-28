@@ -528,13 +528,9 @@ pub async fn contexts_for(
 
 // ─── reminders (VTI-CAL-040 – 042) ───────────────────────────────────────
 
-/// Where an entry's reminders come from, and the offsets (VTI-CAL-041).
-///
-/// The event's own suggestion is not available to the VTA: `vtc/events/mine/list` answers an
-/// `EventRef`, which carries no suggested reminders, and VTI-CAL-011 / 021 keep the VTA from
-/// reading the event any other way on its own. So an entry is reminded at the principal's
-/// alert for it, else the context's default. (Recorded as a divergence; the resolution is an
-/// `EventRef` that carries `suggestedReminderMinutes`.)
+/// Where an entry's reminders come from, and the offsets (VTI-CAL-041): the principal's alert
+/// for the event, else the offsets the event suggests (`suggestedReminderMinutes` on the
+/// `EventRef` that `vtc/events/mine/list` answered), else the context's default.
 #[must_use]
 pub fn reminders_for(
     entry: &Entry,
@@ -550,6 +546,20 @@ pub fn reminders_for(
         } else {
             ("alert", a.reminder_minutes.clone())
         };
+    }
+    let suggested: Vec<u32> = entry
+        .event
+        .get("suggestedReminderMinutes")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_u64)
+                .filter_map(|n| u32::try_from(n).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !suggested.is_empty() {
+        return ("event", suggested);
     }
     if settings.default_reminder_minutes.is_empty() {
         ("none", Vec::new())
@@ -1346,6 +1356,17 @@ pub fn to_ics(listed: &[Listed], detail: &str, uid_salt: &str, now: DateTime<Utc
             Some(t) => out.push_str(&format!("SUMMARY:{}\r\n", ics_escape(t))),
             None => out.push_str("SUMMARY:Busy\r\nTRANSP:OPAQUE\r\nCLASS:CONFIDENTIAL\r\n"),
         }
+        // A feed that admits places carries the event's coarse hint, never an address (the
+        // community never puts one there, VTI-EVT-062).
+        if detail == "titlesAndPlaces"
+            && l.tier == "mine"
+            && let Some(place) = l
+                .wire
+                .pointer("/event/placeSummary")
+                .and_then(Value::as_str)
+        {
+            out.push_str(&format!("LOCATION:{}\r\n", ics_escape(place)));
+        }
         if l.wire.pointer("/event/status").and_then(Value::as_str) == Some("cancelled") {
             out.push_str("STATUS:CANCELLED\r\n");
         }
@@ -1655,6 +1676,26 @@ mod tests {
         assert_eq!(reminders_for(&w, None, &s).0, "none");
     }
 
+    /// VTI-CAL-041: with no alert of the principal's, the event's own suggestion comes before
+    /// the context's default; an alert still beats it.
+    #[test]
+    fn vti_cal_041_the_events_suggestion_comes_before_the_default() {
+        let mut e = entry("2026-12-01T18:00:00", "going", 1);
+        e.event["suggestedReminderMinutes"] = json!([1440, 60]);
+        let mut s = Settings::default_for("ctx");
+        s.default_reminder_minutes = vec![15];
+        assert_eq!(reminders_for(&e, None, &s), ("event", vec![1440, 60]));
+        let a = Alert {
+            context_id: "ctx".into(),
+            community: e.community.clone(),
+            event_id: e.event_id.clone(),
+            reminder_minutes: vec![30],
+        };
+        assert_eq!(reminders_for(&e, Some(&a), &s), ("alert", vec![30]));
+        e.event["suggestedReminderMinutes"] = json!([]);
+        assert_eq!(reminders_for(&e, None, &s), ("default", vec![15]));
+    }
+
     /// VTI-CAL-041, 013: due offsets fire once per sequence; a new sequence re-arms them; an
     /// event that started fires nothing.
     #[test]
@@ -1744,5 +1785,31 @@ mod tests {
         assert_ne!(uid(&a), uid(&b));
         let busy = to_ics(&[l], "busy", "salt-a", now);
         assert!(busy.contains("SUMMARY:Busy") && !busy.contains("Soldering"));
+    }
+
+    /// VTI-CAL-041, 053: a `titlesAndPlaces` feed carries the event's place hint; a titles-only
+    /// feed does not.
+    #[test]
+    fn vti_cal_041_places_only_in_a_feed_that_admits_them() {
+        let mut e = entry("2026-12-01T18:00:00", "going", 1);
+        e.event["placeSummary"] = json!("Mill Lane, Riverside");
+        let (start, end) = e.period().unwrap();
+        let l = Listed {
+            context_id: "ctx".into(),
+            community: e.community.clone(),
+            event_id: e.event_id.clone(),
+            tier: "mine",
+            start,
+            end,
+            wire: json!({ "event": e.event }),
+        };
+        let now = Utc::now();
+        let places = to_ics(std::slice::from_ref(&l), "titlesAndPlaces", "salt", now);
+        assert!(
+            places.contains("LOCATION:Mill Lane\\, Riverside\r\n"),
+            "{places}"
+        );
+        let titles = to_ics(&[l], "titles", "salt", now);
+        assert!(!titles.contains("LOCATION"), "{titles}");
     }
 }

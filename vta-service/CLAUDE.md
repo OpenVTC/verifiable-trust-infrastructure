@@ -1226,8 +1226,10 @@ When adding a flow, add it here and a line to the root index.
   context, and proven by its issuer; kept once per document digest. Audit by reference only,
   never a title or receipt content (VTI-CAL-071). Context deletion purges the keyspace's rows
   and takes the context out of every feed.
-- **Known divergences**: no event-suggested reminders and no places in feeds (`EventRef`
-  carries neither, VTI-CAL-041); `busy/share` records the choice only (no `busy/put` task yet).
+- **Reminder order** (VTI-CAL-041): the principal's alert for the event, else the event's
+  `suggestedReminderMinutes` (on the `EventRef` the community answered), else the context
+  default. A `titlesAndPlaces` feed carries the `EventRef`'s `placeSummary` as `LOCATION`.
+- **Known divergence**: `busy/share` records the choice only (no `busy/put` task yet).
 - **Code**: `vta-service/src/operations/calendar.rs`,
   `vta-service/src/trust_tasks/{calendar,calendar_tests}.rs`,
   `vta-service/src/routes/calendar_feed.rs`, `vta_sdk::client` (`calendar_*`),
