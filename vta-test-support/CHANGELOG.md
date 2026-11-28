@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-test-support-v0.7.0...vta-test-support-v0.8.0) — 2026-11-28
+
+
+### Added
+
+- **vta**: Self-register the VTA's DID with a DID hosting service and keep the account alive ([#2848](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2848))
+
+* feat(vta): self-register the VTA's DID with a third-party DID hosting service
+
+  Pins did-management/account/{register,renew,status,expiry-notice}/0.1 and
+  server/info/0.2 (vti-specs-core) and adds the VTA side of guest
+  self-registration:
+
+  - WebvhHostClient: server_info (and an anonymous, unsigned form for a VTA
+    with no identity yet), register_account (invite admission + optional
+    referral, over HTTPS only), renew_account, account_status, and
+    for_server_offline. The account tasks' refusal codes map to statuses an
+    operator can act on. The invite halves never reach a Debug string.
+  - Outbound::rest_only: a reply to an issuer whose DID does not resolve yet
+    can only come back as the HTTPS response.
+  - register_did_with_server takes an optional admission: with one it sends
+    account/register instead of did/register, keeping the record flip,
+    concurrency check and audit.
+  - Setup: create_webvh gains an optional [vta_did.hosting] block. Before
+    minting, setup checks the host's server/info (the domain admits invites,
+    the path is under one of its prefixes, matched on whole segments); after
+    minting it registers the DID, so a bad invite fails setup immediately.
+  - The stub webvh host serves server/info/0.2 and account/register, renew
+    and status, schema-checked; a round-trip test drives the real client.
+
+
+
 ## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-test-support-v0.6.0...vta-test-support-v0.7.0) — 2026-11-24
 
 

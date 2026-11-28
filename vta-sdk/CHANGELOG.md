@@ -2,6 +2,123 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.96.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.95.0...vta-sdk-v0.96.0) — 2026-11-28
+
+
+### Added
+
+- **vtc**: Events publish/cancel 0.2, partner withdrawal, invitation revoke ([#2850](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2850))
+
+Closes the three phase-2 gaps the divergence register records
+  (dtgwg-vti-spec Appendix F.5b), served from trust-tasks-tf #1407:
+
+  - vtc/events/publish/0.2 and cancel/0.2 answer the 0.2 Event, with its
+    invitation mode, members-may-invite and partners (VTI-EVT-100, 130);
+    0.1 is no longer served.
+  - registrations/withdraw/0.2 accepts a partner member's presentation,
+    verified before the event is looked up, as register does (VTI-EVT-037,
+    135).
+  - vtc/events/invitations/revoke/0.1: a host revokes an invitation; it
+    stops widening the audience, the events sweeper withdraws its
+    notification, a registration stands, and the kept record stops the
+    invitation mode inviting them again (VTI-EVT-103). Console: Revoke.
+
+  withdraw/0.2's in-place bundle change taken with trust-tasks update.
+
+- **vtc**: Community events phase 2 — invitations, links, opt-outs, announcements, partners, the event notification ([#2846](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2846))
+
+Implements VTI-EVT-100 – 135 and the `event` notification kind (VTI-NTF-064 – 067).
+
+  - Pins vtc/events/{create,update,show,list,mine/list,registrations/*} at 0.2 (0.1 no longer
+    served) and the new 0.1 tasks invitations/{send,list,respond}, invitations/links/{create,
+    revoke,redeem}, optouts/{set,list}, announcements/{send,list}.
+  - Invitations: one per member per event carrying the member's answer (going/maybe register,
+    decline registers nothing); audience invitations under `invite: notify|expect` by the events
+    sweeper; host and member invitations widen who may see the event; links with 256-bit codes
+    kept only as their SHA-256 digest, answered once and not recorded for redelivery, every
+    failure `linkInvalid`; opt-outs per event and per calendar.
+  - The `event` notification: the notice row first, the events sweeper its only sender through
+    the durable member push; a revision per sequence change, a withdrawal on cancel, revocation or
+    leaving the audience; the invitee re-checked before each offering revision; membership,
+    directory and group changes kick the sweeper. `vta_sdk::notifications::KIND_EVENT`.
+  - Announcements: no sequence change, never in a notification, per-event daily limit.
+  - Partners: audience.partners checked (partnerInvalid); a partner's member's presentation is
+    verified before the event is looked up (elections::presentation, now built without `voting`);
+    partner registrants keyed by DID and counted as othersGoing, never on the roster.
+  - Console: invite mode, members-may-invite and partners in the editor; an Invitations tab
+    (invitations, invite, links shown once, announcements). Portal: an Invitations tab, opt-outs,
+    announcements on the event page, `#/events/join/<code>`.
+
+  Known gaps against the specification, reported for the divergence register: publish/0.1 and
+  cancel/0.1 answer the event without invite, membersMayInvite and audience.partners (no 0.2
+  versions exist); a partner's member cannot withdraw (withdraw/0.2 carries no presentation,
+  VTI-EVT-037/135); a host cannot revoke an invitation (VTI-EVT-103, no task).
+
+- **vtc**: Community events in the console and the member portal ([#2844](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2844))
+
+The pages over vtc/events/* 0.1.
+
+  Console (Governance -> Events, plugins/events.tsx over lib/events.ts,
+  vtc.events.manage at any qualifier): every event the viewer runs,
+  filtered by calendar, status and range; calendars (make, change,
+  archive, group calendars); the editor (IANA zone, all-day, place
+  summary and released access details, audience by members, groups or
+  badges, or roles with an optional rule, registration mode, capacity,
+  waitlist, plus-ones, window, questions, code of conduct, accessibility,
+  the roster setting offered on a draft and fixed after publishing,
+  count, listing, suggested reminders); publish, cancel with a reason,
+  delete a draft; registrations (approve, decline, remove); hosts
+  (appoint, remove). Console key only (VTI-EVT-095).
+
+  Portal (#/events, members/Events.tsx over members/events-api.ts):
+  Upcoming / Mine / Month with calendar chips; times in the viewer's zone
+  with the event's beside it; one event with register (going or maybe,
+  guests, answers, code of conduct), change and withdraw, where it
+  happens once going (notYet handled), the roster on visible rosters
+  only, Add to calendar (.ics built in the browser), Report. Home tile
+  and attention lines. Portal key only.
+
+
+
+### Build & CI
+
+- Trust-tasks 0.43, trust-tasks-build 0.3.0, affinidi-messaging-sdk 0.52, mediator 0.57 ([#2849](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2849))
+
+* build!: trust-tasks 0.43, trust-tasks-build 0.3.0, affinidi-messaging-sdk 0.52, mediator 0.57
+
+  Moves the workspace to trust-tasks-rs / -capability-client / -https /
+  -didcomm / -tsp 0.43 and trust-tasks-build 0.3.0, the first releases
+  carrying the hcp/* Trust Task suite (HCP V0 needs them; hcp-plan.md §5),
+  with affinidi-tdk 0.51 / affinidi-messaging-sdk 0.52 and the mediator 0.57
+  crates in lockstep, so the graph keeps one trust-tasks-rs.
+
+  trust-tasks-build 0.3.0 keeps member presence in generated payload types
+  (trust-tasks-tf #1385): an optional array or object is now Option<_> and an
+  optional nullable member Option<Option<_>>. Every reader keeps its previous
+  meaning (an absent array is read as the empty one was, and null as absent).
+  Three silent changes the compiler did not flag are handled:
+
+  - A builder given an empty Vec now sends `[]` where the member used to be
+    left out. The senders that can be empty leave it out again: the mobile
+    engine's and the SDK's auth `scope`, WebAuthn `clientExtensionResults`,
+    and the invitation `offer` of a `message` delivery.
+  - `.iter()` over a member that became Option<Vec<_>> yields the whole Vec
+    once when the closure is generic. rooms/owner/revoke read its withdrawals
+    this way and refused every one ("a withdrawal of no known kind"); it now
+    flattens.
+  - A typed consume validates the payload as received (trust-tasks-tf #1398):
+    a forbidden `null` on an optional member is refused malformedRequest.
+
+  Two readers still treat `null` as absent where the specification makes it
+  clear the value (vtc/members/update `label`, persona/binding/set
+  `profileId`); fixing them is a behaviour change, left to its own PR.
+
+  Cargo.lock stays on the published 0.41 graph: it is regenerated once
+  affinidi-tdk-rs publishes messaging-sdk 0.52 / affinidi-tdk 0.51 and the
+  mediator publishes 0.57.
+
+
+
 ## [0.95.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.94.2...vta-sdk-v0.95.0) — 2026-11-27
 
 
