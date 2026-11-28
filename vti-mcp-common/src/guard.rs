@@ -614,6 +614,10 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
 /// to `Mutating` without consulting it, so a runtime miss is safe and a
 /// census miss is loud.
 const MUTATING_VERBS: &[&str] = &[
+    // `did-management/account/expiry-notice`: a DID host warns the VTA that its
+    // self-registered account is about to be disabled, has been, or is about to be
+    // purged; the VTA records it and renews.
+    "expiry-notice",
     // `vtc/events/hosts/appoint`: grants a member `vtc.events.manage` at one event, an
     // appointment its granter answers for (VTI-EVT-070). Withdrawn by `hosts/remove`.
     "appoint",

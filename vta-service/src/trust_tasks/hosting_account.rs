@@ -44,7 +44,29 @@ pub(super) async fn handle_expiry_notice(
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
     let account = serde_json::to_value(payload.account).unwrap_or(Value::Null);
-    match crate::hosting_account::receive_notice(state, &auth.did, &stage, account).await {
+    let received = crate::hosting_account::receive_notice(state, &auth.did, &stage, account).await;
+    // Audited whatever became of it: a notice kept says the VTA's DID is at risk,
+    // and one dropped says a party other than the host claimed to speak for it.
+    let outcome = match &received {
+        Ok(true) => "accepted",
+        Ok(false) => "dropped",
+        Err(_) => "failure",
+    };
+    if let Err(e) = crate::audit::record_with_detail(
+        &state.audit_sink,
+        "hosting.expiry_notice",
+        &auth.did,
+        None,
+        outcome,
+        Some(super::helpers::TRANSPORT_TRUST_TASK),
+        None,
+        Some(&stage),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "audit emission failed for hosting.expiry_notice");
+    }
+    match received {
         Ok(true) => {
             let state = state.clone();
             tokio::spawn(async move {
