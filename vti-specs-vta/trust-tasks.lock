@@ -129,6 +129,84 @@ type_uri = "https://trusttasks.org/spec/vta/backup/put-chunk/1.0"
 digest = "sha256:c5030179ff573e3d429b8fa5edb1e68e039ef3493c62e42014e354ab47222e67"
 
 [[task]]
+slug = "vta/calendar/alerts/clear"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/alerts/clear/0.1"
+digest = "sha256:a82af63f1f5787de8b4cff895227f47172576a80af5028c41349c4d3659f4939"
+
+[[task]]
+slug = "vta/calendar/alerts/set"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/alerts/set/0.1"
+digest = "sha256:b2708b34e3e345a694a5a2dd022330285a21b94c333e461f102db55eeba81569"
+
+[[task]]
+slug = "vta/calendar/busy/share"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/busy/share/0.1"
+digest = "sha256:a3c8ad2924bde7c11d9ff81182fb5c7118f7edd5b2c968bf50f2bfc99760e1f7"
+
+[[task]]
+slug = "vta/calendar/export"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/export/0.1"
+digest = "sha256:d731dd6df0c4fee866037f799fe1fd21f706a7c47876fc44a6f210bcfc1b8b85"
+
+[[task]]
+slug = "vta/calendar/feeds/create"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/feeds/create/0.1"
+digest = "sha256:8345bb96208542b0d637ae8d077a37a8811e1c8aab634cb6b562e54faa621247"
+
+[[task]]
+slug = "vta/calendar/feeds/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/feeds/list/0.1"
+digest = "sha256:d175c9f732fe671c1c74a76fdfcda9146dfd8b4f18a463cd7f54b80e45dda44d"
+
+[[task]]
+slug = "vta/calendar/feeds/revoke"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/feeds/revoke/0.1"
+digest = "sha256:bf334946cdfa795072d3693b1b09b947494a18a1c4e779e76d31c9cfb5110d41"
+
+[[task]]
+slug = "vta/calendar/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/list/0.1"
+digest = "sha256:3eca7b58d811a6fb405b16d44aace2c06c4c2b2b1045a9a737b79fc0a1989438"
+
+[[task]]
+slug = "vta/calendar/receipts/deposit"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/receipts/deposit/0.1"
+digest = "sha256:e201f19af2d2583f683ab9525da049f5a43327c9f7736dc16e94409867f1dfaa"
+
+[[task]]
+slug = "vta/calendar/receipts/list"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/receipts/list/0.1"
+digest = "sha256:fa67e08c309095e2aa087b6e881e7502fc2a134b3507c0fd7c921368f5481450"
+
+[[task]]
+slug = "vta/calendar/settings/show"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/settings/show/0.1"
+digest = "sha256:51f4dce6b764df8aa6381666e69fd1f269b4ceb77ed86882791910282ada48bc"
+
+[[task]]
+slug = "vta/calendar/settings/update"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/settings/update/0.1"
+digest = "sha256:df9052ee5a11cb8805ac76d24548879c95b28128c9e7eb72a3339267298d9f15"
+
+[[task]]
+slug = "vta/calendar/sync"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/calendar/sync/0.1"
+digest = "sha256:310ca907d34dd6429c675b74b23f48f0c066fe399b143af564b1aeb814a1800c"
+
+[[task]]
 slug = "vta/collection/claim"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/vta/collection/claim/0.1"

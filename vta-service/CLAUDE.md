@@ -1196,3 +1196,40 @@ When adding a flow, add it here and a line to the root index.
   `vta-service/src/messaging/collector.rs`, `vta-service/src/trust_tasks/collection.rs`
   (+ `_tests.rs`), `vta_sdk::client` (`collection_*`), `vta-cli-common/src/commands/collection.rs`.
 - **Docs**: `docs/02-vta/collection.md`.
+
+### The member's calendar (`vta/calendar/*/0.1`)
+- **What**: the principal's calendar across every trust context (VTI-CAL-001 – 071): `mine`
+  entries read from each community with `vtc/events/mine/list/0.2` as the context's membership
+  identifier, `notified` entries from held `event` notifications; per-context settings (sync,
+  default reminders, quiet hours); per-event alerts; reminders fired as a content-free device
+  wake; private iCalendar feeds on `GET /calendar/feeds/{token}`; receipts (a community's
+  signed reply about a registration, deposited by the client as received); `export`;
+  `busy/share`. `pnm calendar …`.
+- **Invariants to preserve**: everything is per context; a listing answers only for contexts
+  the caller has standing in and never says another context holds anything — a named context
+  without standing is dropped silently, not refused (VTI-CAL-002); a single-context task is
+  `permissionDenied` first. Reading is off until a context turns it on, and a context whose
+  setting is off is never read. The community read is persona-signed and goes over HTTPS only
+  (`Outbound::send`, `ReplyTrust::SignedByRecipient`), acting as an admin of exactly that
+  context (`acting_as`). One sweeper (`operations::calendar::sweep_loop`, selected against
+  shutdown) owns both retries: reminders each minute, reads each fifteen; never add a retry
+  loop around either. A reminder fires once per offset per event `sequence`, never in quiet
+  hours, and leaves only a wake (`trust_tasks::wake_devices_in_context`) — no event, community
+  or principal reaches a push service or mediator (VTI-CAL-043). A feed's token is 256 bits,
+  returned once, kept only as its SHA-256 digest, **never logged**; unknown, revoked and expired
+  tokens get the same bare 404; every read updates `lastFetchedAt`/`fetchCount`; a feed covers
+  a context only while its creator's ACL entry keeps standing there (VTI-CAL-055); content is
+  titles and times only (no identifier, access details or receipts), UIDs salted per feed. The
+  feed route is a `REST_EXCEPTIONS` row on its own limiter (`Limiter::CalendarFeed`). A receipt
+  is the document **as received** (the spine's `received::document_as_received`), refused
+  unless it is a registration/invitation reply, addressed to a persona the VTA holds in the
+  context, and proven by its issuer; kept once per document digest. Audit by reference only,
+  never a title or receipt content (VTI-CAL-071). Context deletion purges the keyspace's rows
+  and takes the context out of every feed.
+- **Known divergences**: no event-suggested reminders and no places in feeds (`EventRef`
+  carries neither, VTI-CAL-041); `busy/share` records the choice only (no `busy/put` task yet).
+- **Code**: `vta-service/src/operations/calendar.rs`,
+  `vta-service/src/trust_tasks/{calendar,calendar_tests}.rs`,
+  `vta-service/src/routes/calendar_feed.rs`, `vta_sdk::client` (`calendar_*`),
+  `vta-cli-common/src/commands/calendar.rs`.
+- **Docs**: `docs/02-vta/calendar.md`.

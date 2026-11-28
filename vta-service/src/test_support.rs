@@ -1531,6 +1531,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         pcs_engine_ks: store.keyspace(crate::keyspaces::PCS_ENGINE).unwrap(),
         witness_sessions_ks: store.keyspace(crate::keyspaces::WITNESS_SESSIONS).unwrap(),
         notifications_ks: store.keyspace(crate::keyspaces::NOTIFICATIONS).unwrap(),
+        calendar_ks: store.keyspace(crate::keyspaces::CALENDAR).unwrap(),
         collection_ks: store.keyspace(crate::keyspaces::COLLECTION).unwrap(),
         collection: std::sync::Arc::new(crate::operations::collection::CollectionControl::new(
             config.read().await.collection.suspend,

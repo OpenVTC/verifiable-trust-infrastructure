@@ -75,6 +75,7 @@ VTA via the `vtc-host` DID template.
 | Get a relationship witnessed, as a principal whose keys a VTA holds | [The VTA as a witnessed party](02-vta/witness-party.md) |
 | Receive, list and relay notifications (an election put to a member party) | [Notifications](02-vta/notifications.md) |
 | Who collects a persona DID's messages at its mediator: the VTA or a claiming client | [Collection](02-vta/collection.md) |
+| The member's calendar: events from every community, reminders, private feeds, receipts | [Calendar](02-vta/calendar.md) |
 | A community's received notifications and relay decisions | [Community notifications](03-vtc/notifications.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
 | Point Kubernetes liveness / readiness probes at a VTA or VTC | [Health probes](04-reference/health-probes.md) |

@@ -13,6 +13,14 @@ or from how groups, badges, boards, rooms and notifications already work. Decisi
 were added in a review pass and confirmed by the owner the same day. Decisions 26 and 27 are
 recommendations awaiting confirmation.
 
+**Phase 3 (the member's calendar) is implemented in the VTA**: all thirteen `vta/calendar/*/0.1`
+tasks, sync, reminders, feeds, receipts and `export`, with `pnm calendar`
+([`docs/02-vta/calendar.md`](../02-vta/calendar.md)). Still to come in the phase: the browser
+plugin's and OpenVTC's views and the vta-mcp / vtc-mcp tools. Two requirements are not met
+and are recorded as divergences: the event's own suggested reminders and places in a feed
+(VTI-CAL-041; `EventRef` carries neither), and sending busy times (no `busy/put` task until
+phase 7).
+
 Mockups and the infographic (what it brings, how it works, user flows, seven screens):
 <https://claude.ai/artifact/Fs3SHDdLRSXjdt5xXEzVYX>.
 

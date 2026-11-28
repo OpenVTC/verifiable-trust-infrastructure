@@ -5,6 +5,8 @@ pub mod agent_names;
 pub mod approvals;
 pub mod audit;
 pub mod boards;
+/// The member's calendar (`vta/calendar/*`).
+pub mod calendar;
 pub mod collection;
 pub mod config;
 pub mod contexts;

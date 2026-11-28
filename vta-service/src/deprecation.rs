@@ -139,6 +139,14 @@ const REST_EXCEPTIONS: &[RestException] = &[
     },
     RestException {
         method: "GET",
+        path: "/calendar/feeds/{token}",
+        protocol: "iCalendar subscription",
+        twin: Some(trust_tasks::TASK_VTA_CALENDAR_EXPORT_0_1),
+        reason: "a calendar application subscribes to a feed by URL and can sign nothing; \
+                 the address is the credential (VTI-OPS-111, VTI-CAL-051)",
+    },
+    RestException {
+        method: "GET",
         path: "/openapi.json",
         protocol: "tooling/discovery",
         twin: None,

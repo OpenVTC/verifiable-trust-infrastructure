@@ -12124,6 +12124,7 @@ dependencies = [
  "base64 0.23.1",
  "bip39",
  "chrono",
+ "chrono-tz",
  "ciborium",
  "clap",
  "dialoguer",

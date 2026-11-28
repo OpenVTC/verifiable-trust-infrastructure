@@ -344,6 +344,18 @@ pub(crate) enum Commands {
         command: MemoryCommands,
     },
 
+    /// Your calendar — events you registered for at your communities, and events you were
+    /// told of — across every context you have standing in.
+    ///
+    /// Backed by the `vta/calendar/*/0.1` Trust Tasks (VTI-CAL-001 – 071). Reading a
+    /// community is per context and off until you turn it on
+    /// (`pnm calendar settings update --context <id> --sync on`).
+    #[command(name = "calendar")]
+    Calendar {
+        #[command(subcommand)]
+        command: CalendarCommands,
+    },
+
     /// The notifications this VTA holds for you — an election you were told of, and who
     /// passed it on.
     ///
@@ -2273,6 +2285,168 @@ pub(crate) enum CollectionCommands {
         /// Continue from a previous page's cursor (same filters).
         #[arg(long)]
         cursor: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CalendarCommands {
+    /// List the calendar, earliest first: `mine` (registered) and `notified` entries.
+    List {
+        /// TARGET SCOPE: only these contexts (repeatable); default every context you have
+        /// standing in.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        contexts: Vec<String>,
+        /// From this instant (RFC 3339); default now.
+        #[arg(long)]
+        from: Option<String>,
+        /// Until this instant (RFC 3339); default 60 days after `--from`.
+        #[arg(long)]
+        to: Option<String>,
+        /// Only this tier (`mine` or `notified`; repeatable).
+        #[arg(long = "tier", value_name = "TIER")]
+        tiers: Vec<String>,
+        /// The most items to return (1–200).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Continue from a previous page's cursor (same filters).
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Read your communities now, where the context's setting allows.
+    Sync {
+        /// TARGET SCOPE: only this context; default every context you have standing in.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: Option<String>,
+    },
+    /// Show or change one context's calendar settings.
+    Settings {
+        #[command(subcommand)]
+        command: CalendarSettingsCommands,
+    },
+    /// One event's own reminders.
+    Alerts {
+        #[command(subcommand)]
+        command: CalendarAlertsCommands,
+    },
+    /// Private iCalendar feeds for a calendar application.
+    Feeds {
+        #[command(subcommand)]
+        command: CalendarFeedsCommands,
+    },
+    /// Write the calendar as an iCalendar file, and optionally the receipts kept.
+    Export {
+        /// TARGET SCOPE: only these contexts (repeatable).
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        contexts: Vec<String>,
+        /// Where to write the `.ics` (`-` for stdout).
+        #[arg(long, short = 'o', default_value = "-")]
+        out: String,
+        /// Also write the communities' signed replies, as received, to this JSON file.
+        #[arg(long = "receipts", value_name = "FILE")]
+        receipts: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CalendarSettingsCommands {
+    /// Show one context's settings.
+    Show {
+        /// TARGET SCOPE: the context.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+    /// Change one context's settings; what is not given stays as it is.
+    Update {
+        /// TARGET SCOPE: the context.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Read the communities of this context (`on` / `off`).
+        #[arg(long, value_parser = parse_on_off)]
+        sync: Option<bool>,
+        /// Default reminders, minutes before the start (comma-separated; empty for none).
+        #[arg(long = "default-reminders", value_delimiter = ',', num_args = 0..)]
+        default_reminders: Option<Vec<u32>>,
+        /// Quiet hours `HH:MM-HH:MM`, or `none` to clear.
+        #[arg(long)]
+        quiet: Option<String>,
+        /// The IANA zone quiet hours are in (e.g. `Europe/Berlin`).
+        #[arg(long = "time-zone", value_name = "ZONE")]
+        time_zone: Option<String>,
+    },
+}
+
+fn parse_on_off(s: &str) -> Result<bool, String> {
+    match s {
+        "on" | "true" | "yes" => Ok(true),
+        "off" | "false" | "no" => Ok(false),
+        _ => Err(format!("`{s}`: expected on or off")),
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CalendarAlertsCommands {
+    /// Set one event's reminders (minutes before; none given means no reminders).
+    Set {
+        /// The event identifier `pnm calendar list` printed.
+        event_id: String,
+        /// The community holding the event (its DID).
+        #[arg(long, value_name = "DID")]
+        community: String,
+        /// TARGET SCOPE: the context.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+        /// Minutes before the start (comma-separated).
+        #[arg(long, value_delimiter = ',', num_args = 0..)]
+        minutes: Vec<u32>,
+    },
+    /// Drop one event's own reminders, back to the context's default.
+    Clear {
+        /// The event identifier.
+        event_id: String,
+        /// The community holding the event (its DID).
+        #[arg(long, value_name = "DID")]
+        community: String,
+        /// TARGET SCOPE: the context.
+        #[arg(long = "context", alias = "context-id", value_name = "ID")]
+        context: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum CalendarFeedsCommands {
+    /// Create a feed. Its address is printed once and is the credential.
+    Create {
+        /// TARGET SCOPE: the contexts it covers (repeatable, at least one).
+        #[arg(
+            long = "context",
+            alias = "context-id",
+            value_name = "ID",
+            required = true
+        )]
+        contexts: Vec<String>,
+        /// A label for you to recognise it by.
+        #[arg(long)]
+        label: Option<String>,
+        /// `titles` (default), `titlesAndPlaces` or `busy`.
+        #[arg(long)]
+        detail: Option<String>,
+        /// Only this tier (`mine` or `notified`; repeatable; default `mine`).
+        #[arg(long = "tier", value_name = "TIER")]
+        tiers: Vec<String>,
+        /// How long until it expires (`90d`, `12h`; at most a year).
+        #[arg(long, default_value = "90d")]
+        expires: String,
+    },
+    /// List the feeds, never with an address.
+    List {
+        /// Also list revoked and expired ones.
+        #[arg(long)]
+        include_revoked: bool,
+    },
+    /// Revoke a feed at once.
+    Revoke {
+        /// The feed identifier `list` printed.
+        feed_id: String,
     },
 }
 

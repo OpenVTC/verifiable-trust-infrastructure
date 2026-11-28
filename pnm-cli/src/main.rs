@@ -387,6 +387,7 @@ async fn main() {
         Commands::Backup { command } => commands::backup::run(&client, command).await,
         Commands::Keys { command } => commands::keys::run(&client, command).await,
         Commands::Memory { command } => commands::memory::run(&client, command).await,
+        Commands::Calendar { command } => commands::calendar::run(&client, command).await,
         Commands::Notifications { command } => commands::notifications::run(&client, command).await,
         Commands::Collection { command } => commands::collection::run(&client, command).await,
         Commands::External { command } => commands::external::run(&client, command).await,

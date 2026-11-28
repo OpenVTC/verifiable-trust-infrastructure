@@ -1,6 +1,6 @@
 //! Per-client-IP rate limiting for the VTA's unauthenticated REST surface.
 //!
-//! Five independent limiters, each its own per-IP bucket:
+//! Six independent limiters, each its own per-IP bucket:
 //!
 //! | [`Limiter`] | Routes | Quota from `[server]` |
 //! |---|---|---|
@@ -9,6 +9,7 @@
 //! | `auth-refresh` | `auth/refresh` | same values as `auth`, separate bucket |
 //! | `did-log` | public `did.jsonl` retrieval (`/.well-known/did.jsonl`, the canonical `/<path>/did.jsonl` catch-all, `/did/{did}/log`, TEE `/attestation/did-log`) | `did_log_rate_limit_interval_secs` / `did_log_rate_limit_burst` |
 //! | `backup-blob` | token-gated `/backup/blob/*` | same values as `auth`, separate bucket |
+//! | `calendar-feed` | private iCalendar feeds (`/calendar/feeds/{token}`) | same values as `did-log`, separate bucket |
 //!
 //! The DID-log routes have their own limiter because resolving the VTA's DID
 //! is the first step of every client command — a `pnm` call resolves the DID
@@ -146,6 +147,9 @@ pub enum Limiter {
     DidLog,
     /// Token-gated backup blob upload / download.
     BackupBlob,
+    /// Private iCalendar feeds (VTI-OPS-111): a store read like the DID log, in a bucket of
+    /// its own so a calendar application polling cannot spend what resolving the DID needs.
+    CalendarFeed,
 }
 
 impl Limiter {
@@ -157,6 +161,7 @@ impl Limiter {
             Limiter::AuthRefresh => "auth-refresh",
             Limiter::DidLog => "did-log",
             Limiter::BackupBlob => "backup-blob",
+            Limiter::CalendarFeed => "calendar-feed",
         }
     }
 }
@@ -237,7 +242,7 @@ impl RateLimits {
             | Limiter::AuthAuthenticate
             | Limiter::AuthRefresh
             | Limiter::BackupBlob => self.auth,
-            Limiter::DidLog => self.did_log,
+            Limiter::DidLog | Limiter::CalendarFeed => self.did_log,
         }
     }
 }
@@ -876,6 +881,7 @@ mod tests {
         assert_eq!(Limiter::Auth.name(), "auth");
         assert_eq!(Limiter::DidLog.name(), "did-log");
         assert_eq!(Limiter::BackupBlob.name(), "backup-blob");
+        assert_eq!(Limiter::CalendarFeed.name(), "calendar-feed");
         assert_eq!(Limiter::AuthAuthenticate.name(), "auth-authenticate");
         assert_eq!(Limiter::AuthRefresh.name(), "auth-refresh");
     }

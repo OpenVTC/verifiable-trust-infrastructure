@@ -166,12 +166,15 @@ pub(crate) mod transport;
 // approve-response that elevates a session. What decides a ceremony is needed
 // is [`policy_gate`] and nothing else — the `RequireStepUp` extractor and its
 // per-route op markers are gone with the config floors they read.
+/// The member's calendar (`vta/calendar/*`, VTI-CAL-001 – 071).
+mod calendar;
 /// `vta/collection/*` and what the VTA answers as a persona it collects for.
 pub(crate) mod collection;
 #[cfg(feature = "webvh")]
 pub(crate) mod hosting_account;
 pub(crate) mod notifications;
 pub(crate) mod step_up;
+pub(crate) use step_up::wake_devices_in_context;
 mod vault;
 #[cfg(feature = "webs")]
 mod webs;
@@ -3082,6 +3085,35 @@ dispatch_table! {
     // A client hands over what it received for a persona DID (VTI-NTF-054 – 056); held
     // exactly as a direct delivery would be.
     vta_sdk::trust_tasks::TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1 => notifications::handle_deposit
+        [ Mutating None false ],
+    // ─── The member's calendar (`vta/calendar/*`, VTI-CAL-001 – 071) ────
+    // Classes as each specification declares them; a feed's address is a bearer
+    // credential, so `feeds/create` discloses a secret.
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_LIST_0_1 => calendar::handle_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_SYNC_0_1 => calendar::handle_sync
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_SETTINGS_SHOW_0_1 => calendar::handle_settings_show
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_SETTINGS_UPDATE_0_1 => calendar::handle_settings_update
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_ALERTS_SET_0_1 => calendar::handle_alerts_set
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_ALERTS_CLEAR_0_1 => calendar::handle_alerts_clear
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_FEEDS_CREATE_0_1 => calendar::handle_feeds_create
+        [ Mutating Secret false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_FEEDS_LIST_0_1 => calendar::handle_feeds_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_FEEDS_REVOKE_0_1 => calendar::handle_feeds_revoke
+        [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_EXPORT_0_1 => calendar::handle_export
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_RECEIPTS_LIST_0_1 => calendar::handle_receipts_list
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_RECEIPTS_DEPOSIT_0_1 => calendar::handle_receipts_deposit
+        [ Mutating Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_CALENDAR_BUSY_SHARE_0_1 => calendar::handle_busy_share
         [ Mutating None false ],
     // ─── Collection (`vta/collection/*`, VTI-NTF-080 – 098) ────────
     // Who holds each persona DID's one mediator connection. Served whether or
