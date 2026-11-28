@@ -3131,6 +3131,29 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({})
             ),
         ),
+        // ─── did-management/account/expiry-notice (from the DID host) ──
+        // One-way, like `rooms/changed`: answered with nothing.
+        #[cfg(feature = "webvh")]
+        (
+            super::hosting_account::TASK_ACCOUNT_EXPIRY_NOTICE_0_1,
+            checked!(
+                specs::did_management::account::expiry_notice::v0_1::Payload,
+                Acknowledgement,
+                json!({
+                    "stage": "disablePending",
+                    "account": {
+                        "subject": "did:scid:vh:1:QmVta",
+                        "role": "owner",
+                        "domain": "did.example.com",
+                        "state": "warned",
+                        "admission": "invite",
+                        "registeredAt": "2026-11-01T00:00:00Z",
+                        "disableAt": "2026-12-01T00:00:00Z"
+                    }
+                }),
+                json!({})
+            ),
+        ),
         // ─── notifications/* + vta/notifications/* ──────────────
         (
             uris::TASK_NOTIFICATIONS_NOTIFY_0_1,

@@ -1303,6 +1303,8 @@ pub async fn apply_inputs(
             )
             .await?;
             if let Some(h) = hosting {
+                let service_state_ks =
+                    maybe_encrypt(store.keyspace(crate::keyspaces::SERVICE_STATE)?);
                 register_vta_did_on_host(
                     &did,
                     url,
@@ -1311,6 +1313,7 @@ pub async fn apply_inputs(
                     &imported_ks,
                     &contexts_ks,
                     &webvh_ks,
+                    &service_state_ks,
                     &audit,
                     &*wizard_seed_store,
                 )
@@ -2199,6 +2202,7 @@ async fn register_vta_did_on_host(
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    service_state_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
     seed_store: &dyn SeedStore,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2273,7 +2277,7 @@ async fn register_vta_did_on_host(
         &auth,
         operations::did_webvh::RegisterDidWithServerParams {
             did: record_did,
-            server_id,
+            server_id: server_id.clone(),
             force: false,
             domain: Some(domain.clone()),
             admission: Some(crate::webvh_host::AccountAdmission::Invite {
@@ -2287,6 +2291,22 @@ async fn register_vta_did_on_host(
     )
     .await
     .map_err(|e| format!("register the VTA DID with {}: {e}", hosting.server_did))?;
+    // What the running VTA renews from (`hosting_account`). Written only once
+    // the host has committed the account.
+    crate::hosting_account::store(
+        service_state_ks,
+        &crate::hosting_account::HostingAccountRecord::registered(
+            &server_id,
+            &hosting.server_did,
+            &domain,
+            result
+                .account
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?,
+        ),
+    )
+    .await?;
     eprintln!(
         "  Registered with DID hosting service {} on {domain}{}",
         hosting.server_did,
