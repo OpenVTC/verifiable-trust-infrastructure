@@ -458,20 +458,14 @@ async fn member_partner_or_guest(
     }
 }
 
-/// `signer` as a guest, charged one operation against their bound (VTI-EVT-154).
+/// `signer` as a guest. A guest has no access-control entry, so the spine has already
+/// charged this document to the budget for signers without standing (VTI-EVT-154,
+/// `trust_tasks::operation_budget`).
 async fn guest_viewer(
     state: &AppState,
     doc: &Doc,
     signer: &str,
 ) -> Result<Viewer, TrustTaskOutcome> {
-    if let Err(retry) = ce::door::charge_guest(signer, Utc::now()) {
-        return Err(reject_with(
-            doc,
-            RejectReason::Unavailable {
-                retry_after: Some(retry),
-            },
-        ));
-    }
     let mut who = Viewer::read(state, signer)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;

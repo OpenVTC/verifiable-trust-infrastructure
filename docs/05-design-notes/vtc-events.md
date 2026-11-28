@@ -2,9 +2,9 @@
 
 Status: **phases 1, 2 and 4 implemented** (`vtc-service::community_events`,
 `docs/03-vtc/events.md`); phase 3 and phases 5 on are design. Phase 4 departs from this note in
-two places: guests are bounded by a per-DID limit in the VTC (30 operations an hour) because
-the VTC has no Trust Task operation budget of its own (VTI-TRN-029), and the community does not
-check tickets by OpenID4VP at its own door — its door check-in stands in for that. Per the
+one place: the community does not check tickets by OpenID4VP at its own door — its door
+check-in stands in for that. Guests are charged to the VTC's operation budget for signers
+without standing (VTI-TRN-029), on the shared Trust Task spine. Per the
 spec-first rule, nothing here was implemented before (1) a VTI specification chapter
 (proposed `spec/12e-vtc-events.md`, requirements `VTI-EVT-*`) and the notification kind
 `event` (`spec/05a-notifications.md` and Appendix G) are merged in dtgwg-vti-spec, and (2) the

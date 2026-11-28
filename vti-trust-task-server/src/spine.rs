@@ -175,6 +175,7 @@ pub struct Spine<'a> {
     verifier: &'a dyn ProofVerifier,
     hooks: &'a dyn SpineHooks,
     admission: Option<&'a dyn VerifiedAdmission>,
+    budget: Option<&'a dyn crate::budget::BudgetCharge>,
     accepted_ids: &'a dyn AcceptedIdStore,
     dispatcher: &'a dyn Dispatcher,
     signer: Option<&'a dyn ResponseSigner>,
@@ -202,6 +203,7 @@ impl<'a> Spine<'a> {
             verifier,
             hooks,
             admission: None,
+            budget: None,
             accepted_ids,
             dispatcher,
             signer: None,
@@ -224,6 +226,19 @@ impl<'a> Spine<'a> {
     /// Ask `admission` about each verified signer (step 3a').
     pub fn with_admission(mut self, admission: Option<&'a dyn VerifiedAdmission>) -> Self {
         self.admission = admission;
+        self
+    }
+
+    /// Charge each verified signer's document to `budget` (step 3a'', VTI-TRN-029):
+    /// after the proof and the transport's admission, before the duplicate-execution
+    /// record is claimed, on every transport. A refusal leaves the document's `id`
+    /// unrecorded, so resending it is a retry. A client refused answers a retryable
+    /// `unavailable` naming when to come back; a sender without standing refused over
+    /// DIDComm or TSP gets no reply, so a flood cannot make the service sign one per
+    /// message (over HTTPS, where a per-address limit stands in front, it is answered
+    /// as a client is).
+    pub fn with_budget(mut self, budget: Option<&'a dyn crate::budget::BudgetCharge>) -> Self {
+        self.budget = budget;
         self
     }
 
@@ -418,6 +433,22 @@ impl<'a> Spine<'a> {
             && !admit.admit_verified(signer)
         {
             return TrustTaskOutcome::empty(StatusCode::TOO_MANY_REQUESTS);
+        }
+
+        // 3a''. The operation budget (VTI-TRN-029): charged once the signer is proven
+        //       and before the claim, so a refused document keeps its `id`.
+        if let (Some(budget), Some(signer)) = (self.budget, ctx.verified_signer.as_deref())
+            && let Err(refused) = budget.charge_verified(signer, &type_uri).await
+        {
+            if refused.scope == crate::budget::Scope::Unauthenticated
+                && ctx.transport.reports_sender()
+            {
+                return TrustTaskOutcome::empty(StatusCode::NO_CONTENT);
+            }
+            let retry_after = chrono::Duration::from_std(refused.retry_after)
+                .ok()
+                .and_then(|d| Utc::now().checked_add_signed(d));
+            return reject_with(&doc, RejectReason::Unavailable { retry_after });
         }
 
         // 3b. The duplicate-execution record, claimed before dispatch and after

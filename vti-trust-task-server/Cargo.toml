@@ -23,6 +23,9 @@ trust-tasks-rs = { workspace = true }
 # The durable accepted-id record's per-id stripe locks (`accepted_store`).
 tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true }
+# The operation budgets every VTI node keeps (`budget`, VTI-TRN-029).
+governor = "0.10"
+metrics = { workspace = true }
 # The proof verifier (`trust_task_proof`) and the shared reject vocabulary
 # (`protocols::trust_task_reject_reasons` / `_details`).
 vta-sdk = { path = "../vta-sdk", version = "0.96", default-features = false, features = [

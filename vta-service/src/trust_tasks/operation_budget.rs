@@ -59,83 +59,19 @@
 //! The request was not executed and its `id` was not recorded (VTI-OPS-026), so
 //! resending the same document is a retry.
 
-use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-use governor::clock::Clock;
-use governor::middleware::NoOpMiddleware;
-use governor::state::keyed::DefaultKeyedStateStore;
-use governor::state::{InMemoryState, NotKeyed};
-use governor::{Quota, RateLimiter};
-use metrics::counter;
+#[cfg(test)]
+use std::time::Duration;
 use vta_config::ServerConfig;
 use vta_sdk::trust_tasks::{
     TASK_ROOMS_KEYS_WATCH_0_1, TASK_ROOMS_KEYS_WATCH_0_2, TASK_VAULT_RELEASE_0_2,
     TASK_WEBVH_DIDS_CREATE_1_2, TASK_WEBVH_DIDS_DELETE_1_0,
 };
+pub use vti_trust_task_server::budget::{BudgetClock, Caller, Refused, Scope};
+use vti_trust_task_server::budget::{BudgetConfig, BudgetSpec};
 
 /// The heaviest weight in [`weight`]. No burst is below it, or that task could
 /// never be served.
 const MAX_WEIGHT: u32 = 10;
-
-/// At most one warning per bucket per this many seconds while it refuses work.
-/// An appliance shedding load refuses hundreds of requests a second, and a line
-/// for each would make logging part of the overload.
-const WARN_EVERY_SECS: u64 = 60;
-
-/// How many per-subject charges pass between sweeps of idle subjects' buckets,
-/// so the map holds the clients active now, not every DID ever seen.
-const SWEEP_EVERY: u64 = 4096;
-
-/// The metric label of the unauthenticated budget. Never a 429 scope: REST
-/// callers without standing are bounded per IP instead.
-const UNAUTHENTICATED_SCOPE: &str = "operations-unauthenticated";
-
-/// The clock the budgets read: the monotonic clock, or one a test moves by
-/// hand, so a test of a budget never depends on how fast it runs.
-#[derive(Clone, Debug, Default)]
-pub struct BudgetClock(Option<Arc<ManualTime>>);
-
-#[derive(Debug)]
-struct ManualTime {
-    start: Instant,
-    elapsed_nanos: AtomicU64,
-}
-
-impl BudgetClock {
-    /// A clock that stands still until [`Self::advance`] moves it.
-    pub fn manual() -> Self {
-        Self(Some(Arc::new(ManualTime {
-            start: Instant::now(),
-            elapsed_nanos: AtomicU64::new(0),
-        })))
-    }
-
-    /// Move a [`Self::manual`] clock forward. The monotonic clock is not moved.
-    pub fn advance(&self, by: Duration) {
-        if let Some(t) = &self.0 {
-            let nanos = u64::try_from(by.as_nanos()).unwrap_or(u64::MAX);
-            t.elapsed_nanos.fetch_add(nanos, Ordering::Relaxed);
-        }
-    }
-}
-
-impl Clock for BudgetClock {
-    type Instant = Instant;
-
-    fn now(&self) -> Instant {
-        match &self.0 {
-            None => Instant::now(),
-            Some(t) => t.start + Duration::from_nanos(t.elapsed_nanos.load(Ordering::Relaxed)),
-        }
-    }
-}
-
-type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, BudgetClock, NoOpMiddleware<Instant>>;
-type KeyedLimiter =
-    RateLimiter<String, DefaultKeyedStateStore<String>, BudgetClock, NoOpMiddleware<Instant>>;
 
 /// What a task costs against a budget, in signs. A task not listed costs one,
 /// measured or not: tasks that publish a DID log entry other than create and
@@ -153,124 +89,20 @@ pub(crate) fn weight(type_uri: &str) -> u32 {
     }
 }
 
-/// Who a request is charged to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Caller<'a> {
-    /// A client with standing, by its DID.
-    Client(&'a str),
-    /// A DIDComm / TSP sender without standing.
-    Unauthenticated,
-}
-
-/// Which bucket refused a request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Scope {
-    Appliance,
-    Subject,
-    Unauthenticated,
-}
-
-impl Scope {
-    /// The name a REST 429 and the metric carry. `Unauthenticated` is never
-    /// answered over REST.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Scope::Appliance => vta_sdk::rate_limit::OPERATIONS_LIMITER,
-            Scope::Subject => vta_sdk::rate_limit::OPERATIONS_SUBJECT_LIMITER,
-            Scope::Unauthenticated => UNAUTHENTICATED_SCOPE,
-        }
-    }
-}
-
-/// A request a budget refused, which one, and when it will next have room.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Refused {
-    pub(crate) scope: Scope,
-    pub(crate) retry_after: Duration,
-}
-
-impl Refused {
-    /// Whole seconds, rounded up and at least 1: a client honouring it must not
-    /// come back before the budget has room.
-    pub(crate) fn retry_after_secs(self) -> u64 {
-        crate::routes::rate_limit::ceil_secs(self.retry_after).max(1)
-    }
-}
-
-/// The quota a `per_sec` / `burst` pair configures, or `None` without a rate.
-/// The burst defaults to one second's worth and is never below [`MAX_WEIGHT`].
-fn quota(per_sec: Option<u32>, burst: Option<u32>) -> Option<Quota> {
-    let per_sec = NonZeroU32::new(per_sec?)?;
-    let burst = burst.unwrap_or(per_sec.get()).max(MAX_WEIGHT);
-    let burst = NonZeroU32::new(burst).expect("burst is at least MAX_WEIGHT");
-    Some(Quota::per_second(per_sec).allow_burst(burst))
-}
-
-/// What charging one bucket returned, as a refusal naming `scope`.
-fn refusal(
-    checked: Result<Result<(), governor::NotUntil<Instant>>, governor::InsufficientCapacity>,
-    clock: &BudgetClock,
-    scope: Scope,
-) -> Result<(), Refused> {
-    match checked {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(not_until)) => Err(Refused {
-            scope,
-            retry_after: not_until.wait_time_from(clock.now()),
-        }),
-        // Unreachable while every burst is at least MAX_WEIGHT; refused with a
-        // one-second hint rather than admitted, should a weight outgrow it.
-        Err(_) => Err(Refused {
-            scope,
-            retry_after: Duration::from_secs(1),
-        }),
-    }
-}
-
-/// Throttles a bucket's warning to one per [`WARN_EVERY_SECS`].
-#[derive(Default)]
-struct Warning {
-    refused_since: AtomicU64,
-    last_secs: AtomicU64,
-}
-
-impl Warning {
-    fn note(&self, scope: Scope) {
-        let count = self.refused_since.fetch_add(1, Ordering::Relaxed) + 1;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let last = self.last_secs.load(Ordering::Relaxed);
-        if now.saturating_sub(last) >= WARN_EVERY_SECS
-            && self
-                .last_secs
-                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-        {
-            self.refused_since.fetch_sub(count, Ordering::Relaxed);
-            tracing::warn!(
-                scope = scope.name(),
-                refused = count,
-                "operation budget exhausted: refusing Trust Tasks (see [server] \
-                 operation_rate_limit_* and docs/02-vta/rate-limiting.md)"
-            );
-        }
-    }
-}
+const SPEC: BudgetSpec = BudgetSpec {
+    weight,
+    max_weight: MAX_WEIGHT,
+    metric: "vta_operation_budget_refused_total",
+    config_hint: "[server] operation_rate_limit_* and docs/02-vta/rate-limiting.md",
+};
 
 /// The budgets in force for this generation of the service. Read from
 /// `[server]` when the state is built, so a change takes a restart, and a TEE
-/// VTA gets them from its tenant overlay on every boot.
-pub struct OperationBudget {
-    clock: BudgetClock,
-    appliance: Option<DirectLimiter>,
-    per_subject: KeyedLimiter,
-    unauthenticated: DirectLimiter,
-    subject_charges: AtomicU64,
-    appliance_warning: Warning,
-    subject_warning: Warning,
-    unauthenticated_warning: Warning,
-}
+/// VTA gets them from its tenant overlay on every boot. The buckets, the clock
+/// and the refusal are the shared engine's
+/// ([`vti_trust_task_server::budget`]); the weights and the configuration are
+/// this service's.
+pub struct OperationBudget(vti_trust_task_server::budget::OperationBudget);
 
 impl OperationBudget {
     /// The budgets `[server]` configures, on the monotonic clock. An absent
@@ -283,93 +115,23 @@ impl OperationBudget {
     /// [`Self::from_config`] on `clock`: a test passes a
     /// [`BudgetClock::manual`] one.
     pub fn with_clock(server: &ServerConfig, clock: BudgetClock) -> Self {
-        let per_subject_per_sec = server.operation_per_subject_per_sec();
-        let unauthenticated_per_sec = server.operation_unauthenticated_per_sec();
-        // A zero is refused at load; should one get here, it is bounded as
-        // tightly as a rate can be rather than read as no bound.
-        let bounded = |per_sec: u32| {
-            quota(Some(per_sec.max(1)), None).expect("a rate of at least 1 has a quota")
-        };
-        tracing::info!(
-            appliance_per_sec = server.operation_rate_limit_per_sec,
-            per_subject_per_sec,
-            unauthenticated_per_sec,
-            "operation budgets in force for Trust Tasks"
-        );
-        Self {
-            appliance: quota(
-                server.operation_rate_limit_per_sec,
-                server.operation_rate_limit_burst,
-            )
-            .map(|q| RateLimiter::direct_with_clock(q, clock.clone())),
-            per_subject: RateLimiter::new(
-                bounded(per_subject_per_sec),
-                DefaultKeyedStateStore::default(),
-                clock.clone(),
-            ),
-            unauthenticated: RateLimiter::direct_with_clock(
-                bounded(unauthenticated_per_sec),
-                clock.clone(),
-            ),
+        Self(vti_trust_task_server::budget::OperationBudget::new(
+            BudgetConfig {
+                per_sec: server.operation_rate_limit_per_sec,
+                burst: server.operation_rate_limit_burst,
+                per_subject_per_sec: server.operation_per_subject_per_sec(),
+                unauthenticated_per_sec: server.operation_unauthenticated_per_sec(),
+            },
+            SPEC,
             clock,
-            subject_charges: AtomicU64::default(),
-            appliance_warning: Warning::default(),
-            subject_warning: Warning::default(),
-            unauthenticated_warning: Warning::default(),
-        }
+        ))
     }
 
-    /// Charge one request for `type_uri` from `caller`.
-    ///
-    /// A client is charged to its own share first, then to the appliance
-    /// budget. Tokens are taken on success and never returned, so when the
-    /// appliance refuses, the client's share has still been spent: under a
-    /// saturated appliance, a client that keeps retrying can find itself
-    /// refused for its own share next. The other order would let one client's
-    /// excess spend the budget every client shares, which is the worse
-    /// failure.
+    /// Charge one request for `type_uri` from `caller`: a client to its own
+    /// share first, then to the appliance budget; a sender without standing to
+    /// the unauthenticated budget only.
     pub(crate) fn charge(&self, caller: Caller<'_>, type_uri: &str) -> Result<(), Refused> {
-        let cost = NonZeroU32::new(weight(type_uri)).expect("every weight is at least 1");
-        let result = match caller {
-            Caller::Client(did) => {
-                self.charge_subject(did, cost)
-                    .and_then(|()| match &self.appliance {
-                        None => Ok(()),
-                        Some(limiter) => {
-                            refusal(limiter.check_n(cost), &self.clock, Scope::Appliance)
-                        }
-                    })
-            }
-            Caller::Unauthenticated => refusal(
-                self.unauthenticated.check_n(cost),
-                &self.clock,
-                Scope::Unauthenticated,
-            ),
-        };
-        if let Err(refused) = result {
-            counter!("vta_operation_budget_refused_total", "scope" => refused.scope.name())
-                .increment(1);
-            match refused.scope {
-                Scope::Appliance => &self.appliance_warning,
-                Scope::Subject => &self.subject_warning,
-                Scope::Unauthenticated => &self.unauthenticated_warning,
-            }
-            .note(refused.scope);
-        }
-        result
-    }
-
-    fn charge_subject(&self, did: &str, cost: NonZeroU32) -> Result<(), Refused> {
-        let limiter = &self.per_subject;
-        if self.subject_charges.fetch_add(1, Ordering::Relaxed) % SWEEP_EVERY == SWEEP_EVERY - 1 {
-            limiter.retain_recent();
-            limiter.shrink_to_fit();
-        }
-        refusal(
-            limiter.check_key_n(&did.to_string(), cost),
-            &self.clock,
-            Scope::Subject,
-        )
+        self.0.charge(caller, type_uri)
     }
 }
 

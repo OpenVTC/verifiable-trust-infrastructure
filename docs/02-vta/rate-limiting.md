@@ -146,6 +146,37 @@ operation instead. Set the per-client share from how many clients should be
 able to work at once, and the unauthenticated budget from how many logins a
 second you expect over DIDComm and TSP.
 
+### On a community (VTC)
+
+A VTC keeps the same three budgets, on the same engine
+(`vti_trust_task_server::budget`), with the same keys under `[server]`, the same
+defaults (100 a second per client, 50 a second for signers without standing, the
+node budget unset) and the same rules: always on, a zero refused at load, set in
+the file only and never a `config/patch` key.
+
+- **Who has standing.** A signer holding a live access-control entry at the
+  community — a member, an administrator, a bridge. Charged to its own share, then
+  the node's.
+- **Who has none.** A proven signer with no entry: a guest registering for an
+  event (VTI-EVT-154), a credential-exchange counterparty, a party presenting a
+  partner community's credential. Charged to the shared budget for signers
+  without standing.
+- **Where.** The spine's step after the proof has verified and the HTTPS door's
+  per-signer admission, before the duplicate-execution record is claimed, on
+  every transport. The VTC's per-address HTTPS limits stay in front as the
+  pre-authentication layer. A document carrying no proof is not charged: over
+  HTTPS the per-address limit bounds it, and over DIDComm and TSP the spine
+  refuses it unless its specification makes the proof optional.
+- **Weights.** A task that has the community's VTA mint an identity (`vtc/groups/create`,
+  `vtc/badges/create`, `vtc/rooms/community/create`) costs 10; every other task 1
+  (`vtc_service::trust_tasks::operation_budget`).
+- **Refusals.** A client refused answers a retryable `unavailable` carrying
+  `retryAfter`, over every transport. A signer without standing refused over
+  DIDComm or TSP gets no reply; over HTTPS it is answered as a client is. The
+  document was not recorded, so resending it is a retry.
+- **Observability.** `vtc_operation_budget_refused_total{scope}`, and at most one
+  warning a minute per budget.
+
 ## Keying: one bucket per client IP
 
 Each request is charged to a client IP chosen by `[server] trust_xff_cidrs` —
