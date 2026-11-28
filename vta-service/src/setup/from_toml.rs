@@ -48,6 +48,17 @@ use crate::store::{KeyspaceHandle, Store};
 
 use super::{SetupUi, SilentUi, create_seed_context, generate_mnemonic_silent};
 
+/// A progress line through the setup's [`SetupUi`], so an application running
+/// setup under its own interface gets it instead of stderr.
+macro_rules! say {
+    ($ui:expr) => {
+        $ui.progress("")
+    };
+    ($ui:expr, $($arg:tt)+) => {
+        $ui.progress(&format!($($arg)+))
+    };
+}
+
 /// TOML schema for `vta setup --from <file>`.
 ///
 /// `Serialize` is derived (alongside `Deserialize`) so the interactive wizard's
@@ -80,6 +91,14 @@ pub struct WizardInputs {
     /// network.
     #[serde(default)]
     pub public_url: Option<String>,
+
+    /// Serve REST to this machine only, and advertise no REST endpoint: for a
+    /// VTA an application runs in its own process (`embedded::EmbeddedVta`),
+    /// whose REST listener is a loopback port picked at each start. With it,
+    /// `services.rest` needs no `public_url`; peers reach the VTA over its
+    /// mediator (DIDComm / TSP). Default false.
+    #[serde(default)]
+    pub rest_local_only: bool,
 
     /// Where the on-disk fjall store lives.
     pub data_dir: PathBuf,
@@ -867,7 +886,8 @@ pub async fn apply_inputs(
         match super::existing_mediator_tsp(did, inputs.resolver_url.as_deref()).await {
             super::MediatorTsp::Carried => {}
             super::MediatorTsp::NotCarried => return Err(mediator_lacks_tsp(did).into()),
-            super::MediatorTsp::Unknown(why) => eprintln!(
+            super::MediatorTsp::Unknown(why) => say!(
+                ui,
                 "  Warning: {why}. Could not confirm that mediator {did} carries TSP; \
                  `#tsp` will be advertised through it regardless. If it does not route \
                  TSP, run `pnm services tsp disable` once the VTA is up."
@@ -893,10 +913,10 @@ pub async fn apply_inputs(
             ExistingDataDirPolicy::Delete => {
                 clear_dir_contents(&inputs.data_dir)
                     .map_err(|e| format!("clear {}: {e}", inputs.data_dir.display()))?;
-                eprintln!("  Deleted existing data directory contents.");
+                say!(ui, "  Deleted existing data directory contents.");
             }
             ExistingDataDirPolicy::Reuse => {
-                eprintln!("  Reusing existing data directory.");
+                say!(ui, "  Reusing existing data directory.");
             }
         }
     }
@@ -916,7 +936,7 @@ pub async fn apply_inputs(
         ui.confirm_mnemonic(&mnemonic)?;
         let seed = mnemonic.to_seed("");
 
-        let mut sc = secrets_config_from_input(&inputs.secrets)?;
+        let mut sc = secrets_config_from_input(&inputs.secrets, ui)?;
         if matches!(inputs.secrets, SecretsBackendInput::ConfigSeed) {
             sc.seed = Some(hex::encode(seed));
         } else {
@@ -936,7 +956,8 @@ pub async fn apply_inputs(
         setup_storage_key = Some(key);
         pre_generated_seed = Some(seed);
         early_secrets_config = Some(sc);
-        eprintln!(
+        say!(
+            ui,
             "  Hardened configuration: seed stored, storage key derived (store will be encrypted from first write)."
         );
     } else {
@@ -985,7 +1006,7 @@ pub async fn apply_inputs(
     let did_templates_ks = maybe_encrypt(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
 
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
-    eprintln!("  Created application context: vta");
+    say!(ui, "  Created application context: vta");
 
     // 5–7. Mnemonic generation, secrets config, and seed persistence.
     //     For hardened configuration these were already completed in step 3.5 — skip them
@@ -1000,7 +1021,7 @@ pub async fn apply_inputs(
             let seed = mnemonic.to_seed("");
 
             // 6. Translate backend choice.
-            let mut sc = secrets_config_from_input(&inputs.secrets)?;
+            let mut sc = secrets_config_from_input(&inputs.secrets, ui)?;
 
             // 7. Persist seed via the chosen backend.
             if matches!(inputs.secrets, SecretsBackendInput::ConfigSeed) {
@@ -1117,7 +1138,7 @@ pub async fn apply_inputs(
                 let entry = vta_sdk::did_templates::tsp_transport_service(url)
                     .map_err(|e| format!("build the mediator's TSP service entry: {e}"))?;
                 effective_vars.insert(vta_sdk::did_templates::TSP_SERVICE_VAR.into(), entry);
-                eprintln!("  Mediator will advertise: TSP + DIDComm");
+                say!(ui, "  Mediator will advertise: TSP + DIDComm");
             }
 
             // `url` is the DIDComm endpoint; `webvh_url` is the DID-document
@@ -1177,7 +1198,7 @@ pub async fn apply_inputs(
         VtaDidInput::Existing { did } => Some(did.clone()),
         VtaDidInput::CreateDidKey => {
             let did =
-                create_vta_did_key("vta", &keys_ks, &contexts_ks, &*wizard_seed_store).await?;
+                create_vta_did_key("vta", &keys_ks, &contexts_ks, &*wizard_seed_store, ui).await?;
             Some(did)
         }
         #[cfg(feature = "webs")]
@@ -1206,6 +1227,7 @@ pub async fn apply_inputs(
                 &audit,
                 &*wizard_seed_store,
                 &wizard_config,
+                ui,
             )
             .await?;
             Some(did)
@@ -1316,6 +1338,7 @@ pub async fn apply_inputs(
                     &service_state_ks,
                     &audit,
                     &*wizard_seed_store,
+                    ui,
                 )
                 .await?;
             }
@@ -1402,47 +1425,74 @@ pub async fn apply_inputs(
 
     // 15b. Enterprise staff provisioning (context + policy + scoped ACL row).
     //     Runs after the owner is seeded; no-op for a personal VTA.
-    seed_staff(&inputs.data_dir, &inputs.staff, setup_storage_key).await?;
+    seed_staff(&inputs.data_dir, &inputs.staff, setup_storage_key, ui).await?;
 
     // 15. Summary.
-    eprintln!();
-    eprintln!("\x1b[1;32mSetup complete.\x1b[0m");
-    eprintln!("  Config:   {}", config.config_path.display());
-    eprintln!("  Data dir: {}", config.store.data_dir.display());
+    say!(ui);
+    say!(ui, "\x1b[1;32mSetup complete.\x1b[0m");
+    say!(ui, "  Config:   {}", config.config_path.display());
+    say!(ui, "  Data dir: {}", config.store.data_dir.display());
     if let Some(ref name) = config.vta_name {
-        eprintln!("  Name:     {name}");
+        say!(ui, "  Name:     {name}");
     }
     if let Some(ref url) = config.public_url {
-        eprintln!("  URL:      {url}");
+        say!(ui, "  URL:      {url}");
     }
     if let Some(ref did) = config.vta_did {
-        eprintln!("  VTA DID:  {did}");
+        say!(ui, "  VTA DID:  {did}");
     }
     if let Some(ref msg) = config.messaging {
-        eprintln!("  Mediator: {}", msg.mediator_did);
+        say!(ui, "  Mediator: {}", msg.mediator_did);
     }
     if let Some(admin) = &inputs.admin_did {
-        eprintln!("  Admin:    {admin} (sealed)");
+        say!(ui, "  Admin:    {admin} (sealed)");
     } else {
-        eprintln!();
-        eprintln!("  ACL is empty. Seed the first admin:");
-        eprintln!();
-        eprintln!("    Option A (recommended, reversible) — grant admin access to an");
-        eprintln!("    existing DID without sealing the VTA. Lets you add more admins");
-        eprintln!("    later and re-run offline CLI commands:");
-        eprintln!("      vta import-did --did <did:...> --role admin [--label <name>]");
-        eprintln!();
-        eprintln!("    Option B (one-time, seals the VTA) — for immutable-image");
-        eprintln!("    deployments that should refuse any further offline CLI writes");
-        eprintln!("    after first admin. Disables `acl`, `keys`, `import-did`,");
-        eprintln!("    `export-admin` until you run `vta unseal`:");
-        eprintln!("      vta bootstrap-admin --did <did:...> [--label <name>]");
+        say!(ui);
+        say!(ui, "  ACL is empty. Seed the first admin:");
+        say!(ui);
+        say!(
+            ui,
+            "    Option A (recommended, reversible) — grant admin access to an"
+        );
+        say!(
+            ui,
+            "    existing DID without sealing the VTA. Lets you add more admins"
+        );
+        say!(ui, "    later and re-run offline CLI commands:");
+        say!(
+            ui,
+            "      vta import-did --did <did:...> --role admin [--label <name>]"
+        );
+        say!(ui);
+        say!(
+            ui,
+            "    Option B (one-time, seals the VTA) — for immutable-image"
+        );
+        say!(
+            ui,
+            "    deployments that should refuse any further offline CLI writes"
+        );
+        say!(
+            ui,
+            "    after first admin. Disables `acl`, `keys`, `import-did`,"
+        );
+        say!(ui, "    `export-admin` until you run `vta unseal`:");
+        say!(
+            ui,
+            "      vta bootstrap-admin --did <did:...> [--label <name>]"
+        );
     }
-    eprintln!();
-    eprintln!("  Mnemonic was generated and stored in the configured backend.");
-    eprintln!("  Capture an encrypted backup after the first admin connects:");
-    eprintln!("    pnm backup export --output vta-backup.vtabak");
-    eprintln!();
+    say!(ui);
+    say!(
+        ui,
+        "  Mnemonic was generated and stored in the configured backend."
+    );
+    say!(
+        ui,
+        "  Capture an encrypted backup after the first admin connects:"
+    );
+    say!(ui, "    pnm backup export --output vta-backup.vtabak");
+    say!(ui);
 
     Ok(())
 }
@@ -1486,7 +1536,10 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
     // resolvers no way to reach the REST API. The interactive wizard
     // blocks this at prompt time; this rule does the same for the
     // `--from <toml>` path.
-    if inputs.services.rest && inputs.public_url.as_deref().is_none_or(str::is_empty) {
+    if inputs.services.rest
+        && !inputs.rest_local_only
+        && inputs.public_url.as_deref().is_none_or(str::is_empty)
+    {
         errors.push(
             "services.rest = true requires `public_url` to be set (e.g. \
              `public_url = \"https://vta.example.com\"`); without it the VTA DID \
@@ -1753,6 +1806,7 @@ fn backend_selector(input: &SecretsBackendInput) -> SecretBackend {
 
 fn secrets_config_from_input(
     input: &SecretsBackendInput,
+    ui: &dyn SetupUi,
 ) -> Result<SecretsConfig, Box<dyn std::error::Error>> {
     let selector = backend_selector(input);
     let mut config = match input {
@@ -1929,11 +1983,12 @@ fn secrets_config_from_input(
             }
         }
         SecretsBackendInput::Plaintext => {
-            eprintln!();
-            eprintln!(
+            say!(ui);
+            say!(
+                ui,
                 "\x1b[1;33mWARNING: plaintext seed storage selected. NOT for production.\x1b[0m"
             );
-            eprintln!();
+            say!(ui);
             // The plaintext fallback in `create_seed_store` is an explicit
             // opt-in (P0.9) — without `allow_plaintext = true` it errors
             // rather than silently writing the master seed in clear. Since
@@ -2010,6 +2065,7 @@ pub(crate) async fn create_vta_did_key(
     keys_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
+    ui: &dyn SetupUi,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use affinidi_tdk::secrets_resolver::secrets::Secret;
     use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
@@ -2079,7 +2135,7 @@ pub(crate) async fn create_vta_did_key(
     )
     .await?;
 
-    eprintln!("  Created DID: {did}");
+    say!(ui, "  Created DID: {did}");
 
     Ok(did)
 }
@@ -2205,6 +2261,7 @@ async fn register_vta_did_on_host(
     service_state_ks: &KeyspaceHandle,
     audit: &vta_audit::SharedAuditSink,
     seed_store: &dyn SeedStore,
+    ui: &dyn SetupUi,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (domain, _) = hosting_slot(url)?;
     let server_id = hosting
@@ -2307,7 +2364,8 @@ async fn register_vta_did_on_host(
         ),
     )
     .await?;
-    eprintln!(
+    say!(
+        ui,
         "  Registered with DID hosting service {} on {domain}{}",
         hosting.server_did,
         match result.account.as_ref().map(|a| &a.state) {
@@ -2423,11 +2481,11 @@ async fn create_simple_webvh_did(
         (Some(vta_sdk::did_scid::DidMethod::Scid), Some(url)) => url.clone(),
         _ => result.did.clone(),
     };
-    eprintln!("  Created DID: {final_did}");
+    say!(ui, "  Created DID: {final_did}");
     if let Some(ref webvh_did) = result.webvh_did
         && *webvh_did != final_did
     {
-        eprintln!("  Log:         {webvh_did}");
+        say!(ui, "  Log:         {webvh_did}");
     }
 
     // Persist the did.jsonl so operators can re-publish or audit later. The UI
@@ -2445,7 +2503,7 @@ async fn create_simple_webvh_did(
                 std::fs::create_dir_all(parent)?;
             }
             std::fs::write(&log_path, log_entry)?;
-            eprintln!("  DID log:     {}", log_path.display());
+            say!(ui, "  DID log:     {}", log_path.display());
         }
     }
 
@@ -2477,6 +2535,7 @@ async fn create_vta_did_webs(
     audit: &vta_audit::SharedAuditSink,
     seed_store: &dyn SeedStore,
     config: &AppConfig,
+    ui: &dyn SetupUi,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use crate::operations::did_webs::{OwnWebsIdentity, WebsDeps, create_own_identity};
 
@@ -2502,7 +2561,11 @@ async fn create_vta_did_webs(
     let created = create_own_identity(&deps, spec, "setup")
         .await
         .map_err(|e| format!("{e}"))?;
-    eprintln!("  Created DID: {} (published at first boot)", created.did);
+    say!(
+        ui,
+        "  Created DID: {} (published at first boot)",
+        created.did
+    );
     Ok(created.did)
 }
 
@@ -2563,6 +2626,7 @@ async fn seed_staff(
     data_dir: &Path,
     staff: &[StaffProvision],
     storage_key: Option<[u8; 32]>,
+    ui: &dyn SetupUi,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if staff.is_empty() {
         return Ok(());
@@ -2594,7 +2658,12 @@ async fn seed_staff(
             Some(r) => acl::Role::parse(r)?,
             None => acl::Role::Application,
         };
-        eprintln!("  Staff:    {} → context `{}` ({role:?})", s.did, s.context);
+        say!(
+            ui,
+            "  Staff:    {} → context `{}` ({role:?})",
+            s.did,
+            s.context
+        );
         let entry = acl::AclEntry::new(&s.did, role, "cli:setup-from-file")
             .with_contexts(vec![s.context.clone()])
             .with_label(s.label.clone());
@@ -2656,7 +2725,7 @@ mod tests {
                 ..vta_sdk::context_policy::ContextPolicy::unrestricted()
             }),
         }];
-        seed_staff(dir.path(), &staff, None)
+        seed_staff(dir.path(), &staff, None, &super::SilentUi)
             .await
             .expect("seed_staff");
 
@@ -2711,7 +2780,7 @@ mod tests {
         // seed-store fallback (P0.9). Otherwise `create_seed_store` errors
         // during setup and the booted VTA can't re-open the seed. The flag
         // is serialized into `[secrets]` in the generated config.toml.
-        let secrets = secrets_config_from_input(&SecretsBackendInput::Plaintext)
+        let secrets = secrets_config_from_input(&SecretsBackendInput::Plaintext, &super::SilentUi)
             .expect("plaintext backend should convert");
         assert!(
             secrets.allow_plaintext,
@@ -2752,7 +2821,8 @@ mod tests {
             kek = { source = "passphrase", file = "/etc/vta/seed-passphrase" }
         "#;
         let inputs = parse(raw).expect("encrypted_file inputs should parse");
-        let secrets = secrets_config_from_input(&inputs.secrets).expect("converts");
+        let secrets =
+            secrets_config_from_input(&inputs.secrets, &super::SilentUi).expect("converts");
         assert_eq!(secrets.backend, Some(SecretBackend::EncryptedFile));
         assert!(!secrets.allow_plaintext);
         let toml_out = toml::to_string(&secrets).expect("serializes");
@@ -2797,7 +2867,7 @@ mod tests {
             ),
         ];
         for (input, expected) in cases {
-            let secrets = secrets_config_from_input(&input).expect("converts");
+            let secrets = secrets_config_from_input(&input, &super::SilentUi).expect("converts");
             assert_eq!(secrets.backend, Some(expected), "for {input:?}");
         }
     }
@@ -2830,6 +2900,7 @@ mod tests {
             overwrite_config: false,
             vta_name: None,
             public_url: None,
+            rest_local_only: false,
             data_dir: root.join("data"),
             data_dir_exists: ExistingDataDirPolicy::default(),
             dids: Default::default(),
@@ -4041,6 +4112,25 @@ mod tests {
             other => panic!("expected CreateWebvh, got {other:?}"),
         }
         validate_inputs(&inputs).expect("simple create_webvh should validate");
+    }
+
+    /// `rest_local_only` lets REST run with no `public_url`: an embedded VTA's
+    /// REST is a loopback port nothing advertises.
+    #[test]
+    fn rest_local_only_needs_no_public_url() {
+        let raw = r#"
+            config_path     = "/tmp/vta-test/config.toml"
+            data_dir        = "/tmp/vta-test/data"
+            rest_local_only = true
+
+            [services]
+            rest = true
+
+            [secrets]
+            backend = "keyring"
+        "#;
+        let inputs = parse(raw).expect("parses");
+        validate_inputs(&inputs).expect("REST with rest_local_only needs no public_url");
     }
 
     /// A self-registering VTA's slot comes from its URL: the domain (with any

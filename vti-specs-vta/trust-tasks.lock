@@ -387,6 +387,12 @@ type_uri = "https://trusttasks.org/spec/vta/health/details/0.1"
 digest = "sha256:f2da138ce66f8723fbcc44ee77e7a7d9469a7c57d5b3d48c4e817d4e9aa4d77c"
 
 [[task]]
+slug = "vta/hosting-account/get"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/vta/hosting-account/get/0.1"
+digest = "sha256:ba681cf15e7eae3e337ca3280d98a2b4b84a27aaefe85d14bcc8d8bdef015a5c"
+
+[[task]]
 slug = "vta/management/reload-services"
 version = "1.0"
 type_uri = "https://trusttasks.org/spec/vta/management/reload-services/1.0"

@@ -26,6 +26,7 @@ mod authenticate_trust_task;
 mod client_round_trip;
 mod delegated_consent_e2e;
 mod embedded_vta;
+mod hosting_account_get;
 mod idempotency_trust_task;
 mod key_custody_census;
 mod keyring_vti_09_23_https;

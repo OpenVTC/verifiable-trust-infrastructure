@@ -19,9 +19,9 @@ async fn set_up(root: &std::path::Path, admin: &str) -> AppConfig {
         config_path = {config:?}
         data_dir    = {data:?}
         vta_name    = "embedded"
-        # Setup requires one with REST on; an embedded VTA's real REST URL is a
-        # loopback port picked at each start, which nothing should advertise.
-        public_url  = "http://127.0.0.1"
+        # An embedded VTA's REST is a loopback port picked at each start, which
+        # nothing advertises.
+        rest_local_only = true
         admin_did   = {admin:?}
 
         [services]
@@ -69,10 +69,18 @@ async fn an_embedded_vta_serves_its_owner_and_restarts_in_process() {
     let config = set_up(root.path(), &admin).await;
     let vta_did = config.vta_did.clone().expect("setup minted a VTA DID");
 
+    // The second start binds the port the first one picked, as a host
+    // application does so the VTA's URL survives a restart.
+    let mut port = 0;
     for generation in 0..2 {
-        let vta = EmbeddedVta::start(config.clone(), None)
+        let vta = EmbeddedVta::start_on(config.clone(), None, port)
             .await
             .expect("start the embedded VTA");
+        if generation == 0 {
+            port = vta.rest_port();
+        } else {
+            assert_eq!(vta.rest_port(), port, "the restart keeps the port");
+        }
         assert!(
             vta.rest_url().starts_with("http://127.0.0.1:"),
             "an embedded VTA listens on loopback only: {}",

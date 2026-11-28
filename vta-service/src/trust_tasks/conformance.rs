@@ -3154,6 +3154,31 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({})
             ),
         ),
+        #[cfg(feature = "webvh")]
+        (
+            super::hosting_account::TASK_VTA_HOSTING_ACCOUNT_GET_0_1,
+            checked!(
+                specs::vta::hosting_account::get::v0_1::Payload,
+                specs::vta::hosting_account::get::v0_1::Response,
+                json!({ "refresh": true }),
+                json!({
+                    "registered": true,
+                    "hosting": {
+                        "serverDid": "did:webvh:QmHost:did.example.com",
+                        "domain": "did.example.com",
+                        "registeredAt": "2026-11-01T00:00:00Z",
+                        "account": {
+                            "subject": "did:scid:vh:1:QmVta",
+                            "role": "owner",
+                            "domain": "did.example.com",
+                            "state": "active",
+                            "registeredAt": "2026-11-01T00:00:00Z"
+                        },
+                        "renewedAt": "2026-11-27T00:00:00Z"
+                    }
+                })
+            ),
+        ),
         // ─── notifications/* + vta/notifications/* ──────────────
         (
             uris::TASK_NOTIFICATIONS_NOTIFY_0_1,

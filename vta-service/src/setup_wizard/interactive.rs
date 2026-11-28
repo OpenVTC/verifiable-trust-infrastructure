@@ -1378,6 +1378,7 @@ async fn gather_inputs(
         overwrite_config,
         vta_name,
         public_url,
+        rest_local_only: false,
         data_dir,
         data_dir_exists,
         services: ServicesConfig {
