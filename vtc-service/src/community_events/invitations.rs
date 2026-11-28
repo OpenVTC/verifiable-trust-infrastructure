@@ -203,6 +203,10 @@ pub struct Link {
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub digest: String,
+    /// A link for guests, which admits no member — and a member's link admits no guest
+    /// (VTI-EVT-151).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub for_guests: bool,
 }
 
 /// A member's opt-out of invitations (VTI-EVT-110).
@@ -635,6 +639,9 @@ pub fn link_wire(l: &Link) -> Value {
     }
     o.insert("maxRedemptions".into(), json!(l.max_redemptions));
     o.insert("redemptions".into(), json!(l.redemptions));
+    if l.for_guests {
+        o.insert("forGuests".into(), json!(true));
+    }
     o.insert("expiresAt".into(), json!(stamp(l.expires_at)));
     if let Some(t) = l.revoked_at {
         o.insert("revokedAt".into(), json!(stamp(t)));

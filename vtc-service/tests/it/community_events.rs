@@ -19,48 +19,48 @@ use crate::common::signed::{admin, call, party_with_role, payload, post};
 
 use vti_specs::vtc::events as e;
 
-const CAL_CREATE_ERR_EVENTS_OFF: &str = e::calendars::create::v0_1::error_codes::EVENTS_OFF.code;
+const CAL_CREATE_ERR_EVENTS_OFF: &str = e::calendars::create::v0_2::error_codes::EVENTS_OFF.code;
 const CAL_CREATE_ERR_GROUP_NOT_FOUND: &str =
-    e::calendars::create::v0_1::error_codes::GROUP_NOT_FOUND.code;
+    e::calendars::create::v0_2::error_codes::GROUP_NOT_FOUND.code;
 const CAL_CREATE_ERR_GROUP_HAS_CALENDAR: &str =
-    e::calendars::create::v0_1::error_codes::GROUP_HAS_CALENDAR.code;
+    e::calendars::create::v0_2::error_codes::GROUP_HAS_CALENDAR.code;
 const CAL_CREATE_ERR_SETTINGS_INVALID: &str =
-    e::calendars::create::v0_1::error_codes::SETTINGS_INVALID.code;
-const CAL_UPDATE_ERR_EVENTS_OFF: &str = e::calendars::update::v0_1::error_codes::EVENTS_OFF.code;
+    e::calendars::create::v0_2::error_codes::SETTINGS_INVALID.code;
+const CAL_UPDATE_ERR_EVENTS_OFF: &str = e::calendars::update::v0_2::error_codes::EVENTS_OFF.code;
 const CAL_UPDATE_ERR_COMMUNITY_CALENDAR: &str =
-    e::calendars::update::v0_1::error_codes::COMMUNITY_CALENDAR.code;
+    e::calendars::update::v0_2::error_codes::COMMUNITY_CALENDAR.code;
 const CAL_UPDATE_ERR_GROUP_HAS_CALENDAR: &str =
-    e::calendars::update::v0_1::error_codes::GROUP_HAS_CALENDAR.code;
+    e::calendars::update::v0_2::error_codes::GROUP_HAS_CALENDAR.code;
 const CAL_UPDATE_ERR_SETTINGS_INVALID: &str =
-    e::calendars::update::v0_1::error_codes::SETTINGS_INVALID.code;
-const CREATE_ERR_EVENTS_OFF: &str = e::create::v0_2::error_codes::EVENTS_OFF.code;
-const CREATE_ERR_CALENDAR_ARCHIVED: &str = e::create::v0_2::error_codes::CALENDAR_ARCHIVED.code;
-const CREATE_ERR_TIME_ZONE_UNKNOWN: &str = e::create::v0_2::error_codes::TIME_ZONE_UNKNOWN.code;
-const CREATE_ERR_WHEN_INVALID: &str = e::create::v0_2::error_codes::WHEN_INVALID.code;
-const CREATE_ERR_AUDIENCE_INVALID: &str = e::create::v0_2::error_codes::AUDIENCE_INVALID.code;
+    e::calendars::update::v0_2::error_codes::SETTINGS_INVALID.code;
+const CREATE_ERR_EVENTS_OFF: &str = e::create::v0_3::error_codes::EVENTS_OFF.code;
+const CREATE_ERR_CALENDAR_ARCHIVED: &str = e::create::v0_3::error_codes::CALENDAR_ARCHIVED.code;
+const CREATE_ERR_TIME_ZONE_UNKNOWN: &str = e::create::v0_3::error_codes::TIME_ZONE_UNKNOWN.code;
+const CREATE_ERR_WHEN_INVALID: &str = e::create::v0_3::error_codes::WHEN_INVALID.code;
+const CREATE_ERR_AUDIENCE_INVALID: &str = e::create::v0_3::error_codes::AUDIENCE_INVALID.code;
 const CREATE_ERR_REGISTRATION_INVALID: &str =
-    e::create::v0_2::error_codes::REGISTRATION_INVALID.code;
-const CREATE_ERR_POLICY_REFUSED: &str = e::create::v0_2::error_codes::POLICY_REFUSED.code;
-const UPDATE_ERR_EVENTS_OFF: &str = e::update::v0_2::error_codes::EVENTS_OFF.code;
-const UPDATE_ERR_EVENT_CANCELLED: &str = e::update::v0_2::error_codes::EVENT_CANCELLED.code;
-const UPDATE_ERR_ROSTER_LOCKED: &str = e::update::v0_2::error_codes::ROSTER_LOCKED.code;
-const UPDATE_ERR_TIME_ZONE_UNKNOWN: &str = e::update::v0_2::error_codes::TIME_ZONE_UNKNOWN.code;
-const UPDATE_ERR_WHEN_INVALID: &str = e::update::v0_2::error_codes::WHEN_INVALID.code;
-const UPDATE_ERR_AUDIENCE_INVALID: &str = e::update::v0_2::error_codes::AUDIENCE_INVALID.code;
+    e::create::v0_3::error_codes::REGISTRATION_INVALID.code;
+const CREATE_ERR_POLICY_REFUSED: &str = e::create::v0_3::error_codes::POLICY_REFUSED.code;
+const UPDATE_ERR_EVENTS_OFF: &str = e::update::v0_3::error_codes::EVENTS_OFF.code;
+const UPDATE_ERR_EVENT_CANCELLED: &str = e::update::v0_3::error_codes::EVENT_CANCELLED.code;
+const UPDATE_ERR_ROSTER_LOCKED: &str = e::update::v0_3::error_codes::ROSTER_LOCKED.code;
+const UPDATE_ERR_TIME_ZONE_UNKNOWN: &str = e::update::v0_3::error_codes::TIME_ZONE_UNKNOWN.code;
+const UPDATE_ERR_WHEN_INVALID: &str = e::update::v0_3::error_codes::WHEN_INVALID.code;
+const UPDATE_ERR_AUDIENCE_INVALID: &str = e::update::v0_3::error_codes::AUDIENCE_INVALID.code;
 const UPDATE_ERR_REGISTRATION_INVALID: &str =
-    e::update::v0_2::error_codes::REGISTRATION_INVALID.code;
-const UPDATE_ERR_POLICY_REFUSED: &str = e::update::v0_2::error_codes::POLICY_REFUSED.code;
-const PUBLISH_ERR_EVENTS_OFF: &str = e::publish::v0_2::error_codes::EVENTS_OFF.code;
-const PUBLISH_ERR_NOT_DRAFT: &str = e::publish::v0_2::error_codes::NOT_DRAFT.code;
-const PUBLISH_ERR_CALENDAR_ARCHIVED: &str = e::publish::v0_2::error_codes::CALENDAR_ARCHIVED.code;
-const PUBLISH_ERR_EVENT_ENDED: &str = e::publish::v0_2::error_codes::EVENT_ENDED.code;
-const PUBLISH_ERR_POLICY_REFUSED: &str = e::publish::v0_2::error_codes::POLICY_REFUSED.code;
-const CANCEL_ERR_EVENTS_OFF: &str = e::cancel::v0_2::error_codes::EVENTS_OFF.code;
-const CANCEL_ERR_NOT_PUBLISHED: &str = e::cancel::v0_2::error_codes::NOT_PUBLISHED.code;
-const CANCEL_ERR_EVENT_ENDED: &str = e::cancel::v0_2::error_codes::EVENT_ENDED.code;
+    e::update::v0_3::error_codes::REGISTRATION_INVALID.code;
+const UPDATE_ERR_POLICY_REFUSED: &str = e::update::v0_3::error_codes::POLICY_REFUSED.code;
+const PUBLISH_ERR_EVENTS_OFF: &str = e::publish::v0_3::error_codes::EVENTS_OFF.code;
+const PUBLISH_ERR_NOT_DRAFT: &str = e::publish::v0_3::error_codes::NOT_DRAFT.code;
+const PUBLISH_ERR_CALENDAR_ARCHIVED: &str = e::publish::v0_3::error_codes::CALENDAR_ARCHIVED.code;
+const PUBLISH_ERR_EVENT_ENDED: &str = e::publish::v0_3::error_codes::EVENT_ENDED.code;
+const PUBLISH_ERR_POLICY_REFUSED: &str = e::publish::v0_3::error_codes::POLICY_REFUSED.code;
+const CANCEL_ERR_EVENTS_OFF: &str = e::cancel::v0_3::error_codes::EVENTS_OFF.code;
+const CANCEL_ERR_NOT_PUBLISHED: &str = e::cancel::v0_3::error_codes::NOT_PUBLISHED.code;
+const CANCEL_ERR_EVENT_ENDED: &str = e::cancel::v0_3::error_codes::EVENT_ENDED.code;
 const DELETE_ERR_EVENTS_OFF: &str = e::delete::v0_1::error_codes::EVENTS_OFF.code;
 const DELETE_ERR_NOT_DRAFT: &str = e::delete::v0_1::error_codes::NOT_DRAFT.code;
-const LIST_ERR_RANGE_INVALID: &str = e::list::v0_2::error_codes::RANGE_INVALID.code;
+const LIST_ERR_RANGE_INVALID: &str = e::list::v0_3::error_codes::RANGE_INVALID.code;
 const ACCESS_ERR_NOT_GOING: &str = e::access::show::v0_1::error_codes::NOT_GOING.code;
 const ACCESS_ERR_NOT_YET: &str = e::access::show::v0_1::error_codes::NOT_YET.code;
 const ACCESS_ERR_EVENT_CANCELLED: &str = e::access::show::v0_1::error_codes::EVENT_CANCELLED.code;
@@ -108,23 +108,29 @@ const UNKNOWN_GROUP: &str = "grp_AAAAAAAAAAAAAAAAAAAAAA";
 const GROUP: &str = "grp_EngineeringGroup0001";
 const COC_SHA: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 
-/// The served version of each task: 0.2 where phase 2 moved it, 0.1 otherwise.
+/// The served version of each task: 0.3 where phase 4 moved it, 0.2 where phase 2 did (and
+/// phase 4 moved calendars and links), 0.1 otherwise.
 fn uri(task: &str) -> String {
+    const AT_0_3: &[&str] = &["create", "update", "show", "list", "publish", "cancel"];
     const AT_0_2: &[&str] = &[
-        "create",
-        "update",
-        "show",
-        "list",
         "mine/list",
         "registrations/register",
         "registrations/withdraw",
         "registrations/list",
         "registrations/decide",
         "registrations/remove",
-        "publish",
-        "cancel",
+        "calendars/create",
+        "calendars/update",
+        "calendars/list",
+        "invitations/links/create",
     ];
-    let v = if AT_0_2.contains(&task) { "0.2" } else { "0.1" };
+    let v = if AT_0_3.contains(&task) {
+        "0.3"
+    } else if AT_0_2.contains(&task) {
+        "0.2"
+    } else {
+        "0.1"
+    };
     format!("{SPEC}vtc/events/{task}/{v}")
 }
 
@@ -1785,9 +1791,9 @@ const RESPOND_ERR_MAYBE_NOT_ACCEPTED: &str =
 const RESPOND_ERR_HOST_DECIDED: &str =
     e::invitations::respond::v0_1::error_codes::HOST_DECIDED.code;
 const LINKS_CREATE_ERR_EVENT_CANCELLED: &str =
-    e::invitations::links::create::v0_1::error_codes::EVENT_CANCELLED.code;
+    e::invitations::links::create::v0_2::error_codes::EVENT_CANCELLED.code;
 const LINKS_CREATE_ERR_EXPIRY_INVALID: &str =
-    e::invitations::links::create::v0_1::error_codes::EXPIRY_INVALID.code;
+    e::invitations::links::create::v0_2::error_codes::EXPIRY_INVALID.code;
 const LINKS_REVOKE_ERR_LINK_NOT_FOUND: &str =
     e::invitations::links::revoke::v0_1::error_codes::LINK_NOT_FOUND.code;
 const LINKS_REVOKE_ERR_ALREADY_REVOKED: &str =
@@ -1800,8 +1806,8 @@ const ANN_SEND_ERR_LIMIT_REACHED: &str =
     e::announcements::send::v0_1::error_codes::LIMIT_REACHED.code;
 const ANN_LIST_ERR_NOT_REGISTERED: &str =
     e::announcements::list::v0_1::error_codes::NOT_REGISTERED.code;
-const CREATE_ERR_PARTNER_INVALID: &str = e::create::v0_2::error_codes::PARTNER_INVALID.code;
-const UPDATE_ERR_PARTNER_INVALID: &str = e::update::v0_2::error_codes::PARTNER_INVALID.code;
+const CREATE_ERR_PARTNER_INVALID: &str = e::create::v0_3::error_codes::PARTNER_INVALID.code;
+const UPDATE_ERR_PARTNER_INVALID: &str = e::update::v0_3::error_codes::PARTNER_INVALID.code;
 
 /// `host` invites `who` to `id` by name.
 async fn invite_by_name(tv: &TestVtc, host: &Party, id: &str, who: &Party) {

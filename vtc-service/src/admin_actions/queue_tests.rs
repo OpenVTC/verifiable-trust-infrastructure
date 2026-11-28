@@ -644,6 +644,11 @@ async fn reported_event(state: &AppState) -> (String, String) {
         cancelled_at: None,
         created_at: now,
         updated_at: now,
+        identity: None,
+        guests: Default::default(),
+        tickets: false,
+        counts_attendance: None,
+        attendance_badge: None,
         created_by: "dir_creator0000000000".into(),
     };
     ce::put_event(&state.events_ks, &ev).await.unwrap();

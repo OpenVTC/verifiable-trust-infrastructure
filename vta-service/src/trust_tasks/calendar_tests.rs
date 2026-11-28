@@ -583,7 +583,7 @@ async fn vti_cal_030_a_reply_not_addressed_here_or_not_signed_is_refused() {
         CTX,
         reply(
             &member,
-            "https://trusttasks.org/spec/vtc/events/list/0.2#response",
+            "https://trusttasks.org/spec/vtc/events/list/0.3#response",
         ),
     )
     .await;

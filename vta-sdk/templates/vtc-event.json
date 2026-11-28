@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "name": "vtc-event",
+  "kind": "event",
+  "description": "A community event's own identity (vtc/events/create with identity, VTI-EVT-140 – 145). The community's VTA mints and holds it; the community never does. The event's DID signs its tickets and attendance records, and nothing else, under an authorization credential the community issues it, so a verifier chains ticket → event → community. A series has one identity for every occurrence. The document carries a signing key (assertion and authentication) and a key-agreement key, and nothing else: no service, because the community serves no transport at the event's DID (VTI-EVT-143, VTI-KEY-050), and no title, description, place or label, so resolving the DID reveals nothing about the event or its registrants. did:webvh rather than did:peer, so its keys can rotate. WITNESSES is recommended where the DID host is not fully trusted.",
+  "methods": ["webvh"],
+  "requiredVars": ["WEBVH_SERVER"],
+  "optionalVars": {
+    "WITNESSES": []
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-2",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "assertionMethod": ["{DID}#key-1"],
+    "authentication": ["{DID}#key-1"],
+    "keyAgreement": ["{DID}#key-2"]
+  }
+}

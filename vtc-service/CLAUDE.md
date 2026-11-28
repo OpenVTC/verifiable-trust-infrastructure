@@ -1175,14 +1175,15 @@ When adding a flow, add it here and a line to the root index.
   `admin-ui/src/plugins/badges.tsx`, `admin-ui/src/members/Badges.tsx`.
 - **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.
 
-### VTC community events (`vtc/events/*`, VTI-EVT-001 – 135)
+### VTC community events (`vtc/events/*`, VTI-EVT-001 – 186)
 - **What**: Calendars (the community's own, made on first need, and one per group), events
   in them, registrations, hosts by appointment, reports, invitations (audience, host, member,
   link), opt-outs, announcements, partner communities, and the `event` notification kind
   (`crate::community_events`, records in the `events` keyspace, backed up). Phases 1 – 2 of
-  `docs/05-design-notes/vtc-events.md`. `create`/`update`/`show`/`list`/`mine/list`/
-  `registrations/*` are served at 0.2 only; `publish`/`cancel` (0.1) answer the event without
-  `invite`, `membersMayInvite` or `audience.partners`, which their 0.1 schema does not admit.
+  `docs/05-design-notes/vtc-events.md`, and phase 4 (identity, guests, the door, tickets,
+  attendance). `create`/`update`/`publish`/`cancel`/`show`/`list` are served at 0.3,
+  `calendars/*`, `invitations/links/create`, `mine/list` and `registrations/*` at 0.2, the rest
+  at 0.1; no earlier version is served.
 - **Invariants to preserve**: the **roster setting is fixed at publish** — an update that
   changes it on a published event is `rosterLocked`, never parked — and every registration
   records the setting it was made under (VTI-EVT-051/052). **Access details are released, not
@@ -1209,7 +1210,7 @@ When adding a flow, add it here and a line to the root index.
   match `community_events::resolve_local` — keep the two in step. Never show an access detail,
   answer or roster the API did not return. The Type URIs are spelled out in full in both API
   modules (the list-limit census matches the literal) and listed in
-  `tests/it/trust_task_manifest.rs`; the console's wire types are the `Events*01` / `Events*02` wrappers in
+  `tests/it/trust_task_manifest.rs`; the console's wire types are the `Events*01` / `*02` / `*03` wrappers in
   `vta_sdk::openapi`, listed in `routes::openapi_spec`.
 - **Invitations and the `event` kind** (`community_events::invitations`, VTI-EVT-100 – 110,
   VTI-NTF-064 – 067): one invitation per member per event, carrying the member's `answer`
@@ -1221,7 +1222,7 @@ When adding a flow, add it here and a line to the root index.
   anything is sent, and `settle` is its only sender** (`push_signed`), as for elections: a
   revision per `sequence` change, a withdrawal on cancel, revocation or leaving the audience,
   and the invitee re-checked before every offering revision. The notification carries only the
-  community, event id, `show/0.2`, audience DID and period — never a title, place or
+  community, event id, `show/0.3`, audience DID and period — never a title, place or
   announcement. Link codes are 256 random bits, kept only as their SHA-256 digest, answered
   once (`SECRET_RESPONSES`: the response is not recorded for redelivery), and every failure is
   the one `linkInvalid`.
@@ -1238,13 +1239,34 @@ When adding a flow, add it here and a line to the root index.
   `events.report.review`, one per event while open, `admin_actions::queues::raise_event_report`):
   approve upholds (`community_events::uphold_reports` cancels the event), decline dismisses;
   the reporter is never on the item.
-- **Not yet**: the VTA calendar (`vta/calendar/*`), check-in, meetings, booking pages — see
-  the design note. `publish`/`cancel` are served at 0.2 only; a revoked invitation is kept, so
-  the sweeper never re-invites from it.
-- **Code**: `vtc-service/src/community_events/{mod,hosts,policy,invitations}.rs`,
+- **Phase 4** (VTI-EVT-140 – 186). **Identity** (`community_events::identity`): minted from
+  `vtc-event` through `groups::identity::mint_as` with an `issue-tickets` authority, **before**
+  the event is stored — a failure stores nothing; revoked on cancel/delete, renewed at half life
+  by the sweeper; only at create. **Guests** (`guests/*`): admitted by `ev.guests` alone, never
+  the audience; a guest link (`Link.for_guests`) admits no member and a member's link no guest;
+  a guest's registration is keyed by their DID with `guest: true`; every guest operation goes
+  through `door::charge_guest` (in-memory, 30/hour/DID — the VTC has no VTI-TRN-029 budget;
+  recorded deviation). `guests/withdraw` answers `notRegistered` for any event without the
+  signer's guest registration, seen or not. **The door** (`community_events::door`): challenges
+  are 128 bits, stored only as a digest, accepted 300 s and **not consumed** (one code admits
+  every arrival); door staff are hosts or `vtc.events.checkin` at `event:<id>`
+  (`Viewer::door_staff`); self check-in only where the calendar's `selfCheckIn` ≠ `none` and
+  only while the event runs; no record of no-shows. **Attendance**: the only record is the
+  tally `att:<entry>:<cal>:<YYYY-MM>` in `events`, incremented by `door::record` when
+  `check_in_counts` (never a guest's or partner's); `groups::dynamic::Counts::attendance` feeds
+  `eventsAttended` (badge rules only; `calendarId`/`withinDays` qualify it alone); the
+  attendance badge is offered as an award, never issued. **Tickets**
+  (`community_events::tickets`): signed via `keys/sign-document` by the event's identity or the
+  community, slot in the community's revocation list; the sweeper is the one issuer and
+  revoker (and re-issues to a registrant going again); `tickets/show` may issue an owed one at
+  once and revokes its spare if it lost a race. The community does **not** check tickets by
+  OpenID4VP at its door (recorded).
+- **Not yet**: the VTA calendar (`vta/calendar/*`), meetings, booking pages — see the design
+  note. A revoked invitation is kept, so the sweeper never re-invites from it.
+- **Code**: `vtc-service/src/community_events/{mod,hosts,policy,invitations,identity,door,tickets}.rs`,
   `vtc-service/src/trust_tasks/community_event_tasks.rs` (not `event_tasks.rs`, which is the
   console's live channel), `vtc-service/policies/default/events.rego`,
-  `vtc-service/tests/it/community_events.rs`.
+  `vtc-service/tests/it/{community_events,community_events_door}.rs`.
 - **Docs**: `docs/03-vtc/events.md`, `docs/05-design-notes/vtc-events.md`.
 
 ### VTC notifications (`notifications/*`, VTI-NTF-040 – 063)

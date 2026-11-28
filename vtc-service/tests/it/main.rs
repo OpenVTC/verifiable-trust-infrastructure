@@ -50,6 +50,7 @@ mod ceremony_execute;
 mod cnm_vtc_admin_live;
 mod community_authority_renewal;
 mod community_events;
+mod community_events_door;
 mod community_logo;
 mod community_profile;
 mod community_rooms;

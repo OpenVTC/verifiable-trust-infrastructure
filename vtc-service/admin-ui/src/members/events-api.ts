@@ -29,13 +29,17 @@ import type {
   EventOptoutsSetResponse,
   EventOptoutsListResponse,
   EventAnnouncementsListResponse,
+  EventTicketsShowResponse,
+  EventCheckinRecordResponse,
+  EventAttendanceShowResponse,
+  EventAttendanceTally,
 } from "@/lib/wire-types";
 
 import { send } from "./directory-api";
 
-export const EVENTS_CALENDARS_TASK = "https://trusttasks.org/spec/vtc/events/calendars/list/0.1";
-export const EVENTS_LIST_TASK = "https://trusttasks.org/spec/vtc/events/list/0.2";
-export const EVENTS_SHOW_TASK = "https://trusttasks.org/spec/vtc/events/show/0.2";
+export const EVENTS_CALENDARS_TASK = "https://trusttasks.org/spec/vtc/events/calendars/list/0.2";
+export const EVENTS_LIST_TASK = "https://trusttasks.org/spec/vtc/events/list/0.3";
+export const EVENTS_SHOW_TASK = "https://trusttasks.org/spec/vtc/events/show/0.3";
 export const EVENTS_MINE_TASK = "https://trusttasks.org/spec/vtc/events/mine/list/0.2";
 export const EVENTS_ACCESS_TASK = "https://trusttasks.org/spec/vtc/events/access/show/0.1";
 export const EVENTS_REGISTER_TASK = "https://trusttasks.org/spec/vtc/events/registrations/register/0.2";
@@ -48,6 +52,9 @@ export const EVENTS_REDEEM_TASK = "https://trusttasks.org/spec/vtc/events/invita
 export const EVENTS_OPTOUT_SET_TASK = "https://trusttasks.org/spec/vtc/events/optouts/set/0.1";
 export const EVENTS_OPTOUT_LIST_TASK = "https://trusttasks.org/spec/vtc/events/optouts/list/0.1";
 export const EVENTS_ANNOUNCEMENTS_TASK = "https://trusttasks.org/spec/vtc/events/announcements/list/0.1";
+export const EVENTS_TICKET_TASK = "https://trusttasks.org/spec/vtc/events/tickets/show/0.1";
+export const EVENTS_CHECKIN_TASK = "https://trusttasks.org/spec/vtc/events/checkin/record/0.1";
+export const EVENTS_ATTENDANCE_TASK = "https://trusttasks.org/spec/vtc/events/attendance/show/0.1";
 
 export type Calendar = EventCalendarsListResponse["items"][number];
 export type CommunityEvent = EventShowResponse["event"];
@@ -64,11 +71,17 @@ export type InvitationItem = EventInvitationsListResponse["items"][number];
 export type InvitationAnswer = EventInvitationsRespondPayload["answer"];
 export type OptOut = EventOptoutsListResponse["items"][number];
 export type Announcement = EventAnnouncementsListResponse["items"][number];
+export type Ticket = EventTicketsShowResponse;
+export type CheckInReceipt = EventCheckinRecordResponse;
+export type Tally = EventAttendanceTally;
 
 export const eventsHref = "#/events";
 /** Where an invitation link lands in the portal: `#/events/join/<code>` (VTI-EVT-107). */
 export const joinHref = (code: string) => `#/events/join/${encodeURIComponent(code)}`;
 export const eventHref = (eventId: string) => `#/events/${encodeURIComponent(eventId)}`;
+/** Where the door's code lands: the event, with the challenge to sign (VTI-EVT-162). */
+export const checkInHref = (eventId: string, challenge: string) =>
+  `#/events/${encodeURIComponent(eventId)}/checkin/${encodeURIComponent(challenge)}`;
 
 /** The calendars the member may see: the community's own first. */
 export const listCalendars = () =>
@@ -127,6 +140,18 @@ export const listOptOuts = () =>
 /** An event's announcements, to its registrants (VTI-EVT-120). */
 export const listAnnouncements = (eventId: string) =>
   send<EventAnnouncementsListResponse>(EVENTS_ANNOUNCEMENTS_TASK, { eventId, limit: 100 }).then((r) => r.items);
+
+/** The member's ticket for an event they are going to: a credential, exactly as issued
+ *  (VTI-EVT-170 – 174). */
+export const showTicket = (eventId: string) => send<EventTicketsShowResponse>(EVENTS_TICKET_TASK, { eventId });
+
+/** Check in: with the door's challenge, or — where the calendar allows it, while the event runs —
+ *  without one (VTI-EVT-162, 164). */
+export const checkIn = (eventId: string, challenge?: string) =>
+  send<EventCheckinRecordResponse>(EVENTS_CHECKIN_TASK, { eventId, ...(challenge ? { challenge } : {}) });
+
+/** The member's own attendance: counted check-ins per calendar and month (VTI-EVT-185). */
+export const showAttendance = () => send<EventAttendanceShowResponse>(EVENTS_ATTENDANCE_TASK, {});
 
 export const ANSWER_WORDS: Record<string, string> = {
   none: "Not answered",

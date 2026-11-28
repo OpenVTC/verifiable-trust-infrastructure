@@ -5,16 +5,17 @@
 //   /events/calendars   The community's calendars and each group's: make one, change it, archive it.
 //   /events/new         A new event, saved as a draft.
 //   /events/:id         One event: change it, publish, cancel or delete it; its registrations
-//                       (approve, decline, remove); its hosts (appoint, remove).
+//                       (approve, decline, remove); its hosts (appoint, remove); the door
+//                       (a challenge to show, check-in by name, who has arrived).
 //
 // Every act is signed by this browser's console key (VTI-EVT-095). The roster setting is fixed
 // once the event is published (VTI-EVT-051): the editor says so before, and stops offering the
 // choice after. Members register from the member portal; this page never writes as a member.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, CalendarPlus, Eye, EyeOff, Lock, Plus, Trash2, UserMinus, UserPlus } from "lucide-react";
+import { CalendarDays, CalendarPlus, DoorOpen, Eye, EyeOff, Lock, Plus, RefreshCw, Trash2, UserMinus, UserPlus } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { DataTable } from "@/components/DataTable";
@@ -27,7 +28,11 @@ import { formatWhen, zoneNote } from "@/lib/event-time";
 import {
   EVENTS_KEY,
   EVENTS_MANAGE,
+  SELF_CHECK_IN_LABEL,
   STATUS_LABEL,
+  issueChallenge,
+  listCheckIns,
+  staffCheckIn,
   appointHost,
   cancelEvent,
   createLink,
@@ -57,6 +62,7 @@ import {
   type Calendar,
   type CommunityEvent,
   type EventDraft,
+  type EventSelfCheckIn,
   type Registration,
   type RegistrationStatus,
 } from "@/lib/events";
@@ -229,6 +235,8 @@ function CalendarsPage() {
   const [groupId, setGroupId] = useState("");
   const [roster, setRoster] = useState<"visible" | "hidden">("hidden");
   const [reminders, setReminders] = useState("1440, 60");
+  const [selfCheckIn, setSelfCheckIn] = useState<EventSelfCheckIn>("none");
+  const [counts, setCounts] = useState(true);
   const refresh = () => void qc.invalidateQueries({ queryKey: EVENTS_KEY });
   const create = useMutation({
     mutationFn: () =>
@@ -238,6 +246,8 @@ function CalendarsPage() {
         ...(groupId ? { groupId } : {}),
         defaultRoster: roster,
         defaultReminderMinutes: parseMinutes(reminders),
+        selfCheckIn,
+        countsAttendance: counts,
       }),
     onSuccess: () => {
       setName("");
@@ -250,6 +260,11 @@ function CalendarsPage() {
   const archive = useMutation({
     mutationFn: (c: Calendar) =>
       updateCalendar({ calendarId: c.calendarId, state: c.state === "archived" ? "active" : "archived" }),
+    onSuccess: refresh,
+    onError: (err) => toast.pushFromError(err, "The calendar was not changed"),
+  });
+  const door = useMutation({
+    mutationFn: (p: { calendarId: string; selfCheckIn?: EventSelfCheckIn; countsAttendance?: boolean }) => updateCalendar(p),
     onSuccess: refresh,
     onError: (err) => toast.pushFromError(err, "The calendar was not changed"),
   });
@@ -269,6 +284,8 @@ function CalendarsPage() {
             { key: "name", label: "Calendar" },
             { key: "group", label: "Group" },
             { key: "roster", label: "New events' roster" },
+            { key: "door", label: "Self check-in" },
+            { key: "counts", label: "Counts attendance" },
             { key: "state", label: "State" },
             { key: "act", label: "" },
           ]}
@@ -282,6 +299,27 @@ function CalendarsPage() {
               </td>
               <td>{groupName(c.groupId) ?? <span className="muted">—</span>}</td>
               <td>{c.defaultRoster ?? "hidden"}</td>
+              <td>
+                <select
+                  aria-label={`Self check-in for ${c.name}`}
+                  value={c.selfCheckIn ?? "none"}
+                  onChange={(e) => door.mutate({ calendarId: c.calendarId, selfCheckIn: e.target.value as EventSelfCheckIn })}
+                >
+                  {(Object.keys(SELF_CHECK_IN_LABEL) as EventSelfCheckIn[]).map((k) => (
+                    <option key={k} value={k}>
+                      {SELF_CHECK_IN_LABEL[k]}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td>
+                <input
+                  type="checkbox"
+                  aria-label={`${c.name}'s events count toward attendance`}
+                  checked={c.countsAttendance !== false}
+                  onChange={(e) => door.mutate({ calendarId: c.calendarId, countsAttendance: e.target.checked })}
+                />
+              </td>
               <td>{c.state === "archived" ? <span className="chip">Archived</span> : "Active"}</td>
               <td>
                 {!c.community && (
@@ -329,6 +367,19 @@ function CalendarsPage() {
             <Field label="Suggested reminders" hint="Minutes before the start, comma separated.">
               <input value={reminders} onChange={(e) => setReminders(e.target.value)} />
             </Field>
+            <Field label="Self check-in" hint="Checking in without the door's code, from the member portal, while the event runs.">
+              <select value={selfCheckIn} onChange={(e) => setSelfCheckIn(e.target.value as EventSelfCheckIn)}>
+                {(Object.keys(SELF_CHECK_IN_LABEL) as EventSelfCheckIn[]).map((k) => (
+                  <option key={k} value={k}>
+                    {SELF_CHECK_IN_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <label className="checkbox">
+              <input type="checkbox" checked={counts} onChange={(e) => setCounts(e.target.checked)} />
+              <span className="checkbox-text">Its events count toward members' attendance</span>
+            </label>
           </div>
           <div className="form-actions">
             <button type="submit" className="primary" disabled={!name.trim() || create.isPending}>
@@ -405,6 +456,13 @@ interface Form {
   membersMayInvite: boolean;
   /** Partner communities' DIDs, one per line (VTI-EVT-130). */
   partners: string;
+  /** An identity of the event's own, minted when it is made (VTI-EVT-140); fixed after. */
+  identity: boolean;
+  guests: "none" | "invited" | "open";
+  tickets: boolean;
+  /** `inherit` follows the calendar (VTI-EVT-180). */
+  countsAttendance: "inherit" | "yes" | "no";
+  attendanceBadge: string;
 }
 
 const A11Y_LABELS = [
@@ -458,6 +516,11 @@ function blankForm(calendarId: string): Form {
     invite: "none",
     membersMayInvite: false,
     partners: "",
+    identity: false,
+    guests: "none",
+    tickets: false,
+    countsAttendance: "inherit",
+    attendanceBadge: "",
   };
 }
 
@@ -515,6 +578,11 @@ function formOf(ev: CommunityEvent): Form {
     invite: ev.invite ?? "none",
     membersMayInvite: !!ev.membersMayInvite,
     partners: (ev.audience.partners ?? []).join("\n"),
+    identity: !!ev.identity,
+    guests: ev.guests ?? "none",
+    tickets: !!ev.tickets,
+    countsAttendance: ev.countsAttendance === undefined ? "inherit" : ev.countsAttendance ? "yes" : "no",
+    attendanceBadge: ev.attendanceBadge ?? "",
   };
 }
 
@@ -580,6 +648,11 @@ function draftOf(f: Form): EventDraft {
     suggestedReminderMinutes: parseMinutes(f.reminders),
     invite: f.invite,
     membersMayInvite: f.membersMayInvite,
+    ...(f.identity ? { identity: true } : {}),
+    guests: f.guests,
+    tickets: f.tickets,
+    ...(f.countsAttendance !== "inherit" ? { countsAttendance: f.countsAttendance === "yes" } : {}),
+    ...(f.attendanceBadge ? { attendanceBadge: f.attendanceBadge } : {}),
   } as EventDraft;
 }
 
@@ -617,6 +690,7 @@ function EventEditorPage() {
         onChange={setForm}
         calendars={(calendars.data ?? []).filter((c) => c.state === "active")}
         published={false}
+        creating
         submitLabel="Save draft"
         busy={create.isPending}
         onSubmit={() => create.mutate()}
@@ -630,6 +704,7 @@ function EventForm({
   onChange,
   calendars,
   published,
+  creating = false,
   submitLabel,
   busy,
   onSubmit,
@@ -638,6 +713,8 @@ function EventForm({
   onChange: (f: Form) => void;
   calendars: Calendar[];
   published: boolean;
+  /** A new event: only now may it be given an identity (VTI-EVT-140). */
+  creating?: boolean;
   submitLabel: string;
   busy: boolean;
   onSubmit: () => void;
@@ -869,6 +946,54 @@ function EventForm({
         </Field>
       </div>
 
+      <h3>Guests, tickets and attendance</h3>
+      <div className="form-grid">
+        <Field label="Guests" hint="People who are not members, registering with their own DID. Never the audience.">
+          <select aria-label="Guests" value={f.guests} onChange={(e) => set({ guests: e.target.value as Form["guests"] })}>
+            <option value="none">No guests</option>
+            <option value="invited">Guests with a guest link</option>
+            <option value="open">Any guest</option>
+          </select>
+        </Field>
+        <Field label="Counts toward attendance" hint="Checked-in members' tallies, which badge rules can read.">
+          <select
+            aria-label="Counts toward attendance"
+            value={f.countsAttendance}
+            onChange={(e) => set({ countsAttendance: e.target.value as Form["countsAttendance"] })}
+          >
+            <option value="inherit">As its calendar says</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </Field>
+        <Field label="Attendance badge" hint="Offered to each member checked in. They accept or decline it.">
+          <select aria-label="Attendance badge" value={f.attendanceBadge} onChange={(e) => set({ attendanceBadge: e.target.value })}>
+            <option value="">None</option>
+            {(badges.data ?? [])
+              .filter((b) => b.badge.kind === "community" && b.badge.state === "active")
+              .map((b) => (
+                <option key={b.badge.badgeId} value={b.badge.badgeId}>
+                  {b.badge.name}
+                </option>
+              ))}
+          </select>
+        </Field>
+        <label className="checkbox">
+          <input type="checkbox" checked={f.tickets} onChange={(e) => set({ tickets: e.target.checked })} />
+          <span className="checkbox-text">Issue tickets: a credential for each registrant going, revoked if they withdraw</span>
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={f.identity} disabled={!creating} onChange={(e) => set({ identity: e.target.checked })} />
+          <span className="checkbox-text">
+            {creating
+              ? "Give the event its own DID, held by the community's VTA, to sign its tickets"
+              : f.identity
+                ? "The event has its own DID"
+                : "The event has no DID of its own (chosen when it was made)"}
+          </span>
+        </label>
+      </div>
+
       <h3>Privacy</h3>
       <div className="form-grid">
         <Field label="Roster">
@@ -980,7 +1105,7 @@ function QuestionsField({ questions, onChange }: { questions: Question[]; onChan
 
 // ─── one event ────────────────────────────────────────────────────────────
 
-type Tab = "details" | "registrations" | "invitations" | "hosts";
+type Tab = "details" | "registrations" | "invitations" | "hosts" | "door";
 
 function EventPage() {
   const { id = "" } = useParams();
@@ -998,7 +1123,7 @@ function EventPage() {
   const save = useMutation({
     mutationFn: () => {
       const d = draftOf(form!);
-      const { calendarId: _c, kind: _k, ...rest } = d;
+      const { calendarId: _c, kind: _k, identity: _i, ...rest } = d;
       const patch = { eventId, ...rest, ...(ev?.status === "published" ? { roster: undefined } : {}) };
       return updateEvent(patch);
     },
@@ -1091,6 +1216,7 @@ function EventPage() {
             ["registrations", "Registrations"],
             ["invitations", "Invitations"],
             ["hosts", "Hosts"],
+            ...(ev.status === "published" ? ([["door", "Door"]] as const) : []),
           ] as const
         ).map(([t, label]) => (
           <button key={t} type="button" role="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
@@ -1107,6 +1233,13 @@ function EventPage() {
               {ev.status !== "draft" && " · fixed"}
             </span>
             <span>Going: {goingWords(ev)}</span>
+            {ev.identity && (
+              <span title={ev.identity.did}>
+                Own DID{ev.identity.authorityValidUntil ? ` · authority until ${ev.identity.authorityValidUntil.slice(0, 10)}` : ""}
+              </span>
+            )}
+            {ev.tickets && <span>Tickets</span>}
+            {ev.guests && ev.guests !== "none" && <span>Guests: {ev.guests === "open" ? "any" : "with a link"}</span>}
             <span>Sequence {ev.sequence}</span>
           </section>
           {ev.status === "cancelled" ? (
@@ -1150,8 +1283,11 @@ function EventPage() {
         </>
       )}
       {tab === "registrations" && <RegistrationsTab eventId={eventId} />}
-      {tab === "invitations" && <InvitationsTab eventId={eventId} published={ev.status === "published"} />}
+      {tab === "invitations" && (
+        <InvitationsTab eventId={eventId} published={ev.status === "published"} guestsInvited={ev.guests === "invited"} />
+      )}
       {tab === "hosts" && <HostsTab eventId={eventId} />}
+      {tab === "door" && ev.status === "published" && <DoorTab eventId={eventId} />}
     </>
   );
 }
@@ -1217,7 +1353,7 @@ function RegistrationsTab({ eventId }: { eventId: string }) {
               {r.entryId ? (
                 <EntryName entryId={r.entryId} faces={faces} />
               ) : (
-                <span title={r.registrantDid}>A partner's member</span>
+                <span title={r.registrantDid}>Not a member: a guest or a partner's member</span>
               )}
             </td>
             <td>
@@ -1331,7 +1467,16 @@ const INVITER_LABEL: Record<string, string> = {
 };
 
 /** Invitations, invitation links and announcements (VTI-EVT-103 – 107, 120). */
-function InvitationsTab({ eventId, published }: { eventId: string; published: boolean }) {
+function InvitationsTab({
+  eventId,
+  published,
+  guestsInvited = false,
+}: {
+  eventId: string;
+  published: boolean;
+  /** The event admits guests holding a guest link (VTI-EVT-151). */
+  guestsInvited?: boolean;
+}) {
   const qc = useQueryClient();
   const toast = useToast();
   const faces = useEntryFaces();
@@ -1339,6 +1484,8 @@ function InvitationsTab({ eventId, published }: { eventId: string; published: bo
   const [linkLabel, setLinkLabel] = useState("");
   const [linkUses, setLinkUses] = useState(25);
   const [code, setCode] = useState<string | null>(null);
+  const [forGuests, setForGuests] = useState(false);
+  const [codeForGuests, setCodeForGuests] = useState(false);
   const [links, setLinks] = useState<{ linkId: string; label?: string; revokedAt?: string }[]>([]);
   const [text, setText] = useState("");
   const invKey = [...EVENTS_KEY, "invitations", eventId];
@@ -1352,9 +1499,16 @@ function InvitationsTab({ eventId, published }: { eventId: string; published: bo
   });
   const makeLink = useMutation({
     mutationFn: () =>
-      createLink(eventId, linkUses, new Date(Date.now() + 14 * 86400_000).toISOString().replace(/\.\d{3}Z$/, "Z"), linkLabel || undefined),
+      createLink(
+        eventId,
+        linkUses,
+        new Date(Date.now() + 14 * 86400_000).toISOString().replace(/\.\d{3}Z$/, "Z"),
+        linkLabel || undefined,
+        guestsInvited && forGuests,
+      ),
     onSuccess: (r) => {
       setCode(r.code);
+      setCodeForGuests(!!r.link.forGuests);
       setLinks((l) => [{ linkId: r.link.linkId, label: r.link.label }, ...l]);
       setLinkLabel("");
     },
@@ -1475,13 +1629,25 @@ function InvitationsTab({ eventId, published }: { eventId: string; published: bo
             <Field label="Uses">
               <input aria-label="Link uses" type="number" min={1} max={10000} value={linkUses} onChange={(e) => setLinkUses(Number(e.target.value) || 1)} />
             </Field>
+            {guestsInvited && (
+              <label className="checkbox">
+                <input type="checkbox" checked={forGuests} onChange={(e) => setForGuests(e.target.checked)} />
+                <span className="checkbox-text">For guests: people who are not members, never a member</span>
+              </label>
+            )}
           </div>
           <button type="button" className="secondary" onClick={() => makeLink.mutate()}>
             <Plus size={14} aria-hidden="true" /> Make a link (expires in 14 days)
           </button>
-          {joinUrl && (
+          {joinUrl && !codeForGuests && (
             <p className="ev-code" role="status">
               Share this link now — it is not shown again: <code>{joinUrl}</code>
+            </p>
+          )}
+          {code && codeForGuests && (
+            <p className="ev-code" role="status">
+              Give this guest code now — it is not shown again. A guest's wallet registers for the event with it:{" "}
+              <code>{code}</code>
             </p>
           )}
           <ul className="ev-hosts">
@@ -1527,3 +1693,181 @@ function InvitationsTab({ eventId, published }: { eventId: string; published: bo
     </>
   );
 }
+
+// ─── the door (VTI-EVT-160 – 165) ─────────────────────────────────────────
+
+/** Where a registrant's phone lands when it scans the door's code: the member portal's check-in
+ *  for this event, carrying the challenge for their wallet key to sign. */
+export function checkInLink(origin: string, eventId: string, challenge: string): string {
+  return `${origin}/members/#/events/${encodeURIComponent(eventId)}/checkin/${encodeURIComponent(challenge)}`;
+}
+
+/** Seconds left until `iso`, never below zero. */
+export function secondsUntil(iso: string, now = Date.now()): number {
+  return Math.max(0, Math.floor((Date.parse(iso) - now) / 1000));
+}
+
+const CHECKIN_REFRESH_MS = 10_000;
+
+function DoorTab({ eventId }: { eventId: string }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const faces = useEntryFaces();
+  const [challenge, setChallenge] = useState<{ challenge: string; expiresAt: string } | null>(null);
+  const [qr, setQr] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [find, setFind] = useState("");
+  const checkIns = useQuery({
+    queryKey: [...EVENTS_KEY, "checkins", eventId],
+    queryFn: () => listCheckIns(eventId),
+    refetchInterval: CHECKIN_REFRESH_MS,
+    retry: false,
+  });
+  const regs = useQuery({
+    queryKey: [...EVENTS_KEY, "registrations", eventId, "going"],
+    queryFn: () => listRegistrations(eventId, ["going"]),
+    retry: false,
+  });
+  const issue = useMutation({
+    mutationFn: () => issueChallenge(eventId),
+    onSuccess: (c) => setChallenge({ challenge: c.challenge, expiresAt: c.expiresAt }),
+    onError: (err) => toast.pushFromError(err, "No door challenge was issued"),
+  });
+  const checkIn = useMutation({
+    mutationFn: (r: Registration) => staffCheckIn(eventId, r.registrationId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: [...EVENTS_KEY, "checkins", eventId] });
+      toast.push("success", "Checked in.");
+    },
+    onError: (err) => toast.pushFromError(err, "Not checked in"),
+  });
+  const left = challenge ? secondsUntil(challenge.expiresAt, now) : 0;
+  // A challenge is accepted for a few minutes: keep one showing by asking for the next as the
+  // last runs out, while this tab is open.
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  useEffect(() => {
+    if (!issue.isPending && !issue.isError && (!challenge || left <= 15)) issue.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [challenge, left <= 15]);
+  useEffect(() => {
+    if (!challenge) return;
+    let live = true;
+    const link = checkInLink(window.location.origin, eventId, challenge.challenge);
+    import("qrcode")
+      .then((q) => q.toDataURL(link, { margin: 1, width: 320, errorCorrectionLevel: "M" }))
+      .then((url) => live && setQr(url))
+      .catch(() => live && setQr(null));
+    return () => {
+      live = false;
+    };
+  }, [challenge, eventId]);
+  const arrived = new Set((checkIns.data?.items ?? []).map((c) => c.registrationId));
+  const waiting = (regs.data ?? []).filter((r) => !arrived.has(r.registrationId));
+  const shown = find.trim()
+    ? waiting.filter((r) => (r.entryId ? (() => { const f = faces.get(r.entryId!); return !!f && faceMatches(f, find); })() : (r.registrantDid ?? "").includes(find)))
+    : waiting;
+  return (
+    <>
+      <section className="card ev-door">
+        <div className="ev-door-code">
+          <h3>
+            <DoorOpen size={16} aria-hidden="true" /> Show this at the door
+          </h3>
+          <p className="muted">
+            Registrants who are going scan it with their phone, signed in to the member portal, and their wallet key checks
+            them in. It is accepted for a few minutes and replaced before it runs out, so a photo of an old one admits nobody.
+          </p>
+          {qr ? <img src={qr} alt="The door's check-in code" width={260} height={260} /> : <p className="muted">Making a code…</p>}
+          {challenge && (
+            <p className="ev-door-meta">
+              <code>{challenge.challenge}</code> · {left}s left
+              <button type="button" className="ghost" onClick={() => issue.mutate()} disabled={issue.isPending}>
+                <RefreshCw size={14} aria-hidden="true" /> New code
+              </button>
+            </p>
+          )}
+        </div>
+        <div className="ev-door-count" aria-live="polite">
+          <strong>{checkIns.data?.checkedIn ?? 0}</strong>
+          <span>checked in of {(regs.data ?? []).length} going</span>
+        </div>
+      </section>
+      <section className="card table-card">
+        <h3>Check someone in by name</h3>
+        <div className="ev-filters">
+          <Field label="Find">
+            <input aria-label="Find a registrant" value={find} onChange={(e) => setFind(e.target.value)} />
+          </Field>
+        </div>
+        <DataTable caption="Going, not yet checked in" columns={[{ key: "who", label: "Registrant" }, { key: "act", label: "" }]}>
+          {regs.isSuccess && shown.length === 0 && (
+            <tr>
+              <td colSpan={2}>
+                <EmptyState title={waiting.length ? "Nobody matches" : "Everyone going has checked in"} />
+              </td>
+            </tr>
+          )}
+          {shown.map((r) => (
+            <tr key={r.registrationId}>
+              <td>
+                {r.entryId ? (
+                  <EntryName entryId={r.entryId} faces={faces} />
+                ) : (
+                  <span title={r.registrantDid}>Not a member: a guest or a partner's member</span>
+                )}
+              </td>
+              <td>
+                <button type="button" className="primary" disabled={checkIn.isPending} onClick={() => checkIn.mutate(r)}>
+                  Check in
+                </button>
+              </td>
+            </tr>
+          ))}
+        </DataTable>
+      </section>
+      <section className="card table-card">
+        <h3>Checked in</h3>
+        <DataTable
+          caption="Checked in"
+          columns={[
+            { key: "who", label: "Registrant" },
+            { key: "how", label: "How" },
+            { key: "at", label: "At" },
+            { key: "counts", label: "Counts" },
+          ]}
+        >
+          {checkIns.isSuccess && checkIns.data.items.length === 0 && (
+            <tr>
+              <td colSpan={4}>
+                <EmptyState title="Nobody yet" />
+              </td>
+            </tr>
+          )}
+          {(checkIns.data?.items ?? []).map((c) => (
+            <tr key={c.registrationId}>
+              <td>
+                {c.entryId ? (
+                  <EntryName entryId={c.entryId} faces={faces} />
+                ) : (
+                  <span title={c.registrantDid}>{c.registrantKind === "guest" ? "A guest" : "A partner's member"}</span>
+                )}
+              </td>
+              <td>{CHECKIN_METHOD_LABEL[c.method]}</td>
+              <td>{new Date(c.checkedInAt).toLocaleTimeString()}</td>
+              <td>{c.counts ? "Yes" : "No"}</td>
+            </tr>
+          ))}
+        </DataTable>
+      </section>
+    </>
+  );
+}
+
+const CHECKIN_METHOD_LABEL: Record<"challenge" | "staff" | "self", string> = {
+  challenge: "Scanned the door code",
+  staff: "By door staff",
+  self: "Checked themselves in",
+};

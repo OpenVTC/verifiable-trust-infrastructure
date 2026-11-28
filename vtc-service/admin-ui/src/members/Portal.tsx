@@ -46,14 +46,15 @@ async function fetchMe(): Promise<MemberMe | null> {
  *  `#/directory`, `#/directory/<entryId>`, `#/card`, `#/groups`,
  *  `#/groups/<groupId>`, `#/repos`, `#/elections`, `#/elections/<electionId>`,
  *  `#/boards`, `#/boards/<boardId>`, `#/badges`, `#/badges/new`,
- *  `#/badges/<badgeId>`, `#/events`, `#/events/<eventId>`, `#/events/join/<code>`, else home. */
+ *  `#/badges/<badgeId>`, `#/events`, `#/events/<eventId>`, `#/events/<eventId>/checkin/<challenge>`,
+ *  `#/events/join/<code>`, else home. */
 export type Route =
   | { page: "home" }
   | { page: "badges" }
   | { page: "badge"; badgeId: string }
   | { page: "make-badge" }
   | { page: "events" }
-  | { page: "event"; eventId: string }
+  | { page: "event"; eventId: string; challenge?: string }
   | { page: "join-event"; code: string }
   | { page: "rooms" }
   | { page: "room"; roomId: string }
@@ -80,6 +81,8 @@ export function routeOf(hash: string): Route {
   if (path === "/events") return { page: "events" };
   const event = /^\/events\/(evt_[A-Za-z0-9_-]{16,64})$/.exec(path);
   if (event) return { page: "event", eventId: event[1]! };
+  const door = /^\/events\/(evt_[A-Za-z0-9_-]{16,64})\/checkin\/([A-Za-z0-9_-]{22,128})$/.exec(path);
+  if (door) return { page: "event", eventId: door[1]!, challenge: door[2]! };
   const join = /^\/events\/join\/([A-Za-z0-9_-]{43,86})$/.exec(path);
   if (join) return { page: "join-event", code: join[1]! };
   if (path === "/badges/new") return { page: "make-badge" };
@@ -234,7 +237,7 @@ function SignedIn({ me, route }: { me: MemberMe; route: Route }) {
   if (route.page === "badge") return <BadgePage badgeId={route.badgeId} />;
   if (route.page === "make-badge") return <MakeBadgePage />;
   if (route.page === "events") return <EventsPage />;
-  if (route.page === "event") return <EventPage eventId={route.eventId} />;
+  if (route.page === "event") return <EventPage eventId={route.eventId} challenge={route.challenge} />;
   if (route.page === "join-event") return <JoinEventPage code={route.code} />;
   // A board reads without the wallet; only its vote buttons need the community's DID.
   if (route.page === "board") return <BoardPage boardId={route.boardId} hostDid={host.data} member={me.did} />;

@@ -27,6 +27,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "swiyu-verifier",
     "trust-registry",
     "vta-admin",
+    "vtc-event",
     "vtc-group",
     "vtc-host",
     "vtc-host-classical",
@@ -41,6 +42,7 @@ const ROOM_HOST: &str = include_str!("../../templates/room-host.json");
 const SWIYU_VERIFIER: &str = include_str!("../../templates/swiyu-verifier.json");
 const TRUST_REGISTRY: &str = include_str!("../../templates/trust-registry.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
+const VTC_EVENT: &str = include_str!("../../templates/vtc-event.json");
 const VTC_GROUP: &str = include_str!("../../templates/vtc-group.json");
 const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
 const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-didcomm.json");
@@ -66,6 +68,7 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
         "swiyu-verifier" => SWIYU_VERIFIER,
         "trust-registry" => TRUST_REGISTRY,
         "vta-admin" => VTA_ADMIN,
+        "vtc-event" => VTC_EVENT,
         "vtc-group" => VTC_GROUP,
         "vtc-host" => VTC_HOST,
         "did-host-http-didcomm" => DID_HOST_HTTP_DIDCOMM,

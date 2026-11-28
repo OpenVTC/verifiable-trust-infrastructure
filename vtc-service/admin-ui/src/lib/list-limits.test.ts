@@ -61,13 +61,14 @@ const BADGES_AWARDS = `${T}/vtc/badges/awards/list/0.1`;
 const BADGES_CLAIMS = `${T}/vtc/badges/claims/list/0.1`;
 const BADGES_HOLDERS = `${T}/vtc/badges/holders/list/0.1`;
 const BADGES_KUDOS = `${T}/vtc/badges/kudos/list/0.1`;
-const EVENTS_LIST = `${T}/vtc/events/list/0.2`;
-const EVENTS_CALENDARS = `${T}/vtc/events/calendars/list/0.1`;
+const EVENTS_LIST = `${T}/vtc/events/list/0.3`;
+const EVENTS_CALENDARS = `${T}/vtc/events/calendars/list/0.2`;
 const EVENTS_MINE = `${T}/vtc/events/mine/list/0.2`;
 const EVENTS_REGISTRATIONS = `${T}/vtc/events/registrations/list/0.2`;
 const EVENTS_INVITATIONS = `${T}/vtc/events/invitations/list/0.1`;
 const EVENTS_OPTOUTS = `${T}/vtc/events/optouts/list/0.1`;
 const EVENTS_ANNOUNCEMENTS = `${T}/vtc/events/announcements/list/0.1`;
+const EVENTS_CHECKINS = `${T}/vtc/events/checkin/list/0.1`;
 const NETWORKS_LIST = `${T}/vtc/networks/list/0.2`;
 const BOARDS_SHOW = `${T}/vtc/boards/show/0.1`;
 const BOARDS_NOTES = `${T}/vtc/boards/notes/list/0.1`;
@@ -138,6 +139,8 @@ const SITES: Site[] = [
   { file: "lib/events.ts", site: "includeArchived,\n      limit: PAGE", uri: EVENTS_CALENDARS, from: ["PAGE"] },
   { file: "lib/events.ts", site: "...filters,\n      limit: PAGE", uri: EVENTS_LIST, from: ["PAGE"] },
   { file: "lib/events.ts", site: "limit: REG_PAGE", uri: EVENTS_REGISTRATIONS, from: ["REG_PAGE"] },
+  // The door: who has checked in, to the end (VTI-EVT-165).
+  { file: "lib/events.ts", site: "limit: CHECKIN_PAGE", uri: EVENTS_CHECKINS, from: ["CHECKIN_PAGE"] },
   // The member portal's events: one page of calendars, of events, of the member's registrations, of a roster.
   { file: "members/events-api.ts", site: "(EVENTS_CALENDARS_TASK, { limit: 200 }", uri: EVENTS_CALENDARS, from: ["200"] },
   { file: "members/events-api.ts", site: "{ ...filters, limit: 200 }", uri: EVENTS_LIST, from: ["200"] },

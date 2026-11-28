@@ -974,6 +974,7 @@ pub async fn rule_counts(
                 kudos_received,
                 ideas_selected: ideas.get(entry).copied().unwrap_or_default(),
                 election_tickets: tickets.get(&s.card.did).copied().unwrap_or_default(),
+                attendance: crate::community_events::door::tallies(&state.events_ks, entry).await?,
             },
         );
     }

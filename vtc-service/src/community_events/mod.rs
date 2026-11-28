@@ -26,9 +26,12 @@
 //! a zone's rules moves nothing a host chose. A local time a zone skips (the hour clocks go
 //! forward) moves forward to the first time that exists; one it repeats takes the first.
 
+pub mod door;
 pub mod hosts;
+pub mod identity;
 pub mod invitations;
 pub mod policy;
+pub mod tickets;
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -314,8 +317,94 @@ pub struct Calendar {
     pub default_roster: Option<Roster>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub default_reminder_minutes: Vec<u32>,
+    /// Whether its events allow check-in without a door challenge, and whether such a
+    /// check-in counts toward attendance (VTI-EVT-164, VTI-EVT-181).
+    #[serde(default)]
+    pub self_check_in: SelfCheckIn,
+    /// The attendance default for its events (VTI-EVT-180); absent, they count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts_attendance: Option<bool>,
     pub state: CalendarState,
     pub created_at: DateTime<Utc>,
+}
+
+/// `EventSelfCheckIn` (VTI-EVT-164).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SelfCheckIn {
+    /// Never without a door challenge.
+    #[default]
+    None,
+    /// Allowed during the event; it does not count toward attendance.
+    Allowed,
+    /// Allowed during the event, and it counts.
+    Counting,
+}
+
+impl SelfCheckIn {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Allowed => "allowed",
+            Self::Counting => "counting",
+        }
+    }
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "none" => Self::None,
+            "allowed" => Self::Allowed,
+            "counting" => Self::Counting,
+            _ => return None,
+        })
+    }
+}
+
+/// `EventGuestAdmission` (VTI-EVT-150).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GuestAdmission {
+    #[default]
+    None,
+    Invited,
+    Open,
+}
+
+impl GuestAdmission {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Invited => "invited",
+            Self::Open => "open",
+        }
+    }
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "none" => Self::None,
+            "invited" => Self::Invited,
+            "open" => Self::Open,
+            _ => return None,
+        })
+    }
+}
+
+/// An event's own identity (VTI-EVT-140 – 145): the DID the community's VTA minted from the
+/// `vtc-event` template, the key it signs with there, and the community's authority
+/// credential to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventIdentity {
+    pub did: String,
+    pub signing_key_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_log_path: Option<String>,
+    pub authority: crate::groups::Authority,
+    /// When the authority was revoked, if it was (VTI-EVT-142).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// `EventLifecycle` (VTI-EVT-004).
@@ -374,6 +463,21 @@ pub struct EventRecord {
     /// Members of the audience may invite other members of it (VTI-EVT-105).
     #[serde(default)]
     pub members_may_invite: bool,
+    /// Its own identity, where it was given one at creation (VTI-EVT-140).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<EventIdentity>,
+    /// Whether it admits guests (VTI-EVT-150).
+    #[serde(default)]
+    pub guests: GuestAdmission,
+    /// Whether registrants going are issued tickets (VTI-EVT-170).
+    #[serde(default)]
+    pub tickets: bool,
+    /// Whether it counts toward attendance; absent, the calendar's default (VTI-EVT-180).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts_attendance: Option<bool>,
+    /// The badge offered on check-in (VTI-EVT-186).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendance_badge: Option<String>,
     pub sequence: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancel_reason: Option<String>,
@@ -547,6 +651,16 @@ pub struct Registration {
     /// A registrant who is not a member: a partner's member, by the DID they presented as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registrant_did: Option<String>,
+    /// A guest — a party who is no member (VTI-EVT-151); `registrant_did` names them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guest: bool,
+    /// Their check-in, where one is recorded (VTI-EVT-165). Who did not check in is never
+    /// recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_in: Option<CheckIn>,
+    /// Their ticket, kept exactly as issued (VTI-EVT-170, VTI-EVT-174).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<Ticket>,
     pub status: RegStatus,
     pub guests: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -562,6 +676,53 @@ pub struct Registration {
     pub note: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// `EventCheckInMethod` (VTI-EVT-162 – 164).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckInMethod {
+    Challenge,
+    Staff,
+    #[serde(rename = "self")]
+    SelfCheckIn,
+}
+
+impl CheckInMethod {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Challenge => "challenge",
+            Self::Staff => "staff",
+            Self::SelfCheckIn => "self",
+        }
+    }
+}
+
+/// A recorded check-in (VTI-EVT-165).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckIn {
+    pub at: DateTime<Utc>,
+    pub method: CheckInMethod,
+    /// Door staff who checked them in by name (VTI-EVT-163), by entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// Whether it counts toward the registrant's attendance (VTI-EVT-181 – 183).
+    pub counts: bool,
+}
+
+/// A ticket issued to a registrant (VTI-EVT-170 – 172).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ticket {
+    /// The signed credential, exactly as issued.
+    pub credential: Value,
+    pub valid_until: DateTime<Utc>,
+    /// Its slot in the community's revocation list.
+    pub status_list_index: u32,
+    #[serde(default)]
+    pub revoked: bool,
 }
 
 /// One member's report of an event (VTI-EVT-081).
@@ -695,6 +856,8 @@ pub async fn community_calendar(ks: &KeyspaceHandle) -> Result<Calendar, AppErro
         community: true,
         default_roster: None,
         default_reminder_minutes: Vec::new(),
+        self_check_in: SelfCheckIn::None,
+        counts_attendance: None,
         state: CalendarState::Active,
         created_at: Utc::now(),
     };
@@ -974,7 +1137,11 @@ pub async fn sweep_answers(state: &AppState, retention_days: u32) -> Result<usiz
         }
         let _guard = WRITE_LOCK.lock().await;
         for mut reg in registrations_of(ks, &ev.event_id).await? {
-            if reg.answers.take().is_some() {
+            // Check-in records go on the same schedule; the monthly tallies stay
+            // (VTI-EVT-166, VTI-EVT-185).
+            let answers = reg.answers.take().is_some();
+            let check_in = reg.checked_in.take().is_some();
+            if answers || check_in {
                 put_registration(ks, &reg).await?;
                 cleared += 1;
             }
@@ -1007,6 +1174,14 @@ pub fn spawn_sweeper(state: AppState, mut shutdown: tokio::sync::watch::Receiver
             if let Err(e) = invitations::settle(&state, Utc::now()).await {
                 tracing::warn!(error = %e, "event invitations could not be settled; the next pass tries again");
             }
+            // Tickets owed, and tickets no longer valid: the one issuer and revoker
+            // (VTI-EVT-170, VTI-EVT-172).
+            if let Err(e) = tickets::sweep(&state, Utc::now()).await {
+                tracing::warn!(error = %e, "event tickets could not be settled; the next pass tries again");
+            }
+            if let Err(e) = door::sweep_challenges(&state.events_ks, Utc::now()).await {
+                tracing::warn!(error = %e, "expired door challenges could not be removed");
+            }
             if last_hourly.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3600)) {
                 continue;
             }
@@ -1021,8 +1196,42 @@ pub fn spawn_sweeper(state: AppState, mut shutdown: tokio::sync::watch::Receiver
             if let Err(e) = hosts::sweep(&state).await {
                 tracing::warn!(error = %e, "event host review sweep failed; it runs again within the hour");
             }
+            if let Err(e) = renew_identities(&state, Utc::now()).await {
+                tracing::warn!(error = %e, "event identities could not be renewed; the next pass tries again");
+            }
         }
     });
+}
+
+/// Renew each live event identity's authority once half its life is spent, in the slot it
+/// holds (VTI-EVT-142), as groups renew theirs. The sweeper is the one retry owner.
+///
+/// # Errors
+/// A store failure.
+pub async fn renew_identities(state: &AppState, now: DateTime<Utc>) -> Result<usize, AppError> {
+    let ks = &state.events_ks;
+    let mut renewed = 0;
+    for ev in events(ks).await? {
+        if ev.identity.is_none() || ev.status == Lifecycle::Cancelled || ev.ended(now) {
+            continue;
+        }
+        let mut id = ev.identity.clone().expect("checked");
+        match identity::renew_if_due(state, &mut id, now).await {
+            Ok(true) => {
+                let _guard = WRITE_LOCK.lock().await;
+                if let Some(mut fresh) = get_event(ks, &ev.event_id).await? {
+                    fresh.identity = Some(id);
+                    put_event(ks, &fresh).await?;
+                    renewed += 1;
+                }
+            }
+            Ok(false) => {}
+            Err(why) => {
+                tracing::warn!(event = %ev.event_id, why, "an event identity's authority could not be renewed");
+            }
+        }
+    }
+    Ok(renewed)
 }
 
 // ─── reports ─────────────────────────────────────────────────────────────
@@ -1157,6 +1366,11 @@ pub struct Viewer {
     /// they presented with this request, verified before any event was looked up
     /// (VTI-EVT-132, VTI-EVT-133). Never kept beyond the request.
     pub partner: Option<String>,
+    /// A party who is no member, acting as a guest (VTI-EVT-151): they see only an event they
+    /// hold a registration for, or the one this request admits them to.
+    pub guest: bool,
+    /// Set by `guests/register` once the event's admission (VTI-EVT-150, 151) let this guest in.
+    pub guest_admitted: bool,
     entry: Option<VtcAclEntry>,
 }
 
@@ -1190,6 +1404,8 @@ impl Viewer {
             active_member,
             subject,
             partner: None,
+            guest: false,
+            guest_admitted: false,
             entry,
         })
     }
@@ -1236,6 +1452,17 @@ impl Viewer {
         cal.is_some_and(|c| self.runs_calendar(c))
             || self.can(
                 Capability::EventsManage,
+                Some(&ResourceQualifier::Event(ev.event_id.clone())),
+            )
+    }
+
+    /// Door staff for `ev`: its hosts, and holders of `vtc.events.checkin` at it
+    /// (VTI-EVT-160).
+    #[must_use]
+    pub fn door_staff(&self, ev: &EventRecord, cal: Option<&Calendar>) -> bool {
+        self.hosts(ev, cal)
+            || self.can(
+                Capability::EventsCheckIn,
                 Some(&ResourceQualifier::Event(ev.event_id.clone())),
             )
     }
@@ -1308,6 +1535,12 @@ pub fn calendar_wire(cal: &Calendar) -> Value {
     }
     if let Some(r) = cal.default_roster {
         o.insert("defaultRoster".into(), json!(r.as_str()));
+    }
+    if cal.self_check_in != SelfCheckIn::None {
+        o.insert("selfCheckIn".into(), json!(cal.self_check_in.as_str()));
+    }
+    if let Some(c) = cal.counts_attendance {
+        o.insert("countsAttendance".into(), json!(c));
     }
     if !cal.default_reminder_minutes.is_empty() {
         o.insert(
@@ -1395,6 +1628,26 @@ pub fn event_wire(ev: &EventRecord, host: bool, regs: &[Registration], hosts: &[
     }
     if ev.members_may_invite {
         o.insert("membersMayInvite".into(), json!(true));
+    }
+    if let Some(id) = &ev.identity {
+        // The authority's expiry is the hosts' to see (VTI-EVT-142).
+        let mut identity = json!({ "did": id.did });
+        if host {
+            identity["authorityValidUntil"] = json!(stamp(id.authority.valid_until));
+        }
+        o.insert("identity".into(), identity);
+    }
+    if ev.guests != GuestAdmission::None {
+        o.insert("guests".into(), json!(ev.guests.as_str()));
+    }
+    if ev.tickets {
+        o.insert("tickets".into(), json!(true));
+    }
+    if let Some(c) = ev.counts_attendance {
+        o.insert("countsAttendance".into(), json!(c));
+    }
+    if let Some(b) = &ev.attendance_badge {
+        o.insert("attendanceBadge".into(), json!(b));
     }
     let going = places_taken(regs);
     if let Some(c) = count_for(ev, going, host) {
@@ -1563,6 +1816,9 @@ mod tests {
             roster: Roster::Hidden,
             event_sequence: 0,
             note: None,
+            guest: false,
+            checked_in: None,
+            ticket: None,
             created_at: t,
             updated_at: t,
         }
@@ -1596,6 +1852,11 @@ mod tests {
             cancelled_at: None,
             created_at: t,
             updated_at: t,
+            identity: None,
+            guests: Default::default(),
+            tickets: false,
+            counts_attendance: None,
+            attendance_badge: None,
             created_by: "dir_creator".into(),
         }
     }

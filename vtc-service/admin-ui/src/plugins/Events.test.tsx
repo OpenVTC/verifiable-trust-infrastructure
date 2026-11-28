@@ -9,6 +9,9 @@ import {
   ANNOUNCEMENTS_LIST,
   ANNOUNCEMENTS_SEND,
   CALENDARS_LIST,
+  CHECKIN_CHALLENGE,
+  CHECKIN_LIST,
+  CHECKIN_RECORD,
   CREATE,
   INVITATIONS_LIST,
   INVITATIONS_REVOKE,
@@ -21,7 +24,7 @@ import {
 } from "@/lib/events";
 import { GROUPS_LIST_TASK } from "@/lib/groups";
 import { ROLES_LIST_TASK } from "@/lib/roles";
-import { Events } from "@/plugins/events";
+import { Events, checkInLink, secondsUntil } from "@/plugins/events";
 import { NAME_BOOK_ROUTES, mockFetch, renderWithProviders, sentPayloads, taskRoute, whoamiWith } from "@/test/render";
 
 vi.mock("@/lib/api", async (original) => ({
@@ -260,5 +263,83 @@ describe("the Invitations tab (VTI-EVT-103, 107, 120)", () => {
         { eventId: EVENT_ID, invitationId: "inv_Standing000000000AAAA" },
       ]),
     );
+  });
+});
+
+describe("phase 4: identity, guests, tickets and the door (VTI-EVT-140 – 186)", () => {
+  it("asks for an identity, guests and tickets when an event is made", async () => {
+    const requests = mockFetch([...ROUTES, taskRoute(CREATE, { event: event() }), taskRoute(SHOW, { event: event() }), taskRoute(HOSTS_LIST, { eventId: EVENT_ID, hosts: [] })]);
+    renderWithProviders(<Events />, { route: "/events/new", path: "/events/*", whoami: whoamiWith(["vtc.events.manage"]) });
+    await screen.findByRole("option", { name: "Community" });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Gala" } });
+    fireEvent.change(screen.getByLabelText("Guests"), { target: { value: "invited" } });
+    fireEvent.click(screen.getByLabelText(/Issue tickets/));
+    fireEvent.click(screen.getByLabelText(/its own DID/));
+    fireEvent.change(screen.getByLabelText("Counts toward attendance"), { target: { value: "no" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(sentPayloads(requests, CREATE)).toHaveLength(1));
+    expect(sentPayloads(requests, CREATE)[0]).toMatchObject({
+      title: "Gala",
+      guests: "invited",
+      tickets: true,
+      identity: true,
+      countsAttendance: false,
+    });
+  });
+
+  it("never offers an identity to an event already made", async () => {
+    mockFetch([...ROUTES, taskRoute(SHOW, { event: event() })]);
+    renderWithProviders(<Events />, { route: `/events/${EVENT_ID}`, path: "/events/*", whoami: whoamiWith(["vtc.events.manage"]) });
+    const box = (await screen.findByLabelText(/no DID of its own/)) as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+  });
+
+  it("shows the door a challenge, the running count, and checks someone in by name", async () => {
+    const going = {
+      registrationId: "reg_R3g1stration00000AAAA",
+      eventId: EVENT_ID,
+      entryId: ENTRY,
+      status: "going",
+      guests: 0,
+      roster: "hidden",
+      eventSequence: 0,
+      createdAt: "2099-11-02T09:00:00Z",
+      updatedAt: "2099-11-02T09:00:00Z",
+    };
+    const requests = mockFetch([
+      ...ROUTES,
+      taskRoute(SHOW, { event: event({ status: "published" }) }),
+      taskRoute(CHECKIN_CHALLENGE, { eventId: EVENT_ID, challenge: "Zm9vYmFyYmF6cXV4cXV1eA", expiresAt: "2099-11-30T18:35:00Z" }),
+      taskRoute(CHECKIN_LIST, { eventId: EVENT_ID, items: [], checkedIn: 0 }),
+      taskRoute(REGISTRATIONS_LIST, { eventId: EVENT_ID, view: "host", registrations: [going] }),
+      taskRoute(CHECKIN_RECORD, {
+        checkIn: { registrationId: going.registrationId, registrantKind: "member", entryId: ENTRY, method: "staff", checkedInAt: "2099-11-30T18:31:00Z", counts: true },
+        event: { eventId: EVENT_ID },
+      }),
+    ]);
+    renderWithProviders(<Events />, { route: `/events/${EVENT_ID}`, path: "/events/*", whoami: whoamiWith(["vtc.events.manage"]) });
+    fireEvent.click(await screen.findByRole("tab", { name: "Door" }));
+    expect(await screen.findByText("Zm9vYmFyYmF6cXV4cXV1eA")).toBeTruthy();
+    expect(screen.getByText(/checked in of 1 going/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Check in" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, CHECKIN_RECORD)).toEqual([{ eventId: EVENT_ID, registrationId: "reg_R3g1stration00000AAAA" }]),
+    );
+  });
+
+  it("offers the door only on a published event", async () => {
+    mockFetch([...ROUTES, taskRoute(SHOW, { event: event() })]);
+    renderWithProviders(<Events />, { route: `/events/${EVENT_ID}`, path: "/events/*", whoami: whoamiWith(["vtc.events.manage"]) });
+    await screen.findByRole("tab", { name: "Registrations" });
+    expect(screen.queryByRole("tab", { name: "Door" })).toBeNull();
+  });
+
+  it("links the door's code to the portal's check-in, and counts down to its expiry", () => {
+    expect(checkInLink("https://vtc.example.com", EVENT_ID, "abc_DEF-123")).toBe(
+      `https://vtc.example.com/members/#/events/${EVENT_ID}/checkin/abc_DEF-123`,
+    );
+    const now = Date.parse("2099-11-30T18:30:00Z");
+    expect(secondsUntil("2099-11-30T18:35:00Z", now)).toBe(300);
+    expect(secondsUntil("2099-11-30T18:00:00Z", now)).toBe(0);
   });
 });
