@@ -442,7 +442,7 @@ pub(super) async fn handle_supplement(
         &applicant_did,
         request_id,
         Value::Object(body.vp.clone()),
-        Value::Object(body.extensions.clone()),
+        Value::Object(body.extensions.clone().unwrap_or_default()),
         ctx.transport,
     )
     .await

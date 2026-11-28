@@ -663,10 +663,11 @@ pub async fn cmd_rooms_file_put(
                 if begun.missing.is_empty() {
                     return Ok(());
                 }
-                if begun.targets.is_empty() {
+                let targets = begun.targets.as_deref().unwrap_or_default();
+                if targets.is_empty() {
                     return Err("the host answered direct mode with no targets".into());
                 }
-                for t in &begun.targets {
+                for t in targets {
                     let i = usize::try_from(t.index)
                         .ok()
                         .filter(|i| i * part_size < ciphertext.len().max(1))
@@ -874,7 +875,7 @@ pub async fn cmd_rooms_file_get(
             let record = $record;
             // An open room's record describes its file in the clear, key included
             // (`rooms/records/put/0.4`); a sealed room's, inside the body its author signed.
-            let (file, author, carried) = match record.cleartext.get("file") {
+            let (file, author, carried) = match record.cleartext.as_ref().and_then(|c| c.get("file")) {
                 Some(file) if record.sealed.is_none() => {
                     let file: files::FileManifest = serde_json::from_value(file.clone())
                         .map_err(|e| format!("the record's file manifest does not read: {e}"))?;

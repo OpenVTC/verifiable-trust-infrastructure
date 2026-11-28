@@ -693,9 +693,20 @@ pub async fn sign_csr(
         .map(|n| {
             n.dns
                 .iter()
+                .flatten()
                 .map(|d| format!("dns:{}", d.as_str()))
-                .chain(n.uri.iter().map(|u| format!("uri:{}", u.as_str())))
-                .chain(n.email.iter().map(|e| format!("email:{}", e.as_str())))
+                .chain(
+                    n.uri
+                        .iter()
+                        .flatten()
+                        .map(|u| format!("uri:{}", u.as_str())),
+                )
+                .chain(
+                    n.email
+                        .iter()
+                        .flatten()
+                        .map(|e| format!("email:{}", e.as_str())),
+                )
                 .collect::<Vec<_>>()
                 .join(",")
         })

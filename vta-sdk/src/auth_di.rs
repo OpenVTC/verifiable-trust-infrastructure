@@ -126,7 +126,6 @@ pub async fn sign_authenticate_doc(
             authenticate::PayloadSessionId::try_from(session_id.to_string())
                 .map_err(|e| AuthDiError::Payload(format!("sessionId: {e}")))?,
         )
-        .scope(Vec::new())
         .try_into()
         .map_err(|e| AuthDiError::Payload(format!("authenticate payload: {e}")))?;
     Ok(trust_task_sign::build_signed(
@@ -160,7 +159,6 @@ pub fn build_refresh_doc(
             refresh::PayloadRefreshToken::try_from(refresh_token.to_string())
                 .map_err(|e| AuthDiError::Payload(format!("refreshToken: {e}")))?,
         )
-        .scope(Vec::new())
         .try_into()
         .map_err(|e| AuthDiError::Payload(format!("refresh payload: {e}")))?;
     let doc = trust_task_sign::build_unsigned(

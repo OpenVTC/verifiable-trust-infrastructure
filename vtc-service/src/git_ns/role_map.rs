@@ -374,6 +374,7 @@ pub fn read_report<E>(
     else {
         return Ok(Err("not a roleMapReported event".into()));
     };
+    let repos = repos.unwrap_or_default();
     // Containment first: an event that crosses namespaces applies nothing,
     // and says so as permissionDenied rather than as a malformed map.
     for e in &repos {

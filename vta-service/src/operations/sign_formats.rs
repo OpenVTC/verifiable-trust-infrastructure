@@ -261,9 +261,20 @@ pub fn certification_request_info(
                     let general_names = yasna::construct_der(|w| {
                         w.write_sequence(|w| {
                             for (tag, list) in [
-                                (2, names.dns.iter().map(|n| n.as_str()).collect::<Vec<_>>()),
-                                (6, names.uri.iter().map(|n| n.as_str()).collect()),
-                                (1, names.email.iter().map(|n| n.as_str()).collect()),
+                                (
+                                    2,
+                                    names
+                                        .dns
+                                        .iter()
+                                        .flatten()
+                                        .map(|n| n.as_str())
+                                        .collect::<Vec<_>>(),
+                                ),
+                                (6, names.uri.iter().flatten().map(|n| n.as_str()).collect()),
+                                (
+                                    1,
+                                    names.email.iter().flatten().map(|n| n.as_str()).collect(),
+                                ),
                             ] {
                                 for name in list {
                                     w.next().write_tagged_implicit(Tag::context(tag), |w| {

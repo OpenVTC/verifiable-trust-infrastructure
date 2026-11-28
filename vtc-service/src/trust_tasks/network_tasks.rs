@@ -365,6 +365,7 @@ async fn handle_join(
     let assignments: Vec<(String, String)> = checked
         .groups
         .iter()
+        .flatten()
         .map(|g| (g.role.to_string(), g.group_id.to_string()))
         .collect();
     // Everything that would refuse the join, before the gesture (`networks::join_preflight`).

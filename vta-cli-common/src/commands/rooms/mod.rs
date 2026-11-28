@@ -555,7 +555,7 @@ mod newest_version_tests {
         let r3: vti_specs::rooms::records::get::v0_3::Response =
             parse_reply("rooms/records/get", v3.clone()).unwrap();
         assert_eq!(r3.version.get(), 4);
-        assert!(r3.cleartext.get("file").is_some());
+        assert!(r3.cleartext.as_ref().and_then(|c| c.get("file")).is_some());
         assert!(r3.sealed.is_none());
         let r2: vtc_client::rooms::files::GetRecordV2Response =
             parse_reply("rooms/records/get", v2).unwrap();

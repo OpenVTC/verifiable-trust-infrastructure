@@ -108,7 +108,7 @@ pub(super) async fn handle_member_update(
     let extensions = crate::wire::sent(
         &doc.payload,
         "extensions",
-        Value::Object(checked.extensions.clone()),
+        Value::Object(checked.extensions.clone().unwrap_or_default()),
     );
     match crate::members::ops::update::update_member_inner(
         state,

@@ -127,8 +127,8 @@ async fn cmd_webs_create_0_2(client: &VtaClient, args: &CreateArgs, class: &str)
     println!("  Signing key:    {}", r.signing_key_id);
     println!("  Key agreement:  {}", r.key_agreement_key_id);
     println!("  Version:        {}", *r.version_id);
-    if !r.service_ids.is_empty() {
-        println!("  Services:       {}", r.service_ids.join(", "));
+    if let Some(service_ids) = r.service_ids.as_deref().filter(|s| !s.is_empty()) {
+        println!("  Services:       {}", service_ids.join(", "));
     }
     if let (Some(t), Some(scope)) = (&r.template, &r.template_scope) {
         println!("  Template:       {t} ({scope})");
@@ -189,8 +189,8 @@ async fn cmd_webs_create_0_1(client: &VtaClient, args: CreateArgs) -> CmdResult 
     println!("  Signing key:    {}", r.signing_key_id);
     println!("  Key agreement:  {}", r.key_agreement_key_id);
     println!("  Version:        {}", *r.version_id);
-    if !r.service_ids.is_empty() {
-        println!("  Services:       {}", r.service_ids.join(", "));
+    if let Some(service_ids) = r.service_ids.as_deref().filter(|s| !s.is_empty()) {
+        println!("  Services:       {}", service_ids.join(", "));
     }
     Ok(())
 }

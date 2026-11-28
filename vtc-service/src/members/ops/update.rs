@@ -86,7 +86,7 @@ pub(crate) async fn update_member_inner(
 ) -> Result<MemberEnvelope, TaskError> {
     vti_common::identifier::validate_did("did", did)?;
     let role: Option<VtcRole> = crate::wire::read_opt("role", req.role.as_ref())?;
-    let label: Option<String> = req.label.clone().map(String::from);
+    let label: Option<String> = req.label.clone().flatten().map(String::from);
     let publish_consent = req.publish_consent;
     let departure_preference: Option<Disposition> =
         crate::wire::read_opt("departurePreference", req.departure_preference.as_ref())?;

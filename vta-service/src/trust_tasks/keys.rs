@@ -607,6 +607,9 @@ pub(super) async fn handle_sign_jws(
         }
     };
 
+    // An absent `header` is the empty one (trust-tasks-build 0.3 keeps presence).
+    let empty_header = serde_json::Map::new();
+    let header = header.as_ref().unwrap_or(&empty_header);
     let signed = operations::keys::sign_jws(
         &state.keys_ks,
         &state.imported_ks,

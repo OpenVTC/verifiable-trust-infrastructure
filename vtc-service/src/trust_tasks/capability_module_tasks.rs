@@ -280,7 +280,7 @@ async fn handle_enable(
         &vtc_did,
         &capability,
         &version,
-        &checked.config,
+        &checked.config.clone().unwrap_or_default(),
         checked.delegate.is_some(),
     )
     .await

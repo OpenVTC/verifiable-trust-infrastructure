@@ -1865,6 +1865,7 @@ async fn a_correlation_finding_names_where_the_shared_value_went() {
     let reached = finding
         .shared_with
         .iter()
+        .flatten()
         .find(|s| s.profile_id.as_deref().map(|p| &**p) == Some(profile.as_str()))
         .unwrap_or_else(|| {
             panic!(
@@ -2722,6 +2723,7 @@ async fn two_local_faces_sharing_a_value_are_a_finding_and_profile_id_narrows() 
     let named: std::collections::BTreeSet<String> = whole.findings[0]
         .shared_with
         .iter()
+        .flatten()
         .filter_map(|s| s.profile_id.as_ref().map(|p| p.to_string()))
         .collect();
     assert_eq!(named, faces.iter().cloned().collect());

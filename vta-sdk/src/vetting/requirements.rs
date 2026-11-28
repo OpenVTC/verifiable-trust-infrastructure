@@ -327,6 +327,7 @@ pub fn evaluate(
     let independence_ok = independence
         .max_by_declared_relationship
         .iter()
+        .flatten()
         .all(|(rel, max)| u64::from(by_relationship.get(rel).copied().unwrap_or(0)) <= *max);
 
     let mut needs = Vec::new();
@@ -339,6 +340,7 @@ pub fn evaluate(
     let floors: BTreeMap<VettingMethod, u64> = requirements
         .min_by_method
         .iter()
+        .flatten()
         .map(|(m, n)| (*m, *n))
         .collect();
     for (method, floor) in floors {
@@ -503,13 +505,15 @@ mod tests {
             VettingMethod::Video,
             VettingMethod::PriorAcquaintance,
         ];
-        req.min_by_method = [
-            (VettingMethod::PriorAcquaintance, 1),
-            (VettingMethod::Video, 1),
-            (VettingMethod::InPerson, 1),
-        ]
-        .into_iter()
-        .collect();
+        req.min_by_method = Some(
+            [
+                (VettingMethod::PriorAcquaintance, 1),
+                (VettingMethod::Video, 1),
+                (VettingMethod::InPerson, 1),
+            ]
+            .into_iter()
+            .collect(),
+        );
         for _ in 0..8 {
             let e = evaluate(&req, &[], Utc::now());
             assert_eq!(

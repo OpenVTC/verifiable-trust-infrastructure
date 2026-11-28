@@ -178,7 +178,7 @@ pub async fn cmd_attribute_promote(
         println!(
             "{DIM}{profile_id} is now a face in your pool — same id, still worn by {} persona(s). \
              The promoted values can be shown by your other faces; this cannot be undone.{RESET}",
-            out.rebound_persona_dids.len()
+            out.rebound_persona_dids.as_ref().map_or(0, Vec::len)
         );
     }
     print_result("Promoted:", &result)
@@ -198,7 +198,7 @@ pub async fn cmd_attribute_purge_version(
         .await?;
     let result = serde_json::to_value(&out)?;
     if !is_json_output() {
-        let stale = out.stale_pins.len();
+        let stale = out.stale_pins.as_ref().map_or(0, Vec::len);
         if out.purged.is_empty() {
             println!("{DIM}Nothing to remove — no kept version of {attribute_id} matched.{RESET}");
         } else if stale > 0 {
@@ -274,7 +274,12 @@ pub async fn cmd_profile_compose(
     let out = client.persona_profile_compose(&payload).await?;
     let result = serde_json::to_value(&out)?;
     if !is_json_output() {
-        let reused = out.pooled.iter().filter(|p| !p.was_created).count();
+        let reused = out
+            .pooled
+            .iter()
+            .flatten()
+            .filter(|p| !p.was_created)
+            .count();
         match out.scope.to_string().as_str() {
             "local" => println!(
                 "{DIM}Kept in this context: nothing you typed is reusable elsewhere. `persona \
@@ -381,7 +386,7 @@ pub async fn cmd_profile_retire(
         println!(
             "{DIM}Retired: taken off {} place(s) it was worn, and kept. `persona profile \
              reinstate` makes it wearable again.{RESET}",
-            out.unbound.len()
+            out.unbound.as_ref().map_or(0, Vec::len)
         );
     }
     print_result("Retired:", &result)

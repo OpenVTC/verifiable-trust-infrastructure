@@ -187,13 +187,15 @@ pub fn build_authenticate(
     let payload: authenticate::Payload = authenticate::Payload::builder()
         .challenge(authenticate::PayloadChallenge::try_from(challenge).map_err(conv)?)
         .session_id(authenticate::PayloadSessionId::try_from(session_id).map_err(conv)?)
-        .scope(
-            scope
+        .scope({
+            // An empty scope is left out: keep the session's scope.
+            let scope = scope
                 .into_iter()
                 .map(authenticate::PayloadScopeItem::try_from)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(conv)?,
-        )
+                .map_err(conv)?;
+            (!scope.is_empty()).then_some(scope)
+        })
         .try_into()
         .map_err(conv)?;
     let mut doc = envelope_doc(&env, payload)?;
@@ -214,7 +216,12 @@ pub fn parse_authenticate_response(json: String) -> Result<AuthTokens, FfiError>
         refresh_token: tokens.refresh_token.map(|t| t.to_string()),
         refresh_expires_in: tokens.refresh_expires_in.map(|n| n.get()),
         acr: session.acr,
-        amr: session.amr.iter().map(|a| a.to_string()).collect(),
+        amr: session
+            .amr
+            .iter()
+            .flatten()
+            .map(|a| a.to_string())
+            .collect(),
     })
 }
 
@@ -231,13 +238,15 @@ pub fn build_refresh(
 ) -> Result<String, FfiError> {
     let payload: refresh::Payload = refresh::Payload::builder()
         .refresh_token(refresh::PayloadRefreshToken::try_from(refresh_token).map_err(conv)?)
-        .scope(
-            scope
+        .scope({
+            // An empty scope is left out: keep the session's scope.
+            let scope = scope
                 .into_iter()
                 .map(refresh::PayloadScopeItem::try_from)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(conv)?,
-        )
+                .map_err(conv)?;
+            (!scope.is_empty()).then_some(scope)
+        })
         .try_into()
         .map_err(conv)?;
     serialize(&envelope_doc(&env, payload)?)
@@ -261,7 +270,7 @@ pub fn parse_refresh_response(json: String) -> Result<AuthTokens, FfiError> {
         refresh_expires_in: tokens.refresh_expires_in.map(|n| n.get()),
         acr: session.as_ref().and_then(|s| s.acr.clone()),
         amr: session
-            .map(|s| s.amr.iter().map(|a| a.to_string()).collect())
+            .map(|s| s.amr.iter().flatten().map(|a| a.to_string()).collect())
             .unwrap_or_default(),
     })
 }
@@ -290,9 +299,14 @@ pub fn parse_whoami_response(json: String) -> Result<SessionInfo, FfiError> {
         issued_at: session.issued_at.to_rfc3339(),
         expires_at: session.expires_at.to_rfc3339(),
         acr: session.acr,
-        amr: session.amr.iter().map(|a| a.to_string()).collect(),
-        roles: r.roles.iter().map(|x| x.to_string()).collect(),
-        scopes: r.scopes.iter().map(|x| x.to_string()).collect(),
+        amr: session
+            .amr
+            .iter()
+            .flatten()
+            .map(|a| a.to_string())
+            .collect(),
+        roles: r.roles.iter().flatten().map(|x| x.to_string()).collect(),
+        scopes: r.scopes.iter().flatten().map(|x| x.to_string()).collect(),
     })
 }
 

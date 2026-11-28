@@ -187,14 +187,16 @@ pub(super) async fn handle_hidden_publish(
     let live_periods = payload
         .live_periods
         .iter()
+        .flatten()
         .map(|p| p.to_string())
         .collect::<Vec<_>>();
     let live_token_labels = payload
         .live_token_labels
         .iter()
+        .flatten()
         .map(|l| l.to_string())
         .collect::<Vec<_>>();
-    let events = if payload.events.is_empty() {
+    let events = if payload.events.as_ref().is_none_or(|e| e.is_empty()) {
         None
     } else {
         match serde_json::to_value(&payload.events) {

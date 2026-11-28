@@ -168,13 +168,21 @@ fn json_kind(v: &JsonValue) -> &'static str {
 /// records instead of the bodies.
 fn disclosed(response: &wire::Response) -> Vec<String> {
     let mut out = Vec::new();
-    if !response.membership_credential.is_empty() {
+    if response
+        .membership_credential
+        .as_ref()
+        .is_some_and(|c| !c.is_empty())
+    {
         out.push("membershipCredential".to_string());
     }
-    if !response.role_credential.is_empty() {
+    if response
+        .role_credential
+        .as_ref()
+        .is_some_and(|c| !c.is_empty())
+    {
         out.push("roleCredential".to_string());
     }
-    if !response.member_vmc.is_empty() {
+    if response.member_vmc.as_ref().is_some_and(|c| !c.is_empty()) {
         out.push("memberVmc".to_string());
     }
     out
