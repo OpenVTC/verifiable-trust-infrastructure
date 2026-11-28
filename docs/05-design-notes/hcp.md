@@ -7,7 +7,7 @@ suite was released on 2026-11-27 (see below and [hcp-plan.md](hcp-plan.md) §5).
 packages), [hcp-tasks.md](hcp-tasks.md) (the demo-milestone checklist) and
 [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md) (the demo week).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-28
 
 **Normative sources:**
 - **HCP 2.0-draft-3**, the Human Context Protocol
@@ -39,7 +39,7 @@ packages), [hcp-tasks.md](hcp-tasks.md) (the demo-milestone checklist) and
   (`bindings/tsp/0.3/spec.md`), which requires TSP 1.0 (version code
   `YTSP-BAA`) and refuses a TSP draft. The VTA already speaks TSP 1.0
   (`affinidi-tsp` 0.5); refusing a draft as `tsp/0.3` §2.2 requires comes with
-  the `trust-tasks-tsp` 0.42 adoption ([hcp-plan.md](hcp-plan.md) §5). An
+  the `trust-tasks-*` 0.43 bump ([hcp-plan.md](hcp-plan.md) §5). An
   agent client on `@openvtc/trust-tasks-tsp` older than 0.2.0 speaks only the
   Rev 2 draft and cannot exchange a message with the VTA.
 - **The VTI specification**: *Access control* (VTI-ACL-*), *Approvals*
