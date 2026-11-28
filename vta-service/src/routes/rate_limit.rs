@@ -558,12 +558,6 @@ async fn refusal(state: &LimiterState, ip: Result<IpAddr, Refusal>) -> Option<Re
     Some(too_many_requests(state.limiter.name(), retry_after_secs))
 }
 
-/// Whole seconds, rounded up: a client honouring `retry-after` must never be
-/// told to come back before a token is actually available.
-pub(crate) fn ceil_secs(d: Duration) -> u64 {
-    d.as_secs() + u64::from(d.subsec_nanos() > 0)
-}
-
 /// The VTA's 429: see the module docs for the contract. `scope` is the
 /// limiter's name — a [`Limiter::name`], or an operation budget's
 /// (`trust_tasks::operation_budget::Scope::name`). `retry_after_secs` is
@@ -855,14 +849,6 @@ mod tests {
                 "the 403 is plain text, not a JSON refusal"
             );
         }
-    }
-
-    #[test]
-    fn ceil_secs_rounds_up() {
-        assert_eq!(ceil_secs(Duration::from_secs(4)), 4);
-        assert_eq!(ceil_secs(Duration::from_millis(4001)), 5);
-        assert_eq!(ceil_secs(Duration::from_millis(1)), 1);
-        assert_eq!(ceil_secs(Duration::ZERO), 0);
     }
 
     /// The server's label and the SDK's reading of it are one contract.

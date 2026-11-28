@@ -177,6 +177,8 @@ pub(crate) mod badge_tasks;
 // Community events (`vtc/events/*`, VTI-EVT-*): calendars, events, registrations, hosts and
 // reports, through `crate::community_events`. (`event_tasks` is the console's live channel.)
 pub(crate) mod community_event_tasks;
+// The operation budgets (VTI-TRN-029) the spine charges after the proof.
+pub mod operation_budget;
 pub(crate) mod role_tasks;
 // `vtc/members/role/set/0.1` — the community-role move.
 pub mod member_role_tasks;
@@ -483,11 +485,13 @@ async fn receive(
         helpers::is_approval_type,
     );
     let vtc = VtcSpine { state };
+    let budget = operation_budget::VtcBudget { state };
     let accepted = state.accepted_ids();
     vti_trust_task_server::Spine::new(&policy, &verifier, &vtc, &accepted, &vtc)
         .with_size_gate(&size)
         .with_freshness(freshness_policy())
         .with_admission(admit.map(|a| a as &dyn vti_trust_task_server::VerifiedAdmission))
+        .with_budget(Some(&budget))
         .with_signer(response_signer(state))
         .receive(ctx, body)
         .await

@@ -27,6 +27,7 @@
 
 pub mod accepted;
 pub mod accepted_store;
+pub mod budget;
 pub mod context;
 pub mod http;
 pub mod outcome;

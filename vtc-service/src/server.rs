@@ -161,6 +161,9 @@ pub struct AppState {
     pub badges_ks: KeyspaceHandle,
     /// Community events (`crate::community_events`, VTI-EVT-*).
     pub events_ks: KeyspaceHandle,
+    /// The operation budgets on Trust Task work (VTI-TRN-029,
+    /// `trust_tasks::operation_budget`), built from `[server]` when the state is.
+    pub operation_budget: std::sync::Arc<vti_trust_task_server::budget::OperationBudget>,
     /// Badge pictures, re-encoded (`crate::badges`, over `crate::directory::images`).
     pub badge_images_ks: KeyspaceHandle,
     /// OpenID4VP verifier identities and their keys (`crate::oid4vp`).
@@ -1149,6 +1152,10 @@ pub async fn run(
         boards_ks,
         badges_ks,
         events_ks,
+        operation_budget: crate::trust_tasks::operation_budget::from_config(
+            &config.server,
+            vti_trust_task_server::budget::BudgetClock::default(),
+        ),
         badge_images_ks,
         oid4vp_keys_ks,
         oid4vp_signers,

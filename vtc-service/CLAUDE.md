@@ -1244,9 +1244,9 @@ When adding a flow, add it here and a line to the root index.
   the event is stored — a failure stores nothing; revoked on cancel/delete, renewed at half life
   by the sweeper; only at create. **Guests** (`guests/*`): admitted by `ev.guests` alone, never
   the audience; a guest link (`Link.for_guests`) admits no member and a member's link no guest;
-  a guest's registration is keyed by their DID with `guest: true`; every guest operation goes
-  through `door::charge_guest` (in-memory, 30/hour/DID — the VTC has no VTI-TRN-029 budget;
-  recorded deviation). `guests/withdraw` answers `notRegistered` for any event without the
+  a guest's registration is keyed by their DID with `guest: true`; a guest holds no ACL entry,
+  so the spine charges every guest operation to the VTI-TRN-029 budget for signers without
+  standing (`trust_tasks::operation_budget`, VTI-EVT-154). `guests/withdraw` answers `notRegistered` for any event without the
   signer's guest registration, seen or not. **The door** (`community_events::door`): challenges
   are 128 bits, stored only as a digest, accepted 300 s and **not consumed** (one code admits
   every arrival); door staff are hosts or `vtc.events.checkin` at `event:<id>`

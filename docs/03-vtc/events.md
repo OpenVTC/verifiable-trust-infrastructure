@@ -189,7 +189,10 @@ guest. A guest registers and withdraws with `vtc/events/guests/register` and
 `guests/withdraw`, signing with their own DID; a member is refused (`alreadyMember`). A guest is
 held to the event's registration rules as a member is (capacity, window, plus-ones, questions,
 code of conduct, approval), is named by their DID, is never on the roster, and sees only the
-event they registered for. Each guest's operations are bounded: 30 an hour per DID.
+event they registered for. A guest holds no access-control entry, so every guest operation is
+charged to the community's operation budget for signers without standing (VTI-EVT-154,
+VTI-TRN-029; `[server] operation_rate_limit_unauthenticated_per_sec`, see
+[Rate limiting](../02-vta/rate-limiting.md#on-a-community-vtc)).
 
 ## The door
 

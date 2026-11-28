@@ -17,9 +17,6 @@
 //! which is what attendance is counted from, and all that survives the check-in records'
 //! deletion (VTI-EVT-185).
 
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-
 use chrono::{DateTime, Datelike, Duration, Utc};
 use sha2::{Digest, Sha256};
 use vti_common::error::AppError;
@@ -319,29 +316,6 @@ pub async fn offer_attendance_badge(
     Ok(Some(award.award_id))
 }
 
-// ─── guests' bound (VTI-EVT-154) ─────────────────────────────────────────
-
-/// Operations one guest may send per hour. A guest has no standing in the community, so every
-/// operation they send is bounded per guest identifier (VTI-EVT-154).
-pub const GUEST_OPERATIONS_PER_HOUR: u32 = 30;
-
-static GUEST_WINDOWS: LazyLock<Mutex<HashMap<String, (i64, u32)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Charge one operation to `guest_did`. `Err(retry_at)` when the hour's bound is spent.
-pub fn charge_guest(guest_did: &str, now: DateTime<Utc>) -> Result<(), DateTime<Utc>> {
-    let hour = now.timestamp() / 3600;
-    let mut windows = GUEST_WINDOWS.lock().unwrap_or_else(|p| p.into_inner());
-    // Bounded memory: forget past hours as they go.
-    windows.retain(|_, (h, _)| *h == hour);
-    let slot = windows.entry(guest_did.to_string()).or_insert((hour, 0));
-    if slot.1 >= GUEST_OPERATIONS_PER_HOUR {
-        return Err(DateTime::from_timestamp((hour + 1) * 3600, 0).unwrap_or(now));
-    }
-    slot.1 += 1;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,15 +343,5 @@ mod tests {
         assert_eq!(attended(&tallies, Some("cal_a"), None, now), 5);
         assert_eq!(attended(&tallies, None, Some(60), now), 4);
         assert_eq!(attended(&tallies, Some("cal_b"), Some(10), now), 1);
-    }
-
-    #[test]
-    fn vti_evt_154_a_guest_is_bounded_per_hour() {
-        let now = Utc::now();
-        let did = format!("did:key:z6Mk{}", uuid::Uuid::new_v4().simple());
-        for _ in 0..GUEST_OPERATIONS_PER_HOUR {
-            assert!(charge_guest(&did, now).is_ok());
-        }
-        assert!(charge_guest(&did, now).is_err());
     }
 }

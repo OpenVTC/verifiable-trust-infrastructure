@@ -1665,6 +1665,32 @@ pub struct ServerConfig {
         deserialize_with = "vti_common::rate_limit::deserialize_trusted_proxy_cidrs"
     )]
     pub trust_xff_cidrs: Vec<IpNetwork>,
+    /// One token bucket for the whole community node, shared by HTTPS, DIDComm
+    /// and TSP, so the sum of every client's work is bounded; each client's share
+    /// is `operation_rate_limit_per_subject_per_sec` (VTI-TRN-029). Absent means
+    /// unbounded: the right value is a property of the hardware. Charged after the
+    /// signer is proven and before the task runs, on every transport, behind the
+    /// per-address HTTPS limits. Set in the file only — never a `config/patch`
+    /// key. Must be at least 1.
+    #[serde(default)]
+    pub operation_rate_limit_per_sec: Option<u32>,
+    /// Burst for `operation_rate_limit_per_sec`: absent means one second's worth.
+    /// Ignored without a rate.
+    #[serde(default)]
+    pub operation_rate_limit_burst: Option<u32>,
+    /// Per-client share of the operation budget, in operations per second: what one
+    /// signer with an access-control entry may use, keyed by its DID (VTI-TRN-029).
+    /// Absent means [`DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC`]; there is no
+    /// unbounded setting. Must be at least 1.
+    #[serde(default)]
+    pub operation_rate_limit_per_subject_per_sec: Option<u32>,
+    /// Budget for proven signers without standing here — guests, counterparties, a
+    /// party presenting a credential — in operations per second, all together and
+    /// apart from the clients' budget (VTI-TRN-029, VTI-EVT-154). Absent means
+    /// [`DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC`]; there is no
+    /// unbounded setting. Must be at least 1.
+    #[serde(default)]
+    pub operation_rate_limit_unauthenticated_per_sec: Option<u32>,
     /// Retired: `trust_xff`. Present only to **refuse** a config that still
     /// declares it — replaced by `trust_xff_cidrs`, an explicit trusted-proxy
     /// CIDR allowlist. Absent (the only accepted state) deserializes to `()`
@@ -2122,8 +2148,66 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             trust_xff_cidrs: Vec::new(),
+            operation_rate_limit_per_sec: None,
+            operation_rate_limit_burst: None,
+            operation_rate_limit_per_subject_per_sec: None,
+            operation_rate_limit_unauthenticated_per_sec: None,
             trust_xff: (),
         }
+    }
+}
+
+/// Each client's operation budget when `[server] operation_rate_limit_per_subject_per_sec`
+/// is absent — the VTA's default (VTI-TRN-029).
+pub const DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC: u32 = 100;
+
+/// The budget for signers without standing when
+/// `[server] operation_rate_limit_unauthenticated_per_sec` is absent — the VTA's default.
+pub const DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC: u32 = 50;
+
+impl ServerConfig {
+    /// Each client's operation budget: the configured value, or the default.
+    #[must_use]
+    pub fn operation_per_subject_per_sec(&self) -> u32 {
+        self.operation_rate_limit_per_subject_per_sec
+            .unwrap_or(DEFAULT_OPERATION_RATE_LIMIT_PER_SUBJECT_PER_SEC)
+    }
+
+    /// The budget for signers without standing: the configured value, or the default.
+    #[must_use]
+    pub fn operation_unauthenticated_per_sec(&self) -> u32 {
+        self.operation_rate_limit_unauthenticated_per_sec
+            .unwrap_or(DEFAULT_OPERATION_RATE_LIMIT_UNAUTHENTICATED_PER_SEC)
+    }
+
+    /// A zero budget is refused rather than read as no bound (VTI-TRN-029).
+    fn validate_operation_budgets(&self) -> Result<(), AppError> {
+        for (key, value) in [
+            (
+                "operation_rate_limit_per_sec",
+                self.operation_rate_limit_per_sec,
+            ),
+            (
+                "operation_rate_limit_burst",
+                self.operation_rate_limit_burst,
+            ),
+            (
+                "operation_rate_limit_per_subject_per_sec",
+                self.operation_rate_limit_per_subject_per_sec,
+            ),
+            (
+                "operation_rate_limit_unauthenticated_per_sec",
+                self.operation_rate_limit_unauthenticated_per_sec,
+            ),
+        ] {
+            if value == Some(0) {
+                return Err(AppError::Config(format!(
+                    "[server] {key} = 0 — remove the key for the default, or set 1 or more \
+                     (operations per second)"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2347,6 +2431,7 @@ impl AppConfig {
         validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
         self.website.validate()?;
         validate_cors(&self.cors)?;
+        self.server.validate_operation_budgets()?;
         self.admin_ui.validate()?;
         self.witnesses.validate(self.vtc_did.as_deref())?;
         if let Some(files) = &self.rooms.files {

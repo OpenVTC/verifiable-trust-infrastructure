@@ -159,6 +159,12 @@ pub struct TestVtcBuilder {
     x509_trust_anchors: vta_sdk::x509_issuer::X509TrustAnchors,
     /// `[rooms.files] max_file_bytes`: the host-wide ceiling on one file.
     room_file_ceiling: Option<u64>,
+    /// `[server] operation_rate_limit_*` (per subject, without standing) and the
+    /// budgets' clock: [`TestVtcBuilder::with_operation_budget`].
+    operation_budget: Option<(u32, u32, vti_trust_task_server::budget::BudgetClock)>,
+    /// `[server] operation_rate_limit_per_sec` and `_burst`:
+    /// [`TestVtcBuilder::with_node_operation_budget`].
+    node_operation_budget: Option<(u32, u32)>,
     /// Build with no `[rooms.files]` section, as a configuration written before room
     /// files existed.
     without_room_files: bool,
@@ -201,6 +207,8 @@ impl Default for TestVtcBuilder {
             vta_link: None,
             x509_trust_anchors: Default::default(),
             room_file_ceiling: None,
+            operation_budget: None,
+            node_operation_budget: None,
             without_room_files: false,
             room_rate_limits: None,
             community_rooms: None,
@@ -272,6 +280,27 @@ impl TestVtcBuilder {
     /// Set `[rooms.rate_limits]`.
     pub fn with_room_rate_limits(mut self, limits: crate::config::RoomRateLimitsConfig) -> Self {
         self.room_rate_limits = Some(limits);
+        self
+    }
+
+    /// `[server] operation_rate_limit_per_subject_per_sec` and
+    /// `operation_rate_limit_unauthenticated_per_sec`, on `clock` (pass
+    /// [`vti_trust_task_server::budget::BudgetClock::manual`] so no token refills while a
+    /// test runs). Without it the defaults apply on the monotonic clock.
+    pub fn with_operation_budget(
+        mut self,
+        per_subject_per_sec: u32,
+        unauthenticated_per_sec: u32,
+        clock: vti_trust_task_server::budget::BudgetClock,
+    ) -> Self {
+        self.operation_budget = Some((per_subject_per_sec, unauthenticated_per_sec, clock));
+        self
+    }
+
+    /// `[server] operation_rate_limit_per_sec` and `operation_rate_limit_burst`: the node
+    /// budget every client with standing shares (unbounded without it).
+    pub fn with_node_operation_budget(mut self, per_sec: u32, burst: u32) -> Self {
+        self.node_operation_budget = Some((per_sec, burst));
         self
     }
 
@@ -615,6 +644,18 @@ impl TestVtcBuilder {
             config.rooms.rate_limits = limits.clone();
         }
         config.voting = self.voting.clone();
+        if let Some((per_sec, burst)) = self.node_operation_budget {
+            config.server.operation_rate_limit_per_sec = Some(per_sec);
+            config.server.operation_rate_limit_burst = Some(burst);
+        }
+        let budget_clock = match &self.operation_budget {
+            Some((subject, unauthenticated, clock)) => {
+                config.server.operation_rate_limit_per_subject_per_sec = Some(*subject);
+                config.server.operation_rate_limit_unauthenticated_per_sec = Some(*unauthenticated);
+                clock.clone()
+            }
+            None => vti_trust_task_server::budget::BudgetClock::default(),
+        };
         if let Some(groups) = &self.groups {
             config.groups = Some(groups.clone());
         }
@@ -851,6 +892,10 @@ impl TestVtcBuilder {
             boards_ks,
             badges_ks,
             events_ks,
+            operation_budget: crate::trust_tasks::operation_budget::from_config(
+                &config.server,
+                budget_clock,
+            ),
             badge_images_ks,
             oid4vp_signers: {
                 for record in &self.oid4vp_identities {

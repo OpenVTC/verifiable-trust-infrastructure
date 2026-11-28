@@ -428,8 +428,6 @@ tower = { workspace = true, features = ["limit"] }
 # `/auth/*`) so a flood of requests can't burn CPU on attestation / crypto
 # (`routes::rate_limit`).
 affinidi-rate-limit = { workspace = true }
-# The operation budgets' weighted, keyed limiter (`trust_tasks::operation_budget`).
-governor = "0.10"
 ipnetwork = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

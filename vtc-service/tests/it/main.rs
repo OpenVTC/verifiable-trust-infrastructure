@@ -96,6 +96,7 @@ mod notifications_admin;
 mod openapi_response_census;
 mod openapi_schema_names;
 mod openapi_snapshot;
+mod operation_budget;
 mod passkey_state;
 mod passkey_step_up;
 mod personhood;
