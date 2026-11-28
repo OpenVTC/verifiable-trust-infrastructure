@@ -15,7 +15,7 @@ use vtc_service::acl::{
 use vtc_service::test_support::TestVtc;
 use vti_rooms_dtg::test_support::Party;
 
-use crate::common::signed::{admin, call, party_with_role, payload};
+use crate::common::signed::{admin, call, party_with_role, payload, post};
 
 use vti_specs::vtc::events as e;
 
@@ -50,14 +50,14 @@ const UPDATE_ERR_AUDIENCE_INVALID: &str = e::update::v0_2::error_codes::AUDIENCE
 const UPDATE_ERR_REGISTRATION_INVALID: &str =
     e::update::v0_2::error_codes::REGISTRATION_INVALID.code;
 const UPDATE_ERR_POLICY_REFUSED: &str = e::update::v0_2::error_codes::POLICY_REFUSED.code;
-const PUBLISH_ERR_EVENTS_OFF: &str = e::publish::v0_1::error_codes::EVENTS_OFF.code;
-const PUBLISH_ERR_NOT_DRAFT: &str = e::publish::v0_1::error_codes::NOT_DRAFT.code;
-const PUBLISH_ERR_CALENDAR_ARCHIVED: &str = e::publish::v0_1::error_codes::CALENDAR_ARCHIVED.code;
-const PUBLISH_ERR_EVENT_ENDED: &str = e::publish::v0_1::error_codes::EVENT_ENDED.code;
-const PUBLISH_ERR_POLICY_REFUSED: &str = e::publish::v0_1::error_codes::POLICY_REFUSED.code;
-const CANCEL_ERR_EVENTS_OFF: &str = e::cancel::v0_1::error_codes::EVENTS_OFF.code;
-const CANCEL_ERR_NOT_PUBLISHED: &str = e::cancel::v0_1::error_codes::NOT_PUBLISHED.code;
-const CANCEL_ERR_EVENT_ENDED: &str = e::cancel::v0_1::error_codes::EVENT_ENDED.code;
+const PUBLISH_ERR_EVENTS_OFF: &str = e::publish::v0_2::error_codes::EVENTS_OFF.code;
+const PUBLISH_ERR_NOT_DRAFT: &str = e::publish::v0_2::error_codes::NOT_DRAFT.code;
+const PUBLISH_ERR_CALENDAR_ARCHIVED: &str = e::publish::v0_2::error_codes::CALENDAR_ARCHIVED.code;
+const PUBLISH_ERR_EVENT_ENDED: &str = e::publish::v0_2::error_codes::EVENT_ENDED.code;
+const PUBLISH_ERR_POLICY_REFUSED: &str = e::publish::v0_2::error_codes::POLICY_REFUSED.code;
+const CANCEL_ERR_EVENTS_OFF: &str = e::cancel::v0_2::error_codes::EVENTS_OFF.code;
+const CANCEL_ERR_NOT_PUBLISHED: &str = e::cancel::v0_2::error_codes::NOT_PUBLISHED.code;
+const CANCEL_ERR_EVENT_ENDED: &str = e::cancel::v0_2::error_codes::EVENT_ENDED.code;
 const DELETE_ERR_EVENTS_OFF: &str = e::delete::v0_1::error_codes::EVENTS_OFF.code;
 const DELETE_ERR_NOT_DRAFT: &str = e::delete::v0_1::error_codes::NOT_DRAFT.code;
 const LIST_ERR_RANGE_INVALID: &str = e::list::v0_2::error_codes::RANGE_INVALID.code;
@@ -121,6 +121,8 @@ fn uri(task: &str) -> String {
         "registrations/list",
         "registrations/decide",
         "registrations/remove",
+        "publish",
+        "cancel",
     ];
     let v = if AT_0_2.contains(&task) { "0.2" } else { "0.1" };
     format!("{SPEC}vtc/events/{task}/{v}")
@@ -2428,4 +2430,273 @@ async fn vti_evt_130_partners_are_checked() {
     )
     .await;
     assert_not_found(&doc);
+}
+
+// ─── invitation revocation and partner withdrawal (Appendix F.5b) ────────
+
+const REVOKE_ERR_INVITATION_NOT_FOUND: &str =
+    e::invitations::revoke::v0_1::error_codes::INVITATION_NOT_FOUND.code;
+const REVOKE_ERR_ALREADY_REVOKED: &str =
+    e::invitations::revoke::v0_1::error_codes::ALREADY_REVOKED.code;
+
+/// VTI-EVT-103: a host revokes an invitation — it stops widening the audience, its
+/// notification is withdrawn by the sweeper, a registration the invitee made stands, and the
+/// invitation mode never invites them again while the revoked record is kept.
+#[tokio::test]
+async fn vti_evt_103_a_host_revokes_an_invitation() {
+    use vtc_service::community_events::invitations as inv;
+    let tv = community().await;
+    let chair = runner(&tv, None).await;
+    let alice = member(&tv).await;
+    let bob = member(&tv).await;
+    // Bob is outside the group the event is for; only the host's invitation admits him.
+    group_with(&tv, &[&alice]).await;
+    let id = published(
+        &tv,
+        &chair,
+        json!({ "title": "Committee", "when": when_in(7), "invite": "notify",
+                "audience": { "scope": "groups", "groups": [GROUP] } }),
+    )
+    .await;
+    invite_by_name(&tv, &chair, &id, &bob).await;
+    inv::settle(&tv.state, Utc::now()).await.unwrap();
+    let bob_entry = entry_of(&tv, &bob).await;
+    let invited = invitation(&tv, &id, &bob_entry)
+        .await
+        .expect("bob is invited");
+    assert_eq!(invited.notice.revision, 1);
+    let (status, doc) = register(&tv, &bob, &id, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+
+    // Only a host revokes.
+    let (status, _) = call(
+        &tv,
+        &alice,
+        &uri("invitations/revoke"),
+        json!({ "eventId": id, "invitationId": invited.invitation_id }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+
+    let (status, doc) = call(
+        &tv,
+        &chair,
+        &uri("invitations/revoke"),
+        json!({ "eventId": id, "invitationId": invited.invitation_id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["invitation"]["revoked"], true);
+    assert!(
+        audit_changes(&tv)
+            .await
+            .contains(&"invitationRevoked".to_string())
+    );
+
+    // VTI-NTF-065: the sweeper withdraws the notification, and never invites him again.
+    inv::settle(&tv.state, Utc::now()).await.unwrap();
+    inv::settle(&tv.state, Utc::now()).await.unwrap();
+    let revoked = invitation(&tv, &id, &bob_entry).await.unwrap();
+    assert!(revoked.revoked);
+    assert!(revoked.notice.withdrawn);
+    assert_eq!(revoked.invitation_id, invited.invitation_id);
+    assert_eq!(
+        inv::invitations_of(&tv.state.events_ks, &id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|i| i.entry_id == bob_entry)
+            .count(),
+        1
+    );
+    // His registration stands.
+    assert_eq!(status_of(&tv, &bob, &id).await, "going");
+
+    // Refusals.
+    let (_, doc) = call(
+        &tv,
+        &chair,
+        &uri("invitations/revoke"),
+        json!({ "eventId": id, "invitationId": invited.invitation_id }),
+    )
+    .await;
+    assert_eq!(tt_error_code(&doc), REVOKE_ERR_ALREADY_REVOKED, "{doc}");
+    let (_, doc) = call(
+        &tv,
+        &chair,
+        &uri("invitations/revoke"),
+        json!({ "eventId": id, "invitationId": "inv_NoSuchInvitation0000" }),
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        REVOKE_ERR_INVITATION_NOT_FOUND,
+        "{doc}"
+    );
+}
+
+/// A membership credential `issuer` issues `subject`, valid for a day.
+async fn membership_credential(issuer: &Party, subject: &str) -> Value {
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+    let now = Utc::now();
+    let mut vc = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": ["VerifiableCredential", "MembershipCredential"],
+        "issuer": issuer.did,
+        "validFrom": stamp(now - Duration::hours(1)),
+        "validUntil": stamp(now + Duration::days(1)),
+        "credentialSubject": { "id": subject },
+    });
+    let proof = DataIntegrityProof::sign(
+        &vc,
+        &issuer.secret,
+        SignOptions::new().with_proof_purpose("assertionMethod"),
+    )
+    .await
+    .expect("sign the credential");
+    vc["proof"] = serde_json::to_value(proof).unwrap();
+    vc
+}
+
+/// A document `from` signs to `recipient`, its payload carrying `from`'s presentation of `vc`
+/// bound to the document's own `id` and the recipient (VTI-EVT-133).
+async fn with_presentation(
+    from: &Party,
+    recipient: &str,
+    type_uri: &str,
+    mut body: Value,
+    vc: &Value,
+) -> Value {
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+    let mut doc =
+        vta_sdk::trust_task_sign::build_unsigned(type_uri, json!({}), &from.did, recipient)
+            .expect("build the document");
+    let mut vp = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiablePresentation"],
+        "holder": from.did,
+        "nonce": doc.id,
+        "domain": recipient,
+        "verifiableCredential": [vc],
+    });
+    let proof = DataIntegrityProof::sign(
+        &vp,
+        &from.secret,
+        SignOptions::new().with_proof_purpose("authentication"),
+    )
+    .await
+    .expect("sign the presentation");
+    vp["proof"] = serde_json::to_value(proof).unwrap();
+    body["presentation"] = vp;
+    doc.payload = body;
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .expect("sign the document");
+    serde_json::to_value(doc).unwrap()
+}
+
+/// VTI-EVT-037, VTI-EVT-135: a partner's member registers and withdraws on a presentation of
+/// their partner membership credential; without one, the event is not theirs to touch.
+#[tokio::test]
+async fn vti_evt_135_a_partner_member_withdraws_by_presentation() {
+    let tv = community().await;
+    let chair = runner(&tv, None).await;
+    let community = tv.state.config.read().await.vtc_did.clone().unwrap();
+    // A member community holding our membership credential is a partner (as VTI-EVT-130).
+    let partner = member(&tv).await;
+    let mut m = vtc_service::members::get_member(&tv.state.members_ks, &partner.did)
+        .await
+        .unwrap()
+        .unwrap();
+    m.current_vmc_id = Some("urn:uuid:5a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d".into());
+    vtc_service::members::store_member(&tv.state.members_ks, &m)
+        .await
+        .unwrap();
+    let id = published(
+        &tv,
+        &chair,
+        json!({ "title": "Joint build night", "when": when_in(7),
+                "audience": { "scope": "members", "partners": [partner.did] } }),
+    )
+    .await;
+    let outsider = Party::new();
+    let vc = membership_credential(&partner, &outsider.did).await;
+
+    let doc = with_presentation(
+        &outsider,
+        &community,
+        &uri("registrations/register"),
+        json!({ "eventId": id, "status": "going" }),
+        &vc,
+    )
+    .await;
+    let (status, reg) = post(&tv, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reg}");
+    assert_eq!(payload(&reg)["registration"]["status"], "going");
+    assert_eq!(
+        payload(&reg)["registration"]["registrantDid"],
+        json!(outsider.did)
+    );
+
+    // Without the presentation the outsider has no standing here at all: refused before any
+    // event is looked up, as every member task refuses a stranger.
+    let (status, doc) = call(
+        &tv,
+        &outsider,
+        &uri("registrations/withdraw"),
+        json!({ "eventId": id }),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert_eq!(tt_error_code(&doc), "permissionDenied", "{doc}");
+
+    // With it, they withdraw (VTI-EVT-037), and a repeat changes nothing.
+    let doc = with_presentation(
+        &outsider,
+        &community,
+        &uri("registrations/withdraw"),
+        json!({ "eventId": id }),
+        &vc,
+    )
+    .await;
+    let (status, out) = post(&tv, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(payload(&out)["changed"], true);
+    assert_eq!(payload(&out)["registration"]["status"], "withdrawn");
+    let doc = with_presentation(
+        &outsider,
+        &community,
+        &uri("registrations/withdraw"),
+        json!({ "eventId": id }),
+        &vc,
+    )
+    .await;
+    let (status, again) = post(&tv, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(payload(&again)["changed"], false);
+}
+
+/// Appendix F.5b, entry 1: `publish/0.2` and `cancel/0.2` answer the 0.2 Event, with its
+/// invitation mode and members-may-invite.
+#[tokio::test]
+async fn vti_evt_100_publish_and_cancel_answer_the_whole_event() {
+    let tv = community().await;
+    let chair = runner(&tv, None).await;
+    let id = create(
+        &tv,
+        &chair,
+        json!({ "title": "Open evening", "when": when_in(7), "invite": "notify", "membersMayInvite": true }),
+    )
+    .await;
+    let (status, doc) = call(&tv, &chair, &uri("publish"), json!({ "eventId": id })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["event"]["invite"], "notify");
+    assert_eq!(payload(&doc)["event"]["membersMayInvite"], true);
+    let (status, doc) = call(&tv, &chair, &uri("cancel"), json!({ "eventId": id })).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    assert_eq!(payload(&doc)["event"]["status"], "cancelled");
+    assert_eq!(payload(&doc)["event"]["invite"], "notify");
 }

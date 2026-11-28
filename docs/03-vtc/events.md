@@ -83,7 +83,8 @@ badges, or roles with an optional rule, registration settings, questions, code o
 accessibility, the roster setting — offered on a draft with a warning that publishing locks it,
 and shown fixed after — the count, listing and suggested reminders); *Publish*, *Cancel* with a
 reason, *Delete draft*; *Registrations* (approve or decline pending, remove, waitlist positions,
-guests and answers); *Invitations* (who is invited and how they answered, invite a member,
+guests and answers); *Invitations* (who is invited and how they answered, revoke an
+invitation, invite a member,
 make and revoke links — the link is shown once, when made — and post announcements); *Hosts*
 (appoint, remove). The editor also sets the invite mode, whether members may invite, and partner
 communities. Signed with the console key only.
@@ -113,7 +114,10 @@ answer replaces an earlier one (`vtc/events/invitations/respond`, VTI-EVT-104).
 - **Hosts and members** (`vtc/events/invitations/send`, VTI-EVT-103): a host invites any
   active member, even one outside the audience — the invitation lets them see the event and
   register. With `membersMayInvite`, a registered member may invite members of the audience.
-  Within `[events] invitations_per_day` per inviter.
+  Within `[events] invitations_per_day` per inviter. A host **revokes** an invitation
+  (`vtc/events/invitations/revoke`): it stops admitting its invitee, its notification is
+  withdrawn, a registration they made stands, and the audience is never re-invited from it
+  (`invitationNotFound`, `alreadyRevoked`).
 - **Links** (`vtc/events/invitations/links/*`, VTI-EVT-107): a host makes a link with a use
   limit and an expiry. Its code (256 random bits) is answered once by `create` and never again —
   the community keeps only its SHA-256 digest, and the response is not kept for a redelivery.
@@ -158,7 +162,9 @@ partner; it is verified **before** the event is looked up (the check `vtc/electi
 an unobtainable DID document or status list is the standard `indeterminate`, the same whatever
 the event. A partner's member registers under their DID, is never on the roster (the roster
 says only how many others are going), and receives no access detail they are not otherwise
-entitled to.
+entitled to. They **withdraw** the same way, carrying the presentation in
+`registrations/withdraw` (VTI-EVT-037, 135); without one a party who is not a member has no
+standing at all.
 
 ## Configuration
 

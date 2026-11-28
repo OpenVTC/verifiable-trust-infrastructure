@@ -24054,7 +24054,7 @@
           "hidden"
         ]
       },
-      "VtcEventsCancelV0_1AccessDetails": {
+      "VtcEventsCancelV0_2AccessDetails": {
         "type": "object",
         "description": "Where the event happens and how to join it (VTI-EVT-060 – 063). Answered by vtc/events/access/show to a registrant who is going, from `revealAt` if set; included in the event itself only where `public` is true.",
         "properties": {
@@ -24067,7 +24067,7 @@
           "places": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1Place"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2Place"
             },
             "maxItems": 8
           },
@@ -24076,19 +24076,19 @@
             "description": "Show the access details with the event to its whole audience. Absent means false."
           },
           "revealAt": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInstant"
           },
           "virtualPlaces": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1VirtualPlace"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2VirtualPlace"
             },
             "maxItems": 8
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1Accessibility": {
+      "VtcEventsCancelV0_2Accessibility": {
         "type": "object",
         "description": "What the event offers for access, as the host states it (VTI-EVT-036). Each flag absent means not stated, not that it is missing.",
         "properties": {
@@ -24116,12 +24116,12 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1CalendarId": {
+      "VtcEventsCancelV0_2CalendarId": {
         "type": "string",
         "description": "Opaque identifier of a calendar: `cal_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-010).",
         "pattern": "^cal_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsCancelV0_1CodeOfConduct": {
+      "VtcEventsCancelV0_2CodeOfConduct": {
         "type": "object",
         "description": "A code of conduct a registrant acknowledges before the registration is accepted (VTI-EVT-035). `sha256` pins the text acknowledged.",
         "required": [
@@ -24142,7 +24142,7 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1Count": {
+      "VtcEventsCancelV0_2Count": {
         "type": "object",
         "description": "A number of registrants as shown to someone who is not a host: `exact` at or above the event's count threshold, `fewerThan` (the threshold) below it, so a small count does not single anyone out (VTI-EVT-054). Exactly one of the two.",
         "properties": {
@@ -24159,7 +24159,7 @@
         "additionalProperties": false,
         "minProperties": 1
       },
-      "VtcEventsCancelV0_1DynamicRule": {
+      "VtcEventsCancelV0_2DynamicRule": {
         "type": "object",
         "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
         "required": [
@@ -24169,7 +24169,7 @@
           "all": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1RuleCondition"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2RuleCondition"
             },
             "maxItems": 16,
             "minItems": 1
@@ -24177,12 +24177,12 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1EntryId": {
+      "VtcEventsCancelV0_2EntryId": {
         "type": "string",
         "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
         "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsCancelV0_1Event": {
+      "VtcEventsCancelV0_2Event": {
         "type": "object",
         "description": "An event as the caller may see it. Members a caller may not see are left out: `registration` settings' `questions` are shown to everyone who may register, `access` only where it is public, `goingCount` as the roster setting allows (VTI-EVT-054).",
         "required": [
@@ -24202,16 +24202,16 @@
         ],
         "properties": {
           "access": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1AccessDetails"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2AccessDetails"
           },
           "accessibility": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1Accessibility"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2Accessibility"
           },
           "audience": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventAudience"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventAudience"
           },
           "calendarId": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1CalendarId"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2CalendarId"
           },
           "cancelReason": {
             "type": "string",
@@ -24220,7 +24220,7 @@
             "minLength": 1
           },
           "cancelledAt": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInstant"
           },
           "countThreshold": {
             "type": "integer",
@@ -24229,48 +24229,55 @@
             "minimum": 2
           },
           "createdAt": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInstant"
           },
           "description": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventDescription"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventDescription"
           },
           "eventId": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventId"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventId"
           },
           "full": {
             "type": "boolean",
             "description": "True when `capacity` is reached. Shown to everyone who may register, whatever `showCount` says, since a registrant learns it anyway."
           },
           "goingCount": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1Count"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2Count"
           },
           "hosts": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1EntryId"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2EntryId"
             },
             "description": "The event's appointed hosts. Its creator is the first.",
             "maxItems": 32,
             "uniqueItems": true
           },
+          "invite": {
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInviteMode"
+          },
           "kind": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventKind"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventKind"
           },
           "listed": {
             "type": "boolean",
             "description": "Listed to its whole audience. An unlisted event is answered by vtc/events/show to a member of its audience who names it, and left out of vtc/events/list (VTI-EVT-022)."
           },
+          "membersMayInvite": {
+            "type": "boolean",
+            "description": "Members of the audience may invite other members of it, within the community's daily limit (VTI-EVT-105). Absent means false."
+          },
           "placeSummary": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1PlaceSummary"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2PlaceSummary"
           },
           "publishedAt": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInstant"
           },
           "registration": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1RegistrationSettings"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2RegistrationSettings"
           },
           "roster": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1RosterSetting"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2RosterSetting"
           },
           "sequence": {
             "type": "integer",
@@ -24282,32 +24289,32 @@
             "description": "Show the number going to the audience, subject to `countThreshold`. Absent means false."
           },
           "status": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventLifecycle"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventLifecycle"
           },
           "suggestedReminderMinutes": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1ReminderMinutes"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2ReminderMinutes"
             },
             "description": "Reminders the hosts suggest, as minutes before the start. A member's agent applies them unless the member chose otherwise; the community sends no reminder itself (VTI-EVT-040).",
             "maxItems": 4,
             "uniqueItems": true
           },
           "title": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventTitle"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventTitle"
           },
           "updatedAt": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInstant"
           },
           "when": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1When"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2When"
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1EventAudience": {
+      "VtcEventsCancelV0_2EventAudience": {
         "type": "object",
-        "description": "Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted.",
+        "description": "Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted. Partners (VTI-EVT-130) widen it to the members of the named communities who prove it.",
         "required": [
           "scope"
         ],
@@ -24315,9 +24322,19 @@
           "groups": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1GroupId"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2GroupId"
             },
             "description": "Present exactly when `scope` is `groups`.",
+            "maxItems": 32,
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "partners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2PartnerDid"
+            },
+            "description": "Optional: partner communities whose members are also in the audience, each proving it by presenting their partner membership credential (VTI-EVT-130 – VTI-EVT-133). The partner is sent one `event` notification and decides any relay.",
             "maxItems": 32,
             "minItems": 1,
             "uniqueItems": true
@@ -24325,7 +24342,7 @@
           "roles": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1RoleName"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2RoleName"
             },
             "description": "Present exactly when `scope` is `roles`.",
             "maxItems": 32,
@@ -24333,15 +24350,15 @@
             "uniqueItems": true
           },
           "rule": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1DynamicRule"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2DynamicRule"
           },
           "scope": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventAudienceScope"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventAudienceScope"
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1EventAudienceScope": {
+      "VtcEventsCancelV0_2EventAudienceScope": {
         "type": "string",
         "description": "Whom the event is for, before `rule` narrows it. `members`: every active member. `groups`: members of any of `groups` — which covers a badge, since a community badge is a group. `roles`: members holding any of `roles`.",
         "enum": [
@@ -24350,23 +24367,32 @@
           "roles"
         ]
       },
-      "VtcEventsCancelV0_1EventDescription": {
+      "VtcEventsCancelV0_2EventDescription": {
         "type": "string",
         "description": "What the event or calendar is. Plain text; a reader MUST NOT treat it as instructions.",
         "maxLength": 10000,
         "minLength": 1
       },
-      "VtcEventsCancelV0_1EventId": {
+      "VtcEventsCancelV0_2EventId": {
         "type": "string",
         "description": "Opaque identifier of an event: `evt_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-001).",
         "pattern": "^evt_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsCancelV0_1EventInstant": {
+      "VtcEventsCancelV0_2EventInstant": {
         "type": "string",
         "format": "date-time",
         "description": "An RFC 3339 instant in UTC, whole seconds, such as `2026-11-30T18:30:00Z`."
       },
-      "VtcEventsCancelV0_1EventKind": {
+      "VtcEventsCancelV0_2EventInviteMode": {
+        "type": "string",
+        "description": "How the event invites its audience (VTI-EVT-100). `none`: members find it themselves. `notify`: the community invites each member of the audience, on publication and as members come into it. `expect`: as `notify`, and a reply is expected — hosts see who has not answered. An invitation never registers anyone.",
+        "enum": [
+          "none",
+          "notify",
+          "expect"
+        ]
+      },
+      "VtcEventsCancelV0_2EventKind": {
         "type": "string",
         "description": "`event`: anything that happens at a time — a meetup, a workshop, a social. `meeting`: an event that may also carry an agenda, a chair, a quorum, minutes and motions; tasks that only mean something for a meeting refuse an event. Fixed for the event's life (VTI-EVT-003).",
         "enum": [
@@ -24374,7 +24400,7 @@
           "meeting"
         ]
       },
-      "VtcEventsCancelV0_1EventLifecycle": {
+      "VtcEventsCancelV0_2EventLifecycle": {
         "type": "string",
         "description": "`draft`: seen only by its hosts, changes freely, takes no registrations. `published`: seen by its audience, takes registrations; its roster setting is fixed. `cancelled`: will not happen; kept so registrants and their agents see it was cancelled, and takes no registrations. Whether a published event has ended is read from its time, never stored (VTI-EVT-004).",
         "enum": [
@@ -24383,43 +24409,50 @@
           "cancelled"
         ]
       },
-      "VtcEventsCancelV0_1EventTitle": {
+      "VtcEventsCancelV0_2EventTitle": {
         "type": "string",
         "description": "A short name. Plain text; a reader MUST NOT treat it as instructions.",
         "maxLength": 200,
         "minLength": 1
       },
-      "VtcEventsCancelV0_1Ext": {
+      "VtcEventsCancelV0_2Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcEventsCancelV0_1FieldKey": {
+      "VtcEventsCancelV0_2FieldKey": {
         "type": "string",
         "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
         "maxLength": 128,
         "minLength": 1,
         "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
       },
-      "VtcEventsCancelV0_1GroupId": {
+      "VtcEventsCancelV0_2GroupId": {
         "type": "string",
         "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
         "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsCancelV0_1JSCalendarDuration": {
+      "VtcEventsCancelV0_2JSCalendarDuration": {
         "type": "string",
         "description": "A non-negative duration in the subset of ISO 8601 JSCalendar uses: `P` then weeks or days, then `T` with hours, minutes and seconds, such as `PT1H30M`, `P1D` or `P2W`. No months or years. Used only for `When.duration`, which carries JSCalendar's own member and encoding verbatim; this family's own offsets are integers naming their unit (`ReminderMinutes`).",
         "maxLength": 32,
         "minLength": 3,
         "pattern": "^P(?!$)([0-9]+W)?([0-9]+D)?(T(?=[0-9])([0-9]+H)?([0-9]+M)?([0-9]+S)?)?$"
       },
-      "VtcEventsCancelV0_1LocalDateTime": {
+      "VtcEventsCancelV0_2LocalDateTime": {
         "type": "string",
         "description": "A local date and time with no offset, `YYYY-MM-DDTHH:MM:SS`, as JSCalendar's LocalDateTime. Read in the event's `timeZone`.",
         "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
       },
-      "VtcEventsCancelV0_1Payload": {
+      "VtcEventsCancelV0_2PartnerDid": {
+        "type": "string",
+        "description": "A partner community, by its DID: a community that is a member of this one, or with which it holds a relationship in force (VTI-EVT-130).",
+        "maxLength": 2048,
+        "minLength": 8,
+        "pattern": "^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$"
+      },
+      "VtcEventsCancelV0_2Payload": {
         "type": "object",
         "description": "Cancel a published event. The outer document members are owned by the framework — SPEC §6.3.",
         "required": [
@@ -24427,10 +24460,10 @@
         ],
         "properties": {
           "eventId": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventId"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventId"
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1Ext"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2Ext"
           },
           "reason": {
             "type": "string",
@@ -24441,7 +24474,7 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1Place": {
+      "VtcEventsCancelV0_2Place": {
         "type": "object",
         "description": "A physical location, as JSCalendar's Location.",
         "required": [
@@ -24467,13 +24500,13 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1PlaceSummary": {
+      "VtcEventsCancelV0_2PlaceSummary": {
         "type": "string",
         "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
         "maxLength": 200,
         "minLength": 1
       },
-      "VtcEventsCancelV0_1RegistrationMode": {
+      "VtcEventsCancelV0_2RegistrationMode": {
         "type": "string",
         "description": "`open`: a member of the audience who registers is going at once (or waitlisted when full). `approval`: a registration is pending until a host decides it. `closed`: no registrations; the event is for information only (VTI-EVT-031).",
         "enum": [
@@ -24482,7 +24515,7 @@
           "closed"
         ]
       },
-      "VtcEventsCancelV0_1RegistrationQuestion": {
+      "VtcEventsCancelV0_2RegistrationQuestion": {
         "type": "object",
         "description": "A question a registrant answers when registering. Answers are read by the event's hosts only, and are deleted on the event's retention schedule (VTI-EVT-034, VTI-EVT-090).",
         "required": [
@@ -24504,7 +24537,7 @@
             "uniqueItems": true
           },
           "kind": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1RegistrationQuestionKind"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2RegistrationQuestionKind"
           },
           "label": {
             "type": "string",
@@ -24513,7 +24546,7 @@
             "minLength": 1
           },
           "questionId": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1RegistrationQuestionId"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2RegistrationQuestionId"
           },
           "required": {
             "type": "boolean",
@@ -24522,12 +24555,12 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1RegistrationQuestionId": {
+      "VtcEventsCancelV0_2RegistrationQuestionId": {
         "type": "string",
         "description": "A question's key within its event.",
         "pattern": "^[a-z][a-z0-9-]{0,31}$"
       },
-      "VtcEventsCancelV0_1RegistrationQuestionKind": {
+      "VtcEventsCancelV0_2RegistrationQuestionKind": {
         "type": "string",
         "description": "`text`: a free answer of at most 500 characters. `choice`: one of `choices`. `boolean`: yes or no.",
         "enum": [
@@ -24536,7 +24569,7 @@
           "boolean"
         ]
       },
-      "VtcEventsCancelV0_1RegistrationSettings": {
+      "VtcEventsCancelV0_2RegistrationSettings": {
         "type": "object",
         "description": "How the event takes registrations (VTI-EVT-031 – 036).",
         "required": [
@@ -24550,16 +24583,16 @@
             "minimum": 1
           },
           "closesAt": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInstant"
           },
           "codeOfConduct": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1CodeOfConduct"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2CodeOfConduct"
           },
           "mode": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1RegistrationMode"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2RegistrationMode"
           },
           "opensAt": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2EventInstant"
           },
           "plusOnes": {
             "type": "integer",
@@ -24570,7 +24603,7 @@
           "questions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1RegistrationQuestion"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2RegistrationQuestion"
             },
             "maxItems": 20
           },
@@ -24581,34 +24614,34 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1ReminderMinutes": {
+      "VtcEventsCancelV0_2ReminderMinutes": {
         "type": "integer",
         "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
         "maximum": 40320,
         "minimum": 1
       },
-      "VtcEventsCancelV0_1Response": {
+      "VtcEventsCancelV0_2Response": {
         "type": "object",
-        "description": "The success response to a vtc/events/cancel/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/cancel/0.1#response.",
+        "description": "The success response to a vtc/events/cancel/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/cancel/0.2#response.",
         "required": [
           "event"
         ],
         "properties": {
           "event": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1Event"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2Event"
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1Ext"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2Ext"
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1RoleName": {
+      "VtcEventsCancelV0_2RoleName": {
         "type": "string",
         "description": "A role identifier: lowercase, hyphen-separated, at most 64 characters. Compared by exact string equality. It is the value an AclEntry 0.2 carries in `role`.",
         "pattern": "^[a-z][a-z0-9-]{0,63}$"
       },
-      "VtcEventsCancelV0_1RosterSetting": {
+      "VtcEventsCancelV0_2RosterSetting": {
         "type": "string",
         "description": "Who may see who is registered (VTI-EVT-050). `visible`: registrants who are going or maybe see each other. `hidden`: no registrant sees another; the event's hosts do. Fixed once the event is published (VTI-EVT-051) and recorded on each registration (VTI-EVT-052).",
         "enum": [
@@ -24616,7 +24649,7 @@
           "hidden"
         ]
       },
-      "VtcEventsCancelV0_1RuleCondition": {
+      "VtcEventsCancelV0_2RuleCondition": {
         "type": "object",
         "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
@@ -24643,7 +24676,7 @@
             ]
           },
           "field": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1FieldKey"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2FieldKey"
           },
           "op": {
             "type": "string",
@@ -24680,14 +24713,14 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1TimeZoneId": {
+      "VtcEventsCancelV0_2TimeZoneId": {
         "type": "string",
         "description": "An IANA time zone name, such as `Europe/London`, or `Etc/UTC`. A responder MUST refuse a name its time zone database does not know.",
         "maxLength": 64,
         "minLength": 1,
         "pattern": "^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$"
       },
-      "VtcEventsCancelV0_1VirtualFeature": {
+      "VtcEventsCancelV0_2VirtualFeature": {
         "type": "string",
         "description": "What a virtual location offers, as JSCalendar's VirtualLocation `features`.",
         "enum": [
@@ -24700,7 +24733,7 @@
           "video"
         ]
       },
-      "VtcEventsCancelV0_1VirtualPlace": {
+      "VtcEventsCancelV0_2VirtualPlace": {
         "type": "object",
         "description": "A way to join online, as JSCalendar's VirtualLocation.",
         "required": [
@@ -24716,7 +24749,7 @@
           "features": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsCancelV0_1VirtualFeature"
+              "$ref": "#/components/schemas/VtcEventsCancelV0_2VirtualFeature"
             },
             "maxItems": 7,
             "uniqueItems": true
@@ -24736,7 +24769,7 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsCancelV0_1When": {
+      "VtcEventsCancelV0_2When": {
         "type": "object",
         "description": "When the event happens, in JSCalendar's terms. `start` is local time in `timeZone`; `duration` is how long it lasts. With `showWithoutTime` true it is an all-day event: `start`'s time MUST be `T00:00:00` and `duration` whole days (VTI-EVT-005).",
         "required": [
@@ -24746,17 +24779,17 @@
         ],
         "properties": {
           "duration": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1JSCalendarDuration"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2JSCalendarDuration"
           },
           "showWithoutTime": {
             "type": "boolean",
             "description": "An all-day event. Absent means false."
           },
           "start": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1LocalDateTime"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2LocalDateTime"
           },
           "timeZone": {
-            "$ref": "#/components/schemas/VtcEventsCancelV0_1TimeZoneId"
+            "$ref": "#/components/schemas/VtcEventsCancelV0_2TimeZoneId"
           }
         },
         "additionalProperties": false
@@ -26869,6 +26902,136 @@
         },
         "additionalProperties": false
       },
+      "VtcEventsInvitationsRevokeV0_1EntryId": {
+        "type": "string",
+        "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
+        "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcEventsInvitationsRevokeV0_1EventId": {
+        "type": "string",
+        "description": "Opaque identifier of an event: `evt_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-001).",
+        "pattern": "^evt_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcEventsInvitationsRevokeV0_1EventInstant": {
+        "type": "string",
+        "format": "date-time",
+        "description": "An RFC 3339 instant in UTC, whole seconds, such as `2026-11-30T18:30:00Z`."
+      },
+      "VtcEventsInvitationsRevokeV0_1EventInvitation": {
+        "type": "object",
+        "description": "One member's invitation to one event (VTI-EVT-102). Seen by the event's hosts and by the invitee; never by anyone else (VTI-EVT-106).",
+        "required": [
+          "invitationId",
+          "eventId",
+          "entryId",
+          "invitedBy",
+          "replyExpected",
+          "answer",
+          "createdAt"
+        ],
+        "properties": {
+          "answer": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventInvitationAnswer"
+          },
+          "answeredAt": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventInstant"
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventInstant"
+          },
+          "entryId": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EntryId"
+          },
+          "eventId": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventId"
+          },
+          "invitationId": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventInvitationId"
+          },
+          "invitedBy": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventInviter"
+          },
+          "inviterEntryId": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EntryId"
+          },
+          "replyExpected": {
+            "type": "boolean",
+            "description": "The event was `expect` when the invitation was made (VTI-EVT-100)."
+          },
+          "revoked": {
+            "type": "boolean",
+            "description": "A host revoked it (VTI-EVT-103); its notification was withdrawn. Absent means false."
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcEventsInvitationsRevokeV0_1EventInvitationAnswer": {
+        "type": "string",
+        "description": "The invitee's answer (VTI-EVT-104). `none`: not answered. `going`, `maybe`: answered by registering. `declined`: the invitee said they will not come — recorded here and nowhere else; not a host's decline of a registration.",
+        "enum": [
+          "none",
+          "going",
+          "maybe",
+          "declined"
+        ]
+      },
+      "VtcEventsInvitationsRevokeV0_1EventInvitationId": {
+        "type": "string",
+        "description": "Opaque identifier of one invitation to one event: `inv_` followed by 16 to 64 base64url characters.",
+        "pattern": "^inv_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcEventsInvitationsRevokeV0_1EventInviter": {
+        "type": "string",
+        "description": "Who invited (VTI-EVT-106). `audience`: the community, under the event's invitation mode (VTI-EVT-101). `host`: a host, by name (VTI-EVT-103). `member`: a member of the audience (VTI-EVT-105). `link`: the invitee redeemed an invitation link (VTI-EVT-107).",
+        "enum": [
+          "audience",
+          "host",
+          "member",
+          "link"
+        ]
+      },
+      "VtcEventsInvitationsRevokeV0_1Ext": {
+        "type": "object",
+        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
+        "additionalProperties": true,
+        "minProperties": 1
+      },
+      "VtcEventsInvitationsRevokeV0_1Payload": {
+        "type": "object",
+        "description": "A host revokes an invitation: its notification is withdrawn and, where the invitation was what put the member in the event's audience, it no longer does. A registration the member made stands. The outer document members are owned by the framework — SPEC §6.3.",
+        "required": [
+          "eventId",
+          "invitationId"
+        ],
+        "properties": {
+          "eventId": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventId"
+          },
+          "ext": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1Ext"
+          },
+          "invitationId": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventInvitationId"
+          }
+        },
+        "additionalProperties": false
+      },
+      "VtcEventsInvitationsRevokeV0_1Response": {
+        "type": "object",
+        "description": "The success response to a vtc/events/invitations/revoke/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/invitations/revoke/0.1#response.",
+        "required": [
+          "invitation"
+        ],
+        "properties": {
+          "ext": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1Ext"
+          },
+          "invitation": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRevokeV0_1EventInvitation"
+          }
+        },
+        "additionalProperties": false
+      },
       "VtcEventsInvitationsSendV0_1EntryId": {
         "type": "string",
         "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
@@ -28323,7 +28486,7 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1AccessDetails": {
+      "VtcEventsPublishV0_2AccessDetails": {
         "type": "object",
         "description": "Where the event happens and how to join it (VTI-EVT-060 – 063). Answered by vtc/events/access/show to a registrant who is going, from `revealAt` if set; included in the event itself only where `public` is true.",
         "properties": {
@@ -28336,7 +28499,7 @@
           "places": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1Place"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2Place"
             },
             "maxItems": 8
           },
@@ -28345,19 +28508,19 @@
             "description": "Show the access details with the event to its whole audience. Absent means false."
           },
           "revealAt": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInstant"
           },
           "virtualPlaces": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1VirtualPlace"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2VirtualPlace"
             },
             "maxItems": 8
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1Accessibility": {
+      "VtcEventsPublishV0_2Accessibility": {
         "type": "object",
         "description": "What the event offers for access, as the host states it (VTI-EVT-036). Each flag absent means not stated, not that it is missing.",
         "properties": {
@@ -28385,12 +28548,12 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1CalendarId": {
+      "VtcEventsPublishV0_2CalendarId": {
         "type": "string",
         "description": "Opaque identifier of a calendar: `cal_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-010).",
         "pattern": "^cal_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsPublishV0_1CodeOfConduct": {
+      "VtcEventsPublishV0_2CodeOfConduct": {
         "type": "object",
         "description": "A code of conduct a registrant acknowledges before the registration is accepted (VTI-EVT-035). `sha256` pins the text acknowledged.",
         "required": [
@@ -28411,7 +28574,7 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1Count": {
+      "VtcEventsPublishV0_2Count": {
         "type": "object",
         "description": "A number of registrants as shown to someone who is not a host: `exact` at or above the event's count threshold, `fewerThan` (the threshold) below it, so a small count does not single anyone out (VTI-EVT-054). Exactly one of the two.",
         "properties": {
@@ -28428,7 +28591,7 @@
         "additionalProperties": false,
         "minProperties": 1
       },
-      "VtcEventsPublishV0_1DynamicRule": {
+      "VtcEventsPublishV0_2DynamicRule": {
         "type": "object",
         "description": "A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries.",
         "required": [
@@ -28438,7 +28601,7 @@
           "all": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1RuleCondition"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2RuleCondition"
             },
             "maxItems": 16,
             "minItems": 1
@@ -28446,12 +28609,12 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1EntryId": {
+      "VtcEventsPublishV0_2EntryId": {
         "type": "string",
         "description": "Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality.",
         "pattern": "^dir_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsPublishV0_1Event": {
+      "VtcEventsPublishV0_2Event": {
         "type": "object",
         "description": "An event as the caller may see it. Members a caller may not see are left out: `registration` settings' `questions` are shown to everyone who may register, `access` only where it is public, `goingCount` as the roster setting allows (VTI-EVT-054).",
         "required": [
@@ -28471,16 +28634,16 @@
         ],
         "properties": {
           "access": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1AccessDetails"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2AccessDetails"
           },
           "accessibility": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1Accessibility"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2Accessibility"
           },
           "audience": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventAudience"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventAudience"
           },
           "calendarId": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1CalendarId"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2CalendarId"
           },
           "cancelReason": {
             "type": "string",
@@ -28489,7 +28652,7 @@
             "minLength": 1
           },
           "cancelledAt": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInstant"
           },
           "countThreshold": {
             "type": "integer",
@@ -28498,48 +28661,55 @@
             "minimum": 2
           },
           "createdAt": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInstant"
           },
           "description": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventDescription"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventDescription"
           },
           "eventId": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventId"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventId"
           },
           "full": {
             "type": "boolean",
             "description": "True when `capacity` is reached. Shown to everyone who may register, whatever `showCount` says, since a registrant learns it anyway."
           },
           "goingCount": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1Count"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2Count"
           },
           "hosts": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1EntryId"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2EntryId"
             },
             "description": "The event's appointed hosts. Its creator is the first.",
             "maxItems": 32,
             "uniqueItems": true
           },
+          "invite": {
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInviteMode"
+          },
           "kind": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventKind"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventKind"
           },
           "listed": {
             "type": "boolean",
             "description": "Listed to its whole audience. An unlisted event is answered by vtc/events/show to a member of its audience who names it, and left out of vtc/events/list (VTI-EVT-022)."
           },
+          "membersMayInvite": {
+            "type": "boolean",
+            "description": "Members of the audience may invite other members of it, within the community's daily limit (VTI-EVT-105). Absent means false."
+          },
           "placeSummary": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1PlaceSummary"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2PlaceSummary"
           },
           "publishedAt": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInstant"
           },
           "registration": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1RegistrationSettings"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2RegistrationSettings"
           },
           "roster": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1RosterSetting"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2RosterSetting"
           },
           "sequence": {
             "type": "integer",
@@ -28551,32 +28721,32 @@
             "description": "Show the number going to the audience, subject to `countThreshold`. Absent means false."
           },
           "status": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventLifecycle"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventLifecycle"
           },
           "suggestedReminderMinutes": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1ReminderMinutes"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2ReminderMinutes"
             },
             "description": "Reminders the hosts suggest, as minutes before the start. A member's agent applies them unless the member chose otherwise; the community sends no reminder itself (VTI-EVT-040).",
             "maxItems": 4,
             "uniqueItems": true
           },
           "title": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventTitle"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventTitle"
           },
           "updatedAt": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInstant"
           },
           "when": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1When"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2When"
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1EventAudience": {
+      "VtcEventsPublishV0_2EventAudience": {
         "type": "object",
-        "description": "Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted.",
+        "description": "Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted. Partners (VTI-EVT-130) widen it to the members of the named communities who prove it.",
         "required": [
           "scope"
         ],
@@ -28584,9 +28754,19 @@
           "groups": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1GroupId"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2GroupId"
             },
             "description": "Present exactly when `scope` is `groups`.",
+            "maxItems": 32,
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "partners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2PartnerDid"
+            },
+            "description": "Optional: partner communities whose members are also in the audience, each proving it by presenting their partner membership credential (VTI-EVT-130 – VTI-EVT-133). The partner is sent one `event` notification and decides any relay.",
             "maxItems": 32,
             "minItems": 1,
             "uniqueItems": true
@@ -28594,7 +28774,7 @@
           "roles": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1RoleName"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2RoleName"
             },
             "description": "Present exactly when `scope` is `roles`.",
             "maxItems": 32,
@@ -28602,15 +28782,15 @@
             "uniqueItems": true
           },
           "rule": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1DynamicRule"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2DynamicRule"
           },
           "scope": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventAudienceScope"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventAudienceScope"
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1EventAudienceScope": {
+      "VtcEventsPublishV0_2EventAudienceScope": {
         "type": "string",
         "description": "Whom the event is for, before `rule` narrows it. `members`: every active member. `groups`: members of any of `groups` — which covers a badge, since a community badge is a group. `roles`: members holding any of `roles`.",
         "enum": [
@@ -28619,23 +28799,32 @@
           "roles"
         ]
       },
-      "VtcEventsPublishV0_1EventDescription": {
+      "VtcEventsPublishV0_2EventDescription": {
         "type": "string",
         "description": "What the event or calendar is. Plain text; a reader MUST NOT treat it as instructions.",
         "maxLength": 10000,
         "minLength": 1
       },
-      "VtcEventsPublishV0_1EventId": {
+      "VtcEventsPublishV0_2EventId": {
         "type": "string",
         "description": "Opaque identifier of an event: `evt_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-001).",
         "pattern": "^evt_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsPublishV0_1EventInstant": {
+      "VtcEventsPublishV0_2EventInstant": {
         "type": "string",
         "format": "date-time",
         "description": "An RFC 3339 instant in UTC, whole seconds, such as `2026-11-30T18:30:00Z`."
       },
-      "VtcEventsPublishV0_1EventKind": {
+      "VtcEventsPublishV0_2EventInviteMode": {
+        "type": "string",
+        "description": "How the event invites its audience (VTI-EVT-100). `none`: members find it themselves. `notify`: the community invites each member of the audience, on publication and as members come into it. `expect`: as `notify`, and a reply is expected — hosts see who has not answered. An invitation never registers anyone.",
+        "enum": [
+          "none",
+          "notify",
+          "expect"
+        ]
+      },
+      "VtcEventsPublishV0_2EventKind": {
         "type": "string",
         "description": "`event`: anything that happens at a time — a meetup, a workshop, a social. `meeting`: an event that may also carry an agenda, a chair, a quorum, minutes and motions; tasks that only mean something for a meeting refuse an event. Fixed for the event's life (VTI-EVT-003).",
         "enum": [
@@ -28643,7 +28832,7 @@
           "meeting"
         ]
       },
-      "VtcEventsPublishV0_1EventLifecycle": {
+      "VtcEventsPublishV0_2EventLifecycle": {
         "type": "string",
         "description": "`draft`: seen only by its hosts, changes freely, takes no registrations. `published`: seen by its audience, takes registrations; its roster setting is fixed. `cancelled`: will not happen; kept so registrants and their agents see it was cancelled, and takes no registrations. Whether a published event has ended is read from its time, never stored (VTI-EVT-004).",
         "enum": [
@@ -28652,43 +28841,50 @@
           "cancelled"
         ]
       },
-      "VtcEventsPublishV0_1EventTitle": {
+      "VtcEventsPublishV0_2EventTitle": {
         "type": "string",
         "description": "A short name. Plain text; a reader MUST NOT treat it as instructions.",
         "maxLength": 200,
         "minLength": 1
       },
-      "VtcEventsPublishV0_1Ext": {
+      "VtcEventsPublishV0_2Ext": {
         "type": "object",
         "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
         "additionalProperties": true,
         "minProperties": 1
       },
-      "VtcEventsPublishV0_1FieldKey": {
+      "VtcEventsPublishV0_2FieldKey": {
         "type": "string",
         "description": "Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined.",
         "maxLength": 128,
         "minLength": 1,
         "pattern": "^([a-z][a-z0-9-]*\\.)*[a-z][a-zA-Z0-9]{0,63}$"
       },
-      "VtcEventsPublishV0_1GroupId": {
+      "VtcEventsPublishV0_2GroupId": {
         "type": "string",
         "description": "Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID.",
         "pattern": "^grp_[A-Za-z0-9_-]{16,64}$"
       },
-      "VtcEventsPublishV0_1JSCalendarDuration": {
+      "VtcEventsPublishV0_2JSCalendarDuration": {
         "type": "string",
         "description": "A non-negative duration in the subset of ISO 8601 JSCalendar uses: `P` then weeks or days, then `T` with hours, minutes and seconds, such as `PT1H30M`, `P1D` or `P2W`. No months or years. Used only for `When.duration`, which carries JSCalendar's own member and encoding verbatim; this family's own offsets are integers naming their unit (`ReminderMinutes`).",
         "maxLength": 32,
         "minLength": 3,
         "pattern": "^P(?!$)([0-9]+W)?([0-9]+D)?(T(?=[0-9])([0-9]+H)?([0-9]+M)?([0-9]+S)?)?$"
       },
-      "VtcEventsPublishV0_1LocalDateTime": {
+      "VtcEventsPublishV0_2LocalDateTime": {
         "type": "string",
         "description": "A local date and time with no offset, `YYYY-MM-DDTHH:MM:SS`, as JSCalendar's LocalDateTime. Read in the event's `timeZone`.",
         "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
       },
-      "VtcEventsPublishV0_1Payload": {
+      "VtcEventsPublishV0_2PartnerDid": {
+        "type": "string",
+        "description": "A partner community, by its DID: a community that is a member of this one, or with which it holds a relationship in force (VTI-EVT-130).",
+        "maxLength": 2048,
+        "minLength": 8,
+        "pattern": "^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$"
+      },
+      "VtcEventsPublishV0_2Payload": {
         "type": "object",
         "description": "Publish a draft event. The outer document members are owned by the framework — SPEC §6.3.",
         "required": [
@@ -28696,15 +28892,15 @@
         ],
         "properties": {
           "eventId": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventId"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventId"
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1Ext"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2Ext"
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1Place": {
+      "VtcEventsPublishV0_2Place": {
         "type": "object",
         "description": "A physical location, as JSCalendar's Location.",
         "required": [
@@ -28730,13 +28926,13 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1PlaceSummary": {
+      "VtcEventsPublishV0_2PlaceSummary": {
         "type": "string",
         "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
         "maxLength": 200,
         "minLength": 1
       },
-      "VtcEventsPublishV0_1RegistrationMode": {
+      "VtcEventsPublishV0_2RegistrationMode": {
         "type": "string",
         "description": "`open`: a member of the audience who registers is going at once (or waitlisted when full). `approval`: a registration is pending until a host decides it. `closed`: no registrations; the event is for information only (VTI-EVT-031).",
         "enum": [
@@ -28745,7 +28941,7 @@
           "closed"
         ]
       },
-      "VtcEventsPublishV0_1RegistrationQuestion": {
+      "VtcEventsPublishV0_2RegistrationQuestion": {
         "type": "object",
         "description": "A question a registrant answers when registering. Answers are read by the event's hosts only, and are deleted on the event's retention schedule (VTI-EVT-034, VTI-EVT-090).",
         "required": [
@@ -28767,7 +28963,7 @@
             "uniqueItems": true
           },
           "kind": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1RegistrationQuestionKind"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2RegistrationQuestionKind"
           },
           "label": {
             "type": "string",
@@ -28776,7 +28972,7 @@
             "minLength": 1
           },
           "questionId": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1RegistrationQuestionId"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2RegistrationQuestionId"
           },
           "required": {
             "type": "boolean",
@@ -28785,12 +28981,12 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1RegistrationQuestionId": {
+      "VtcEventsPublishV0_2RegistrationQuestionId": {
         "type": "string",
         "description": "A question's key within its event.",
         "pattern": "^[a-z][a-z0-9-]{0,31}$"
       },
-      "VtcEventsPublishV0_1RegistrationQuestionKind": {
+      "VtcEventsPublishV0_2RegistrationQuestionKind": {
         "type": "string",
         "description": "`text`: a free answer of at most 500 characters. `choice`: one of `choices`. `boolean`: yes or no.",
         "enum": [
@@ -28799,7 +28995,7 @@
           "boolean"
         ]
       },
-      "VtcEventsPublishV0_1RegistrationSettings": {
+      "VtcEventsPublishV0_2RegistrationSettings": {
         "type": "object",
         "description": "How the event takes registrations (VTI-EVT-031 – 036).",
         "required": [
@@ -28813,16 +29009,16 @@
             "minimum": 1
           },
           "closesAt": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInstant"
           },
           "codeOfConduct": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1CodeOfConduct"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2CodeOfConduct"
           },
           "mode": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1RegistrationMode"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2RegistrationMode"
           },
           "opensAt": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1EventInstant"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2EventInstant"
           },
           "plusOnes": {
             "type": "integer",
@@ -28833,7 +29029,7 @@
           "questions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1RegistrationQuestion"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2RegistrationQuestion"
             },
             "maxItems": 20
           },
@@ -28844,34 +29040,34 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1ReminderMinutes": {
+      "VtcEventsPublishV0_2ReminderMinutes": {
         "type": "integer",
         "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
         "maximum": 40320,
         "minimum": 1
       },
-      "VtcEventsPublishV0_1Response": {
+      "VtcEventsPublishV0_2Response": {
         "type": "object",
-        "description": "The success response to a vtc/events/publish/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/publish/0.1#response.",
+        "description": "The success response to a vtc/events/publish/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/publish/0.2#response.",
         "required": [
           "event"
         ],
         "properties": {
           "event": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1Event"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2Event"
           },
           "ext": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1Ext"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2Ext"
           }
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1RoleName": {
+      "VtcEventsPublishV0_2RoleName": {
         "type": "string",
         "description": "A role identifier: lowercase, hyphen-separated, at most 64 characters. Compared by exact string equality. It is the value an AclEntry 0.2 carries in `role`.",
         "pattern": "^[a-z][a-z0-9-]{0,63}$"
       },
-      "VtcEventsPublishV0_1RosterSetting": {
+      "VtcEventsPublishV0_2RosterSetting": {
         "type": "string",
         "description": "Who may see who is registered (VTI-EVT-050). `visible`: registrants who are going or maybe see each other. `hidden`: no registrant sees another; the event's hosts do. Fixed once the event is published (VTI-EVT-051) and recorded on each registration (VTI-EVT-052).",
         "enum": [
@@ -28879,7 +29075,7 @@
           "hidden"
         ]
       },
-      "VtcEventsPublishV0_1RuleCondition": {
+      "VtcEventsPublishV0_2RuleCondition": {
         "type": "object",
         "description": "One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`.",
         "required": [
@@ -28906,7 +29102,7 @@
             ]
           },
           "field": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1FieldKey"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2FieldKey"
           },
           "op": {
             "type": "string",
@@ -28943,14 +29139,14 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1TimeZoneId": {
+      "VtcEventsPublishV0_2TimeZoneId": {
         "type": "string",
         "description": "An IANA time zone name, such as `Europe/London`, or `Etc/UTC`. A responder MUST refuse a name its time zone database does not know.",
         "maxLength": 64,
         "minLength": 1,
         "pattern": "^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$"
       },
-      "VtcEventsPublishV0_1VirtualFeature": {
+      "VtcEventsPublishV0_2VirtualFeature": {
         "type": "string",
         "description": "What a virtual location offers, as JSCalendar's VirtualLocation `features`.",
         "enum": [
@@ -28963,7 +29159,7 @@
           "video"
         ]
       },
-      "VtcEventsPublishV0_1VirtualPlace": {
+      "VtcEventsPublishV0_2VirtualPlace": {
         "type": "object",
         "description": "A way to join online, as JSCalendar's VirtualLocation.",
         "required": [
@@ -28979,7 +29175,7 @@
           "features": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VtcEventsPublishV0_1VirtualFeature"
+              "$ref": "#/components/schemas/VtcEventsPublishV0_2VirtualFeature"
             },
             "maxItems": 7,
             "uniqueItems": true
@@ -28999,7 +29195,7 @@
         },
         "additionalProperties": false
       },
-      "VtcEventsPublishV0_1When": {
+      "VtcEventsPublishV0_2When": {
         "type": "object",
         "description": "When the event happens, in JSCalendar's terms. `start` is local time in `timeZone`; `duration` is how long it lasts. With `showWithoutTime` true it is an all-day event: `start`'s time MUST be `T00:00:00` and `duration` whole days (VTI-EVT-005).",
         "required": [
@@ -29009,17 +29205,17 @@
         ],
         "properties": {
           "duration": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1JSCalendarDuration"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2JSCalendarDuration"
           },
           "showWithoutTime": {
             "type": "boolean",
             "description": "An all-day event. Absent means false."
           },
           "start": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1LocalDateTime"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2LocalDateTime"
           },
           "timeZone": {
-            "$ref": "#/components/schemas/VtcEventsPublishV0_1TimeZoneId"
+            "$ref": "#/components/schemas/VtcEventsPublishV0_2TimeZoneId"
           }
         },
         "additionalProperties": false
@@ -30260,6 +30456,21 @@
         "description": "A local date and time with no offset, `YYYY-MM-DDTHH:MM:SS`, as JSCalendar's LocalDateTime. Read in the event's `timeZone`.",
         "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
       },
+      "VtcEventsRegistrationsWithdrawV0_2MembershipPresentation": {
+        "anyOf": [
+          {
+            "type": "object",
+            "description": "A W3C Verifiable Presentation whose `nonce` is the request's `id` and whose `domain` is the community's DID, both signed by its holder's Data Integrity proof."
+          },
+          {
+            "type": "string",
+            "description": "A compact presentation: an SD-JWT with a key-binding JWT whose `nonce` is the request's `id` and whose `aud` is the community's DID.",
+            "maxLength": 65536,
+            "minLength": 1
+          }
+        ],
+        "description": "A partner member's presentation of the membership credential a partner the event's audience names issued them, made by the credential's subject — who signs the request — and bound to it: its `nonce` the request's `id`, its `domain` this community's DID (VTI-EVT-132). The community verifies it before, and without reference to, the event, and discards it once it has decided (VTI-EVT-133)."
+      },
       "VtcEventsRegistrationsWithdrawV0_2Payload": {
         "type": "object",
         "description": "A member withdraws their registration for an event: always allowed, never held for anyone's decision, at any time before or after the registration window closes. A place it held passes to the waitlist. The community's signed answer is the member's receipt. The outer document members are owned by the framework — SPEC §6.3.",
@@ -30272,6 +30483,9 @@
           },
           "ext": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsWithdrawV0_2Ext"
+          },
+          "presentation": {
+            "$ref": "#/components/schemas/VtcEventsRegistrationsWithdrawV0_2MembershipPresentation"
           }
         },
         "additionalProperties": false

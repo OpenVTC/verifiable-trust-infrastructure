@@ -34,6 +34,7 @@ import {
   listAnnouncements,
   listInvitations,
   revokeLink,
+  revokeInvitation,
   sendAnnouncement,
   sendInvitations,
   createCalendar,
@@ -1364,6 +1365,11 @@ function InvitationsTab({ eventId, published }: { eventId: string; published: bo
     onSuccess: (link) => setLinks((l) => l.map((x) => (x.linkId === link.linkId ? { ...x, revokedAt: link.revokedAt } : x))),
     onError: (err) => toast.pushFromError(err, "The link was not revoked"),
   });
+  const revoke = useMutation({
+    mutationFn: (invitationId: string) => revokeInvitation(eventId, invitationId),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: invKey }),
+    onError: (err) => toast.pushFromError(err, "The invitation was not revoked"),
+  });
   const announce = useMutation({
     mutationFn: () => sendAnnouncement(eventId, text.trim()),
     onSuccess: () => {
@@ -1394,11 +1400,12 @@ function InvitationsTab({ eventId, published }: { eventId: string; published: bo
             { key: "who", label: "Member" },
             { key: "by", label: "Invited by" },
             { key: "answer", label: "Answer" },
+            { key: "actions", label: "" },
           ]}
         >
           {invitations.isSuccess && (invitations.data ?? []).length === 0 && (
             <tr>
-              <td colSpan={3}>
+              <td colSpan={4}>
                 <EmptyState title="Nobody is invited yet" />
               </td>
             </tr>
@@ -1413,6 +1420,19 @@ function InvitationsTab({ eventId, published }: { eventId: string; published: bo
                 {ANSWER_LABEL[i.answer] ?? i.answer}
                 {i.replyExpected && i.answer === "none" ? " · reply expected" : ""}
                 {i.revoked ? " · revoked" : ""}
+              </td>
+              <td>
+                {!i.revoked && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={revoke.isPending}
+                    title="It no longer admits them to the event, and its notification is withdrawn. A registration they made stands."
+                    onClick={() => revoke.mutate(i.invitationId)}
+                  >
+                    Revoke
+                  </button>
+                )}
               </td>
             </tr>
           ))}

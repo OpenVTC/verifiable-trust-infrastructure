@@ -36,6 +36,7 @@ import type {
   EventInvitationsListResponse,
   EventInvitationLinksCreateResponse,
   EventInvitationLinksRevokeResponse,
+  EventInvitationsRevokeResponse,
   EventAnnouncementsSendResponse,
   EventAnnouncementsListResponse,
   EventInvitation,
@@ -50,8 +51,8 @@ export const CALENDARS_UPDATE = "https://trusttasks.org/spec/vtc/events/calendar
 export const CALENDARS_LIST = "https://trusttasks.org/spec/vtc/events/calendars/list/0.1";
 export const CREATE = "https://trusttasks.org/spec/vtc/events/create/0.2";
 export const UPDATE = "https://trusttasks.org/spec/vtc/events/update/0.2";
-export const PUBLISH = "https://trusttasks.org/spec/vtc/events/publish/0.1";
-export const CANCEL = "https://trusttasks.org/spec/vtc/events/cancel/0.1";
+export const PUBLISH = "https://trusttasks.org/spec/vtc/events/publish/0.2";
+export const CANCEL = "https://trusttasks.org/spec/vtc/events/cancel/0.2";
 export const DELETE = "https://trusttasks.org/spec/vtc/events/delete/0.1";
 export const SHOW = "https://trusttasks.org/spec/vtc/events/show/0.2";
 export const LIST = "https://trusttasks.org/spec/vtc/events/list/0.2";
@@ -63,6 +64,7 @@ export const HOSTS_REMOVE = "https://trusttasks.org/spec/vtc/events/hosts/remove
 export const HOSTS_LIST = "https://trusttasks.org/spec/vtc/events/hosts/list/0.1";
 export const INVITATIONS_SEND = "https://trusttasks.org/spec/vtc/events/invitations/send/0.1";
 export const INVITATIONS_LIST = "https://trusttasks.org/spec/vtc/events/invitations/list/0.1";
+export const INVITATIONS_REVOKE = "https://trusttasks.org/spec/vtc/events/invitations/revoke/0.1";
 export const LINKS_CREATE = "https://trusttasks.org/spec/vtc/events/invitations/links/create/0.1";
 export const LINKS_REVOKE = "https://trusttasks.org/spec/vtc/events/invitations/links/revoke/0.1";
 export const ANNOUNCEMENTS_SEND = "https://trusttasks.org/spec/vtc/events/announcements/send/0.1";
@@ -228,6 +230,11 @@ export async function listInvitations(eventId: string): Promise<EventInvitation[
   }
   return out;
 }
+
+/** A host revokes an invitation (VTI-EVT-103): it stops admitting its invitee, its notification is
+ *  withdrawn, and a registration the invitee made stands. */
+export const revokeInvitation = (eventId: string, invitationId: string) =>
+  postSignedTrustTask<EventInvitationsRevokeResponse>(INVITATIONS_REVOKE, { eventId, invitationId }).then((r) => r.invitation);
 
 /** A link and its code — the code answered this once and never again (VTI-EVT-107). */
 export const createLink = (eventId: string, maxRedemptions: number, expiresAt: string, label?: string) =>

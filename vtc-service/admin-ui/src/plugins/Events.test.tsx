@@ -11,6 +11,7 @@ import {
   CALENDARS_LIST,
   CREATE,
   INVITATIONS_LIST,
+  INVITATIONS_REVOKE,
   LINKS_CREATE,
   HOSTS_LIST,
   LIST,
@@ -218,6 +219,46 @@ describe("the Invitations tab (VTI-EVT-103, 107, 120)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Post announcement" }));
     await waitFor(() =>
       expect(sentPayloads(requests, ANNOUNCEMENTS_SEND)).toEqual([{ eventId: EVENT_ID, text: "Bring glasses." }]),
+    );
+  });
+
+  it("revokes an invitation that still stands, and offers no revoke on one already revoked", async () => {
+    const inv = (id: string, revoked: boolean) => ({
+      invitation: {
+        invitationId: id,
+        eventId: EVENT_ID,
+        entryId: ENTRY,
+        invitedBy: "host",
+        replyExpected: false,
+        answer: "none",
+        createdAt: "2099-11-02T09:00:00Z",
+        ...(revoked ? { revoked: true } : {}),
+      },
+    });
+    const requests = mockFetch([
+      ...ROUTES,
+      taskRoute(SHOW, { event: event({ status: "published", invite: "notify" }) }),
+      taskRoute(INVITATIONS_LIST, { items: [inv("inv_Standing000000000AAAA", false), inv("inv_Revoked0000000000AAAA", true)] }),
+      taskRoute(ANNOUNCEMENTS_LIST, { items: [] }),
+      taskRoute(INVITATIONS_REVOKE, { invitation: inv("inv_Standing000000000AAAA", true).invitation }),
+    ]);
+    renderWithProviders(<Events />, {
+      route: `/events/${EVENT_ID}`,
+      path: "/events/*",
+      whoami: whoamiWith(["vtc.events.manage"]),
+    });
+    fireEvent.click(await screen.findByRole("tab", { name: "Invitations" }));
+    const table = await screen.findByRole("table", { name: "Invitations" });
+    const revokes = await waitFor(() => {
+      const found = table.querySelectorAll("button");
+      expect(found.length).toBe(1);
+      return found;
+    });
+    fireEvent.click(revokes[0]!);
+    await waitFor(() =>
+      expect(sentPayloads(requests, INVITATIONS_REVOKE)).toEqual([
+        { eventId: EVENT_ID, invitationId: "inv_Standing000000000AAAA" },
+      ]),
     );
   });
 });
