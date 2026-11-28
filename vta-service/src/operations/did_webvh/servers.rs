@@ -150,7 +150,7 @@ pub async fn list_webvh_server_domains(
                 ),
             })
             .collect(),
-        default: resp.default,
+        default: resp.default.flatten(),
     };
     info!(
         caller = %auth.did,

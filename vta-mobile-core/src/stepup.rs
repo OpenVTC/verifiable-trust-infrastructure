@@ -90,7 +90,6 @@ pub fn build_approve_response_webauthn(
             .raw_id(assertion.credential_id)
             .type_(serde_json::Value::String("public-key".to_string()))
             .response(response)
-            .client_extension_results(serde_json::Map::new())
             .try_into()
             .map_err(conv)?;
     let evidence = approve_response::Evidence::Webauthn {

@@ -545,11 +545,11 @@ async fn member_credentials_round_trips_and_types_not_found() {
         .expect("a member's credentials are readable");
     assert_eq!(creds.did.as_str(), member_did);
     assert_eq!(
-        serde_json::Value::Object(creds.membership_credential.clone()),
+        serde_json::Value::Object(creds.membership_credential.clone().unwrap_or_default()),
         grant
     );
-    assert!(creds.role_credential.is_empty());
-    assert!(creds.member_vmc.is_empty());
+    assert!(creds.role_credential.as_ref().is_none_or(|c| c.is_empty()));
+    assert!(creds.member_vmc.as_ref().is_none_or(|c| c.is_empty()));
     assert!(!creds.member_vmc_bound);
 
     let (stranger, _) = did_key_from_seed(0xA4);

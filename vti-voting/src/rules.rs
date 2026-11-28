@@ -367,7 +367,7 @@ fn bad_ballot(why: impl Into<String>) -> RuleError {
 fn members(a: &Answer) -> usize {
     usize::from(a.choice.is_some())
         + usize::from(a.ranking.is_some())
-        + usize::from(!a.scores.is_empty())
+        + usize::from(a.scores.as_ref().is_some_and(|s| !s.is_empty()))
         + usize::from(a.text.is_some())
         + usize::from(a.abstain.is_some())
 }
@@ -447,11 +447,20 @@ pub fn check_ballot(m: &Manifest, manifest_digest: &[u8; 32], b: &Ballot) -> Res
                 }
             }
             Question::Score { min, max, .. } => {
-                let scored: HashSet<&str> = a.scores.keys().map(|k| k.as_str()).collect();
+                let scored: HashSet<&str> = a
+                    .scores
+                    .iter()
+                    .flat_map(|s| s.keys())
+                    .map(|k| k.as_str())
+                    .collect();
                 if scored != opts {
                     return Err(bad_ballot(format!("question {qkey}: score every option")));
                 }
-                if a.scores.values().any(|v| v < min || v > max) {
+                if a.scores
+                    .iter()
+                    .flat_map(|s| s.values())
+                    .any(|v| v < min || v > max)
+                {
                     return Err(bad_ballot(format!("question {qkey}: score out of bounds")));
                 }
             }

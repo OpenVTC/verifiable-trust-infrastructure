@@ -100,7 +100,7 @@ pub fn render(req: &VerifiedConsentRequest) {
             println!("    - {}", *effect.summary);
         }
     }
-    for consequence in &p.consequences {
+    for consequence in p.consequences.iter().flatten() {
         println!("  {YELLOW}! {}{RESET}", **consequence);
     }
     println!(

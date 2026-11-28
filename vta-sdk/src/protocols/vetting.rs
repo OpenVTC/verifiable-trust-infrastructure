@@ -800,7 +800,8 @@ impl CheckShape for VettingRequirements {
         }
         if self
             .min_by_method
-            .keys()
+            .iter()
+            .flat_map(|m| m.keys())
             .any(|method| !self.accepted_methods.contains(method))
         {
             return Err(ShapeError::Field {
@@ -1562,13 +1563,19 @@ mod tests {
     #[test]
     fn requirements_round_trip_as_published() {
         let req: VettingRequirements = serde_json::from_value(requirements_json()).unwrap();
-        assert_eq!(req.min_by_method.get(&VettingMethod::InPerson), Some(&1));
+        assert_eq!(
+            req.min_by_method
+                .as_ref()
+                .and_then(|m| m.get(&VettingMethod::InPerson)),
+            Some(&1)
+        );
         assert_eq!(
             req.independence
                 .as_ref()
                 .unwrap()
                 .max_by_declared_relationship
-                .get(&VettingRelationship::Family),
+                .as_ref()
+                .and_then(|m| m.get(&VettingRelationship::Family)),
             Some(&0)
         );
         let back = serde_json::to_value(&req).unwrap();

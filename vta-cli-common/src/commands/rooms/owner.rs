@@ -169,8 +169,8 @@ pub async fn cmd_rooms_owner_group_remove(
         r["revocation"]["sequence"],
         r["epoch"]
     );
-    if !resp.mirrors_pending.is_empty() {
-        let pending: Vec<&str> = resp.mirrors_pending.iter().map(|m| m.as_str()).collect();
+    if let Some(mirrors_pending) = resp.mirrors_pending.as_deref().filter(|m| !m.is_empty()) {
+        let pending: Vec<&str> = mirrors_pending.iter().map(|m| m.as_str()).collect();
         println!(
             "  Not yet withdrawn at: {}. Deliver it with `pnm rooms owner revoke --room \
              {room_id} --signing-key {} --host <did>` (no withdrawal).",

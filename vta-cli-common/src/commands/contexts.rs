@@ -675,7 +675,7 @@ fn deletion_outcome(
         )
         .into());
     }
-    Ok(result.daemon_cleanup_errors)
+    Ok(result.daemon_cleanup_errors.unwrap_or_default())
 }
 
 /// Say, loudly and on stderr, which DIDs' logs a refused deletion could not

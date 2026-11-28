@@ -124,7 +124,7 @@ pub(super) fn offers_page(
     Ok((
         page.items,
         page.next_cursor.map(|c| c.to_string()),
-        page.renewals,
+        page.renewals.unwrap_or_default(),
     ))
 }
 

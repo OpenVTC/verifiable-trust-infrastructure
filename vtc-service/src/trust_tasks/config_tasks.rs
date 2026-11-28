@@ -326,7 +326,7 @@ pub(super) async fn handle_endorsement_type_register(
     let claim_schema = crate::wire::sent(
         &doc.payload,
         "claimSchema",
-        Value::Object(body.claim_schema.clone()),
+        Value::Object(body.claim_schema.clone().unwrap_or_default()),
     );
     match crate::endorsement_types::ops::register_inner(state, &actor.did, &body, claim_schema)
         .await

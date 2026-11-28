@@ -257,8 +257,12 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
             "credentialSubject": subject,
         }),
     };
-    let presentation_definition =
-        serde_json::Value::Object(criterion.presentation_definition.clone());
+    let presentation_definition = serde_json::Value::Object(
+        criterion
+            .presentation_definition
+            .clone()
+            .unwrap_or_default(),
+    );
     let candidates = select_credentials(&presentation_definition, &[held])
         .expect("held credential satisfies the manifest DCQL");
     let vp_token = build_vp_token(

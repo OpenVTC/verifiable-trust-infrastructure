@@ -61,6 +61,7 @@ pub(super) async fn handle_revoke(
     let withdraw: Vec<Value> = req
         .withdraw
         .iter()
+        .flatten()
         .map(|w| serde_json::to_value(w).unwrap_or(Value::Null))
         .collect();
 

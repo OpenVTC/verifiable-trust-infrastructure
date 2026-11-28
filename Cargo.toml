@@ -176,7 +176,7 @@ uniffi = "0.32"
 # 0.50 goes with `affinidi-messaging-sdk` 0.51, the messaging SDK's move to
 # `trust-tasks-rs` 0.41 (affinidi-tdk-rs #1189): one `trust-tasks-rs` across
 # the SDK boundary again.
-affinidi-tdk = "0.50"
+affinidi-tdk = "0.51"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -342,7 +342,7 @@ affinidi-messaging-core = "0.1.12"
 # the per-entry status scope and the `messaging/wake/*` client (#2553, #2663).
 # 0.47.2 is the release mediator 0.52 is built on.
 # 0.51 is on `trust-tasks-rs` 0.41, the workspace's copy (affinidi-tdk-rs #1189).
-affinidi-messaging-sdk = { version = "0.51.0", default-features = false }
+affinidi-messaging-sdk = { version = "0.52.0", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -367,7 +367,7 @@ dtg-credentials = "0.16"
 # `idna` is kept: it is the `hostname`/`idn-hostname` format check, pure
 # computation and no I/O. `tls-aws-lc-rs` goes with `resolve-http` — it exists
 # only to fetch over HTTPS.
-jsonschema = { version = "0.61", default-features = false, features = ["idna"] }
+jsonschema = { version = "0.63", default-features = false, features = ["idna"] }
 
 # Async runtime. 1.49 stabilised `runtime::Id`, which
 # `vta_sdk::resolver::shared_did_resolver` keys on.
@@ -816,10 +816,10 @@ aws-smithy-types = ">=1.6.1, <1.10"
 # PINNED IN THE `vti-specs-*` CRATES" above).
 # 0.39: one copy with `affinidi-messaging-sdk` 0.47 across the boundary, and
 # `validate::SchemaValidator`, a compiled schema the caller keeps (#2622).
-trust-tasks-rs = { version = "0.41.0", default-features = false, features = [
+trust-tasks-rs = { version = "0.43.0", default-features = false, features = [
   "validate",
 ] }
-trust-tasks-capability-client = "0.41"
+trust-tasks-capability-client = "0.43"
 # The build-time generator behind the `vti-specs-*` crates: each one's build.rs
 # turns the versions its `trust-tasks.lock` pins into Rust types and a Type URI
 # index (`.index(true)`). 0.1.3 is the floor: the first with the index.
@@ -829,8 +829,8 @@ trust-tasks-capability-client = "0.41"
 # #1243), but still every definition a spec declares for clients and references
 # from nowhere (#1353), such as `vtc/storage/credentials/set`'s
 # SealedCredentialCleartext, which the console and `vta_sdk::openapi` read.
-trust-tasks-build = "0.2.2"
-trust-tasks-https = { version = "0.41", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-build = "0.3.0"
+trust-tasks-https = { version = "0.43", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -841,7 +841,7 @@ trust-tasks-https = { version = "0.41", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.41", default-features = false }
+trust-tasks-didcomm = { version = "0.43", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -860,7 +860,7 @@ trust-tasks-didcomm = { version = "0.41", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.41", default-features = false }
+trust-tasks-tsp = { version = "0.43", default-features = false }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
@@ -1084,7 +1084,7 @@ affinidi-rate-limit = "0.1.4"
 # against (ECDH-ES+A256KW + A256CBC-HS512 JWEs from `vta-sdk`'s light client).
 affinidi-messaging-didcomm = "0.16.0"
 # The in-process mediator for end-to-end tests; always with its TSP arm.
-affinidi-messaging-test-mediator = { version = "0.56", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.57", features = ["tsp"] }
 openmls_rust_crypto = "0.6"
 # Hidden vetting and community voting (`vti-vetting-pcs`, `vti-voting`, and
 # their hosts).

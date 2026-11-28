@@ -670,14 +670,14 @@ mod tests {
         );
         let own = &r.items[2];
         assert_eq!(own.record_type.as_str(), "authorization");
-        assert_eq!(own.authorized, Some(true));
-        assert_eq!(own.recognized, None);
+        assert_eq!(own.authorized.flatten(), Some(true));
+        assert_eq!(own.recognized.flatten(), None);
         assert_eq!(own.resource.as_str(), REPO);
         assert_eq!(own.authority_id.as_str(), TEST_VTC_DID);
         let member = &r.items[0];
         assert_eq!(member.record_type.as_str(), "recognition");
-        assert_eq!(member.recognized, Some(true));
-        assert_eq!(member.authorized, None);
+        assert_eq!(member.recognized.flatten(), Some(true));
+        assert_eq!(member.authorized.flatten(), None);
     }
 
     #[tokio::test]
@@ -688,9 +688,9 @@ mod tests {
             .unwrap();
         assert_eq!(r.items.len(), 3, "{r:?}");
         assert!(
-            r.items
-                .iter()
-                .any(|i| i.action.as_str() == "git.repo.own" && i.authorized == Some(true))
+            r.items.iter().any(
+                |i| i.action.as_str() == "git.repo.own" && i.authorized.flatten() == Some(true)
+            )
         );
     }
 

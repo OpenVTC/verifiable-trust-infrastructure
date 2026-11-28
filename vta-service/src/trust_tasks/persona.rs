@@ -1199,7 +1199,12 @@ pub(super) async fn handle_profile_put(
     if let Some(id) = &req.profile_id {
         profile.profile_id = id.to_string();
     }
-    profile.credential_refs = req.credential_refs.iter().map(|c| (**c).clone()).collect();
+    profile.credential_refs = req
+        .credential_refs
+        .iter()
+        .flatten()
+        .map(|c| (**c).clone())
+        .collect();
     // Through the wire spelling: the generated enum is `#[non_exhaustive]`,
     // and a reach this build cannot read must be refused, not widened to
     // anywhere.
@@ -1980,8 +1985,17 @@ pub(super) async fn handle_binding_set(
     }
 
     let ctx = req.context_id.to_string();
-    let profile_id = req.profile_id.as_ref().map(|p| p.to_string());
-    let public = req.public_entries.iter().map(|e| e.to_string()).collect();
+    let profile_id = req
+        .profile_id
+        .as_ref()
+        .and_then(|p| p.as_ref())
+        .map(|p| p.to_string());
+    let public = req
+        .public_entries
+        .iter()
+        .flatten()
+        .map(|e| e.to_string())
+        .collect();
     let until = req.until.map(|u| u.to_rfc3339());
     let s = store(state);
     // Named, or the persona the holder already uses here (§9.7). Never minted:
@@ -2935,7 +2949,11 @@ pub(super) async fn handle_local_binding_set(
     }
 
     let persona = req.persona_did.to_string();
-    let profile_id = req.profile_id.as_ref().map(|p| p.to_string());
+    let profile_id = req
+        .profile_id
+        .as_ref()
+        .and_then(|p| p.as_ref())
+        .map(|p| p.to_string());
     let until = req.until.map(|u| u.to_rfc3339());
     let s = store(state);
     if let Some(refused) = refuse_binding(
@@ -3023,11 +3041,18 @@ pub(super) async fn handle_disclosure_preview(
         return reject(&doc, e);
     }
 
-    let requested: Option<Vec<String>> = if req.requested_claims.is_empty() {
-        None
-    } else {
-        Some(req.requested_claims.iter().map(|c| c.to_string()).collect())
-    };
+    let requested: Option<Vec<String>> =
+        if req.requested_claims.as_ref().is_none_or(|c| c.is_empty()) {
+            None
+        } else {
+            Some(
+                req.requested_claims
+                    .iter()
+                    .flatten()
+                    .map(|c| c.to_string())
+                    .collect(),
+            )
+        };
 
     let preview = match store(state)
         .create_preview(
@@ -3547,7 +3572,11 @@ pub(super) async fn handle_contact_put(
             &subject.to_string(),
             &persona.to_string(),
             document,
-            req.credential_refs.iter().map(|c| c.to_string()).collect(),
+            req.credential_refs
+                .iter()
+                .flatten()
+                .map(|c| c.to_string())
+                .collect(),
             &change,
         )
         .await

@@ -134,7 +134,7 @@ fn check_target(url: &str, got: &str, method: &str) -> Result<(), VtcError> {
 pub async fn put_part(target: &WriteTarget, part: &[u8]) -> Result<(), VtcError> {
     check_target(&target.url, &target.method.to_string(), "PUT")?;
     let mut req = storage_client()?.put(&target.url);
-    for (name, value) in &target.headers {
+    for (name, value) in target.headers.iter().flatten() {
         req = req.header(name.as_str(), value.as_str());
     }
     let res = req
@@ -163,7 +163,7 @@ pub async fn get_range(
         return Ok(Vec::new());
     }
     let mut req = storage_client()?.get(&target.url);
-    for (name, value) in &target.headers {
+    for (name, value) in target.headers.iter().flatten() {
         req = req.header(name.as_str(), value.as_str());
     }
     let res = req

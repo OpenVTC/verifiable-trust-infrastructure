@@ -496,7 +496,7 @@ pub async fn check_invite(
         ));
     }
     // A step-up credential confers nothing (invite 0.2, conformance item 3).
-    if payload.role.is_some() || !payload.scopes.is_empty() {
+    if payload.role.is_some() || payload.scopes.as_ref().is_some_and(|s| !s.is_empty()) {
         return Err(AppError::Validation(
             "a `stepUp` invite carries no `role` and no `scopes`".into(),
         )

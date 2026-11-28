@@ -119,11 +119,11 @@ pub fn tally<'a>(
                 let mut sums: BTreeMap<&str, (i64, u64)> =
                     opts.iter().map(|o| (*o, (0, 0))).collect();
                 for a in answers {
-                    if a.scores.is_empty() {
+                    if a.scores.as_ref().is_none_or(|s| s.is_empty()) {
                         abstained += 1;
                         continue;
                     }
-                    for (k, v) in &a.scores {
+                    for (k, v) in a.scores.iter().flatten() {
                         let e = sums.entry(k.as_str()).or_default();
                         e.0 = e.0.saturating_add(*v);
                         e.1 += 1;

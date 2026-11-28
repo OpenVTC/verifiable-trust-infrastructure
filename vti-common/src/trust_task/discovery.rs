@@ -88,7 +88,12 @@ pub fn respond_v0_4<'a>(
     served: impl IntoIterator<Item = &'a str>,
     query: &v0_4::Payload,
 ) -> v0_4::Response {
-    let patterns: Vec<&str> = query.patterns.iter().map(|p| p.as_str()).collect();
+    let patterns: Vec<&str> = query
+        .patterns
+        .iter()
+        .flatten()
+        .map(|p| p.as_str())
+        .collect();
     v0_4::Response::builder()
         .acceptance_window(VTI_ACCEPTANCE_WINDOW.advertised())
         .supported_types(
@@ -108,7 +113,12 @@ pub fn respond_v0_3<'a>(
     served: impl IntoIterator<Item = &'a str>,
     query: &v0_3::Payload,
 ) -> v0_3::Response {
-    let patterns: Vec<&str> = query.patterns.iter().map(|p| p.as_str()).collect();
+    let patterns: Vec<&str> = query
+        .patterns
+        .iter()
+        .flatten()
+        .map(|p| p.as_str())
+        .collect();
     v0_3::Response::builder()
         .acceptance_window(VTI_ACCEPTANCE_WINDOW.advertised_v0_3())
         .supported_types(

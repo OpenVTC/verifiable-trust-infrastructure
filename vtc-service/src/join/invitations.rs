@@ -656,8 +656,8 @@ pub(crate) async fn deliver(
             Channel::Message => spec::ResponseChannel::Message,
             Channel::Offer => spec::ResponseChannel::Offer,
         })
-        // An absent offer is an empty map: the generated type omits it then.
-        .offer(returned_offer.unwrap_or_default())
+        // No offer for a `message` delivery: the member is left out.
+        .offer(returned_offer)
         .expires_at(expires_at)
         .try_into()
         .map_err(|e| AppError::Internal(format!("build deliver response: {e}")))?;

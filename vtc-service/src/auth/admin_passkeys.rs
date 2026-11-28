@@ -341,7 +341,12 @@ pub(crate) async fn register_finish(
         .as_ref()
         .map(|l| l.to_string())
         .unwrap_or_default();
-    let transports = payload.credential.response.transports.clone();
+    let transports = payload
+        .credential
+        .response
+        .transports
+        .clone()
+        .unwrap_or_default();
 
     let _guard = ADMIN_PASSKEY_LOCK.lock().await;
 
