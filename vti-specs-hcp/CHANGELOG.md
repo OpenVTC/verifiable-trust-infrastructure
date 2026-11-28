@@ -2,6 +2,32 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.1.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-hcp-v0.1.0...vti-specs-hcp-v0.1.1) — 2026-11-28
+
+
+### Added
+
+- **hcp**: Pin the hcp/* 0.1 suite in vti-specs-hcp (A1) ([#2859](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2859))
+
+HCP V0 task A1 (docs/05-design-notes/hcp-tasks.md): pins the seven hcp/*
+  0.1 tasks V0 speaks in vti-specs-hcp: hcp/grants/{request,revoke,revoked},
+  hcp/entries/{query,create}, hcp/audit/read and hcp/disclosures/summary. The
+  bundles are as published at trusttasks.org, digests in the lock, and
+  trust-tasks-build 0.3.0 generates every one. vti-specs re-exports the family
+  as vti_specs::hcp and merges its index; the six generated tables stay
+  disjoint.
+
+  Pinned is not served: nothing dispatches an hcp/* task until A8 wires the
+  handlers behind the `hcp` feature. The one census that holds every pinned
+  request URI, vti-mcp-common's verb classification, gains `revoked`
+  (hcp/grants/revoked, a provider's revocation notice) as mutating, beside
+  `granted` and `notice`.
+
+  The suite is `draft`, so a version may change in place upstream:
+  `trust-tasks -C vti-specs-hcp check` is what says a re-pin still matches.
+
+
+
 ## [0.1.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/releases/tag/vti-specs-hcp-v0.1.0) — 2026-11-28
 
 
