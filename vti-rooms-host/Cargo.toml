@@ -1,7 +1,7 @@
 [package]
 name = "vti-rooms-host"
 description = "The rooms/* Trust Task handlers a data-room host serves, shared by every host behind one RoomHost trait"
-version = "0.7.0"
+version = "0.7.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,7 +18,7 @@ vti-rooms = { path = "../vti-rooms", version = "0.42" }
 # The one chain verifier, and nomination checks for `rooms/owner/claim`.
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.44" }
 # `AppError`, `KeyspaceHandle` and the verification-method resolver.
-vti-common = { path = "../vti-common", version = "0.71" }
+vti-common = { path = "../vti-common", version = "0.72" }
 # The outcome every handler returns and the refusal helpers, so a host's spine
 # renders these answers exactly as it renders its own.
 vti-trust-task-server = { path = "../vti-trust-task-server", version = "0.17" }

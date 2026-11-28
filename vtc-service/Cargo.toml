@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.36.0"
+version = "0.37.0"
 edition.workspace = true
 # Published, so an operator can install the VTC with `cargo install
 # vtc-service` (the `vtc` binary), the way `pnm-cli` and `cnm-cli` are installed.
@@ -181,7 +181,7 @@ path = "tests/it/main.rs"
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", version = "0.28", optional = true }
-vti-voting = { path = "../vti-voting", version = "0.24", optional = true }
+vti-voting = { path = "../vti-voting", version = "0.25", optional = true }
 predicate-credential-system = { workspace = true, optional = true }
 # The community's audit-event vocabulary, over vti-common's envelope and writer.
 vtc-audit = { path = "../vtc-audit", version = "0.7", features = ["openapi"] }
@@ -189,7 +189,7 @@ vti-rooms = { path = "../vti-rooms", version = "0.42" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.44" }
 # The `rooms/*` handlers, shared with room-host behind one `RoomHost` trait (#2575).
 vti-rooms-host = { path = "../vti-rooms-host", version = "0.7" }
-vti-common = { path = "../vti-common", version = "0.71", features = [
+vti-common = { path = "../vti-common", version = "0.72", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -249,7 +249,7 @@ png = "0.18"
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.44" }
-vta-sdk = { path = "../vta-sdk", version = "0.95", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.96", features = [
   "didcomm",
   "session",
   "config-session",

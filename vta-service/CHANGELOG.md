@@ -2,6 +2,91 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.89.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.88.0...vta-service-v0.89.0) — 2026-11-28
+
+
+### Added
+
+- **vta**: Self-register the VTA's DID with a DID hosting service and keep the account alive ([#2848](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2848))
+
+* feat(vta): self-register the VTA's DID with a third-party DID hosting service
+
+  Pins did-management/account/{register,renew,status,expiry-notice}/0.1 and
+  server/info/0.2 (vti-specs-core) and adds the VTA side of guest
+  self-registration:
+
+  - WebvhHostClient: server_info (and an anonymous, unsigned form for a VTA
+    with no identity yet), register_account (invite admission + optional
+    referral, over HTTPS only), renew_account, account_status, and
+    for_server_offline. The account tasks' refusal codes map to statuses an
+    operator can act on. The invite halves never reach a Debug string.
+  - Outbound::rest_only: a reply to an issuer whose DID does not resolve yet
+    can only come back as the HTTPS response.
+  - register_did_with_server takes an optional admission: with one it sends
+    account/register instead of did/register, keeping the record flip,
+    concurrency check and audit.
+  - Setup: create_webvh gains an optional [vta_did.hosting] block. Before
+    minting, setup checks the host's server/info (the domain admits invites,
+    the path is under one of its prefixes, matched on whole segments); after
+    minting it registers the DID, so a bad invite fails setup immediately.
+  - The stub webvh host serves server/info/0.2 and account/register, renew
+    and status, schema-checked; a round-trip test drives the real client.
+
+- **vta-service**: Run a VTA inside another application's process ([#2841](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2841))
+
+* feat(vta-service): run a VTA inside another process
+
+  - server::run_with + RunOptions: an external shutdown token replaces the
+    OS signal handler (and its process::exit), and a pre-bound REST listener
+    replaces binding config.server.host:port. run() keeps its signature.
+  - metrics::install is idempotent, so a VTA restarted in one process does
+    not panic installing the global recorder twice.
+  - The setup engine (apply_inputs, WizardInputs, SetupUi) moves into the
+    library as vta_service::setup, behind the setup feature, which now
+    carries vti-common/cli-synthesis. The dialoguer wizard stays in the
+    binary as setup_wizard.
+
+
+
+### Build & CI
+
+- Trust-tasks 0.43, trust-tasks-build 0.3.0, affinidi-messaging-sdk 0.52, mediator 0.57 ([#2849](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2849))
+
+* build!: trust-tasks 0.43, trust-tasks-build 0.3.0, affinidi-messaging-sdk 0.52, mediator 0.57
+
+  Moves the workspace to trust-tasks-rs / -capability-client / -https /
+  -didcomm / -tsp 0.43 and trust-tasks-build 0.3.0, the first releases
+  carrying the hcp/* Trust Task suite (HCP V0 needs them; hcp-plan.md §5),
+  with affinidi-tdk 0.51 / affinidi-messaging-sdk 0.52 and the mediator 0.57
+  crates in lockstep, so the graph keeps one trust-tasks-rs.
+
+  trust-tasks-build 0.3.0 keeps member presence in generated payload types
+  (trust-tasks-tf #1385): an optional array or object is now Option<_> and an
+  optional nullable member Option<Option<_>>. Every reader keeps its previous
+  meaning (an absent array is read as the empty one was, and null as absent).
+  Three silent changes the compiler did not flag are handled:
+
+  - A builder given an empty Vec now sends `[]` where the member used to be
+    left out. The senders that can be empty leave it out again: the mobile
+    engine's and the SDK's auth `scope`, WebAuthn `clientExtensionResults`,
+    and the invitation `offer` of a `message` delivery.
+  - `.iter()` over a member that became Option<Vec<_>> yields the whole Vec
+    once when the closure is generic. rooms/owner/revoke read its withdrawals
+    this way and refused every one ("a withdrawal of no known kind"); it now
+    flattens.
+  - A typed consume validates the payload as received (trust-tasks-tf #1398):
+    a forbidden `null` on an optional member is refused malformedRequest.
+
+  Two readers still treat `null` as absent where the specification makes it
+  clear the value (vtc/members/update `label`, persona/binding/set
+  `profileId`); fixing them is a behaviour change, left to its own PR.
+
+  Cargo.lock stays on the published 0.41 graph: it is regenerated once
+  affinidi-tdk-rs publishes messaging-sdk 0.52 / affinidi-tdk 0.51 and the
+  mediator publishes 0.57.
+
+
+
 ## [0.88.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.87.2...vta-service-v0.88.0) — 2026-11-27
 
 

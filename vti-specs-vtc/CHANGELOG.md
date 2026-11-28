@@ -2,6 +2,64 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.9.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.9.0...vti-specs-vtc-v0.9.1) — 2026-11-28
+
+
+### Added
+
+- **vtc**: Events publish/cancel 0.2, partner withdrawal, invitation revoke ([#2850](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2850))
+
+Closes the three phase-2 gaps the divergence register records
+  (dtgwg-vti-spec Appendix F.5b), served from trust-tasks-tf #1407:
+
+  - vtc/events/publish/0.2 and cancel/0.2 answer the 0.2 Event, with its
+    invitation mode, members-may-invite and partners (VTI-EVT-100, 130);
+    0.1 is no longer served.
+  - registrations/withdraw/0.2 accepts a partner member's presentation,
+    verified before the event is looked up, as register does (VTI-EVT-037,
+    135).
+  - vtc/events/invitations/revoke/0.1: a host revokes an invitation; it
+    stops widening the audience, the events sweeper withdraws its
+    notification, a registration stands, and the kept record stops the
+    invitation mode inviting them again (VTI-EVT-103). Console: Revoke.
+
+  withdraw/0.2's in-place bundle change taken with trust-tasks update.
+
+- **vtc**: Community events phase 2 — invitations, links, opt-outs, announcements, partners, the event notification ([#2846](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2846))
+
+Implements VTI-EVT-100 – 135 and the `event` notification kind (VTI-NTF-064 – 067).
+
+  - Pins vtc/events/{create,update,show,list,mine/list,registrations/*} at 0.2 (0.1 no longer
+    served) and the new 0.1 tasks invitations/{send,list,respond}, invitations/links/{create,
+    revoke,redeem}, optouts/{set,list}, announcements/{send,list}.
+  - Invitations: one per member per event carrying the member's answer (going/maybe register,
+    decline registers nothing); audience invitations under `invite: notify|expect` by the events
+    sweeper; host and member invitations widen who may see the event; links with 256-bit codes
+    kept only as their SHA-256 digest, answered once and not recorded for redelivery, every
+    failure `linkInvalid`; opt-outs per event and per calendar.
+  - The `event` notification: the notice row first, the events sweeper its only sender through
+    the durable member push; a revision per sequence change, a withdrawal on cancel, revocation or
+    leaving the audience; the invitee re-checked before each offering revision; membership,
+    directory and group changes kick the sweeper. `vta_sdk::notifications::KIND_EVENT`.
+  - Announcements: no sequence change, never in a notification, per-event daily limit.
+  - Partners: audience.partners checked (partnerInvalid); a partner's member's presentation is
+    verified before the event is looked up (elections::presentation, now built without `voting`);
+    partner registrants keyed by DID and counted as othersGoing, never on the roster.
+  - Console: invite mode, members-may-invite and partners in the editor; an Invitations tab
+    (invitations, invite, links shown once, announcements). Portal: an Invitations tab, opt-outs,
+    announcements on the event page, `#/events/join/<code>`.
+
+  Known gaps against the specification, reported for the divergence register: publish/0.1 and
+  cancel/0.1 answer the event without invite, membersMayInvite and audience.partners (no 0.2
+  versions exist); a partner's member cannot withdraw (withdraw/0.2 carries no presentation,
+  VTI-EVT-037/135); a host cannot revoke an invitation (VTI-EVT-103, no task).
+
+- **vtc**: Community events, phase 1 — calendars, events, registrations, hosts ([#2840](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2840))
+
+* wip(vtc): events phase 1 groundwork (capability, keyspace, domain module, pins)
+
+
+
 ## [0.9.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-specs-vtc-v0.8.2...vti-specs-vtc-v0.9.0) — 2026-11-27
 
 
