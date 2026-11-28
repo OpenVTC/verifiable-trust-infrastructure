@@ -2,7 +2,7 @@
 name = "vti-specs-hcp"
 description = "VTI's generated Trust Task wire types: the hcp/* family (Human Context Protocol), at the versions trust-tasks.lock pins"
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 # Published, because `vta-hcp` will depend on it and is in `vta-service`'s
 # published closure (feature `hcp`): a published crate's whole closure must be.

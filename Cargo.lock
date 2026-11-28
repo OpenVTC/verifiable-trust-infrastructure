@@ -2929,7 +2929,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.63.0"
+version = "0.63.1"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "base64 0.23.1",
@@ -8182,7 +8182,7 @@ dependencies = [
 
 [[package]]
 name = "pnm-cli"
-version = "0.69.0"
+version = "0.69.1"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -12095,7 +12095,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.89.0"
+version = "0.89.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-bbs",
@@ -12846,7 +12846,7 @@ dependencies = [
 
 [[package]]
 name = "vti-specs"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "trust-tasks-rs",
  "vti-specs-core",
@@ -12867,7 +12867,7 @@ dependencies = [
 
 [[package]]
 name = "vti-specs-hcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "trust-tasks-build",
  "trust-tasks-rs",
