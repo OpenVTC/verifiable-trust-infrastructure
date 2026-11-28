@@ -47,6 +47,7 @@ registry = "https://trusttasks.org"
 "vta/dids/list" = "0.1"
 "vta/dids/methods/list" = "0.1"
 "vta/health/details" = "0.1"
+"vta/hosting-account/get" = "0.1"
 "vta/management/reload-services" = "1.0"
 "vta/memory/delete" = ["0.1", "0.2", "0.3"]
 "vta/memory/get" = ["0.1", "0.2"]

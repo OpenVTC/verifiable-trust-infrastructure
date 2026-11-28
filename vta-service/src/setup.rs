@@ -49,6 +49,14 @@ pub trait SetupUi {
     /// path. The interactive wizard prompts for a path (offering its own
     /// default) so the operator can place it wherever the hosting tool expects.
     fn did_log_path(&self, label: &str, default: &Path) -> Option<PathBuf>;
+
+    /// One progress or summary line for the operator (empty for a blank
+    /// line). The default writes it to stderr, as `vta setup` always has; an
+    /// application that runs setup under its own interface — a TUI, where
+    /// stderr would draw over the screen — captures it instead.
+    fn progress(&self, line: &str) {
+        eprintln!("{line}");
+    }
 }
 
 /// Non-interactive [`SetupUi`] for `vta setup --from <file>`: never displays

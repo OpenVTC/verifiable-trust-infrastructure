@@ -3059,6 +3059,11 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     hosting_account::TASK_ACCOUNT_EXPIRY_NOTICE_0_1 => hosting_account::handle_expiry_notice
         [ Mutating None false ],
+    // The VTA's principal reads that account (state, dates, last notice, last
+    // error). Read-only; `refresh` reads the host's view without renewing.
+    #[cfg(feature = "webvh")]
+    hosting_account::TASK_VTA_HOSTING_ACCOUNT_GET_0_1 => hosting_account::handle_get
+        [ None Metadata false ],
     // ─── Rooms: watching for a client (`rooms/keys/watch/0.1`) ────
     // `actsAsSubject`: arms `rooms/watch` at the host as the member, presenting the
     // member's own `read`. Mutating: keeps one record per armed watch until it fires, is

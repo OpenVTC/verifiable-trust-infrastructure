@@ -2046,3 +2046,45 @@ async fn hosting_account_refresh_and_expiry_notices() {
 
     mock.shutdown().await;
 }
+
+/// `vta/hosting-account/get/0.1` through the real client: `registered: false`
+/// for a VTA that never self-registered; with a record, the record (and with
+/// `refresh`, the host's view read through `account/status`).
+#[tokio::test]
+async fn hosting_account_get_round_trips() {
+    use vta_service::hosting_account::{self, HostingAccountRecord};
+    use vta_test_support::STUB_WEBVH_SERVER_DID;
+
+    const GET: &str = "https://trusttasks.org/spec/vta/hosting-account/get/0.1";
+    let mock = MockVta::start_with_webvh_host().await;
+    let client = signing_client(&mock, 0x31, "admin", vec![]).await;
+
+    let none = client
+        .dispatch_trust_task(GET, serde_json::json!({}), 10)
+        .await
+        .expect("get with no account");
+    assert_eq!(none["registered"], false);
+    assert!(none.get("hosting").is_none());
+
+    hosting_account::store(
+        &mock.ctx.state.service_state_ks,
+        &HostingAccountRecord::registered(
+            MockVta::WEBVH_SERVER_ID,
+            STUB_WEBVH_SERVER_DID,
+            "webvh-host.test",
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let refreshed = client
+        .dispatch_trust_task(GET, serde_json::json!({ "refresh": true }), 10)
+        .await
+        .expect("get with refresh");
+    assert_eq!(refreshed["registered"], true);
+    assert_eq!(refreshed["hosting"]["serverDid"], STUB_WEBVH_SERVER_DID);
+    assert_eq!(refreshed["hosting"]["account"]["state"], "active");
+
+    mock.shutdown().await;
+}

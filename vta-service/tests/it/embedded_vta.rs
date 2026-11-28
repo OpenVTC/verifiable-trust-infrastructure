@@ -19,9 +19,9 @@ async fn set_up(root: &std::path::Path, admin: &str) -> AppConfig {
         config_path = {config:?}
         data_dir    = {data:?}
         vta_name    = "embedded"
-        # Setup requires one with REST on; an embedded VTA's real REST URL is a
-        # loopback port picked at each start, which nothing should advertise.
-        public_url  = "http://127.0.0.1"
+        # An embedded VTA's REST is a loopback port picked at each start, which
+        # nothing advertises.
+        rest_local_only = true
         admin_did   = {admin:?}
 
         [services]
