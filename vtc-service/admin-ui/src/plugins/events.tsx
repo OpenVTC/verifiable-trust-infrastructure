@@ -30,6 +30,12 @@ import {
   STATUS_LABEL,
   appointHost,
   cancelEvent,
+  createLink,
+  listAnnouncements,
+  listInvitations,
+  revokeLink,
+  sendAnnouncement,
+  sendInvitations,
   createCalendar,
   createEvent,
   decideRegistration,
@@ -394,6 +400,10 @@ interface Form {
   countThreshold: number;
   listed: boolean;
   reminders: string;
+  invite: "none" | "notify" | "expect";
+  membersMayInvite: boolean;
+  /** Partner communities' DIDs, one per line (VTI-EVT-130). */
+  partners: string;
 }
 
 const A11Y_LABELS = [
@@ -444,6 +454,9 @@ function blankForm(calendarId: string): Form {
     countThreshold: 5,
     listed: true,
     reminders: "1440, 60",
+    invite: "none",
+    membersMayInvite: false,
+    partners: "",
   };
 }
 
@@ -498,7 +511,18 @@ function formOf(ev: CommunityEvent): Form {
     countThreshold: ev.countThreshold ?? 5,
     listed: ev.listed,
     reminders: (ev.suggestedReminderMinutes ?? []).join(", "),
+    invite: ev.invite ?? "none",
+    membersMayInvite: !!ev.membersMayInvite,
+    partners: (ev.audience.partners ?? []).join("\n"),
   };
+}
+
+/** The partner DIDs a form names, one per line. */
+function partnersOf(f: Form): string[] {
+  return f.partners
+    .split(/\s+/)
+    .map((p) => p.trim())
+    .filter((p) => p.startsWith("did:"));
 }
 
 const utcOf = (local: string) => (local ? new Date(local).toISOString().replace(/\.\d{3}Z$/, "Z") : undefined);
@@ -520,6 +544,7 @@ function draftOf(f: Form): EventDraft {
     ...(f.scope === "groups" ? { groups: f.groups } : {}),
     ...(f.scope === "roles" ? { roles: f.roles } : {}),
     ...(f.useRule ? { rule: wireRule(f.rule) } : {}),
+    ...(partnersOf(f).length ? { partners: partnersOf(f) } : {}),
   };
   const cap = Number(f.capacity);
   const a11y = Object.fromEntries(Object.entries(f.a11y).filter(([, v]) => v));
@@ -552,6 +577,8 @@ function draftOf(f: Form): EventDraft {
     listed: f.listed,
     ...(Object.keys(a11y).length || f.a11yNotes ? { accessibility: { ...a11y, ...(f.a11yNotes ? { notes: f.a11yNotes } : {}) } } : {}),
     suggestedReminderMinutes: parseMinutes(f.reminders),
+    invite: f.invite,
+    membersMayInvite: f.membersMayInvite,
   } as EventDraft;
 }
 
@@ -758,6 +785,38 @@ function EventForm({
           <span className="checkbox-text">Narrow it further by a rule (tenure, a verified field, personhood)</span>
         </label>
         {f.useRule && <RuleEditor value={f.rule} onChange={(rule) => set({ rule })} className="span-2" />}
+        <Field
+          label="Partner communities"
+          hint="Their members may come too, each proving it with their own membership. One DID per line. The partner decides whom it tells."
+          className="span-2"
+        >
+          <textarea
+            aria-label="Partner communities"
+            rows={2}
+            value={f.partners}
+            onChange={(e) => set({ partners: e.target.value })}
+            placeholder="did:webvh:…"
+          />
+        </Field>
+      </div>
+
+      <h3>Invitations</h3>
+      <div className="form-grid">
+        <Field label="Invite the audience" hint="Invitations are notifications that name the event and its time, never its title.">
+          <select aria-label="Invite the audience" value={f.invite} onChange={(e) => set({ invite: e.target.value as Form["invite"] })}>
+            <option value="none">No: members find it themselves</option>
+            <option value="notify">Yes: invite everyone it is for</option>
+            <option value="expect">Yes, and expect a reply</option>
+          </select>
+        </Field>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={f.membersMayInvite}
+            onChange={(e) => set({ membersMayInvite: e.target.checked })}
+          />
+          <span className="checkbox-text">Members may invite others it is for</span>
+        </label>
       </div>
 
       <h3>Registration</h3>
@@ -920,7 +979,7 @@ function QuestionsField({ questions, onChange }: { questions: Question[]; onChan
 
 // ─── one event ────────────────────────────────────────────────────────────
 
-type Tab = "details" | "registrations" | "hosts";
+type Tab = "details" | "registrations" | "invitations" | "hosts";
 
 function EventPage() {
   const { id = "" } = useParams();
@@ -1029,6 +1088,7 @@ function EventPage() {
           [
             ["details", "Details"],
             ["registrations", "Registrations"],
+            ["invitations", "Invitations"],
             ["hosts", "Hosts"],
           ] as const
         ).map(([t, label]) => (
@@ -1089,6 +1149,7 @@ function EventPage() {
         </>
       )}
       {tab === "registrations" && <RegistrationsTab eventId={eventId} />}
+      {tab === "invitations" && <InvitationsTab eventId={eventId} published={ev.status === "published"} />}
       {tab === "hosts" && <HostsTab eventId={eventId} />}
     </>
   );
@@ -1152,7 +1213,11 @@ function RegistrationsTab({ eventId }: { eventId: string }) {
         {items.map((r) => (
           <tr key={r.registrationId}>
             <td>
-              <EntryName entryId={r.entryId} faces={faces} />
+              {r.entryId ? (
+                <EntryName entryId={r.entryId} faces={faces} />
+              ) : (
+                <span title={r.registrantDid}>A partner's member</span>
+              )}
             </td>
             <td>
               {STATUS_LABEL[r.status]}
@@ -1247,5 +1312,198 @@ function HostsTab({ eventId }: { eventId: string }) {
         ))}
       </ul>
     </section>
+  );
+}
+
+const ANSWER_LABEL: Record<string, string> = {
+  none: "Not answered",
+  going: "Going",
+  maybe: "Maybe",
+  declined: "Declined",
+};
+
+const INVITER_LABEL: Record<string, string> = {
+  audience: "The community",
+  host: "A host",
+  member: "A member",
+  link: "A link",
+};
+
+/** Invitations, invitation links and announcements (VTI-EVT-103 – 107, 120). */
+function InvitationsTab({ eventId, published }: { eventId: string; published: boolean }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const faces = useEntryFaces();
+  const [filter, setFilter] = useState("");
+  const [linkLabel, setLinkLabel] = useState("");
+  const [linkUses, setLinkUses] = useState(25);
+  const [code, setCode] = useState<string | null>(null);
+  const [links, setLinks] = useState<{ linkId: string; label?: string; revokedAt?: string }[]>([]);
+  const [text, setText] = useState("");
+  const invKey = [...EVENTS_KEY, "invitations", eventId];
+  const annKey = [...EVENTS_KEY, "announcements", eventId];
+  const invitations = useQuery({ queryKey: invKey, queryFn: () => listInvitations(eventId), retry: false });
+  const announcements = useQuery({ queryKey: annKey, queryFn: () => listAnnouncements(eventId), retry: false });
+  const invite = useMutation({
+    mutationFn: (entryId: string) => sendInvitations(eventId, [entryId]),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: invKey }),
+    onError: (err) => toast.pushFromError(err, "The invitation was not sent"),
+  });
+  const makeLink = useMutation({
+    mutationFn: () =>
+      createLink(eventId, linkUses, new Date(Date.now() + 14 * 86400_000).toISOString().replace(/\.\d{3}Z$/, "Z"), linkLabel || undefined),
+    onSuccess: (r) => {
+      setCode(r.code);
+      setLinks((l) => [{ linkId: r.link.linkId, label: r.link.label }, ...l]);
+      setLinkLabel("");
+    },
+    onError: (err) => toast.pushFromError(err, "The link was not made"),
+  });
+  const dropLink = useMutation({
+    mutationFn: (linkId: string) => revokeLink(eventId, linkId),
+    onSuccess: (link) => setLinks((l) => l.map((x) => (x.linkId === link.linkId ? { ...x, revokedAt: link.revokedAt } : x))),
+    onError: (err) => toast.pushFromError(err, "The link was not revoked"),
+  });
+  const announce = useMutation({
+    mutationFn: () => sendAnnouncement(eventId, text.trim()),
+    onSuccess: () => {
+      setText("");
+      void qc.invalidateQueries({ queryKey: annKey });
+    },
+    onError: (err) => toast.pushFromError(err, "The announcement was not posted"),
+  });
+  const invited = new Set((invitations.data ?? []).map((i) => i.entryId));
+  const candidates = [...faces.entries()]
+    .filter(([id]) => !invited.has(id))
+    .filter(([, f]) => filter && faceMatches(f, filter))
+    .sort(byFace)
+    .slice(0, 8);
+  const joinUrl = code ? `${window.location.origin}/members/#/events/join/${encodeURIComponent(code)}` : null;
+  return (
+    <>
+      <section className="card form-stack">
+        <h3>Invitations</h3>
+        <p className="muted">
+          An invitation is a notification naming the event and its time, never its title. A member a host invites may see
+          the event even outside its audience; nobody is registered until they say so.
+        </p>
+        {!published && <p className="muted">Publish the event to invite anyone.</p>}
+        <DataTable
+          caption="Invitations"
+          columns={[
+            { key: "who", label: "Member" },
+            { key: "by", label: "Invited by" },
+            { key: "answer", label: "Answer" },
+          ]}
+        >
+          {invitations.isSuccess && (invitations.data ?? []).length === 0 && (
+            <tr>
+              <td colSpan={3}>
+                <EmptyState title="Nobody is invited yet" />
+              </td>
+            </tr>
+          )}
+          {(invitations.data ?? []).map((i) => (
+            <tr key={i.invitationId}>
+              <td>
+                <EntryName entryId={i.entryId} faces={faces} />
+              </td>
+              <td>{INVITER_LABEL[i.invitedBy] ?? i.invitedBy}</td>
+              <td>
+                {ANSWER_LABEL[i.answer] ?? i.answer}
+                {i.replyExpected && i.answer === "none" ? " · reply expected" : ""}
+                {i.revoked ? " · revoked" : ""}
+              </td>
+            </tr>
+          ))}
+        </DataTable>
+        {published && (
+          <>
+            <Field label="Invite a member">
+              <input
+                type="search"
+                aria-label="Invite a member"
+                placeholder="Find a member by name or DID…"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+            </Field>
+            <ul className="ev-hosts">
+              {candidates.map(([id, f]) => (
+                <li key={id}>
+                  {f.name ?? id}
+                  <button type="button" className="secondary" onClick={() => invite.mutate(id)}>
+                    <UserPlus size={14} aria-hidden="true" /> Invite
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
+      {published && (
+        <section className="card form-stack">
+          <h3>Invitation links</h3>
+          <p className="muted">
+            Anyone who is an active member and follows the link is invited, as if a host had invited them. The code is shown
+            once, now; the community keeps only its digest.
+          </p>
+          <div className="form-grid">
+            <Field label="Label">
+              <input aria-label="Link label" value={linkLabel} onChange={(e) => setLinkLabel(e.target.value)} placeholder="Flyer at the library" />
+            </Field>
+            <Field label="Uses">
+              <input aria-label="Link uses" type="number" min={1} max={10000} value={linkUses} onChange={(e) => setLinkUses(Number(e.target.value) || 1)} />
+            </Field>
+          </div>
+          <button type="button" className="secondary" onClick={() => makeLink.mutate()}>
+            <Plus size={14} aria-hidden="true" /> Make a link (expires in 14 days)
+          </button>
+          {joinUrl && (
+            <p className="ev-code" role="status">
+              Share this link now — it is not shown again: <code>{joinUrl}</code>
+            </p>
+          )}
+          <ul className="ev-hosts">
+            {links.map((l) => (
+              <li key={l.linkId}>
+                {l.label ?? l.linkId}
+                {l.revokedAt ? (
+                  <span className="muted"> · revoked</span>
+                ) : (
+                  <button type="button" className="ghost" onClick={() => dropLink.mutate(l.linkId)}>
+                    Revoke
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <section className="card form-stack">
+        <h3>Announcements</h3>
+        <p className="muted">
+          Registrants read announcements on the event. They never change its time or place, and their text is never in a
+          notification.
+        </p>
+        {published && (
+          <>
+            <Field label="Announce">
+              <textarea aria-label="Announcement" rows={2} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)} />
+            </Field>
+            <button type="button" disabled={!text.trim()} onClick={() => announce.mutate()}>
+              Post announcement
+            </button>
+          </>
+        )}
+        <ul className="ev-announcements">
+          {(announcements.data ?? []).map((a) => (
+            <li key={a.announcementId}>
+              <span className="muted">{new Date(a.createdAt).toLocaleString()}</span> {a.text}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </>
   );
 }

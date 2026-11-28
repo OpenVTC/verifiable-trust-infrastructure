@@ -617,6 +617,10 @@ const MUTATING_VERBS: &[&str] = &[
     // `vtc/events/hosts/appoint`: grants a member `vtc.events.manage` at one event, an
     // appointment its granter answers for (VTI-EVT-070). Withdrawn by `hosts/remove`.
     "appoint",
+    // `vtc/events/invitations/respond`: the invitee answers an invitation — `going` or
+    // `maybe` registers them as `registrations/register` does, `decline` records the answer
+    // (VTI-EVT-104). Undone by withdrawing or answering again.
+    "respond",
     // `notifications/notify`, `notifications/relay`: a counterparty's delivery, which may
     // be held — replacing a lower revision of the same notification, never anything else.
     "notify",

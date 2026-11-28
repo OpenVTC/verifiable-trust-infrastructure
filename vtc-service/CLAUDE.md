@@ -1175,10 +1175,14 @@ When adding a flow, add it here and a line to the root index.
   `admin-ui/src/plugins/badges.tsx`, `admin-ui/src/members/Badges.tsx`.
 - **Docs**: `docs/03-vtc/badges.md`, `docs/05-design-notes/vtc-badges.md`.
 
-### VTC community events (`vtc/events/*`, VTI-EVT-001 – 095)
+### VTC community events (`vtc/events/*`, VTI-EVT-001 – 135)
 - **What**: Calendars (the community's own, made on first need, and one per group), events
-  in them, registrations, hosts by appointment, and reports (`crate::community_events`,
-  records in the `events` keyspace, backed up). Phase 1 of `docs/05-design-notes/vtc-events.md`.
+  in them, registrations, hosts by appointment, reports, invitations (audience, host, member,
+  link), opt-outs, announcements, partner communities, and the `event` notification kind
+  (`crate::community_events`, records in the `events` keyspace, backed up). Phases 1 – 2 of
+  `docs/05-design-notes/vtc-events.md`. `create`/`update`/`show`/`list`/`mine/list`/
+  `registrations/*` are served at 0.2 only; `publish`/`cancel` (0.1) answer the event without
+  `invite`, `membersMayInvite` or `audience.partners`, which their 0.1 schema does not admit.
 - **Invariants to preserve**: the **roster setting is fixed at publish** — an update that
   changes it on a published event is `rosterLocked`, never parked — and every registration
   records the setting it was made under (VTI-EVT-051/052). **Access details are released, not
@@ -1205,15 +1209,39 @@ When adding a flow, add it here and a line to the root index.
   match `community_events::resolve_local` — keep the two in step. Never show an access detail,
   answer or roster the API did not return. The Type URIs are spelled out in full in both API
   modules (the list-limit census matches the literal) and listed in
-  `tests/it/trust_task_manifest.rs`; the console's wire types are the `Events*01` wrappers in
+  `tests/it/trust_task_manifest.rs`; the console's wire types are the `Events*01` / `Events*02` wrappers in
   `vta_sdk::openapi`, listed in `routes::openapi_spec`.
+- **Invitations and the `event` kind** (`community_events::invitations`, VTI-EVT-100 – 110,
+  VTI-NTF-064 – 067): one invitation per member per event, carrying the member's `answer`
+  (`respond`: going/maybe register through `register_as`, decline registers nothing). A host's,
+  a member's or a link's invitation widens who may see the event (`visible_event`); the audience
+  sweep (`invitations::settle`, run by the events sweeper and kicked by `community_events::kick()`
+  from `admin_events::notify` and event writes) invites the audience under `notify`/`expect`,
+  skipping registered, invited and opted-out members. **The notice row is written before
+  anything is sent, and `settle` is its only sender** (`push_signed`), as for elections: a
+  revision per `sequence` change, a withdrawal on cancel, revocation or leaving the audience,
+  and the invitee re-checked before every offering revision. The notification carries only the
+  community, event id, `show/0.2`, audience DID and period — never a title, place or
+  announcement. Link codes are 256 random bits, kept only as their SHA-256 digest, answered
+  once (`SECRET_RESPONSES`: the response is not recorded for redelivery), and every failure is
+  the one `linkInvalid`.
+- **Announcements** (VTI-EVT-120): no `sequence` change, but `updated_at` moves; text never in
+  a notification; read by hosts and live registrants only (`notRegistered` otherwise); within
+  `[events] announcements_per_day` per event (invitations: `invitations_per_day` per inviter).
+- **Partners** (VTI-EVT-130 – 135): `audience.partners` must each be an active member party with
+  a current VMC and unrevoked slot, or a relationship counterparty in force (`partnerInvalid`).
+  A partner's member's presentation is checked with `elections::presentation` **before** the
+  event is looked up (`indeterminate` the same whatever the event); they register under their
+  DID (`registrantDid`), never appear on the roster (`othersGoing` counts them), and a partner
+  gets one notification at its own DID.
 - **Reports** reach the action list as a queue item (`Act::EventReportReview`, kind
   `events.report.review`, one per event while open, `admin_actions::queues::raise_event_report`):
   approve upholds (`community_events::uphold_reports` cancels the event), decline dismisses;
   the reporter is never on the item.
-- **Not yet**: invitations and the `event` notification kind,
-  the VTA calendar (`vta/calendar/*`), check-in, meetings, booking pages — see the design note.
-- **Code**: `vtc-service/src/community_events/{mod,hosts,policy}.rs`,
+- **Not yet**: the VTA calendar (`vta/calendar/*`), check-in, meetings, booking pages — see
+  the design note. Within phase 2: a host cannot revoke an invitation (no task), and a partner's
+  member cannot withdraw (`withdraw/0.2` carries no presentation).
+- **Code**: `vtc-service/src/community_events/{mod,hosts,policy,invitations}.rs`,
   `vtc-service/src/trust_tasks/community_event_tasks.rs` (not `event_tasks.rs`, which is the
   console's live channel), `vtc-service/policies/default/events.rego`,
   `vtc-service/tests/it/community_events.rs`.

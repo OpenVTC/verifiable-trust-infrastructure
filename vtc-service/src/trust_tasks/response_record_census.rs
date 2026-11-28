@@ -157,6 +157,7 @@ fn token_bearing_responses_are_not_recorded() {
         super::backup_tasks::INITIATE_EXPORT_TYPE,
         super::backup_tasks::INITIATE_IMPORT_TYPE,
         super::badge_tasks::CLAIMS_CREATE_TYPE,
+        super::community_event_tasks::LINKS_CREATE_TYPE,
         crate::git_ns::tasks::SECRET_RESPONSES[0],
     ] {
         assert!(

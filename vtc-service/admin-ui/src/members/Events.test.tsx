@@ -14,10 +14,16 @@ vi.mock("./directory-api", async (orig) => ({
 }));
 
 import { DirectoryError } from "./directory-api";
-import { EventPage, EventsPage } from "./Events";
+import { EventPage, EventsPage, JoinEventPage } from "./Events";
 import {
   EVENTS_ACCESS_TASK,
+  EVENTS_ANNOUNCEMENTS_TASK,
   EVENTS_CALENDARS_TASK,
+  EVENTS_INVITATIONS_TASK,
+  EVENTS_OPTOUT_LIST_TASK,
+  EVENTS_OPTOUT_SET_TASK,
+  EVENTS_REDEEM_TASK,
+  EVENTS_RESPOND_TASK,
   EVENTS_LIST_TASK,
   EVENTS_MINE_TASK,
   EVENTS_REGISTER_TASK,
@@ -27,6 +33,7 @@ import {
   eventHref,
 } from "./events-api";
 import { eventsAttention, eventsStatus } from "./home-status";
+import { routeOf } from "./Portal";
 
 const EVENT_ID = "evt_W5k2N8xRb3Qz7TpLAAAAAA";
 const CAL = "cal_C0mmunityCalendarAAAA";
@@ -206,5 +213,88 @@ describe("the home tile", () => {
 
   it("says nothing is coming up", () => {
     expect(eventsStatus(read([]) as never, now)).toEqual({ text: "Nothing coming up", tone: "muted" });
+  });
+});
+
+describe("invitations (VTI-EVT-104, 107, 110, 120)", () => {
+  const CODE = "c".repeat(43);
+  const invitation = (extra: object = {}) => ({
+    invitationId: "inv_1nvitation00000000AAAA",
+    eventId: EVENT_ID,
+    entryId: ENTRY,
+    invitedBy: "host",
+    replyExpected: true,
+    answer: "none",
+    createdAt: "2099-11-02T09:00:00Z",
+    ...extra,
+  });
+  const ref = { eventId: EVENT_ID, title: "Intro to Soldering", when: event().when, status: "published", sequence: 0 };
+
+  it("answers an invitation from the Invitations tab", async () => {
+    answer({
+      [EVENTS_CALENDARS_TASK]: { items: [] },
+      [EVENTS_LIST_TASK]: { items: [] },
+      [EVENTS_MINE_TASK]: { items: [] },
+      [EVENTS_INVITATIONS_TASK]: { items: [{ invitation: invitation(), event: ref }] },
+      [EVENTS_OPTOUT_LIST_TASK]: { items: [] },
+      [EVENTS_RESPOND_TASK]: { invitation: invitation({ answer: "maybe" }) },
+    });
+    renderPage(<EventsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Invitations/ }));
+    expect(await screen.findByText("Reply expected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    await waitFor(() => expect(sent(EVENTS_RESPOND_TASK)).toEqual([{ eventId: EVENT_ID, answer: "maybe" }]));
+  });
+
+  it("shows a withdrawn invitation without answers", async () => {
+    answer({
+      [EVENTS_CALENDARS_TASK]: { items: [] },
+      [EVENTS_LIST_TASK]: { items: [] },
+      [EVENTS_MINE_TASK]: { items: [] },
+      [EVENTS_INVITATIONS_TASK]: { items: [{ invitation: invitation({ revoked: true }), event: ref }] },
+      [EVENTS_OPTOUT_LIST_TASK]: { items: [] },
+    });
+    renderPage(<EventsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: /Invitations/ }));
+    expect(await screen.findByText("Withdrawn")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Going" })).toBeNull();
+  });
+
+  it("routes an invitation link and redeems it", async () => {
+    expect(routeOf(`#/events/join/${CODE}`)).toEqual({ page: "join-event", code: CODE });
+    expect(routeOf("#/events/join/short")).toEqual({ page: "home" });
+    answer({ [EVENTS_REDEEM_TASK]: { invitation: invitation({ invitedBy: "link" }), event: ref } });
+    renderPage(<JoinEventPage code={CODE} />);
+    expect(await screen.findByText(/You're invited to Intro to Soldering/)).toBeTruthy();
+    expect(sent(EVENTS_REDEEM_TASK)).toEqual([{ code: CODE }]);
+    expect(screen.getByRole("link", { name: "See the event" }).getAttribute("href")).toBe(eventHref(EVENT_ID));
+  });
+
+  it("says a refused link can't be used, whatever the reason", async () => {
+    answer({
+      [EVENTS_REDEEM_TASK]: () => {
+        throw new DirectoryError("linkInvalid", "No.", {});
+      },
+    });
+    renderPage(<JoinEventPage code={CODE} />);
+    expect(await screen.findByText("This link can't be used")).toBeTruthy();
+  });
+
+  it("shows the hosts' announcements and opts out of the event", async () => {
+    answer({
+      [EVENTS_SHOW_TASK]: { event: event(), myRegistration: registration() },
+      [EVENTS_ACCESS_TASK]: { eventId: EVENT_ID, access: {}, sequence: 0 },
+      [EVENTS_ANNOUNCEMENTS_TASK]: {
+        items: [{ announcementId: "ann_1", eventId: EVENT_ID, text: "Bring safety glasses.", createdAt: "2099-11-03T09:00:00Z" }],
+      },
+      [EVENTS_OPTOUT_LIST_TASK]: { items: [] },
+      [EVENTS_OPTOUT_SET_TASK]: { optOut: { scope: "event", eventId: EVENT_ID, createdAt: "2099-11-03T09:00:00Z" } },
+    });
+    renderPage(<EventPage eventId={EVENT_ID} />);
+    expect(await screen.findByText(/Bring safety glasses\./)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Don't invite me to this" }));
+    await waitFor(() =>
+      expect(sent(EVENTS_OPTOUT_SET_TASK)).toEqual([{ scope: "event", eventId: EVENT_ID, optedOut: true }]),
+    );
   });
 });

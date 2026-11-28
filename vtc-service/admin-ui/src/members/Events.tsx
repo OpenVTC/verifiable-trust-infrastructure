@@ -2,6 +2,7 @@
 //
 //   #/events          What's on: upcoming events you may come to, filtered by calendar; the
 //                     events you registered for; a month at a glance.
+//   #/events/join/<code>  An invitation link: redeemed, then the event it invites to.
 //   #/events/<id>     One event: its details and accessibility, its roster setting, registering,
 //                     changing and withdrawing, where it happens once you are going, who else is
 //                     going on a visible roster, adding it to your calendar, reporting it.
@@ -30,8 +31,15 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { dateTile, formatWhen, icsFor, startOf, viewerZone, zoneNote } from "@/lib/event-time";
 
 import {
+  ANSWER_WORDS,
   REPORT_REASONS,
   STATUS_WORDS,
+  listAnnouncements,
+  listInvitations,
+  listOptOuts,
+  redeemLink,
+  respond,
+  setOptOut,
   eventHref,
   eventsHref,
   listCalendars,
@@ -44,6 +52,9 @@ import {
   showEvent,
   withdraw,
   type AccessDetails,
+  type InvitationAnswer,
+  type InvitationItem,
+  type OptOut,
   type CommunityEvent,
   type ListedEvent,
   type MyRegistration,
@@ -54,7 +65,7 @@ import { DirectoryError } from "./directory-api";
 import { Crumbs } from "./member-card";
 import "./events.css";
 
-type Tab = "upcoming" | "mine" | "month";
+type Tab = "upcoming" | "mine" | "invited" | "month";
 
 const EVENTS_KEY = ["events"] as const;
 
@@ -165,6 +176,8 @@ export function EventsPage() {
     retry: false,
   });
   const mine = useQuery({ queryKey: [...EVENTS_KEY, "mine"], queryFn: listMine, retry: false });
+  const invited = useQuery({ queryKey: [...EVENTS_KEY, "invitations"], queryFn: listInvitations, retry: false });
+  const waiting = (invited.data ?? []).filter((i) => i.invitation.answer === "none" && !i.invitation.revoked).length;
   const items = upcoming.data ?? [];
   return (
     <main className="home" id="main">
@@ -182,6 +195,7 @@ export function EventsPage() {
           [
             ["upcoming", "Upcoming"],
             ["mine", "Mine"],
+            ["invited", "Invitations"],
             ["month", "Month"],
           ] as const
         ).map(([id, label]) => (
@@ -190,6 +204,7 @@ export function EventsPage() {
             {id === "mine" && mine.data && mine.data.filter((m) => m.registration.status === "pending").length > 0 && (
               <span className="ev-tab-count">{mine.data.filter((m) => m.registration.status === "pending").length}</span>
             )}
+            {id === "invited" && waiting > 0 && <span className="ev-tab-count">{waiting}</span>}
           </button>
         ))}
       </div>
@@ -254,8 +269,169 @@ export function EventsPage() {
           </div>
         </section>
       )}
+      {tab === "invited" && <Invitations items={invited.data ?? []} pending={invited.isPending} error={invited.error} />}
       {tab === "month" && <Month items={items} />}
     </main>
+  );
+}
+
+/** The member's invitations, answered in place (VTI-EVT-104), and their opt-outs (VTI-EVT-110). */
+function Invitations({
+  items,
+  pending,
+  error,
+}: {
+  items: InvitationItem[];
+  pending: boolean;
+  error: unknown;
+}) {
+  const qc = useQueryClient();
+  const [problem, setProblem] = useState<string | null>(null);
+  const optOuts = useQuery({ queryKey: [...EVENTS_KEY, "optouts"], queryFn: listOptOuts, retry: false });
+  const answer = useMutation({
+    mutationFn: ({ eventId, a }: { eventId: string; a: InvitationAnswer }) => respond({ eventId, answer: a }),
+    onSuccess: () => {
+      setProblem(null);
+      void qc.invalidateQueries({ queryKey: EVENTS_KEY });
+    },
+    onError: (e) => setProblem(refusal(e)),
+  });
+  const undo = useMutation({
+    mutationFn: (o: OptOut) =>
+      setOptOut(o.scope, (o.scope === "event" ? o.eventId : o.calendarId) ?? "", false),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: [...EVENTS_KEY, "optouts"] }),
+  });
+  return (
+    <section className="bw-section" aria-label="Your invitations">
+      <p className="muted">
+        An invitation never registers you. Going or maybe registers you; declining tells the hosts you won't come.
+      </p>
+      {pending && <p className="muted">Loading…</p>}
+      {Boolean(error) && <p className="muted">{refusal(error)}</p>}
+      {!pending && !error && items.length === 0 && <p className="muted">No invitations.</p>}
+      {problem && (
+        <p className="muted" role="alert">
+          {problem}
+        </p>
+      )}
+      <div className="ev-list">
+        {items.map(({ invitation: i, event }) => (
+          <div key={i.invitationId} className="ev-card">
+            {event && <DateTile ev={event} />}
+            <div className="ev-card-body">
+              <h3>
+                <a href={eventHref(i.eventId)}>{event?.title ?? i.eventId}</a>
+                {i.replyExpected && i.answer === "none" && <span className="pill pill-warn">Reply expected</span>}
+              </h3>
+              {event && (
+                <p className="ev-meta">
+                  <span>
+                    <Clock size={13} aria-hidden="true" /> {formatWhen(event.when)}
+                  </span>
+                </p>
+              )}
+            </div>
+            <div className="ev-card-side">
+              {i.revoked ? (
+                <span className="pill">Withdrawn</span>
+              ) : (
+                <div className="ev-answers" role="group" aria-label={`Answer ${event?.title ?? "the invitation"}`}>
+                  {(["going", "maybe", "decline"] as const).map((a) => (
+                    <button
+                      key={a}
+                      type="button"
+                      className={(a === "decline" ? "declined" : a) === i.answer ? "on" : "secondary"}
+                      onClick={() => answer.mutate({ eventId: i.eventId, a })}
+                    >
+                      {a === "decline" ? "Decline" : ANSWER_WORDS[a]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      {(optOuts.data ?? []).length > 0 && (
+        <>
+          <h2>You opted out of</h2>
+          <ul className="ev-optouts">
+            {optOuts.data!.map((o) => (
+              <li key={`${o.scope}:${o.eventId ?? o.calendarId}`}>
+                {o.scope === "event" ? "One event" : "A calendar"}{" "}
+                <span className="muted">({o.eventId ?? o.calendarId})</span>{" "}
+                <button type="button" className="ghost" onClick={() => undo.mutate(o)}>
+                  Hear about it again
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** `#/events/join/<code>`: redeem an invitation link, then go to the event (VTI-EVT-107). */
+export function JoinEventPage({ code }: { code: string }) {
+  const redeem = useQuery({ queryKey: [...EVENTS_KEY, "join", code], queryFn: () => redeemLink(code), retry: false });
+  return (
+    <main className="home" id="main">
+      <Crumbs trail={[{ label: "Events", href: eventsHref }, { label: "Invitation" }]} />
+      <section className="welcome">
+        <p className="eyebrow">Invitation</p>
+        {redeem.isPending && <p className="muted">Checking the link…</p>}
+        {redeem.isError && (
+          <>
+            <h1>This link can't be used</h1>
+            <p className="lead">It may have expired, been used up or withdrawn, or you already used it.</p>
+          </>
+        )}
+        {redeem.isSuccess && (
+          <>
+            <h1>You're invited to {redeem.data.event.title}</h1>
+            <p className="lead">{formatWhen(redeem.data.event.when)}</p>
+            <a className="button" href={eventHref(redeem.data.event.eventId)}>
+              See the event
+            </a>
+          </>
+        )}
+      </section>
+    </main>
+  );
+}
+
+/** An event's announcements, to its registrants (VTI-EVT-120). */
+function Announcements({ eventId }: { eventId: string }) {
+  const q = useQuery({ queryKey: [...EVENTS_KEY, "announcements", eventId], queryFn: () => listAnnouncements(eventId), retry: false });
+  if (!q.isSuccess || q.data.length === 0) return null;
+  return (
+    <section className="card ev-announcements" aria-label="Announcements">
+      <h2>From the hosts</h2>
+      <ul>
+        {q.data.map((a) => (
+          <li key={a.announcementId}>
+            <span className="muted">{new Date(a.createdAt).toLocaleString()}</span> {a.text}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Stop invitations to this event, or start them again (VTI-EVT-110). */
+function OptOutButton({ eventId }: { eventId: string }) {
+  const qc = useQueryClient();
+  const optOuts = useQuery({ queryKey: [...EVENTS_KEY, "optouts"], queryFn: listOptOuts, retry: false });
+  const out = (optOuts.data ?? []).some((o) => o.scope === "event" && o.eventId === eventId);
+  const toggle = useMutation({
+    mutationFn: () => setOptOut("event", eventId, !out),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: [...EVENTS_KEY, "optouts"] }),
+  });
+  return (
+    <button type="button" className="ghost" onClick={() => toggle.mutate()}>
+      {out ? "Hear about this event again" : "Don't invite me to this"}
+    </button>
   );
 }
 
@@ -463,6 +639,7 @@ export function EventPage({ eventId }: { eventId: string }) {
               </ul>
             </section>
           )}
+          <Announcements eventId={ev.eventId} />
           <ReportForm eventId={ev.eventId} />
         </div>
         <aside className="ev-aside">
@@ -471,6 +648,7 @@ export function EventPage({ eventId }: { eventId: string }) {
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => downloadIcs(ev, placeForIcs)}>
             <CalendarPlus size={14} aria-hidden="true" /> Add to calendar
           </button>
+          <OptOutButton eventId={ev.eventId} />
         </aside>
       </div>
     </main>

@@ -6,8 +6,12 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ANNOUNCEMENTS_LIST,
+  ANNOUNCEMENTS_SEND,
   CALENDARS_LIST,
   CREATE,
+  INVITATIONS_LIST,
+  LINKS_CREATE,
   HOSTS_LIST,
   LIST,
   REGISTRATIONS_DECIDE,
@@ -160,6 +164,60 @@ describe("the Events page", () => {
       expect(sentPayloads(requests, REGISTRATIONS_DECIDE)).toEqual([
         { registrationId: "reg_R3g1stration00000AAAA", decision: "approve" },
       ]),
+    );
+  });
+});
+
+describe("the Invitations tab (VTI-EVT-103, 107, 120)", () => {
+  const CODE = "k".repeat(43);
+  it("lists invitations, shows a new link's code once, and posts an announcement", async () => {
+    const requests = mockFetch([
+      ...ROUTES,
+      taskRoute(SHOW, { event: event({ status: "published", invite: "notify" }) }),
+      taskRoute(INVITATIONS_LIST, {
+        items: [
+          {
+            invitation: {
+              invitationId: "inv_1nvitation00000000AAAA",
+              eventId: EVENT_ID,
+              entryId: ENTRY,
+              invitedBy: "audience",
+              replyExpected: false,
+              answer: "going",
+              createdAt: "2099-11-02T09:00:00Z",
+            },
+          },
+        ],
+      }),
+      taskRoute(ANNOUNCEMENTS_LIST, { items: [] }),
+      taskRoute(LINKS_CREATE, {
+        link: { linkId: "lnk_L1nk00000000000000AAAA", eventId: EVENT_ID, label: "Flyer", maxRedemptions: 25, redemptions: 0, expiresAt: "2099-12-01T00:00:00Z", createdAt: "2099-11-02T09:00:00Z" },
+        code: CODE,
+      }),
+      taskRoute(ANNOUNCEMENTS_SEND, {
+        announcement: { announcementId: "ann_1", eventId: EVENT_ID, text: "Bring glasses.", createdAt: "2099-11-03T09:00:00Z" },
+      }),
+    ]);
+    renderWithProviders(<Events />, {
+      route: `/events/${EVENT_ID}`,
+      path: "/events/*",
+      whoami: whoamiWith(["vtc.events.manage"]),
+    });
+    fireEvent.click(await screen.findByRole("tab", { name: "Invitations" }));
+    expect(await screen.findByText("Going")).toBeTruthy();
+    expect(screen.getByText("The community")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Link label"), { target: { value: "Flyer" } });
+    fireEvent.click(screen.getByRole("button", { name: /Make a link/ }));
+    expect(await screen.findByText(new RegExp(`#/events/join/${CODE}`))).toBeTruthy();
+    const made = sentPayloads(requests, LINKS_CREATE)[0] as Record<string, unknown>;
+    expect(made).toMatchObject({ eventId: EVENT_ID, maxRedemptions: 25, label: "Flyer" });
+    expect(String(made.expiresAt)).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+
+    fireEvent.change(screen.getByLabelText("Announcement"), { target: { value: "Bring glasses." } });
+    fireEvent.click(screen.getByRole("button", { name: "Post announcement" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, ANNOUNCEMENTS_SEND)).toEqual([{ eventId: EVENT_ID, text: "Bring glasses." }]),
     );
   });
 });

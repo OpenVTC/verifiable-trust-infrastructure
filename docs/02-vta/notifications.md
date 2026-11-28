@@ -124,6 +124,18 @@ holds no record of them. The notification names the community (`heldBy`), the `e
 At the VTC the notice is recorded before it is sent and the election sweeper is its only
 sender, through the durable member push (`docs/03-vtc/elections.md`).
 
+## The event kind
+
+A community notifies a member it invites to an event (VTI-NTF-064 – 067): the notification
+names the community (`heldBy`), the event id, `vtc/events/show/0.2`, the member's DID
+(`audience`) and the event's period, and nothing else — never the title, the place or an
+announcement. A change of time or place sends a higher revision; cancelling, revoking the
+invitation or the member leaving the event's audience withdraws it. A partner community named
+in an event's audience gets one notification at its own DID, which it may relay to its members
+(`relayable`); relaying discloses that the relayer is a member of the community holding the event, or a partner it named (VTI-NTF-066). At the VTC
+the notice is recorded before it is sent and the events sweeper is its only sender
+(`docs/03-vtc/events.md`).
+
 A VTC that receives a notification holds it by its own stated policy and relays it to its
 members only when an administrator decides to, after being shown what a relay discloses — for an
 election, that the community is a member of the one holding it (VTI-NTF-046). The

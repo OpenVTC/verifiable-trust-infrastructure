@@ -636,6 +636,8 @@ async fn reported_event(state: &AppState) -> (String, String) {
         listed: true,
         accessibility: None,
         suggested_reminder_minutes: Vec::new(),
+        invite: Default::default(),
+        members_may_invite: false,
         sequence: 0,
         cancel_reason: None,
         published_at: Some(now),
