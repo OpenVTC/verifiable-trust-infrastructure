@@ -368,6 +368,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 bip39 = { workspace = true }
 ed25519-dalek = { workspace = true }
+chrono-tz = { workspace = true }
 hex = { workspace = true }
 keyring-core = { workspace = true, optional = true }
 uuid = { workspace = true }

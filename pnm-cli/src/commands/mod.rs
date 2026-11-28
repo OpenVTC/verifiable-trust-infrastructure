@@ -17,6 +17,7 @@ pub(crate) mod auth_credential;
 pub(crate) mod backup;
 pub(crate) mod boards;
 pub(crate) mod bootstrap;
+pub(crate) mod calendar;
 pub(crate) mod collection;
 pub(crate) mod config;
 pub(crate) mod consent;

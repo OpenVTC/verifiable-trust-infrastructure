@@ -2742,3 +2742,51 @@ mod envelope_push_tests {
         );
     }
 }
+
+/// Ring the doorbell of every device bound in `context` that has a wake channel — a content-free
+/// `push/wake` (the handle and the mediator, nothing else), so the device connects and reads
+/// what is due from this VTA (VTI-CAL-043: nothing that passes a mediator or a push service
+/// names the event, its community or the principal). Best-effort, never retried: what the device
+/// would have been told stays in the calendar it reads. A device with no wake channel is left
+/// alone — there is no queued document for its mediator to ring for.
+pub(crate) async fn wake_devices_in_context(state: &AppState, context: &str) {
+    #[cfg(feature = "didcomm")]
+    {
+        let entries = match vti_common::acl::list_acl_entries(&state.acl_ks).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "calendar wake: the access-control list could not be read");
+                return;
+            }
+        };
+        let configured = {
+            let cfg = state.config.read().await;
+            cfg.messaging.as_ref().map(|m| m.mediator_did.clone())
+        };
+        let now = now_epoch();
+        for entry in entries {
+            let Some(device) = entry.device.as_ref() else {
+                continue;
+            };
+            if !device.push_capable() || entry.is_expired(now) || !entry.act_scope().covers(context)
+            {
+                continue;
+            }
+            let Some(mediator) = approver_mediator(
+                &entry.did,
+                configured.as_deref(),
+                state.did_resolver.as_ref(),
+            )
+            .await
+            else {
+                continue;
+            };
+            let push = format!("calendar-wake:{}", Uuid::new_v4());
+            trigger_gateway_wake(state, &entry.did, &mediator, &push).await;
+        }
+    }
+    #[cfg(not(feature = "didcomm"))]
+    {
+        let _ = (state, context);
+    }
+}

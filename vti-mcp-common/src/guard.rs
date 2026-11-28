@@ -418,6 +418,8 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
 
 /// Final-segment verbs that only ever read.
 const READ_VERBS: &[&str] = &[
+    // `vta/calendar/export`: the calendar as iCalendar and the receipts kept; changes nothing.
+    "export",
     // `rooms/changed`: a host's one-way signal; `rooms/keys/changed`: the VTA passing one
     // on to the client that watched. Neither changes anything a client could ask for.
     "changed",
@@ -513,6 +515,9 @@ const READ_VERBS: &[&str] = &[
 
 /// Final-segment verbs that remove state or access.
 const DESTRUCTIVE_VERBS: &[&str] = &[
+    // `vta/calendar/alerts/clear`: drops an event's own reminders. Restorable by setting
+    // them again, but "clear" names removal in general, so it is held to the stricter list.
+    "clear",
     "delete",
     "purge",
     // `persona/attribute/purge-version`: destroys kept earlier values of an
@@ -614,6 +619,8 @@ const DESTRUCTIVE_VERBS: &[&str] = &[
 /// to `Mutating` without consulting it, so a runtime miss is safe and a
 /// census miss is loud.
 const MUTATING_VERBS: &[&str] = &[
+    // `vta/calendar/sync`: reads the principal's communities now and rewrites the calendar.
+    "sync",
     // `did-management/account/expiry-notice`: a DID host warns the VTA that its
     // self-registered account is about to be disabled, has been, or is about to be
     // purged; the VTA records it and renews.

@@ -68,6 +68,9 @@ pub struct Keyspaces<'a> {
     /// drops its setting, so a context created again under the id starts
     /// enabled (VTI-NTF-094).
     pub collection: &'a KeyspaceHandle,
+    /// The member's calendar ([`CALENDAR`]): a context's settings, entries, alerts,
+    /// receipts and sharing choices go with it, and it leaves every feed.
+    pub calendar: &'a KeyspaceHandle,
     #[cfg(feature = "webvh")]
     pub webvh: &'a KeyspaceHandle,
     /// `did:webs` DID records ([`WEBS`]), each naming its context. Not
@@ -417,6 +420,18 @@ pub const NOTIFICATIONS: &str = "notifications";
 /// eviction fight the claim exists to prevent (VTI-NTF-081).
 pub const COLLECTION: &str = "collection";
 
+/// The member's **calendar** (`vta/calendar/*`, VTI-CAL-001 – 071): per trust context, the
+/// settings (`set:<ctx>`), the events read from each community as the member
+/// (`ent:<ctx>\0<community>\0<eventId>`, with the reminders already fired), where each
+/// community's last read stands (`mark:<ctx>\0<community>`), the principal's own reminders
+/// (`alert:…`), kept receipts exactly as received (`rcpt:<ctx>\0<id>`, by digest
+/// `rcptdig:…`), the choices to share busy times (`busy:…`); and the feeds (`feed:<id>`,
+/// whose address is kept only as a digest, `feeddig:<digest>`).
+///
+/// In [`BACKED_UP`]: receipts are evidence the community will not hand out again
+/// (VTI-CAL-032), and settings, alerts and feeds are the principal's own choices.
+pub const CALENDAR: &str = "calendar";
+
 /// The watches this VTA holds for its principal's clients (`rooms/keys/watch/0.1`): one
 /// record per armed watch, keyed by a digest of (caller, member, host, room), holding
 /// exactly what Recipient item 6 lets it keep — the caller, the member, the room, the
@@ -477,6 +492,7 @@ pub const ALL: &[&str] = &[
     NOTIFICATIONS,
     COLLECTION,
     ROOM_KEY_WATCHES,
+    CALENDAR,
 ];
 
 /// Keyspaces a backup carries, **every row of each**, as a raw dump.
@@ -557,6 +573,9 @@ pub const BACKED_UP: &[&str] = &[
     // Who collects for each persona. A restored VTA without the claims would be
     // the second connection to every claimed persona (VTI-NTF-081).
     COLLECTION,
+    // Receipts the community will not hand out again (VTI-CAL-032), and the principal's
+    // calendar choices.
+    CALENDAR,
 ];
 
 /// Keyspaces deliberately **not** in a backup, each for a stated reason.
@@ -845,6 +864,11 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // (`rooms/keys/watch/0.1` Recipient item 7) within one pass, and every watch
         // lapses within 30 days.
         b"room_key_watches" => Orphaned,
+        // Calendar entries name the membership identifier they were read as, and a
+        // receipt the persona it was addressed to. Purged with their context; a lone DID
+        // deletion leaves them, and the next sync reads nothing as an identifier no
+        // membership credential names any more.
+        b"calendar" => Orphaned,
         // Persona is two scopes in one keyspace and only one half is DID-keyed:
         // a binding is keyed by the persona DID, and a contact records the
         // persona that knows it. Those should cascade (a context deletion takes
@@ -997,6 +1021,9 @@ pub const fn context_delete_effect(keyspace: &str) -> Option<ContextDeleteEffect
         // it (VTI-NTF-090), and so does its setting, so a context created again
         // under the id starts enabled (VTI-NTF-094).
         b"collection" => Purged,
+        // The context's calendar, and its place in every feed: a context created again
+        // under the id starts with sync off and nothing listed (VTI-CAL-001).
+        b"calendar" => Purged,
 
         // ---- Kept on purpose --------------------------------------------
         // Append-only; the record that a context was deleted must survive it.

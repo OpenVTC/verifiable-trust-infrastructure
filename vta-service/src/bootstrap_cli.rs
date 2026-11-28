@@ -1101,6 +1101,7 @@ pub async fn run_context_delete(
     let external_accounts_ks = cs.keyspace(crate::keyspaces::EXTERNAL_ACCOUNTS)?;
     let external_secrets_ks = cs.keyspace(crate::keyspaces::EXTERNAL_SECRETS)?;
     let collection_ks = cs.keyspace(crate::keyspaces::COLLECTION)?;
+    let calendar_ks = cs.keyspace(crate::keyspaces::CALENDAR)?;
     #[cfg(feature = "webvh")]
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
     let webs_ks = cs.keyspace(crate::keyspaces::WEBS)?;
@@ -1157,6 +1158,7 @@ pub async fn run_context_delete(
         external_accounts: &external_accounts_ks,
         external_secrets: &external_secrets_ks,
         collection: &collection_ks,
+        calendar: &calendar_ks,
         #[cfg(feature = "webvh")]
         webvh: &webvh_ks,
         webs: &webs_ks,

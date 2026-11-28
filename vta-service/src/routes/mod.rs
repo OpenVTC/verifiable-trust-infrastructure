@@ -4,6 +4,7 @@ mod auth;
 mod auth_portal;
 mod backup_blob;
 mod bootstrap;
+pub(crate) mod calendar_feed;
 #[cfg(feature = "webvh")]
 mod did_webvh;
 mod health;
@@ -311,6 +312,17 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     let did_log = did_log.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
     let did_log = rate_limit::apply(did_log, Limiter::DidLog, &extractor, &quotas);
 
+    // Private iCalendar feeds (VTI-OPS-111): a calendar application subscribes by URL and
+    // signs nothing, so this is a declared REST exception. The token in the path is the
+    // credential; unauthenticated, on its own limiter, body-capped like any GET here.
+    let calendar_feed = OpenApiRouter::new().route(
+        "/calendar/feeds/{token}",
+        get(calendar_feed::calendar_feed_handler),
+    );
+    let calendar_feed = calendar_feed.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
+    let calendar_feed =
+        rate_limit::apply(calendar_feed, Limiter::CalendarFeed, &extractor, &quotas);
+
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
     //  - It's NOT behind the rate-limit layer (operator may refresh
@@ -351,7 +363,8 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
 
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(unauth)
-        .merge(did_log);
+        .merge(did_log)
+        .merge(calendar_feed);
     let router = router.merge(auth_portal_router);
 
     // ACL, audit, config, contexts, did-templates and keys are Trust Tasks

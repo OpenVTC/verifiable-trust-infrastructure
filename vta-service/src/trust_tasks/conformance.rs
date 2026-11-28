@@ -3219,6 +3219,140 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 json!({ "notificationId": "ntf-9Lm4q2Wx8nT5", "revision": 1 })
             ),
         ),
+        // ─── vta/calendar/* (VTI-CAL-001 – 071) ──────────────────
+        (
+            uris::TASK_VTA_CALENDAR_LIST_0_1,
+            checked!(
+                specs::vta::calendar::list::v0_1::Payload,
+                specs::vta::calendar::list::v0_1::Response,
+                json!({ "contextIds": ["personal"], "from": TS, "tiers": ["mine"], "limit": 50 }),
+                json!({ "items": [cal_entry()], "nextCursor": "c1" })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_SYNC_0_1,
+            checked!(
+                specs::vta::calendar::sync::v0_1::Payload,
+                specs::vta::calendar::sync::v0_1::Response,
+                json!({ "contextId": "personal" }),
+                json!({ "results": [
+                    { "contextId": "personal", "community": CAL_COMMUNITY, "status": "read",
+                      "changed": 2, "lastReadAt": TS },
+                    { "contextId": "personal", "community": "did:web:other.example",
+                      "status": "refused", "code": "permissionDenied" }
+                ] })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_SETTINGS_SHOW_0_1,
+            checked!(
+                specs::vta::calendar::settings::show::v0_1::Payload,
+                specs::vta::calendar::settings::show::v0_1::Response,
+                json!({ "contextId": "personal" }),
+                json!({ "settings": cal_settings() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_SETTINGS_UPDATE_0_1,
+            checked!(
+                specs::vta::calendar::settings::update::v0_1::Payload,
+                specs::vta::calendar::settings::update::v0_1::Response,
+                json!({ "contextId": "personal", "sync": true, "quietHours": null }),
+                json!({ "settings": cal_settings() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_ALERTS_SET_0_1,
+            checked!(
+                specs::vta::calendar::alerts::set::v0_1::Payload,
+                specs::vta::calendar::alerts::set::v0_1::Response,
+                json!({ "contextId": "personal", "community": CAL_COMMUNITY,
+                        "eventId": CAL_EVENT, "reminderMinutes": [60, 10] }),
+                json!({ "alert": { "contextId": "personal", "community": CAL_COMMUNITY,
+                                   "eventId": CAL_EVENT, "reminderMinutes": [60, 10] } })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_ALERTS_CLEAR_0_1,
+            checked!(
+                specs::vta::calendar::alerts::clear::v0_1::Payload,
+                specs::vta::calendar::alerts::clear::v0_1::Response,
+                json!({ "contextId": "personal", "community": CAL_COMMUNITY, "eventId": CAL_EVENT }),
+                json!({ "contextId": "personal", "community": CAL_COMMUNITY,
+                        "eventId": CAL_EVENT, "changed": true })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_FEEDS_CREATE_0_1,
+            checked!(
+                specs::vta::calendar::feeds::create::v0_1::Payload,
+                specs::vta::calendar::feeds::create::v0_1::Response,
+                json!({ "label": "Phone", "contextIds": ["personal"], "expiresAt": TS,
+                        "detail": "titles", "tiers": ["mine"] }),
+                json!({ "feed": cal_feed(),
+                        "url": "https://vta.example/calendar/feeds/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.ics" })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_FEEDS_LIST_0_1,
+            checked!(
+                specs::vta::calendar::feeds::list::v0_1::Payload,
+                specs::vta::calendar::feeds::list::v0_1::Response,
+                json!({ "includeRevoked": true, "limit": 20 }),
+                json!({ "items": [cal_feed()] })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_FEEDS_REVOKE_0_1,
+            checked!(
+                specs::vta::calendar::feeds::revoke::v0_1::Payload,
+                specs::vta::calendar::feeds::revoke::v0_1::Response,
+                json!({ "feedId": "feed_AAAAAAAAAAAAAAAAAAAAAA" }),
+                json!({ "feed": cal_feed() })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_EXPORT_0_1,
+            checked!(
+                specs::vta::calendar::export::v0_1::Payload,
+                specs::vta::calendar::export::v0_1::Response,
+                json!({ "contextIds": ["personal"], "includeReceipts": true }),
+                json!({ "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n",
+                        "receipts": [cal_receipt()] })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_RECEIPTS_LIST_0_1,
+            checked!(
+                specs::vta::calendar::receipts::list::v0_1::Payload,
+                specs::vta::calendar::receipts::list::v0_1::Response,
+                json!({ "contextId": "personal", "community": CAL_COMMUNITY }),
+                json!({ "items": [cal_receipt()] })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_RECEIPTS_DEPOSIT_0_1,
+            checked!(
+                specs::vta::calendar::receipts::deposit::v0_1::Payload,
+                specs::vta::calendar::receipts::deposit::v0_1::Response,
+                json!({ "contextId": "personal",
+                        "document": { "type": "https://trusttasks.org/spec/vtc/events/registrations/register/0.2#response" } }),
+                json!({ "receipt": cal_receipt(), "alreadyKept": false })
+            ),
+        ),
+        (
+            uris::TASK_VTA_CALENDAR_BUSY_SHARE_0_1,
+            checked!(
+                specs::vta::calendar::busy::share::v0_1::Payload,
+                specs::vta::calendar::busy::share::v0_1::Response,
+                json!({ "contextId": "personal",
+                        "target": { "holder": CAL_COMMUNITY, "pageId": "office-hours" },
+                        "enabled": true }),
+                json!({ "share": { "contextId": "personal",
+                                   "target": { "holder": CAL_COMMUNITY, "pageId": "office-hours" },
+                                   "enabled": true } })
+            ),
+        ),
         // ─── vta/collection/* ────────────────────────────────────
         (
             uris::TASK_VTA_COLLECTION_CLAIM_0_1,
@@ -7304,6 +7438,70 @@ pub(super) fn request_payload_for(uri: &str) -> Option<Value> {
 }
 
 // ─── The sweep ───────────────────────────────────────────────────────────
+
+// ─── vta/calendar/* fixtures ────────────────────────────────────────────
+
+const CAL_COMMUNITY: &str = "did:webvh:QmCommunity:vtc.example.org";
+const CAL_EVENT: &str = "evt_AAAAAAAAAAAAAAAA";
+
+fn cal_entry() -> Value {
+    json!({
+        "contextId": "personal",
+        "community": CAL_COMMUNITY,
+        "eventId": CAL_EVENT,
+        "tier": "mine",
+        "period": { "startsAt": TS, "endsAt": TS },
+        "identifier": "did:webvh:QmMember:member.example",
+        "event": {
+            "eventId": CAL_EVENT,
+            "title": "Soldering night",
+            "when": { "start": "2026-12-03T19:00:00", "timeZone": "Europe/Berlin", "duration": "PT2H" },
+            "status": "published",
+            "sequence": 1
+        },
+        "registrationStatus": "going",
+        "reminders": [60],
+        "reminderSource": "default",
+        "readAt": TS,
+        "overlaps": false
+    })
+}
+
+fn cal_settings() -> Value {
+    json!({
+        "contextId": "personal",
+        "sync": true,
+        "defaultReminderMinutes": [60],
+        "quietHours": { "startsAt": "22:00", "endsAt": "07:00", "timeZone": "Europe/Berlin" },
+        "updatedAt": TS,
+        "updatedBy": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+    })
+}
+
+fn cal_feed() -> Value {
+    json!({
+        "feedId": "feed_AAAAAAAAAAAAAAAAAAAAAA",
+        "label": "Phone",
+        "contextIds": ["personal"],
+        "detail": "titles",
+        "tiers": ["mine"],
+        "createdAt": TS,
+        "expiresAt": TS,
+        "fetchCount": 0
+    })
+}
+
+fn cal_receipt() -> Value {
+    json!({
+        "receiptId": "rcpt_AAAAAAAAAAAAAAAAAAAAAA",
+        "contextId": "personal",
+        "community": CAL_COMMUNITY,
+        "eventId": CAL_EVENT,
+        "replyType": "https://trusttasks.org/spec/vtc/events/registrations/register/0.2#response",
+        "receivedAt": TS,
+        "document": { "type": "https://trusttasks.org/spec/vtc/events/registrations/register/0.2#response" }
+    })
+}
 
 /// Coverage: the witness table and the derived census agree exactly, in both
 /// directions. A sibling stream rebinding a URI onto a published spec lands

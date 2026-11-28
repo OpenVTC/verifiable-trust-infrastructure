@@ -17,6 +17,11 @@ pub mod audit;
 /// `descriptor_deps_from_app_state` below), and the deployment glue — how a
 /// restored seed is committed — in `crate::restore`.
 pub use vta_backup::ops as backup;
+/// Runtime Policy Decision Point management (`policy/*`).
+/// The notifications this VTA holds for its principal (`notifications/*`,
+/// `vta/notifications/*`, VTI-NTF-022 – 053).
+/// The member's calendar across communities (`vta/calendar/*`, VTI-CAL-001 – 071).
+pub mod calendar;
 /// Collection for the principal's identifiers (`vta/collection/*`,
 /// VTI-NTF-080 – 093): who holds each persona DID's mediator connection.
 pub mod collection;
@@ -55,9 +60,6 @@ pub mod keys;
 /// `mem:<contextId>:<key>` in the [`MEMORY`](crate::keyspaces::MEMORY) keyspace;
 /// `list` is a `mem:<contextId>:` prefix scan.
 pub mod memory;
-/// Runtime Policy Decision Point management (`policy/*`).
-/// The notifications this VTA holds for its principal (`notifications/*`,
-/// `vta/notifications/*`, VTI-NTF-022 – 053).
 pub mod notifications;
 pub mod outbound;
 /// Passkey login — DID-VM-resolved WebAuthn assertion verification.
@@ -142,6 +144,7 @@ pub fn keyspaces_from_app_state(s: &crate::server::AppState) -> Keyspaces<'_> {
         external_accounts: &s.external_accounts_ks,
         external_secrets: &s.external_secrets_ks,
         collection: &s.collection_ks,
+        calendar: &s.calendar_ks,
         #[cfg(feature = "webvh")]
         webvh: &s.webvh_ks,
         webs: &s.webs_ks,

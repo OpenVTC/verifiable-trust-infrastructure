@@ -2699,6 +2699,60 @@ pub const TASK_NOTIFICATIONS_NOTIFY_0_1: &str =
 pub const TASK_NOTIFICATIONS_RELAY_0_1: &str =
     <vti_specs::notifications::relay::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+// ─── The member's calendar (`vta/calendar/*`, VTI-CAL-001 – 071) ───
+
+/// `vta/calendar/list/0.1` — the principal's calendar across every trust context the caller has standing in: events they registered for (`mine`) and events they hold only a notification of (`notified`).
+pub const TASK_VTA_CALENDAR_LIST_0_1: &str =
+    <vti_specs::vta::calendar::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/sync/0.1` — read the principal's communities now, as the membership identifier held at each, where the context's setting allows.
+pub const TASK_VTA_CALENDAR_SYNC_0_1: &str =
+    <vti_specs::vta::calendar::sync::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/settings/show/0.1` — one trust context's calendar settings.
+pub const TASK_VTA_CALENDAR_SETTINGS_SHOW_0_1: &str =
+    <vti_specs::vta::calendar::settings::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/settings/update/0.1` — change one trust context's calendar settings: sync, default reminders, quiet hours.
+pub const TASK_VTA_CALENDAR_SETTINGS_UPDATE_0_1: &str =
+    <vti_specs::vta::calendar::settings::update::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/alerts/set/0.1` — the principal's own reminders for one event.
+pub const TASK_VTA_CALENDAR_ALERTS_SET_0_1: &str =
+    <vti_specs::vta::calendar::alerts::set::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/alerts/clear/0.1` — drop the principal's own reminders for one event.
+pub const TASK_VTA_CALENDAR_ALERTS_CLEAR_0_1: &str =
+    <vti_specs::vta::calendar::alerts::clear::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/feeds/create/0.1` — a private iCalendar feed for a calendar application; its address is returned once.
+pub const TASK_VTA_CALENDAR_FEEDS_CREATE_0_1: &str =
+    <vti_specs::vta::calendar::feeds::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/feeds/list/0.1` — the calendar feeds, never with an address.
+pub const TASK_VTA_CALENDAR_FEEDS_LIST_0_1: &str =
+    <vti_specs::vta::calendar::feeds::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/feeds/revoke/0.1` — end a calendar feed at once.
+pub const TASK_VTA_CALENDAR_FEEDS_REVOKE_0_1: &str =
+    <vti_specs::vta::calendar::feeds::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/export/0.1` — the principal's events as iCalendar, and the receipts kept.
+pub const TASK_VTA_CALENDAR_EXPORT_0_1: &str =
+    <vti_specs::vta::calendar::export::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/receipts/list/0.1` — the communities' signed replies kept for the principal, as received.
+pub const TASK_VTA_CALENDAR_RECEIPTS_LIST_0_1: &str =
+    <vti_specs::vta::calendar::receipts::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/receipts/deposit/0.1` — a client hands over a community's signed reply about a registration, exactly as received.
+pub const TASK_VTA_CALENDAR_RECEIPTS_DEPOSIT_0_1: &str =
+    <vti_specs::vta::calendar::receipts::deposit::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vta/calendar/busy/share/0.1` — the principal's choice to share busy times with one booking page.
+pub const TASK_VTA_CALENDAR_BUSY_SHARE_0_1: &str =
+    <vti_specs::vta::calendar::busy::share::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `vta/notifications/list/0.1` — the notifications the VTA holds for the principal in one trust context, filtered by kind or holder; paged by `limit` and `nextCursor`.
 pub const TASK_VTA_NOTIFICATIONS_LIST_0_1: &str =
     <vti_specs::vta::notifications::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -3081,6 +3135,20 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VTA_NOTIFICATIONS_SHOW_0_1,
     TASK_VTA_NOTIFICATIONS_DISMISS_0_1,
     TASK_VTA_NOTIFICATIONS_DEPOSIT_0_1,
+    // Calendar slice
+    TASK_VTA_CALENDAR_LIST_0_1,
+    TASK_VTA_CALENDAR_SYNC_0_1,
+    TASK_VTA_CALENDAR_SETTINGS_SHOW_0_1,
+    TASK_VTA_CALENDAR_SETTINGS_UPDATE_0_1,
+    TASK_VTA_CALENDAR_ALERTS_SET_0_1,
+    TASK_VTA_CALENDAR_ALERTS_CLEAR_0_1,
+    TASK_VTA_CALENDAR_FEEDS_CREATE_0_1,
+    TASK_VTA_CALENDAR_FEEDS_LIST_0_1,
+    TASK_VTA_CALENDAR_FEEDS_REVOKE_0_1,
+    TASK_VTA_CALENDAR_EXPORT_0_1,
+    TASK_VTA_CALENDAR_RECEIPTS_LIST_0_1,
+    TASK_VTA_CALENDAR_RECEIPTS_DEPOSIT_0_1,
+    TASK_VTA_CALENDAR_BUSY_SHARE_0_1,
     // Collection slice
     TASK_VTA_COLLECTION_CLAIM_0_1,
     TASK_VTA_COLLECTION_RELEASE_0_1,

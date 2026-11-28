@@ -327,6 +327,7 @@ async fn write_state(
         let external_accounts = target.keyspace(vta_keyspaces::EXTERNAL_ACCOUNTS)?;
         let external_secrets = target.keyspace(vta_keyspaces::EXTERNAL_SECRETS)?;
         let collection = target.keyspace(vta_keyspaces::COLLECTION)?;
+        let calendar = target.keyspace(vta_keyspaces::CALENDAR)?;
         #[cfg(feature = "webvh")]
         let webvh = target.keyspace(vta_keyspaces::WEBVH)?;
         let webs = target.keyspace(vta_keyspaces::WEBS)?;
@@ -349,6 +350,7 @@ async fn write_state(
             external_accounts: &external_accounts,
             external_secrets: &external_secrets,
             collection: &collection,
+            calendar: &calendar,
             #[cfg(feature = "webvh")]
             webvh: &webvh,
             webs: &webs,

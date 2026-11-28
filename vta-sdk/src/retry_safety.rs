@@ -599,6 +599,32 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Reads of what the VTA holds; nothing is marked or sent.
     (trust_tasks::TASK_VTA_NOTIFICATIONS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_VTA_NOTIFICATIONS_SHOW_0_1, ReadOnly),
+    // ── The member's calendar (`vta/calendar/*`, VTI-CAL-001 – 071) ──────────
+    // Reads of what the VTA holds.
+    (trust_tasks::TASK_VTA_CALENDAR_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_CALENDAR_SETTINGS_SHOW_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_CALENDAR_FEEDS_LIST_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_CALENDAR_EXPORT_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_CALENDAR_RECEIPTS_LIST_0_1, ReadOnly),
+    // Set-a-state writes: a repeat changes nothing more. `sync` reads the communities
+    // again, which tells them nothing they did not already answer.
+    (trust_tasks::TASK_VTA_CALENDAR_SYNC_0_1, RetrySafe),
+    (
+        trust_tasks::TASK_VTA_CALENDAR_SETTINGS_UPDATE_0_1,
+        RetrySafe,
+    ),
+    (trust_tasks::TASK_VTA_CALENDAR_ALERTS_SET_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_CALENDAR_ALERTS_CLEAR_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_CALENDAR_FEEDS_REVOKE_0_1, RetrySafe),
+    (trust_tasks::TASK_VTA_CALENDAR_BUSY_SHARE_0_1, RetrySafe),
+    // A receipt is kept once per document; a repeat answers `alreadyKept`.
+    (
+        trust_tasks::TASK_VTA_CALENDAR_RECEIPTS_DEPOSIT_0_1,
+        RetrySafe,
+    ),
+    // Creates a feed whose address is returned once: a repeat must not mint a second,
+    // and the answer carries a bearer credential.
+    (trust_tasks::TASK_VTA_CALENDAR_FEEDS_CREATE_0_1, KeyedSecret),
     // ── Collection (`vta/collection/*`, VTI-NTF-082 – 091) ───────────────
     // Retry class 2 by specification: a claim by the client already holding it
     // is a renewal that sets the end again, and releasing a claim that is

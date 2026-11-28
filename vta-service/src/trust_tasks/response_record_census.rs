@@ -24,6 +24,11 @@ fn looks_secret(member: &str) -> bool {
 /// Type URI prefix they appear under: `(prefix, member, why)`.
 const NOT_SECRET: &[(&str, &str, &str)] = &[
     (
+        "https://trusttasks.org/spec/vta/calendar/sync/",
+        "code",
+        "the refusal code a community answered a read with, never a credential",
+    ),
+    (
         "https://trusttasks.org/spec/consent/list/",
         "nextSyncToken",
         "an incremental-sync cursor",

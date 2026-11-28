@@ -284,6 +284,8 @@ pub struct AppState {
     /// The notifications held for the principal (`vta/notifications/*`) — see
     /// [`crate::keyspaces::NOTIFICATIONS`].
     pub notifications_ks: KeyspaceHandle,
+    /// The member's calendar (`vta/calendar/*`) — see [`crate::keyspaces::CALENDAR`].
+    pub calendar_ks: KeyspaceHandle,
     /// Collection claims, conflicts and the setting's last applied value — see
     /// [`crate::keyspaces::COLLECTION`].
     pub collection_ks: KeyspaceHandle,
@@ -663,6 +665,9 @@ pub async fn build_app_state(
     // encrypted at rest like the vault.
     let notifications_ks = apply_encryption(store.keyspace(crate::keyspaces::NOTIFICATIONS)?);
     let collection_ks = apply_encryption(store.keyspace(crate::keyspaces::COLLECTION)?);
+    // The calendar: which communities the principal belongs to and what they registered for,
+    // encrypted at rest like the notifications.
+    let calendar_ks = apply_encryption(store.keyspace(crate::keyspaces::CALENDAR)?);
     // Watches: each record holds its address's private keys.
     let room_key_watches_ks = apply_encryption(store.keyspace(crate::keyspaces::ROOM_KEY_WATCHES)?);
     // Encrypted alongside the key store where a TEE deployment provides a storage key: a
@@ -820,6 +825,7 @@ pub async fn build_app_state(
         pcs_engine_ks,
         witness_sessions_ks,
         notifications_ks,
+        calendar_ks,
         collection_ks,
         collection: Arc::new(crate::operations::collection::CollectionControl::new(
             config.collection.suspend,
@@ -1559,6 +1565,20 @@ pub async fn run_with(
                 tokio::select! {
                     _ = stop.changed() => {}
                     _ = crate::trust_tasks::room_list_delivery::redelivery_loop(state) => {}
+                }
+            });
+        }
+
+        // The member's calendar: reminders each minute, community reads each fifteen
+        // (VTI-CAL-010 – 013, 040 – 043) — one sweeper, each pass the one retry owner of
+        // its work. Off the startup path, ended at shutdown.
+        {
+            let state = app_state.clone();
+            let mut stop = shutdown_rx.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = stop.changed() => {}
+                    _ = crate::operations::calendar::sweep_loop(state) => {}
                 }
             });
         }

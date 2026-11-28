@@ -1235,6 +1235,7 @@ pub async fn delete_context(
         external_accounts_removed = rows.external_accounts,
         quota_counters_removed = rows.quota_counters,
         collection_records_removed = rows.collection,
+        calendar_records_removed = rows.calendar,
         webs_dids_removed = rows.webs_dids,
         "context (and subtree) deleted"
     );
@@ -1425,6 +1426,7 @@ const PURGED_ON_CONTEXT_DELETE: &[&str] = &[
     crate::keyspaces::EXTERNAL_ACCOUNTS,
     crate::keyspaces::EXTERNAL_SECRETS,
     crate::keyspaces::COLLECTION,
+    crate::keyspaces::CALENDAR,
 ];
 
 /// How many rows [`purge_context_rows`] removed, by store, for the log line.
@@ -1442,6 +1444,7 @@ struct PurgedRows {
     external_accounts: usize,
     quota_counters: usize,
     collection: usize,
+    calendar: usize,
     webs_dids: usize,
 }
 
@@ -1458,6 +1461,7 @@ impl std::ops::AddAssign for PurgedRows {
         self.pcs_engine += o.pcs_engine;
         self.external_accounts += o.external_accounts;
         self.collection += o.collection;
+        self.calendar += o.calendar;
         self.quota_counters += o.quota_counters;
         self.webs_dids += o.webs_dids;
     }
@@ -1506,6 +1510,7 @@ async fn purge_context_rows(
         // Every collection claim for the context's identifiers ends with it
         // (VTI-NTF-090); the collector stops on its next pass.
         collection: super::collection::purge_context(ks.collection, context_id).await?,
+        calendar: super::calendar::purge_context(ks.calendar, context_id).await?,
         // The context's did:webs records. Their key records go with the
         // context's keys; the hosted slot is left, as it is for a did:webvh
         // whose server cannot be reached.
@@ -1997,6 +2002,7 @@ mod tests {
         external_accounts: KeyspaceHandle,
         external_secrets: KeyspaceHandle,
         collection: KeyspaceHandle,
+        calendar: KeyspaceHandle,
         #[cfg(feature = "webvh")]
         webvh: KeyspaceHandle,
         webs: KeyspaceHandle,
@@ -2023,6 +2029,7 @@ mod tests {
                 external_accounts: &self.external_accounts,
                 external_secrets: &self.external_secrets,
                 collection: &self.collection,
+                calendar: &self.calendar,
                 #[cfg(feature = "webvh")]
                 webvh: &self.webvh,
                 webs: &self.webs,
@@ -2057,6 +2064,7 @@ mod tests {
             external_accounts: k(ks::EXTERNAL_ACCOUNTS),
             external_secrets: k(ks::EXTERNAL_SECRETS),
             collection: k(ks::COLLECTION),
+            calendar: k(ks::CALENDAR),
             #[cfg(feature = "webvh")]
             webvh: k(ks::WEBVH),
             webs: k(ks::WEBS),
