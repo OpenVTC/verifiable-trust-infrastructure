@@ -8,7 +8,7 @@ Day 7.
 Keyring side, its screens and copy, is in the Keyring companion plan
 (keyring-wallet, `docs/plans/agent-connect-plan/2026-11-25-bam.md`).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-28
 
 ## Demo narrative
 
@@ -21,10 +21,12 @@ the agent prints the notice, forgets what it held, and its next request is
 refused.
 
 The demo is `agent-connect-p0-hcp`: Keyring's P0 tier with its HCP increment
-and VTI's milestone V0. It runs from a branch on a fork, against the
+and VTI's milestone V0. It runs from VTI `main` with the `hcp` cargo feature
+on: V0 lands on `main` in small PRs behind that feature, off by default, on
+`trust-tasks-*` 0.43 and `trust-tasks-build` 0.3.0. It runs against the
 `hcp/*` suite as frozen at X0: published and released (`trust-tasks-rs`
-0.42.0, `@openvtc/trust-tasks` 0.31.10), still `draft`, so pinned by digest;
-nothing merges to `main`.
+0.42.0 and later, `@openvtc/trust-tasks` 0.31.10), still `draft`, so pinned by
+digest.
 
 ---
 
@@ -78,7 +80,7 @@ through the mediator to the VTA.
   +----------------+------------------------------------+---------------------------------+
                    |                                    |
   +----------------v----------------+   +---------------v---------------------------------+
-  | VTA: image from the VTI branch, |   | mediator: DIDComm and TSP, holds the client's   |
+  | VTA: image from VTI `main` ref, |   | mediator: DIDComm and TSP, holds the client's   |
   | `hcp` added to its features     |<->| mailbox; the phone's live socket                |
   +---------------------------------+   +-------------------------------------------------+
          openvti-starter, MODE=tunnel, demo variant; hcp_* keyspaces reset before each run
@@ -102,7 +104,7 @@ through the mediator to the VTA.
   the starter's pinned mediator serves the wake task is not verified, so the
   demo relies on Keyring in the foreground (or a `DeviceBinding` wake), not on
   the mediator wake.
-- **The image** is built through openvti-starter's tooling from the VTI branch
+- **The image** is built through openvti-starter's tooling from a VTI `main`
   ref, with `hcp` added to the image's features, tagged `vta:<ref8>` and
   `vta:<version>-<ref8>` (never `:local` or `latest`), and not pushed to a
   registry. `pins.json` changes only through the tooling, and the main pin is
@@ -161,7 +163,7 @@ with the work behind them.
 
 **Before the demo day: all must hold.**
 - The script has passed end to end on the tunnelled lab twice, on the image
-  built from the branch ref that will be shown.
+  built from the `main` ref that will be shown.
 - The phone-leg smoke test passed: Keyring linked to the tunnelled VTA and
   received one `task-consent/request` live, with the mediator's CORS origin
   set if it was refused.

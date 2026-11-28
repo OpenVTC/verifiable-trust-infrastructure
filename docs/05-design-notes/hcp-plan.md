@@ -7,7 +7,7 @@ decisions), [hcp-tasks.md](hcp-tasks.md) (the V0 checklist, generated from
 §3) and [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md) (the demo
 week).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-28
 
 This plan turns the design into runnable milestones, says what can run in
 parallel, lists the risks, and fixes the check at each milestone boundary.
@@ -30,7 +30,7 @@ completes and updates this note's `Status:` line in the same PR.
 | # | Step | Lands as | Exit check |
 |---|---|---|---|
 | 0 | This note, [hcp.md](hcp.md), [hcp-tasks.md](hcp-tasks.md) and the demo plan | `docs(hcp)`, docs only, before any code PR | Maintainer has read the design |
-| 1 | **V0**, the demo (with Keyring's P0 HCP increment) | A `feat/hcp-demo` branch on a fork, pinning the suite as frozen at X0. **Never merged to `main`**; any PR from it stays draft | §6, V0 |
+| 1 | **V0**, the demo (with Keyring's P0 HCP increment) | Small PRs to `main`, behind the VTA's `hcp` cargo feature, off by default, on `trust-tasks-*` 0.43 and `trust-tasks-build` 0.3.0 (§5), pinning the suite as frozen at X0 | §6, V0 |
 | 2 | **V1** = A7 + H0 + H1 (with Keyring's P1 HCP increment) | On the suite's first release (out since 2026-11-27, §5): single-unit PRs in order `vti-specs-hcp` → `vta-hcp` → spine wiring → tests → docs, then H1 | §6, V1 |
 | 3 | **V2** = H2 (with Keyring's P2 HCP increment): the First-Party claim | One PR per task group, then the conformance run | §6, V2 |
 | 4 | **H3**: Delegated Authorization, VC Evidence, Memory Manager profiles | One PR per profile | §6, V3 |
@@ -39,12 +39,13 @@ completes and updates this note's `Status:` line in the same PR.
 
 Order rationale. V0 proves the hardest path end to end, the person's approval
 of a third party's grant on their phone and a revocation the client hears
-about, on a branch that cannot leak a demo-week pin onto `main`. When this plan
-was written the suite was unpublished; it is now published and released as
+about. As agreed with the maintainer, V0 lands on `main` in small PRs, behind
+the `hcp` cargo feature, which is off by default, so a build without the
+feature is unchanged. It builds on the `trust-tasks-*` 0.43 and
+`trust-tasks-build` 0.3.0 bump (§5), which lands first. When this plan was
+written the suite was unpublished; it is now published and released as
 `draft` 0.1 (§5), so V0 pins the published bundles by digest, and a draft can
-still change in place. Whether V0's units then go to `main` sooner, as V1's
-single-unit PRs, is the maintainer's call; nothing in the suite now prevents
-it. V1 starts
+still change in place. V1 starts
 with HTTP parity because the HTTP Binding is what any conformance claim rests
 on ([hcp.md](hcp.md) §1), and building it beside each handler is cheaper than
 a retrofit. V2 completes the binding and makes the first real claim. V3's
@@ -62,7 +63,7 @@ conformance claim each milestone leaves the VTA able to make.
           (the demo)                        |                 |
           |                                 |                 |
  VTI      V0 -----------------------------> V1 -------------> V2 -------------> V3
-          demo week, fork branch            A7 + H0 + H1      H2                H3 | H4 | H5
+          on main, `hcp` feature            A7 + H0 + H1      H2                H3 | H4 | H5
           |                                 |                 |                 |
  claim    aligned pilot                     aligned pilot     First-Party       + profiles,
           (no conformsTo)                   (no conformsTo)   package           Provider and
@@ -89,8 +90,8 @@ after the demo. Task-level detail for V0 (acceptance, verify, files) is in
 | WP | Work | Milestone |
 |---|---|---|
 | X0 | **Freeze.** Re-check every snapshot the plan names (VTI `main`, the suite, Keyring, openvti-starter) and diff the cited VTI files; re-read any that moved. Tag the suite commit; build its registry and bundles; record digests and fixtures in a demo contract | V0 |
-| X0b | **Skeleton commit.** Empty `vti-specs-hcp` (on the `vti-specs-vtn` precedent) and `vta-hcp` crates; workspace members with `[lints] workspace = true`; `Dockerfile.nitro` `COPY` lines; root `CLAUDE.md` crate-table rows via `check-docs.py --write`; `RELEASING.md` crate counts; `scripts/semver-report.sh` exclusions; the `hcp` feature (optional dependency, off by default) with a [feature-flags.md](../02-vta/feature-flags.md) row and a feature-combination CI step; keyspace names | V0 |
-| X1 | **VTI specification drafts**, three separate texts ([hcp.md](hcp.md) §12): (a) Appendix F divergence entries; (b) the `VTI-HCP-*` change proposal; (c) the Appendix H change: each purpose's DTG registry IRI listed as canonical, the bare name kept as a deprecated alias mapped to the IRI before the exact comparison. Filed after the demo, before any VTI PR leaves draft | V0 (drafts), V1 (filed) |
+| X0b | **Skeleton commit.** Empty `vti-specs-hcp` (on the `vti-specs-vtn` precedent) and `vta-hcp` crates; workspace members with `[lints] workspace = true`; `Dockerfile.nitro` `COPY` lines; root `CLAUDE.md` crate-table rows via `check-docs.py --write`; `RELEASING.md` crate counts; `scripts/semver-report.sh` exclusions; the `hcp` feature (optional dependency, off by default) with a [feature-flags.md](../02-vta/feature-flags.md) row and a feature-combination CI step; keyspace names. On the 0.43 bump (§5), which lands first | V0 |
+| X1 | **VTI specification drafts**, three separate texts ([hcp.md](hcp.md) §12): (a) Appendix F divergence entries; (b) the `VTI-HCP-*` change proposal; (c) the Appendix H change: each purpose's DTG registry IRI listed as canonical, the bare name kept as a deprecated alias mapped to the IRI before the exact comparison. Filed after the demo, before V1 | V0 (drafts), V1 (filed) |
 | X2 | **Editor questions**: N1–N10 are now the suite's questions 44–52 and 16 in `specs/hcp/_shared/0.1/QUESTIONS.md` ([hcp.md](hcp.md) §12), beside 37, 46 and 56, which the suite lists as most important. Sent to the HCP editors with the working demo, not before; an answer changes the suite, and [hcp.md](hcp.md) follows it | V0 |
 | X3 | **Docs with the code**: keep [hcp.md](hcp.md) and this note current; `vta-hcp/CLAUDE.md` (its invariants); the `vta-service/CLAUDE.md` integration-flow entry; `//!` module docs citing requirement ids | every step |
 | X4 | **Merge gate and independent review**: the cheap required CI checks at every merge; the full pre-push list before the first full run; a review by someone given the diff and the HCP text, not our conclusions, that checks the requested testing and the coverage | V0 |
@@ -137,15 +138,12 @@ so V0's discovery serves six `hcp/*` tasks and V1's seven.
   the `hcp/*` tasks in `trust-task-discovery` and still no HCP discovery
   document, which needs an HCP binding in `conformsTo` (V2,
   [hcp.md](hcp.md) §9.4); management tokens replacing DID-proven
-  management; the suite's first release and the Rust presence fix, both in
-  `trust-tasks-rs` 0.42.0 and `trust-tasks-build` 0.3.0, adopted in one bump,
-  with `trust-tasks-tsp` 0.42 refusing a TSP draft (`tsp/0.3`); SDK client methods and `pnm` commands with `--json`; held replies
+  management; SDK client methods and `pnm` commands with `--json`; held replies
   in `vta-sdk` (a `threadId` on every request, a `trust-task-next-step` never
   returned as the result, resubmission per its continuation) and a dedicated
   HCP tool in `vta-mcp` that keeps the token out of the model's context (HCP
   10.5; [hcp.md](hcp.md) §9.4), replacing the V0 refusal in `vta_call`; a fuzz target
-  for the admission parser; the demo branch rebased onto `main` with a map of
-  old to new commits.
+  for the admission parser.
 - **H1, context plane:** `hcp/entries/{get,revise,withdraw}`,
   `hcp/grants/{read-own,relinquish}`, `hcp/shares/report` (`context.shared`)
   on both carriages; version history; purpose IRIs from the registry once
@@ -192,7 +190,7 @@ until A3 and D3 are live.
  X1, X2, X5 run beside everything; nothing waits on them
 ```
 
-- **Critical path:** X0 → X0b → A1 → A2 → A3 → C1 live → D3 → X4 → the first
+- **Critical path:** X0 → the 0.43 bump → X0b → A1 → A2 → A3 → C1 live → D3 → X4 → the first
   full run → on-device test → rehearsal.
 - **A8 starts on `StubHcp`**, beside A2 → A3. If the stub slips, A8 joins the
   critical path.
@@ -204,7 +202,7 @@ until A3 and D3 are live.
   and number format (B1 with C1); the fakes for the agent client and Keyring,
   regenerated only from A9's transcript; the environment file (D3).
 
-**V1.** The critical path is the re-pin to the suite's first release → A10 →
+**V1.** The critical path is A10 →
 H1's entries plane → C10, C11 and B8 live → the P1 lab run. A7 goes first in
 its track so C5 and B5 have a live target.
 
@@ -217,16 +215,16 @@ P2 items are separable and ship on their own exits.
 | Dependency | Where | What VTI needs | When |
 |---|---|---|---|
 | The `hcp/*` suite | dtgwg-trust-tasks-tf `main`: merged as #1380 (28 `hcp/*` tasks at `0.1`, `draft`, framework `0.6.0`), #1381 (declared unchecked rules) and #1382 (demos in four languages) | The suite frozen at X0 for V0: the published bundles pinned by digest, since a draft can change in place | X0 |
-| The suite's first release | **Done 2026-11-27**: published at trusttasks.org; `trust-tasks-rs` 0.42.0, `trust-tasks-build` 0.3.0, `@openvtc/trust-tasks` 0.31.10 | Digests from the published registry. The gate "nothing HCP merges to VTI `main` before it" is met. VTI pins `trust-tasks-*` 0.41 and `trust-tasks-build` 0.2.2 today, so adopting it is a 0.41 → 0.42 bump across every `trust-tasks-*` dependency, a workspace event | V1 (H0) |
-| The Rust presence fix | Released in the same release (#1385, `trust-tasks-rs` 0.42.0 and `trust-tasks-build` 0.3.0) | Optional and nullable members keep "empty", "absent" and "null" apart; field types change in every `vti-specs-*` crate, so the 0.42 adoption is its own `!` PR | V1 (H0), with the suite's release |
-| TSP 1.0 and binding `tsp/0.3` | Released: `trust-tasks-tsp` 0.42.0 (refuses a TSP draft as `UnsupportedTspVersion`), `@openvtc/trust-tasks-tsp` 0.2.0 | The VTA already speaks TSP 1.0 (`affinidi-tsp` 0.5); the agent client needs the TypeScript 0.2.0 package to reach it at all | X0 for the agent client; the 0.42 adoption for the VTA |
+| The suite's first release | **Done 2026-11-27**: published at trusttasks.org; `trust-tasks-rs` 0.42.0, `trust-tasks-build` 0.3.0, `@openvtc/trust-tasks` 0.31.10 | Digests from the published registry. The gate "nothing HCP merges to VTI `main` before it" is met. VTI pins `trust-tasks-*` 0.41 and `trust-tasks-build` 0.2.2 today, so adopting it is a bump to `trust-tasks-*` 0.43 and `trust-tasks-build` 0.3.0 across every dependency, a workspace event; it lands first, before X0b | V0, first |
+| The Rust presence fix | Released in the same release (#1385, `trust-tasks-rs` 0.42.0 and `trust-tasks-build` 0.3.0) | Optional and nullable members keep "empty", "absent" and "null" apart; field types change in every `vti-specs-*` crate, so the 0.43 bump is its own `!` PR | V0, with the 0.43 bump |
+| TSP 1.0 and binding `tsp/0.3` | Released: `trust-tasks-tsp` 0.42.0 and later (refuses a TSP draft as `UnsupportedTspVersion`), `@openvtc/trust-tasks-tsp` 0.2.0 | The VTA already speaks TSP 1.0 (`affinidi-tsp` 0.5); the agent client needs the TypeScript 0.2.0 package to reach it at all | X0 for the agent client; the 0.43 bump for the VTA |
 | Go 1.24 for the Go library | dtgwg-trust-tasks-tf; released in the Go core `v0.14.0` | Required-nullable members no longer omitted; `trusttasks.Nullable` (absent, null and a value kept apart, #1376) is merged but not yet in a release; affects the Go interop client, not VTI | Before H1's Go interop test |
 | The TypeScript library | dtgwg-trust-tasks-tf (`@openvtc/trust-tasks` 0.31.10 or later) | Keyring and the agent client use the suite as frozen at X0, like A1 | X0 |
 | Keyring's agent-connect plan | keyring-wallet (PR 958 and its HCP companion) | The C track, the screens and the copy; the same milestone names and ids | every milestone |
 | The agent client | `berkmancenter/vti-agent-connect` (a temporary repository until it exists) | The B track | V0 onward |
 | Purpose IRIs | `trustoverip/dtgwg-vsc-registry` | The draft entries at `https://registry.trustoverip.org/dtg/purpose/<name>/<n>` reviewed; until then the drafts are used. The directive action URI is not in the registry: it is on a Keyring-controlled domain ([hcp.md](hcp.md) decision 16). The VTA reads both from configuration | X5 in V0; reviewed IRIs in H1 |
 | Images | openvti-starter | A VTA image with `hcp`, built and pinned through its tooling, never by hand; an `oauth-sidecar` image and deployment variant in H4 | D1; H4 |
-| Divergences and VTI changes | dtgwg-vti-spec | Appendix F entries, the `VTI-HCP-*` proposal and the Appendix H purpose-IRI change (X1) | Filed before any VTI PR leaves draft |
+| Divergences and VTI changes | dtgwg-vti-spec | Appendix F entries, the `VTI-HCP-*` proposal and the Appendix H purpose-IRI change (X1) | Filed after the demo, before V1 |
 | HCP readings | The HCP editors | Answers to the suite's questions, first 37, 46 and 56, and 44–52 and 16 (this work's N1–N10); the HCP-side status of the Trust Task carriage | Sent with the demo |
 
 ## 6. Checks at each milestone boundary
@@ -264,7 +262,7 @@ P2 items are separable and ship on their own exits.
 | The phone cannot reach the lab: the tunnel's phone leg is untested, and a restart needs relinking | Medium / high | MODE=tunnel; a phone-leg smoke test in D3; two rehearsals; a recorded video |
 | Keyring is not woken in the background | Certain / medium | Foreground only: the app is open at approval; Keyring polls `hcp/disclosures/summary` for the notice state |
 | The agent client's mediator receive loop misses the notice | Medium / medium | Reuse openvti-starter's mediator session patterns; de-duplicate on `noticeId`; admit the acknowledgement (A5, A8); a duplicate-notice test |
-| `trust-tasks-build` fails on an `hcp/*` bundle | Low-medium / high | A1 checks it first; a `[patch]` to the repository's builder on the fork branch only |
+| `trust-tasks-build` fails on an `hcp/*` bundle | Low-medium / high | A1 checks it first; a fix goes into a `trust-tasks-build` release, never a `[patch]` on `main` |
 | VTI `main` and openvti-starter's pinned VTA and mediator have drifted | Medium / medium | A dry-run image from `main` early in the week; a tunnel-mode smoke test; fall back to the starter's pinned ref only if the mediator fails |
 | The suite changes under the demo | Medium / low (released, but `draft`, so it may change in place) | Pin by digest at X0; re-pin only by agreement |
 | A token leaks into a store or a log | Medium / high | Redaction in A8; REST refused; a census in H0 |

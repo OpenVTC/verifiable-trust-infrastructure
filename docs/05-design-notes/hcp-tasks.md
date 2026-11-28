@@ -5,7 +5,7 @@
 [hcp-plan.md](hcp-plan.md) (the plan this is generated from). The demo week
 is [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-26
+**Last updated:** 2026-11-28
 
 V0 is task-level here; V1, V2 and V3 are milestone-level in
 [hcp-plan.md](hcp-plan.md) §3.4 and get their own pass when they start. Only
@@ -88,9 +88,8 @@ by raising a count or growing an allowlist.
     all `0.1`) are byte-identical to the published registry's and their
     digests equal the contract's; the lock's `registry` line reads
     `https://trusttasks.org`; framework specs are not pinned here;
-    `trust-tasks-build` generates every pinned task (checked first on
-    VTI's 0.2.2 pin; if it cannot, the 0.3.0 adoption of
-    [hcp-plan.md](hcp-plan.md) §5 comes first); the generated tables of
+    `trust-tasks-build` 0.3.0, from the 0.43 bump of
+    [hcp-plan.md](hcp-plan.md) §5, generates every pinned task; the generated tables of
     the `vti-specs-*` crates stay disjoint.
   - Verify: `trust-tasks -C vti-specs-hcp check`;
     `cargo nextest run -p vti-specs --locked`.
