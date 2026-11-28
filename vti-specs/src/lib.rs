@@ -4,7 +4,7 @@
 //! The Trust Task specifications are normative; `trust-tasks-build` turns each
 //! version a `trust-tasks.lock` pins into the same `Payload` / `Response` types
 //! the deprecated prebuilt `trust_tasks_rs::specs` modules carried, at the same
-//! module paths (`vtc::members::list::v0_2`). The versions live in five
+//! module paths (`vtc::members::list::v0_2`). The versions live in six
 //! generated crates, so no consumer compiles one huge unit and the light ones
 //! compile only what they use:
 //!
@@ -14,12 +14,13 @@
 //! | `vti-specs-vta` | `vta/*` |
 //! | `vti-specs-vtc` | `vtc/*` |
 //! | `vti-specs-vtn` | `vtn/*` — the Verifiable Trust Network's own tasks |
+//! | `vti-specs-hcp` | `hcp/*` — the Human Context Protocol (the VTA's `hcp` feature) |
 //! | `vti-specs-core` | every other family VTI speaks |
 //!
 //! Each version is generated in exactly one of them, so a type is the same type
 //! everywhere in the workspace. This crate re-exports every family at the path
 //! `trust_tasks_rs::specs` gave it — `vta_sdk::specs` re-exports this crate —
-//! and merges the five indexes in [`schema_index`].
+//! and merges the six indexes in [`schema_index`].
 //!
 //! To pin a new version: `trust-tasks -C vti-specs-<crate> add <slug>/<M.N>`,
 //! then commit `trust-tasks.toml`, `trust-tasks.lock` and the bundle under
@@ -35,6 +36,7 @@ pub use vti_specs_core::{
     external, git_ns, git_trust, governance, keys, messaging, notifications, persona, policy,
     provision, push, registry, task_consent, vault, vetting, voting, witness,
 };
+pub use vti_specs_hcp::hcp;
 pub use vti_specs_rooms::rooms;
 pub use vti_specs_vta::vta;
 pub use vti_specs_vtc::vtc;
@@ -48,18 +50,19 @@ pub use trust_tasks_rs::specs::{
     trust_task_ok,
 };
 
-/// Every locked version's `extends` declaration (SPEC §5.2), across the five
+/// Every locked version's `extends` declaration (SPEC §5.2), across the six
 /// generated crates.
 ///
 /// Nothing in VTI routes a newer version to an older handler today, so nothing
 /// calls this; it is here so that turning forward-minor routing on is one call
-/// at start-up rather than five.
+/// at start-up rather than six.
 pub fn declare_extends() {
     vti_specs_core::declare_extends();
     vti_specs_rooms::declare_extends();
     vti_specs_vta::declare_extends();
     vti_specs_vtc::declare_extends();
     vti_specs_vtn::declare_extends();
+    vti_specs_hcp::declare_extends();
 }
 
 /// Type URI → payload schema and consumer policy, for exactly the versions VTI
@@ -78,7 +81,7 @@ pub mod schema_index {
     use trust_tasks_rs::type_index::{self, IndexEntry};
     use trust_tasks_rs::{DeclaredErrorCode, SpecPolicy};
 
-    /// The five generated crates' tables. Disjoint: each version is generated
+    /// The six generated crates' tables. Disjoint: each version is generated
     /// in exactly one crate.
     pub static INDEXES: &[&[IndexEntry]] = &[
         vti_specs_core::schema_index::INDEX,
@@ -86,6 +89,7 @@ pub mod schema_index {
         vti_specs_vta::schema_index::INDEX,
         vti_specs_vtc::schema_index::INDEX,
         vti_specs_vtn::schema_index::INDEX,
+        vti_specs_hcp::schema_index::INDEX,
     ];
 
     /// Every pinned Type URI — each version's bare request URI and its

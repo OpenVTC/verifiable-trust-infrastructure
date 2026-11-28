@@ -806,6 +806,9 @@ const MUTATING_VERBS: &[&str] = &[
     "deploy",
     // `task-consent/granted`: a fire-and-forget notice to re-submit.
     "granted",
+    // `hcp/grants/revoked`: a provider's revocation notice; the client stops using and
+    // purges what it holds under the grant (HCP 6.2.3).
+    "revoked",
     // `vetting/session`, `witness/session`: opens a session with an
     // applicant; `witness/session/submit`, `vtc/join-requests/submit`,
     // `submit-receipt`, `supplement`: the applicant's side of a ceremony.

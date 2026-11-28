@@ -18,6 +18,7 @@ vti-specs-rooms = { path = "../vti-specs-rooms", version = "0.12" }
 vti-specs-vta = { path = "../vti-specs-vta", version = "0.14" }
 vti-specs-vtc = { path = "../vti-specs-vtc", version = "0.11" }
 vti-specs-vtn = { path = "../vti-specs-vtn", version = "0.5" }
+vti-specs-hcp = { path = "../vti-specs-hcp", version = "0.1" }
 
 [lints]
 workspace = true

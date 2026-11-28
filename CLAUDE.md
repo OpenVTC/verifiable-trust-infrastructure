@@ -65,8 +65,8 @@ Layer 0 (leaves: no internal dependencies):
   vti-webauthn
 
 Layer 1 (longest internal chain 1):
-  vti-specs              → vti-specs-core, vti-specs-rooms, vti-specs-vta,
-                           vti-specs-vtc, vti-specs-vtn
+  vti-specs              → vti-specs-core, vti-specs-hcp, vti-specs-rooms,
+                           vti-specs-vta, vti-specs-vtc, vti-specs-vtn
 
 Layer 2 (longest internal chain 2):
   vta-sdk                → vta-signing, vti-specs
@@ -149,8 +149,8 @@ Layer 9 (longest internal chain 9):
 | Crate | Role |
 |---|---|
 | `vti-specs-{rooms,vta,vtc,vtn,core}` | **Generated Trust Task wire types** (`trust-tasks-build` in `build.rs`), one crate per family group, each version pinned exactly once in its `trust-tasks.lock` and vendored under `trust-tasks/`. `rooms` stands alone so `vti-rooms-wasm` compiles nothing else |
-| `vti-specs-hcp` | **Generated `hcp/*` wire types** (the Human Context Protocol), on the same `trust-tasks-build` pattern; nothing pinned yet and not yet re-exported by `vti-specs` (HCP V0 task A1, `docs/05-design-notes/hcp-tasks.md`) |
-| `vti-specs` | Facade: re-exports every family at its (deprecated) `trust_tasks_rs::specs` path and merges the five `schema_index` tables (`schema_for`, `spec_policy_for`, `error_codes_for`, `max_document_bytes_for`, `is_pinned`). `vta-sdk` re-exports it as `vta_sdk::specs` |
+| `vti-specs-hcp` | **Generated `hcp/*` wire types** (the Human Context Protocol), on the same `trust-tasks-build` pattern: the seven `hcp/*` 0.1 tasks HCP V0 speaks, re-exported as `vti_specs::hcp`. The suite is `draft`, so `trust-tasks -C vti-specs-hcp check` is what says a re-pin still matches the lock |
+| `vti-specs` | Facade: re-exports every family at its (deprecated) `trust_tasks_rs::specs` path and merges the six `schema_index` tables (`schema_for`, `spec_policy_for`, `error_codes_for`, `max_document_bytes_for`, `is_pinned`). `vta-sdk` re-exports it as `vta_sdk::specs` |
 | `vti-common` | Shared foundation: `host_session` (a host service identity's mediator session), JWT auth, ACL, `Store` (local fjall + vsock), `AppError`, config types, identifier validation, `secure_file`, telemetry sink, `SeedStore`, `guards` |
 | `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
 | `vta-signing` | **The signing core**: Ed25519 / P-256 keys (`SigningSecret`, `PublicKey`, the `Signer` trait), the opaque-signing framing, and the bytes and artefacts of `keys/sign-jws` (JWS), `keys/sign-document` (`eddsa-jcs-2022`) and `keys/sign-sshsig`, each as `prepare_*` / `finish_*` / `sign_*` plus verification, the rules for which key may sign as which DID, and the specification's refusal codes. No async, I/O, storage or workspace dependency, so a service that signs with keys of its own (the agent gateway) depends on it without compiling the VTA. The VTA wraps its gates, custody, quota and audit *around* it (detail: `vta-signing/CLAUDE.md`) |

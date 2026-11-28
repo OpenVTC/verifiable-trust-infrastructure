@@ -1,11 +1,11 @@
 # The Human Context Protocol in the VTA: V0 task checklist
 
-**Status:** in progress; 1 of 15 V0 tasks done (X0b).
+**Status:** in progress; 2 of 15 V0 tasks done (X0b, A1).
 **Companion to:** [hcp.md](hcp.md) (the design) and
 [hcp-plan.md](hcp-plan.md) (the plan this is generated from). The demo week
 is [tasks/hcp-demo-plan.md](../../tasks/hcp-demo-plan.md).
 **Owner:** Brendan Miller, Alberto Leon
-**Last updated:** 2026-11-27
+**Last updated:** 2026-11-28
 
 V0 is task-level here; V1, V2 and V3 are milestone-level in
 [hcp-plan.md](hcp-plan.md) §3.4 and get their own pass when they start. Only
@@ -82,7 +82,7 @@ by raising a count or growing an allowlist.
 
 ## VTI
 
-- [ ] **A1 — Pin the suite in `vti-specs-hcp`.**
+- [x] **A1 — Pin the suite in `vti-specs-hcp`.**
   - Acceptance: the pinned bundles (`hcp/grants/{request,revoke,revoked}`,
     `hcp/entries/{query,create}`, `hcp/audit/read`, `hcp/disclosures/summary`,
     all `0.1`) are byte-identical to the published registry's and their
