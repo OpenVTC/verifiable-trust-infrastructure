@@ -53,10 +53,25 @@ impl EmbeddedVta {
     /// `server.host:port` is ignored, because an embedded VTA must never listen
     /// beyond the machine it runs on.
     pub async fn start(
-        mut config: AppConfig,
+        config: AppConfig,
         seed_store: Option<Arc<dyn SeedStore>>,
     ) -> Result<Self, AppError> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(AppError::Io)?;
+        Self::start_on(config, seed_store, 0).await
+    }
+
+    /// [`start`](Self::start) on a loopback port of the caller's choosing.
+    ///
+    /// For a host application that hands the VTA's URL to other local
+    /// processes (a git signing proxy that connects on its own), so the URL has
+    /// to survive a restart: it binds the port it bound last time. `0` picks a
+    /// free one. A port that is taken is an error, not a silent move to
+    /// another — whatever holds it would be answering for this VTA.
+    pub async fn start_on(
+        mut config: AppConfig,
+        seed_store: Option<Arc<dyn SeedStore>>,
+        port: u16,
+    ) -> Result<Self, AppError> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).map_err(AppError::Io)?;
         let rest_addr = listener.local_addr().map_err(AppError::Io)?;
 
         let store = Store::open_with(&config.store, &config.fjall)?;
@@ -98,6 +113,11 @@ impl EmbeddedVta {
             shutdown,
             thread: Some(thread),
         })
+    }
+
+    /// The loopback port REST listens on.
+    pub fn rest_port(&self) -> u16 {
+        self.rest_addr.port()
     }
 
     /// The loopback REST base URL, e.g. `http://127.0.0.1:53817`.
