@@ -1,8 +1,16 @@
 # The Trust Task specification versions this crate generates (trust-tasks-build).
 # Edit with the `trust-tasks` CLI — see the workspace CLAUDE.md, "Pinning a task version".
 #
-# Empty until the `hcp/*` 0.1 tasks V0 uses are pinned (HCP V0 task A1,
-# docs/05-design-notes/hcp-tasks.md).
+# The `hcp/*` 0.1 tasks HCP V0 speaks (task A1, docs/05-design-notes/hcp-tasks.md).
+# The suite is `draft`: a version may change in place upstream, so a re-pin is
+# checked against the lock's digests, never taken on trust.
 registry = "https://trusttasks.org"
 
 [tasks]
+"hcp/audit/read" = "0.1"
+"hcp/disclosures/summary" = "0.1"
+"hcp/entries/create" = "0.1"
+"hcp/entries/query" = "0.1"
+"hcp/grants/request" = "0.1"
+"hcp/grants/revoke" = "0.1"
+"hcp/grants/revoked" = "0.1"

@@ -12850,6 +12850,7 @@ version = "0.20.0"
 dependencies = [
  "trust-tasks-rs",
  "vti-specs-core",
+ "vti-specs-hcp",
  "vti-specs-rooms",
  "vti-specs-vta",
  "vti-specs-vtc",
