@@ -24,6 +24,9 @@ members = [
   "vta-external",
   "vta-webvh",
   "vta-persona",
+  # The Human Context Protocol provider (docs/05-design-notes/hcp.md): a
+  # subsystem crate behind `vta-service`'s `hcp` feature, off by default.
+  "vta-hcp",
   "vta-service",
   "vta-test-support",
   "vta-enclave",
@@ -40,6 +43,7 @@ members = [
   # Trust Task wire types section of CLAUDE.md.
   "vti-specs",
   "vti-specs-core",
+  "vti-specs-hcp",
   "vti-specs-rooms",
   "vti-specs-vta",
   "vti-specs-vtc",
@@ -95,6 +99,7 @@ default-members = [
   "vta-external",
   "vta-webvh",
   "vta-persona",
+  "vta-hcp",
   "vta-enclave",
   "vtc-audit",
   "vtc-client",
@@ -105,6 +110,7 @@ default-members = [
   "vti-secrets",
   "vti-specs",
   "vti-specs-core",
+  "vti-specs-hcp",
   "vti-specs-rooms",
   "vti-specs-vta",
   "vti-specs-vtc",

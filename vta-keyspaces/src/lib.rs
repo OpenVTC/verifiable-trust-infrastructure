@@ -446,6 +446,59 @@ pub const CALENDAR: &str = "calendar";
 /// A restored VTA holds no watches; a client re-arms after its next read, or polls.
 pub const ROOM_KEY_WATCHES: &str = "room_key_watches";
 
+// ---------------------------------------------------------------------------
+// The Human Context Protocol provider (`vta-hcp`, `vta-service` feature `hcp`)
+// ---------------------------------------------------------------------------
+//
+// Declared, not yet opened. Each joins [`ALL`] — with its backup decision
+// (docs/05-design-notes/hcp.md §10), its DID-deletion effect and its
+// context-deletion purge — in the change that first stores a row in it (HCP V0
+// task A2 onward), so that no census classifies a keyspace nothing writes.
+
+/// HCP grants (HCP 6.1.5): status, client, purposes and expiry.
+///
+/// To be in [`BACKED_UP`]; a restored grant comes back suspended.
+pub const HCP_GRANTS: &str = "hcp_grants";
+/// The SHA-256 of each HCP access token, mapped to its grant. Never the token.
+///
+/// To be in [`EXCLUDED_FROM_BACKUP`]: a token hash is never restored.
+pub const HCP_TOKENS: &str = "hcp_tokens";
+/// Revoked HCP grant ids.
+///
+/// Placed so that a restore can never drop one: a revocation a restore forgot
+/// would bring a revoked grant back.
+pub const HCP_TOMBSTONES: &str = "hcp_tombstones";
+/// Held `hcp/grants/request`s by (`threadId`, `issuer`), waiting on the
+/// person's decision, and the ended threads for as long as a resubmission on
+/// them would be accepted.
+///
+/// To be in [`EXCLUDED_FROM_BACKUP`].
+pub const HCP_HOLDS: &str = "hcp_holds";
+/// HCP entries, with linear versions.
+///
+/// To be in [`BACKED_UP`].
+pub const HCP_ENTRIES: &str = "hcp_entries";
+/// HCP directives (V1).
+///
+/// To be in [`BACKED_UP`].
+pub const HCP_DIRECTIVES: &str = "hcp_directives";
+/// The HCP notice schedule (`hcp/grants/revoked`), per `noticeId`.
+///
+/// To be in [`BACKED_UP`].
+pub const HCP_NOTICES: &str = "hcp_notices";
+
+/// Every HCP keyspace, in the order of hcp.md §10. Not yet part of [`ALL`]:
+/// see the section comment above.
+pub const HCP: &[&str] = &[
+    HCP_GRANTS,
+    HCP_TOKENS,
+    HCP_TOMBSTONES,
+    HCP_HOLDS,
+    HCP_ENTRIES,
+    HCP_DIRECTIVES,
+    HCP_NOTICES,
+];
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -690,6 +743,23 @@ mod tests {
             "backup partition is not exhaustive — every keyspace in ALL must be in \
              exactly one of BACKED_UP / EXCLUDED_FROM_BACKUP"
         );
+    }
+
+    /// The HCP names are their own namespace: distinct, `hcp_`-prefixed, and
+    /// never the name of a keyspace that already holds something else.
+    #[test]
+    fn hcp_keyspace_names_are_distinct_and_their_own() {
+        let hcp: BTreeSet<&str> = HCP.iter().copied().collect();
+        assert_eq!(hcp.len(), HCP.len(), "HCP has a duplicate");
+        for ks in HCP {
+            assert!(ks.starts_with("hcp_"), "{ks} is not hcp_-prefixed");
+        }
+        for ks in ALL {
+            assert!(
+                HCP.contains(ks) || !ks.starts_with("hcp_"),
+                "{ks} takes the hcp_ prefix without being an HCP keyspace"
+            );
+        }
     }
 
     /// An environment-bound rule for a keyspace a backup never carries would be

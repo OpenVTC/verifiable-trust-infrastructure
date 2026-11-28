@@ -97,7 +97,7 @@ esac
 # crate's proposal does now (`semver_check = false` in release-plz.toml); this
 # list is the one place that decides which APIs are checked.
 #
-# These twelve are the subsystem crates. They are on crates.io only because a
+# These thirteen are the subsystem crates. They are on crates.io only because a
 # published crate's whole dependency closure must be published and `vta-service`
 # is published (for OpenVTC's `MockVta` harness — see RELEASING.md). Nothing
 # consumes their APIs directly, here or outside.
@@ -116,6 +116,7 @@ EXCLUDED=(
   vta-audit
   vta-backup
   vta-config
+  vta-hcp
   vta-keys
   vta-keyspaces
   vta-policy

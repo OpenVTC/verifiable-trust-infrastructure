@@ -11890,6 +11890,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vta-hcp"
+version = "0.1.0"
+
+[[package]]
 name = "vta-keys"
 version = "0.50.0"
 dependencies = [
@@ -12179,6 +12183,7 @@ dependencies = [
  "vta-cli-common",
  "vta-config",
  "vta-external",
+ "vta-hcp",
  "vta-keys",
  "vta-keyspaces",
  "vta-persona",
@@ -12854,6 +12859,14 @@ dependencies = [
 [[package]]
 name = "vti-specs-core"
 version = "0.8.0"
+dependencies = [
+ "trust-tasks-build",
+ "trust-tasks-rs",
+]
+
+[[package]]
+name = "vti-specs-hcp"
+version = "0.1.0"
 dependencies = [
  "trust-tasks-build",
  "trust-tasks-rs",

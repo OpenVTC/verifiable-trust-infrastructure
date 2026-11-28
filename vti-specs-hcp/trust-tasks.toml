@@ -1,0 +1,8 @@
+# The Trust Task specification versions this crate generates (trust-tasks-build).
+# Edit with the `trust-tasks` CLI — see the workspace CLAUDE.md, "Pinning a task version".
+#
+# Empty until the `hcp/*` 0.1 tasks V0 uses are pinned (HCP V0 task A1,
+# docs/05-design-notes/hcp-tasks.md).
+registry = "https://trusttasks.org"
+
+[tasks]

@@ -161,6 +161,7 @@ COPY vta-tee/ vta-tee/
 COPY vta-sweepers/ vta-sweepers/
 COPY vta-vault/ vta-vault/
 COPY vta-external/ vta-external/
+COPY vta-hcp/ vta-hcp/
 COPY vta-webvh/ vta-webvh/
 COPY vta-service/ vta-service/
 COPY vta-test-support/ vta-test-support/
@@ -178,6 +179,7 @@ COPY vti-rooms-wasm/ vti-rooms-wasm/
 COPY vti-secrets/ vti-secrets/
 COPY vti-specs/ vti-specs/
 COPY vti-specs-core/ vti-specs-core/
+COPY vti-specs-hcp/ vti-specs-hcp/
 COPY vti-specs-rooms/ vti-specs-rooms/
 COPY vti-specs-vta/ vti-specs-vta/
 COPY vti-specs-vtc/ vti-specs-vtc/
