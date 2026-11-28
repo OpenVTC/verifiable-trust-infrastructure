@@ -2446,49 +2446,49 @@ fn witnesses() -> Vec<Witness> {
             "vti_evt_080_the_events_policy_may_refuse"
         ),
         witness!(
-            s::events::publish::v0_1::error_codes::EVENTS_OFF,
+            s::events::publish::v0_2::error_codes::EVENTS_OFF,
             crate::trust_tasks::community_event_tasks::PUBLISH_ERR_EVENTS_OFF,
             "community_events.rs",
             "vti_evt_007_events_off_refuses_every_change"
         ),
         witness!(
-            s::events::publish::v0_1::error_codes::NOT_DRAFT,
+            s::events::publish::v0_2::error_codes::NOT_DRAFT,
             crate::trust_tasks::community_event_tasks::PUBLISH_ERR_NOT_DRAFT,
             "community_events.rs",
             "vti_evt_004_the_lifecycle"
         ),
         witness!(
-            s::events::publish::v0_1::error_codes::CALENDAR_ARCHIVED,
+            s::events::publish::v0_2::error_codes::CALENDAR_ARCHIVED,
             crate::trust_tasks::community_event_tasks::PUBLISH_ERR_CALENDAR_ARCHIVED,
             "community_events.rs",
             "vti_evt_014_an_archived_calendar_takes_no_events"
         ),
         witness!(
-            s::events::publish::v0_1::error_codes::EVENT_ENDED,
+            s::events::publish::v0_2::error_codes::EVENT_ENDED,
             crate::trust_tasks::community_event_tasks::PUBLISH_ERR_EVENT_ENDED,
             "community_events.rs",
             "vti_evt_004_the_lifecycle"
         ),
         witness!(
-            s::events::publish::v0_1::error_codes::POLICY_REFUSED,
+            s::events::publish::v0_2::error_codes::POLICY_REFUSED,
             crate::trust_tasks::community_event_tasks::PUBLISH_ERR_POLICY_REFUSED,
             "community_events.rs",
             "vti_evt_080_the_events_policy_may_refuse"
         ),
         witness!(
-            s::events::cancel::v0_1::error_codes::EVENTS_OFF,
+            s::events::cancel::v0_2::error_codes::EVENTS_OFF,
             crate::trust_tasks::community_event_tasks::CANCEL_ERR_EVENTS_OFF,
             "community_events.rs",
             "vti_evt_007_events_off_refuses_every_change"
         ),
         witness!(
-            s::events::cancel::v0_1::error_codes::NOT_PUBLISHED,
+            s::events::cancel::v0_2::error_codes::NOT_PUBLISHED,
             crate::trust_tasks::community_event_tasks::CANCEL_ERR_NOT_PUBLISHED,
             "community_events.rs",
             "vti_evt_004_the_lifecycle"
         ),
         witness!(
-            s::events::cancel::v0_1::error_codes::EVENT_ENDED,
+            s::events::cancel::v0_2::error_codes::EVENT_ENDED,
             crate::trust_tasks::community_event_tasks::CANCEL_ERR_EVENT_ENDED,
             "community_events.rs",
             "vti_evt_004_the_lifecycle"
@@ -2768,6 +2768,18 @@ fn witnesses() -> Vec<Witness> {
             crate::trust_tasks::community_event_tasks::RESPOND_ERR_HOST_DECIDED,
             "community_events.rs",
             "vti_evt_104_answering_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::revoke::v0_1::error_codes::INVITATION_NOT_FOUND,
+            crate::trust_tasks::community_event_tasks::REVOKE_ERR_INVITATION_NOT_FOUND,
+            "community_events.rs",
+            "vti_evt_103_a_host_revokes_an_invitation"
+        ),
+        witness!(
+            s::events::invitations::revoke::v0_1::error_codes::ALREADY_REVOKED,
+            crate::trust_tasks::community_event_tasks::REVOKE_ERR_ALREADY_REVOKED,
+            "community_events.rs",
+            "vti_evt_103_a_host_revokes_an_invitation"
         ),
         witness!(
             s::events::invitations::links::create::v0_1::error_codes::EVENT_CANCELLED,

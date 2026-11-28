@@ -10090,17 +10090,17 @@ export interface components {
          */
         VtcEventsCalendarsUpdateV0_1RosterSetting: "visible" | "hidden";
         /** @description Where the event happens and how to join it (VTI-EVT-060 – 063). Answered by vtc/events/access/show to a registrant who is going, from `revealAt` if set; included in the event itself only where `public` is true. */
-        VtcEventsCancelV0_1AccessDetails: {
+        VtcEventsCancelV0_2AccessDetails: {
             /** @description Anything else attendees need. Plain text. */
             notes?: string;
-            places?: components["schemas"]["VtcEventsCancelV0_1Place"][];
+            places?: components["schemas"]["VtcEventsCancelV0_2Place"][];
             /** @description Show the access details with the event to its whole audience. Absent means false. */
             public?: boolean;
-            revealAt?: components["schemas"]["VtcEventsCancelV0_1EventInstant"];
-            virtualPlaces?: components["schemas"]["VtcEventsCancelV0_1VirtualPlace"][];
+            revealAt?: components["schemas"]["VtcEventsCancelV0_2EventInstant"];
+            virtualPlaces?: components["schemas"]["VtcEventsCancelV0_2VirtualPlace"][];
         };
         /** @description What the event offers for access, as the host states it (VTI-EVT-036). Each flag absent means not stated, not that it is missing. */
-        VtcEventsCancelV0_1Accessibility: {
+        VtcEventsCancelV0_2Accessibility: {
             captions?: boolean;
             hearingLoop?: boolean;
             /** @description Anything else. Plain text. */
@@ -10110,182 +10110,194 @@ export interface components {
             stepFree?: boolean;
         };
         /** @description Opaque identifier of a calendar: `cal_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-010). */
-        VtcEventsCancelV0_1CalendarId: string;
+        VtcEventsCancelV0_2CalendarId: string;
         /** @description A code of conduct a registrant acknowledges before the registration is accepted (VTI-EVT-035). `sha256` pins the text acknowledged. */
-        VtcEventsCancelV0_1CodeOfConduct: {
+        VtcEventsCancelV0_2CodeOfConduct: {
             sha256: string;
             /** Format: uri */
             url: string;
         };
         /** @description A number of registrants as shown to someone who is not a host: `exact` at or above the event's count threshold, `fewerThan` (the threshold) below it, so a small count does not single anyone out (VTI-EVT-054). Exactly one of the two. */
-        VtcEventsCancelV0_1Count: {
+        VtcEventsCancelV0_2Count: {
             exact?: number;
             fewerThan?: number;
         };
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
-        VtcEventsCancelV0_1DynamicRule: {
-            all: components["schemas"]["VtcEventsCancelV0_1RuleCondition"][];
+        VtcEventsCancelV0_2DynamicRule: {
+            all: components["schemas"]["VtcEventsCancelV0_2RuleCondition"][];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
-        VtcEventsCancelV0_1EntryId: string;
+        VtcEventsCancelV0_2EntryId: string;
         /** @description An event as the caller may see it. Members a caller may not see are left out: `registration` settings' `questions` are shown to everyone who may register, `access` only where it is public, `goingCount` as the roster setting allows (VTI-EVT-054). */
-        VtcEventsCancelV0_1Event: {
-            access?: components["schemas"]["VtcEventsCancelV0_1AccessDetails"];
-            accessibility?: components["schemas"]["VtcEventsCancelV0_1Accessibility"];
-            audience: components["schemas"]["VtcEventsCancelV0_1EventAudience"];
-            calendarId: components["schemas"]["VtcEventsCancelV0_1CalendarId"];
+        VtcEventsCancelV0_2Event: {
+            access?: components["schemas"]["VtcEventsCancelV0_2AccessDetails"];
+            accessibility?: components["schemas"]["VtcEventsCancelV0_2Accessibility"];
+            audience: components["schemas"]["VtcEventsCancelV0_2EventAudience"];
+            calendarId: components["schemas"]["VtcEventsCancelV0_2CalendarId"];
             /** @description Present once cancelled, where the host gave one. Plain text. */
             cancelReason?: string;
-            cancelledAt?: components["schemas"]["VtcEventsCancelV0_1EventInstant"];
+            cancelledAt?: components["schemas"]["VtcEventsCancelV0_2EventInstant"];
             /** @description Below this many going, a count is shown as `fewerThan`. Absent means 5. */
             countThreshold?: number;
-            createdAt: components["schemas"]["VtcEventsCancelV0_1EventInstant"];
-            description?: components["schemas"]["VtcEventsCancelV0_1EventDescription"];
-            eventId: components["schemas"]["VtcEventsCancelV0_1EventId"];
+            createdAt: components["schemas"]["VtcEventsCancelV0_2EventInstant"];
+            description?: components["schemas"]["VtcEventsCancelV0_2EventDescription"];
+            eventId: components["schemas"]["VtcEventsCancelV0_2EventId"];
             /** @description True when `capacity` is reached. Shown to everyone who may register, whatever `showCount` says, since a registrant learns it anyway. */
             full?: boolean;
-            goingCount?: components["schemas"]["VtcEventsCancelV0_1Count"];
+            goingCount?: components["schemas"]["VtcEventsCancelV0_2Count"];
             /** @description The event's appointed hosts. Its creator is the first. */
-            hosts?: components["schemas"]["VtcEventsCancelV0_1EntryId"][];
-            kind: components["schemas"]["VtcEventsCancelV0_1EventKind"];
+            hosts?: components["schemas"]["VtcEventsCancelV0_2EntryId"][];
+            invite?: components["schemas"]["VtcEventsCancelV0_2EventInviteMode"];
+            kind: components["schemas"]["VtcEventsCancelV0_2EventKind"];
             /** @description Listed to its whole audience. An unlisted event is answered by vtc/events/show to a member of its audience who names it, and left out of vtc/events/list (VTI-EVT-022). */
             listed: boolean;
-            placeSummary?: components["schemas"]["VtcEventsCancelV0_1PlaceSummary"];
-            publishedAt?: components["schemas"]["VtcEventsCancelV0_1EventInstant"];
-            registration: components["schemas"]["VtcEventsCancelV0_1RegistrationSettings"];
-            roster: components["schemas"]["VtcEventsCancelV0_1RosterSetting"];
+            /** @description Members of the audience may invite other members of it, within the community's daily limit (VTI-EVT-105). Absent means false. */
+            membersMayInvite?: boolean;
+            placeSummary?: components["schemas"]["VtcEventsCancelV0_2PlaceSummary"];
+            publishedAt?: components["schemas"]["VtcEventsCancelV0_2EventInstant"];
+            registration: components["schemas"]["VtcEventsCancelV0_2RegistrationSettings"];
+            roster: components["schemas"]["VtcEventsCancelV0_2RosterSetting"];
             /** @description Incremented on every change of `when`, `access`, `status` or `kind` after publication — the changes a registrant must notice, as iTIP's SEQUENCE (VTI-EVT-006). */
             sequence: number;
             /** @description Show the number going to the audience, subject to `countThreshold`. Absent means false. */
             showCount?: boolean;
-            status: components["schemas"]["VtcEventsCancelV0_1EventLifecycle"];
+            status: components["schemas"]["VtcEventsCancelV0_2EventLifecycle"];
             /** @description Reminders the hosts suggest, as minutes before the start. A member's agent applies them unless the member chose otherwise; the community sends no reminder itself (VTI-EVT-040). */
-            suggestedReminderMinutes?: components["schemas"]["VtcEventsCancelV0_1ReminderMinutes"][];
-            title: components["schemas"]["VtcEventsCancelV0_1EventTitle"];
-            updatedAt: components["schemas"]["VtcEventsCancelV0_1EventInstant"];
-            when: components["schemas"]["VtcEventsCancelV0_1When"];
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsCancelV0_2ReminderMinutes"][];
+            title: components["schemas"]["VtcEventsCancelV0_2EventTitle"];
+            updatedAt: components["schemas"]["VtcEventsCancelV0_2EventInstant"];
+            when: components["schemas"]["VtcEventsCancelV0_2When"];
         };
-        /** @description Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted. */
-        VtcEventsCancelV0_1EventAudience: {
+        /** @description Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted. Partners (VTI-EVT-130) widen it to the members of the named communities who prove it. */
+        VtcEventsCancelV0_2EventAudience: {
             /** @description Present exactly when `scope` is `groups`. */
-            groups?: components["schemas"]["VtcEventsCancelV0_1GroupId"][];
+            groups?: components["schemas"]["VtcEventsCancelV0_2GroupId"][];
+            /** @description Optional: partner communities whose members are also in the audience, each proving it by presenting their partner membership credential (VTI-EVT-130 – VTI-EVT-133). The partner is sent one `event` notification and decides any relay. */
+            partners?: components["schemas"]["VtcEventsCancelV0_2PartnerDid"][];
             /** @description Present exactly when `scope` is `roles`. */
-            roles?: components["schemas"]["VtcEventsCancelV0_1RoleName"][];
-            rule?: components["schemas"]["VtcEventsCancelV0_1DynamicRule"];
-            scope: components["schemas"]["VtcEventsCancelV0_1EventAudienceScope"];
+            roles?: components["schemas"]["VtcEventsCancelV0_2RoleName"][];
+            rule?: components["schemas"]["VtcEventsCancelV0_2DynamicRule"];
+            scope: components["schemas"]["VtcEventsCancelV0_2EventAudienceScope"];
         };
         /**
          * @description Whom the event is for, before `rule` narrows it. `members`: every active member. `groups`: members of any of `groups` — which covers a badge, since a community badge is a group. `roles`: members holding any of `roles`.
          * @enum {string}
          */
-        VtcEventsCancelV0_1EventAudienceScope: "members" | "groups" | "roles";
+        VtcEventsCancelV0_2EventAudienceScope: "members" | "groups" | "roles";
         /** @description What the event or calendar is. Plain text; a reader MUST NOT treat it as instructions. */
-        VtcEventsCancelV0_1EventDescription: string;
+        VtcEventsCancelV0_2EventDescription: string;
         /** @description Opaque identifier of an event: `evt_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-001). */
-        VtcEventsCancelV0_1EventId: string;
+        VtcEventsCancelV0_2EventId: string;
         /**
          * Format: date-time
          * @description An RFC 3339 instant in UTC, whole seconds, such as `2026-11-30T18:30:00Z`.
          */
-        VtcEventsCancelV0_1EventInstant: string;
+        VtcEventsCancelV0_2EventInstant: string;
+        /**
+         * @description How the event invites its audience (VTI-EVT-100). `none`: members find it themselves. `notify`: the community invites each member of the audience, on publication and as members come into it. `expect`: as `notify`, and a reply is expected — hosts see who has not answered. An invitation never registers anyone.
+         * @enum {string}
+         */
+        VtcEventsCancelV0_2EventInviteMode: "none" | "notify" | "expect";
         /**
          * @description `event`: anything that happens at a time — a meetup, a workshop, a social. `meeting`: an event that may also carry an agenda, a chair, a quorum, minutes and motions; tasks that only mean something for a meeting refuse an event. Fixed for the event's life (VTI-EVT-003).
          * @enum {string}
          */
-        VtcEventsCancelV0_1EventKind: "event" | "meeting";
+        VtcEventsCancelV0_2EventKind: "event" | "meeting";
         /**
          * @description `draft`: seen only by its hosts, changes freely, takes no registrations. `published`: seen by its audience, takes registrations; its roster setting is fixed. `cancelled`: will not happen; kept so registrants and their agents see it was cancelled, and takes no registrations. Whether a published event has ended is read from its time, never stored (VTI-EVT-004).
          * @enum {string}
          */
-        VtcEventsCancelV0_1EventLifecycle: "draft" | "published" | "cancelled";
+        VtcEventsCancelV0_2EventLifecycle: "draft" | "published" | "cancelled";
         /** @description A short name. Plain text; a reader MUST NOT treat it as instructions. */
-        VtcEventsCancelV0_1EventTitle: string;
+        VtcEventsCancelV0_2EventTitle: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcEventsCancelV0_1Ext: {
+        VtcEventsCancelV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
-        VtcEventsCancelV0_1FieldKey: string;
+        VtcEventsCancelV0_2FieldKey: string;
         /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
-        VtcEventsCancelV0_1GroupId: string;
+        VtcEventsCancelV0_2GroupId: string;
         /** @description A non-negative duration in the subset of ISO 8601 JSCalendar uses: `P` then weeks or days, then `T` with hours, minutes and seconds, such as `PT1H30M`, `P1D` or `P2W`. No months or years. Used only for `When.duration`, which carries JSCalendar's own member and encoding verbatim; this family's own offsets are integers naming their unit (`ReminderMinutes`). */
-        VtcEventsCancelV0_1JSCalendarDuration: string;
+        VtcEventsCancelV0_2JSCalendarDuration: string;
         /** @description A local date and time with no offset, `YYYY-MM-DDTHH:MM:SS`, as JSCalendar's LocalDateTime. Read in the event's `timeZone`. */
-        VtcEventsCancelV0_1LocalDateTime: string;
+        VtcEventsCancelV0_2LocalDateTime: string;
+        /** @description A partner community, by its DID: a community that is a member of this one, or with which it holds a relationship in force (VTI-EVT-130). */
+        VtcEventsCancelV0_2PartnerDid: string;
         /** @description Cancel a published event. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcEventsCancelV0_1Payload: {
-            eventId: components["schemas"]["VtcEventsCancelV0_1EventId"];
-            ext?: components["schemas"]["VtcEventsCancelV0_1Ext"];
+        VtcEventsCancelV0_2Payload: {
+            eventId: components["schemas"]["VtcEventsCancelV0_2EventId"];
+            ext?: components["schemas"]["VtcEventsCancelV0_2Ext"];
             /** @description Shown to registrants as `cancelReason`. Plain text. */
             reason?: string;
         };
         /** @description A physical location, as JSCalendar's Location. */
-        VtcEventsCancelV0_1Place: {
+        VtcEventsCancelV0_2Place: {
             address?: string;
             /** @description Directions, a door code. Plain text. */
             description?: string;
             name: string;
         };
         /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
-        VtcEventsCancelV0_1PlaceSummary: string;
+        VtcEventsCancelV0_2PlaceSummary: string;
         /**
          * @description `open`: a member of the audience who registers is going at once (or waitlisted when full). `approval`: a registration is pending until a host decides it. `closed`: no registrations; the event is for information only (VTI-EVT-031).
          * @enum {string}
          */
-        VtcEventsCancelV0_1RegistrationMode: "open" | "approval" | "closed";
+        VtcEventsCancelV0_2RegistrationMode: "open" | "approval" | "closed";
         /** @description A question a registrant answers when registering. Answers are read by the event's hosts only, and are deleted on the event's retention schedule (VTI-EVT-034, VTI-EVT-090). */
-        VtcEventsCancelV0_1RegistrationQuestion: {
+        VtcEventsCancelV0_2RegistrationQuestion: {
             /** @description Present exactly when `kind` is `choice`. */
             choices?: string[];
-            kind: components["schemas"]["VtcEventsCancelV0_1RegistrationQuestionKind"];
+            kind: components["schemas"]["VtcEventsCancelV0_2RegistrationQuestionKind"];
             /** @description The question as shown. Plain text. */
             label: string;
-            questionId: components["schemas"]["VtcEventsCancelV0_1RegistrationQuestionId"];
+            questionId: components["schemas"]["VtcEventsCancelV0_2RegistrationQuestionId"];
             /** @description The registration is refused without an answer. Absent means false. */
             required?: boolean;
         };
         /** @description A question's key within its event. */
-        VtcEventsCancelV0_1RegistrationQuestionId: string;
+        VtcEventsCancelV0_2RegistrationQuestionId: string;
         /**
          * @description `text`: a free answer of at most 500 characters. `choice`: one of `choices`. `boolean`: yes or no.
          * @enum {string}
          */
-        VtcEventsCancelV0_1RegistrationQuestionKind: "text" | "choice" | "boolean";
+        VtcEventsCancelV0_2RegistrationQuestionKind: "text" | "choice" | "boolean";
         /** @description How the event takes registrations (VTI-EVT-031 – 036). */
-        VtcEventsCancelV0_1RegistrationSettings: {
+        VtcEventsCancelV0_2RegistrationSettings: {
             /** @description The most people who may be going, plus-ones included. Absent means no limit. */
             capacity?: number;
-            closesAt?: components["schemas"]["VtcEventsCancelV0_1EventInstant"];
-            codeOfConduct?: components["schemas"]["VtcEventsCancelV0_1CodeOfConduct"];
-            mode: components["schemas"]["VtcEventsCancelV0_1RegistrationMode"];
-            opensAt?: components["schemas"]["VtcEventsCancelV0_1EventInstant"];
+            closesAt?: components["schemas"]["VtcEventsCancelV0_2EventInstant"];
+            codeOfConduct?: components["schemas"]["VtcEventsCancelV0_2CodeOfConduct"];
+            mode: components["schemas"]["VtcEventsCancelV0_2RegistrationMode"];
+            opensAt?: components["schemas"]["VtcEventsCancelV0_2EventInstant"];
             /** @description The most guests a registrant may bring. Absent means 0. */
             plusOnes?: number;
-            questions?: components["schemas"]["VtcEventsCancelV0_1RegistrationQuestion"][];
+            questions?: components["schemas"]["VtcEventsCancelV0_2RegistrationQuestion"][];
             /** @description Registrations beyond `capacity` are waitlisted, and the first on the waitlist becomes going when a place frees (VTI-EVT-033). Absent means false: a registration beyond capacity is refused. */
             waitlist?: boolean;
         };
         /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
-        VtcEventsCancelV0_1ReminderMinutes: number;
-        /** @description The success response to a vtc/events/cancel/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/cancel/0.1#response. */
-        VtcEventsCancelV0_1Response: {
-            event: components["schemas"]["VtcEventsCancelV0_1Event"];
-            ext?: components["schemas"]["VtcEventsCancelV0_1Ext"];
+        VtcEventsCancelV0_2ReminderMinutes: number;
+        /** @description The success response to a vtc/events/cancel/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/cancel/0.2#response. */
+        VtcEventsCancelV0_2Response: {
+            event: components["schemas"]["VtcEventsCancelV0_2Event"];
+            ext?: components["schemas"]["VtcEventsCancelV0_2Ext"];
         };
         /** @description A role identifier: lowercase, hyphen-separated, at most 64 characters. Compared by exact string equality. It is the value an AclEntry 0.2 carries in `role`. */
-        VtcEventsCancelV0_1RoleName: string;
+        VtcEventsCancelV0_2RoleName: string;
         /**
          * @description Who may see who is registered (VTI-EVT-050). `visible`: registrants who are going or maybe see each other. `hidden`: no registrant sees another; the event's hosts do. Fixed once the event is published (VTI-EVT-051) and recorded on each registration (VTI-EVT-052).
          * @enum {string}
          */
-        VtcEventsCancelV0_1RosterSetting: "visible" | "hidden";
+        VtcEventsCancelV0_2RosterSetting: "visible" | "hidden";
         /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
-        VtcEventsCancelV0_1RuleCondition: {
+        VtcEventsCancelV0_2RuleCondition: {
             /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
             count?: number;
             /** @enum {string} */
             fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
-            field?: components["schemas"]["VtcEventsCancelV0_1FieldKey"];
+            field?: components["schemas"]["VtcEventsCancelV0_2FieldKey"];
             /**
              * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
@@ -10295,17 +10307,17 @@ export interface components {
             values?: string[];
         };
         /** @description An IANA time zone name, such as `Europe/London`, or `Etc/UTC`. A responder MUST refuse a name its time zone database does not know. */
-        VtcEventsCancelV0_1TimeZoneId: string;
+        VtcEventsCancelV0_2TimeZoneId: string;
         /**
          * @description What a virtual location offers, as JSCalendar's VirtualLocation `features`.
          * @enum {string}
          */
-        VtcEventsCancelV0_1VirtualFeature: "audio" | "chat" | "feed" | "moderator" | "phone" | "screen" | "video";
+        VtcEventsCancelV0_2VirtualFeature: "audio" | "chat" | "feed" | "moderator" | "phone" | "screen" | "video";
         /** @description A way to join online, as JSCalendar's VirtualLocation. */
-        VtcEventsCancelV0_1VirtualPlace: {
+        VtcEventsCancelV0_2VirtualPlace: {
             /** @description A passcode, dial-in numbers. Plain text. */
             description?: string;
-            features?: components["schemas"]["VtcEventsCancelV0_1VirtualFeature"][];
+            features?: components["schemas"]["VtcEventsCancelV0_2VirtualFeature"][];
             name?: string;
             /**
              * Format: uri
@@ -10314,12 +10326,12 @@ export interface components {
             uri: string;
         };
         /** @description When the event happens, in JSCalendar's terms. `start` is local time in `timeZone`; `duration` is how long it lasts. With `showWithoutTime` true it is an all-day event: `start`'s time MUST be `T00:00:00` and `duration` whole days (VTI-EVT-005). */
-        VtcEventsCancelV0_1When: {
-            duration: components["schemas"]["VtcEventsCancelV0_1JSCalendarDuration"];
+        VtcEventsCancelV0_2When: {
+            duration: components["schemas"]["VtcEventsCancelV0_2JSCalendarDuration"];
             /** @description An all-day event. Absent means false. */
             showWithoutTime?: boolean;
-            start: components["schemas"]["VtcEventsCancelV0_1LocalDateTime"];
-            timeZone: components["schemas"]["VtcEventsCancelV0_1TimeZoneId"];
+            start: components["schemas"]["VtcEventsCancelV0_2LocalDateTime"];
+            timeZone: components["schemas"]["VtcEventsCancelV0_2TimeZoneId"];
         };
         /** @description Where the event happens and how to join it (VTI-EVT-060 – 063). Answered by vtc/events/access/show to a registrant who is going, from `revealAt` if set; included in the event itself only where `public` is true. */
         VtcEventsCreateV0_2AccessDetails: {
@@ -11055,6 +11067,57 @@ export interface components {
             timeZone: components["schemas"]["VtcEventsInvitationsRespondV0_1TimeZoneId"];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
+        VtcEventsInvitationsRevokeV0_1EntryId: string;
+        /** @description Opaque identifier of an event: `evt_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-001). */
+        VtcEventsInvitationsRevokeV0_1EventId: string;
+        /**
+         * Format: date-time
+         * @description An RFC 3339 instant in UTC, whole seconds, such as `2026-11-30T18:30:00Z`.
+         */
+        VtcEventsInvitationsRevokeV0_1EventInstant: string;
+        /** @description One member's invitation to one event (VTI-EVT-102). Seen by the event's hosts and by the invitee; never by anyone else (VTI-EVT-106). */
+        VtcEventsInvitationsRevokeV0_1EventInvitation: {
+            answer: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventInvitationAnswer"];
+            answeredAt?: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventInstant"];
+            createdAt: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventInstant"];
+            entryId: components["schemas"]["VtcEventsInvitationsRevokeV0_1EntryId"];
+            eventId: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventId"];
+            invitationId: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventInvitationId"];
+            invitedBy: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventInviter"];
+            inviterEntryId?: components["schemas"]["VtcEventsInvitationsRevokeV0_1EntryId"];
+            /** @description The event was `expect` when the invitation was made (VTI-EVT-100). */
+            replyExpected: boolean;
+            /** @description A host revoked it (VTI-EVT-103); its notification was withdrawn. Absent means false. */
+            revoked?: boolean;
+        };
+        /**
+         * @description The invitee's answer (VTI-EVT-104). `none`: not answered. `going`, `maybe`: answered by registering. `declined`: the invitee said they will not come — recorded here and nowhere else; not a host's decline of a registration.
+         * @enum {string}
+         */
+        VtcEventsInvitationsRevokeV0_1EventInvitationAnswer: "none" | "going" | "maybe" | "declined";
+        /** @description Opaque identifier of one invitation to one event: `inv_` followed by 16 to 64 base64url characters. */
+        VtcEventsInvitationsRevokeV0_1EventInvitationId: string;
+        /**
+         * @description Who invited (VTI-EVT-106). `audience`: the community, under the event's invitation mode (VTI-EVT-101). `host`: a host, by name (VTI-EVT-103). `member`: a member of the audience (VTI-EVT-105). `link`: the invitee redeemed an invitation link (VTI-EVT-107).
+         * @enum {string}
+         */
+        VtcEventsInvitationsRevokeV0_1EventInviter: "audience" | "host" | "member" | "link";
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        VtcEventsInvitationsRevokeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description A host revokes an invitation: its notification is withdrawn and, where the invitation was what put the member in the event's audience, it no longer does. A registration the member made stands. The outer document members are owned by the framework — SPEC §6.3. */
+        VtcEventsInvitationsRevokeV0_1Payload: {
+            eventId: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventId"];
+            ext?: components["schemas"]["VtcEventsInvitationsRevokeV0_1Ext"];
+            invitationId: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventInvitationId"];
+        };
+        /** @description The success response to a vtc/events/invitations/revoke/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/invitations/revoke/0.1#response. */
+        VtcEventsInvitationsRevokeV0_1Response: {
+            ext?: components["schemas"]["VtcEventsInvitationsRevokeV0_1Ext"];
+            invitation: components["schemas"]["VtcEventsInvitationsRevokeV0_1EventInvitation"];
+        };
+        /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
         VtcEventsInvitationsSendV0_1EntryId: string;
         /** @description Opaque identifier of an event: `evt_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-001). */
         VtcEventsInvitationsSendV0_1EventId: string;
@@ -11565,17 +11628,17 @@ export interface components {
             optedOut: boolean;
         };
         /** @description Where the event happens and how to join it (VTI-EVT-060 – 063). Answered by vtc/events/access/show to a registrant who is going, from `revealAt` if set; included in the event itself only where `public` is true. */
-        VtcEventsPublishV0_1AccessDetails: {
+        VtcEventsPublishV0_2AccessDetails: {
             /** @description Anything else attendees need. Plain text. */
             notes?: string;
-            places?: components["schemas"]["VtcEventsPublishV0_1Place"][];
+            places?: components["schemas"]["VtcEventsPublishV0_2Place"][];
             /** @description Show the access details with the event to its whole audience. Absent means false. */
             public?: boolean;
-            revealAt?: components["schemas"]["VtcEventsPublishV0_1EventInstant"];
-            virtualPlaces?: components["schemas"]["VtcEventsPublishV0_1VirtualPlace"][];
+            revealAt?: components["schemas"]["VtcEventsPublishV0_2EventInstant"];
+            virtualPlaces?: components["schemas"]["VtcEventsPublishV0_2VirtualPlace"][];
         };
         /** @description What the event offers for access, as the host states it (VTI-EVT-036). Each flag absent means not stated, not that it is missing. */
-        VtcEventsPublishV0_1Accessibility: {
+        VtcEventsPublishV0_2Accessibility: {
             captions?: boolean;
             hearingLoop?: boolean;
             /** @description Anything else. Plain text. */
@@ -11585,180 +11648,192 @@ export interface components {
             stepFree?: boolean;
         };
         /** @description Opaque identifier of a calendar: `cal_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-010). */
-        VtcEventsPublishV0_1CalendarId: string;
+        VtcEventsPublishV0_2CalendarId: string;
         /** @description A code of conduct a registrant acknowledges before the registration is accepted (VTI-EVT-035). `sha256` pins the text acknowledged. */
-        VtcEventsPublishV0_1CodeOfConduct: {
+        VtcEventsPublishV0_2CodeOfConduct: {
             sha256: string;
             /** Format: uri */
             url: string;
         };
         /** @description A number of registrants as shown to someone who is not a host: `exact` at or above the event's count threshold, `fewerThan` (the threshold) below it, so a small count does not single anyone out (VTI-EVT-054). Exactly one of the two. */
-        VtcEventsPublishV0_1Count: {
+        VtcEventsPublishV0_2Count: {
             exact?: number;
             fewerThan?: number;
         };
         /** @description A dynamic group's membership rule: a member belongs when every condition holds and they have not opted out. The community evaluates it under its `groups` policy and recomputes membership whenever a fact it reads changes, always excluding opted-out entries. */
-        VtcEventsPublishV0_1DynamicRule: {
-            all: components["schemas"]["VtcEventsPublishV0_1RuleCondition"][];
+        VtcEventsPublishV0_2DynamicRule: {
+            all: components["schemas"]["VtcEventsPublishV0_2RuleCondition"][];
         };
         /** @description Opaque identifier of one directory entry: `dir_` followed by 16 to 64 base64url characters. Random, scoped to one community, and stable for the life of the membership — it survives a rotation of the member's DID, which is why groups, notes and cards are keyed by it. It MUST NOT be derived from, and MUST NOT reveal, any DID of the member, and the same person's entries in two communities MUST NOT share one. Compared by exact string equality. */
-        VtcEventsPublishV0_1EntryId: string;
+        VtcEventsPublishV0_2EntryId: string;
         /** @description An event as the caller may see it. Members a caller may not see are left out: `registration` settings' `questions` are shown to everyone who may register, `access` only where it is public, `goingCount` as the roster setting allows (VTI-EVT-054). */
-        VtcEventsPublishV0_1Event: {
-            access?: components["schemas"]["VtcEventsPublishV0_1AccessDetails"];
-            accessibility?: components["schemas"]["VtcEventsPublishV0_1Accessibility"];
-            audience: components["schemas"]["VtcEventsPublishV0_1EventAudience"];
-            calendarId: components["schemas"]["VtcEventsPublishV0_1CalendarId"];
+        VtcEventsPublishV0_2Event: {
+            access?: components["schemas"]["VtcEventsPublishV0_2AccessDetails"];
+            accessibility?: components["schemas"]["VtcEventsPublishV0_2Accessibility"];
+            audience: components["schemas"]["VtcEventsPublishV0_2EventAudience"];
+            calendarId: components["schemas"]["VtcEventsPublishV0_2CalendarId"];
             /** @description Present once cancelled, where the host gave one. Plain text. */
             cancelReason?: string;
-            cancelledAt?: components["schemas"]["VtcEventsPublishV0_1EventInstant"];
+            cancelledAt?: components["schemas"]["VtcEventsPublishV0_2EventInstant"];
             /** @description Below this many going, a count is shown as `fewerThan`. Absent means 5. */
             countThreshold?: number;
-            createdAt: components["schemas"]["VtcEventsPublishV0_1EventInstant"];
-            description?: components["schemas"]["VtcEventsPublishV0_1EventDescription"];
-            eventId: components["schemas"]["VtcEventsPublishV0_1EventId"];
+            createdAt: components["schemas"]["VtcEventsPublishV0_2EventInstant"];
+            description?: components["schemas"]["VtcEventsPublishV0_2EventDescription"];
+            eventId: components["schemas"]["VtcEventsPublishV0_2EventId"];
             /** @description True when `capacity` is reached. Shown to everyone who may register, whatever `showCount` says, since a registrant learns it anyway. */
             full?: boolean;
-            goingCount?: components["schemas"]["VtcEventsPublishV0_1Count"];
+            goingCount?: components["schemas"]["VtcEventsPublishV0_2Count"];
             /** @description The event's appointed hosts. Its creator is the first. */
-            hosts?: components["schemas"]["VtcEventsPublishV0_1EntryId"][];
-            kind: components["schemas"]["VtcEventsPublishV0_1EventKind"];
+            hosts?: components["schemas"]["VtcEventsPublishV0_2EntryId"][];
+            invite?: components["schemas"]["VtcEventsPublishV0_2EventInviteMode"];
+            kind: components["schemas"]["VtcEventsPublishV0_2EventKind"];
             /** @description Listed to its whole audience. An unlisted event is answered by vtc/events/show to a member of its audience who names it, and left out of vtc/events/list (VTI-EVT-022). */
             listed: boolean;
-            placeSummary?: components["schemas"]["VtcEventsPublishV0_1PlaceSummary"];
-            publishedAt?: components["schemas"]["VtcEventsPublishV0_1EventInstant"];
-            registration: components["schemas"]["VtcEventsPublishV0_1RegistrationSettings"];
-            roster: components["schemas"]["VtcEventsPublishV0_1RosterSetting"];
+            /** @description Members of the audience may invite other members of it, within the community's daily limit (VTI-EVT-105). Absent means false. */
+            membersMayInvite?: boolean;
+            placeSummary?: components["schemas"]["VtcEventsPublishV0_2PlaceSummary"];
+            publishedAt?: components["schemas"]["VtcEventsPublishV0_2EventInstant"];
+            registration: components["schemas"]["VtcEventsPublishV0_2RegistrationSettings"];
+            roster: components["schemas"]["VtcEventsPublishV0_2RosterSetting"];
             /** @description Incremented on every change of `when`, `access`, `status` or `kind` after publication — the changes a registrant must notice, as iTIP's SEQUENCE (VTI-EVT-006). */
             sequence: number;
             /** @description Show the number going to the audience, subject to `countThreshold`. Absent means false. */
             showCount?: boolean;
-            status: components["schemas"]["VtcEventsPublishV0_1EventLifecycle"];
+            status: components["schemas"]["VtcEventsPublishV0_2EventLifecycle"];
             /** @description Reminders the hosts suggest, as minutes before the start. A member's agent applies them unless the member chose otherwise; the community sends no reminder itself (VTI-EVT-040). */
-            suggestedReminderMinutes?: components["schemas"]["VtcEventsPublishV0_1ReminderMinutes"][];
-            title: components["schemas"]["VtcEventsPublishV0_1EventTitle"];
-            updatedAt: components["schemas"]["VtcEventsPublishV0_1EventInstant"];
-            when: components["schemas"]["VtcEventsPublishV0_1When"];
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsPublishV0_2ReminderMinutes"][];
+            title: components["schemas"]["VtcEventsPublishV0_2EventTitle"];
+            updatedAt: components["schemas"]["VtcEventsPublishV0_2EventInstant"];
+            when: components["schemas"]["VtcEventsPublishV0_2When"];
         };
-        /** @description Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted. */
-        VtcEventsPublishV0_1EventAudience: {
+        /** @description Who may see and register for the event (VTI-EVT-020). A member is in the audience when `scope` admits them and, where `rule` is present, the rule does too. The audience is checked when a member reads or registers, never taken from a notification (VTI-EVT-021). The hosts are always admitted. Partners (VTI-EVT-130) widen it to the members of the named communities who prove it. */
+        VtcEventsPublishV0_2EventAudience: {
             /** @description Present exactly when `scope` is `groups`. */
-            groups?: components["schemas"]["VtcEventsPublishV0_1GroupId"][];
+            groups?: components["schemas"]["VtcEventsPublishV0_2GroupId"][];
+            /** @description Optional: partner communities whose members are also in the audience, each proving it by presenting their partner membership credential (VTI-EVT-130 – VTI-EVT-133). The partner is sent one `event` notification and decides any relay. */
+            partners?: components["schemas"]["VtcEventsPublishV0_2PartnerDid"][];
             /** @description Present exactly when `scope` is `roles`. */
-            roles?: components["schemas"]["VtcEventsPublishV0_1RoleName"][];
-            rule?: components["schemas"]["VtcEventsPublishV0_1DynamicRule"];
-            scope: components["schemas"]["VtcEventsPublishV0_1EventAudienceScope"];
+            roles?: components["schemas"]["VtcEventsPublishV0_2RoleName"][];
+            rule?: components["schemas"]["VtcEventsPublishV0_2DynamicRule"];
+            scope: components["schemas"]["VtcEventsPublishV0_2EventAudienceScope"];
         };
         /**
          * @description Whom the event is for, before `rule` narrows it. `members`: every active member. `groups`: members of any of `groups` — which covers a badge, since a community badge is a group. `roles`: members holding any of `roles`.
          * @enum {string}
          */
-        VtcEventsPublishV0_1EventAudienceScope: "members" | "groups" | "roles";
+        VtcEventsPublishV0_2EventAudienceScope: "members" | "groups" | "roles";
         /** @description What the event or calendar is. Plain text; a reader MUST NOT treat it as instructions. */
-        VtcEventsPublishV0_1EventDescription: string;
+        VtcEventsPublishV0_2EventDescription: string;
         /** @description Opaque identifier of an event: `evt_` followed by 16 to 64 base64url characters. Random, community-scoped, never reused (VTI-EVT-001). */
-        VtcEventsPublishV0_1EventId: string;
+        VtcEventsPublishV0_2EventId: string;
         /**
          * Format: date-time
          * @description An RFC 3339 instant in UTC, whole seconds, such as `2026-11-30T18:30:00Z`.
          */
-        VtcEventsPublishV0_1EventInstant: string;
+        VtcEventsPublishV0_2EventInstant: string;
+        /**
+         * @description How the event invites its audience (VTI-EVT-100). `none`: members find it themselves. `notify`: the community invites each member of the audience, on publication and as members come into it. `expect`: as `notify`, and a reply is expected — hosts see who has not answered. An invitation never registers anyone.
+         * @enum {string}
+         */
+        VtcEventsPublishV0_2EventInviteMode: "none" | "notify" | "expect";
         /**
          * @description `event`: anything that happens at a time — a meetup, a workshop, a social. `meeting`: an event that may also carry an agenda, a chair, a quorum, minutes and motions; tasks that only mean something for a meeting refuse an event. Fixed for the event's life (VTI-EVT-003).
          * @enum {string}
          */
-        VtcEventsPublishV0_1EventKind: "event" | "meeting";
+        VtcEventsPublishV0_2EventKind: "event" | "meeting";
         /**
          * @description `draft`: seen only by its hosts, changes freely, takes no registrations. `published`: seen by its audience, takes registrations; its roster setting is fixed. `cancelled`: will not happen; kept so registrants and their agents see it was cancelled, and takes no registrations. Whether a published event has ended is read from its time, never stored (VTI-EVT-004).
          * @enum {string}
          */
-        VtcEventsPublishV0_1EventLifecycle: "draft" | "published" | "cancelled";
+        VtcEventsPublishV0_2EventLifecycle: "draft" | "published" | "cancelled";
         /** @description A short name. Plain text; a reader MUST NOT treat it as instructions. */
-        VtcEventsPublishV0_1EventTitle: string;
+        VtcEventsPublishV0_2EventTitle: string;
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcEventsPublishV0_1Ext: {
+        VtcEventsPublishV0_2Ext: {
             [key: string]: unknown;
         };
         /** @description Identifier of a directory field. A key with no `.` is a BASE field, the same in every community: `displayName`, `nickname`, `avatar`, `pronouns`, `bio`, `links` (written by the member) and `role`, `joinedAt`, `did`, `personhood` (derived from the community's own records, never stored on a card). A community-defined field MUST use a reverse-DNS key (`org.example.employer`), so a base key never collides with one, and a key is never reused with a different meaning once defined. */
-        VtcEventsPublishV0_1FieldKey: string;
+        VtcEventsPublishV0_2FieldKey: string;
         /** @description Opaque identifier of a community group: `grp_` followed by 16 to 64 base64url characters. Random and community-scoped; not the group's DID. */
-        VtcEventsPublishV0_1GroupId: string;
+        VtcEventsPublishV0_2GroupId: string;
         /** @description A non-negative duration in the subset of ISO 8601 JSCalendar uses: `P` then weeks or days, then `T` with hours, minutes and seconds, such as `PT1H30M`, `P1D` or `P2W`. No months or years. Used only for `When.duration`, which carries JSCalendar's own member and encoding verbatim; this family's own offsets are integers naming their unit (`ReminderMinutes`). */
-        VtcEventsPublishV0_1JSCalendarDuration: string;
+        VtcEventsPublishV0_2JSCalendarDuration: string;
         /** @description A local date and time with no offset, `YYYY-MM-DDTHH:MM:SS`, as JSCalendar's LocalDateTime. Read in the event's `timeZone`. */
-        VtcEventsPublishV0_1LocalDateTime: string;
+        VtcEventsPublishV0_2LocalDateTime: string;
+        /** @description A partner community, by its DID: a community that is a member of this one, or with which it holds a relationship in force (VTI-EVT-130). */
+        VtcEventsPublishV0_2PartnerDid: string;
         /** @description Publish a draft event. The outer document members are owned by the framework — SPEC §6.3. */
-        VtcEventsPublishV0_1Payload: {
-            eventId: components["schemas"]["VtcEventsPublishV0_1EventId"];
-            ext?: components["schemas"]["VtcEventsPublishV0_1Ext"];
+        VtcEventsPublishV0_2Payload: {
+            eventId: components["schemas"]["VtcEventsPublishV0_2EventId"];
+            ext?: components["schemas"]["VtcEventsPublishV0_2Ext"];
         };
         /** @description A physical location, as JSCalendar's Location. */
-        VtcEventsPublishV0_1Place: {
+        VtcEventsPublishV0_2Place: {
             address?: string;
             /** @description Directions, a door code. Plain text. */
             description?: string;
             name: string;
         };
         /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
-        VtcEventsPublishV0_1PlaceSummary: string;
+        VtcEventsPublishV0_2PlaceSummary: string;
         /**
          * @description `open`: a member of the audience who registers is going at once (or waitlisted when full). `approval`: a registration is pending until a host decides it. `closed`: no registrations; the event is for information only (VTI-EVT-031).
          * @enum {string}
          */
-        VtcEventsPublishV0_1RegistrationMode: "open" | "approval" | "closed";
+        VtcEventsPublishV0_2RegistrationMode: "open" | "approval" | "closed";
         /** @description A question a registrant answers when registering. Answers are read by the event's hosts only, and are deleted on the event's retention schedule (VTI-EVT-034, VTI-EVT-090). */
-        VtcEventsPublishV0_1RegistrationQuestion: {
+        VtcEventsPublishV0_2RegistrationQuestion: {
             /** @description Present exactly when `kind` is `choice`. */
             choices?: string[];
-            kind: components["schemas"]["VtcEventsPublishV0_1RegistrationQuestionKind"];
+            kind: components["schemas"]["VtcEventsPublishV0_2RegistrationQuestionKind"];
             /** @description The question as shown. Plain text. */
             label: string;
-            questionId: components["schemas"]["VtcEventsPublishV0_1RegistrationQuestionId"];
+            questionId: components["schemas"]["VtcEventsPublishV0_2RegistrationQuestionId"];
             /** @description The registration is refused without an answer. Absent means false. */
             required?: boolean;
         };
         /** @description A question's key within its event. */
-        VtcEventsPublishV0_1RegistrationQuestionId: string;
+        VtcEventsPublishV0_2RegistrationQuestionId: string;
         /**
          * @description `text`: a free answer of at most 500 characters. `choice`: one of `choices`. `boolean`: yes or no.
          * @enum {string}
          */
-        VtcEventsPublishV0_1RegistrationQuestionKind: "text" | "choice" | "boolean";
+        VtcEventsPublishV0_2RegistrationQuestionKind: "text" | "choice" | "boolean";
         /** @description How the event takes registrations (VTI-EVT-031 – 036). */
-        VtcEventsPublishV0_1RegistrationSettings: {
+        VtcEventsPublishV0_2RegistrationSettings: {
             /** @description The most people who may be going, plus-ones included. Absent means no limit. */
             capacity?: number;
-            closesAt?: components["schemas"]["VtcEventsPublishV0_1EventInstant"];
-            codeOfConduct?: components["schemas"]["VtcEventsPublishV0_1CodeOfConduct"];
-            mode: components["schemas"]["VtcEventsPublishV0_1RegistrationMode"];
-            opensAt?: components["schemas"]["VtcEventsPublishV0_1EventInstant"];
+            closesAt?: components["schemas"]["VtcEventsPublishV0_2EventInstant"];
+            codeOfConduct?: components["schemas"]["VtcEventsPublishV0_2CodeOfConduct"];
+            mode: components["schemas"]["VtcEventsPublishV0_2RegistrationMode"];
+            opensAt?: components["schemas"]["VtcEventsPublishV0_2EventInstant"];
             /** @description The most guests a registrant may bring. Absent means 0. */
             plusOnes?: number;
-            questions?: components["schemas"]["VtcEventsPublishV0_1RegistrationQuestion"][];
+            questions?: components["schemas"]["VtcEventsPublishV0_2RegistrationQuestion"][];
             /** @description Registrations beyond `capacity` are waitlisted, and the first on the waitlist becomes going when a place frees (VTI-EVT-033). Absent means false: a registration beyond capacity is refused. */
             waitlist?: boolean;
         };
         /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
-        VtcEventsPublishV0_1ReminderMinutes: number;
-        /** @description The success response to a vtc/events/publish/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/publish/0.1#response. */
-        VtcEventsPublishV0_1Response: {
-            event: components["schemas"]["VtcEventsPublishV0_1Event"];
-            ext?: components["schemas"]["VtcEventsPublishV0_1Ext"];
+        VtcEventsPublishV0_2ReminderMinutes: number;
+        /** @description The success response to a vtc/events/publish/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/publish/0.2#response. */
+        VtcEventsPublishV0_2Response: {
+            event: components["schemas"]["VtcEventsPublishV0_2Event"];
+            ext?: components["schemas"]["VtcEventsPublishV0_2Ext"];
         };
         /** @description A role identifier: lowercase, hyphen-separated, at most 64 characters. Compared by exact string equality. It is the value an AclEntry 0.2 carries in `role`. */
-        VtcEventsPublishV0_1RoleName: string;
+        VtcEventsPublishV0_2RoleName: string;
         /**
          * @description Who may see who is registered (VTI-EVT-050). `visible`: registrants who are going or maybe see each other. `hidden`: no registrant sees another; the event's hosts do. Fixed once the event is published (VTI-EVT-051) and recorded on each registration (VTI-EVT-052).
          * @enum {string}
          */
-        VtcEventsPublishV0_1RosterSetting: "visible" | "hidden";
+        VtcEventsPublishV0_2RosterSetting: "visible" | "hidden";
         /** @description One test over a verified fact about a member. `fact: role` tests the member's community role; `fact: field` tests an `admin`- or `credential`-sourced directory field named by `field`; `fact: personhood` tests whether a personhood assertion is on file; `fact: joinedAt` tests when they joined. A rule never reads a self-asserted (`member`-sourced) field: a member must not be able to join a group by editing their card. `kudosReceived`, `ideasSelected` and `electionTickets` are counts the community keeps of its own records (kudos the member accepted, ideas of theirs a board selected, elections it issued them a ticket in), compared with `atLeast`; only a badge's group reads them (VTI-BDG-015), and any other group refuses them with `ruleInvalid`. */
-        VtcEventsPublishV0_1RuleCondition: {
+        VtcEventsPublishV0_2RuleCondition: {
             /** @description With `atLeast`: the least a count fact (`kudosReceived`, `ideasSelected`, `electionTickets`) must be. Present exactly when `op` is `atLeast`. */
             count?: number;
             /** @enum {string} */
             fact: "role" | "field" | "personhood" | "joinedAt" | "kudosReceived" | "ideasSelected" | "electionTickets";
-            field?: components["schemas"]["VtcEventsPublishV0_1FieldKey"];
+            field?: components["schemas"]["VtcEventsPublishV0_2FieldKey"];
             /**
              * @description `equals` compares with `value`; `oneOf` with any of `values`; `exists` needs neither; `before` and `after` compare a date fact with `value`; `atLeast` compares a count fact with `count`.
              * @enum {string}
@@ -11768,17 +11843,17 @@ export interface components {
             values?: string[];
         };
         /** @description An IANA time zone name, such as `Europe/London`, or `Etc/UTC`. A responder MUST refuse a name its time zone database does not know. */
-        VtcEventsPublishV0_1TimeZoneId: string;
+        VtcEventsPublishV0_2TimeZoneId: string;
         /**
          * @description What a virtual location offers, as JSCalendar's VirtualLocation `features`.
          * @enum {string}
          */
-        VtcEventsPublishV0_1VirtualFeature: "audio" | "chat" | "feed" | "moderator" | "phone" | "screen" | "video";
+        VtcEventsPublishV0_2VirtualFeature: "audio" | "chat" | "feed" | "moderator" | "phone" | "screen" | "video";
         /** @description A way to join online, as JSCalendar's VirtualLocation. */
-        VtcEventsPublishV0_1VirtualPlace: {
+        VtcEventsPublishV0_2VirtualPlace: {
             /** @description A passcode, dial-in numbers. Plain text. */
             description?: string;
-            features?: components["schemas"]["VtcEventsPublishV0_1VirtualFeature"][];
+            features?: components["schemas"]["VtcEventsPublishV0_2VirtualFeature"][];
             name?: string;
             /**
              * Format: uri
@@ -11787,12 +11862,12 @@ export interface components {
             uri: string;
         };
         /** @description When the event happens, in JSCalendar's terms. `start` is local time in `timeZone`; `duration` is how long it lasts. With `showWithoutTime` true it is an all-day event: `start`'s time MUST be `T00:00:00` and `duration` whole days (VTI-EVT-005). */
-        VtcEventsPublishV0_1When: {
-            duration: components["schemas"]["VtcEventsPublishV0_1JSCalendarDuration"];
+        VtcEventsPublishV0_2When: {
+            duration: components["schemas"]["VtcEventsPublishV0_2JSCalendarDuration"];
             /** @description An all-day event. Absent means false. */
             showWithoutTime?: boolean;
-            start: components["schemas"]["VtcEventsPublishV0_1LocalDateTime"];
-            timeZone: components["schemas"]["VtcEventsPublishV0_1TimeZoneId"];
+            start: components["schemas"]["VtcEventsPublishV0_2LocalDateTime"];
+            timeZone: components["schemas"]["VtcEventsPublishV0_2TimeZoneId"];
         };
         /**
          * @description `approve`: the registration becomes going, or waitlisted where the event is full and keeps a waitlist. `decline`: the registration is declined; the registrant cannot re-open it.
@@ -12239,10 +12314,13 @@ export interface components {
         VtcEventsRegistrationsWithdrawV0_2JSCalendarDuration: string;
         /** @description A local date and time with no offset, `YYYY-MM-DDTHH:MM:SS`, as JSCalendar's LocalDateTime. Read in the event's `timeZone`. */
         VtcEventsRegistrationsWithdrawV0_2LocalDateTime: string;
+        /** @description A partner member's presentation of the membership credential a partner the event's audience names issued them, made by the credential's subject — who signs the request — and bound to it: its `nonce` the request's `id`, its `domain` this community's DID (VTI-EVT-132). The community verifies it before, and without reference to, the event, and discards it once it has decided (VTI-EVT-133). */
+        VtcEventsRegistrationsWithdrawV0_2MembershipPresentation: Record<string, never> | string;
         /** @description A member withdraws their registration for an event: always allowed, never held for anyone's decision, at any time before or after the registration window closes. A place it held passes to the waitlist. The community's signed answer is the member's receipt. The outer document members are owned by the framework — SPEC §6.3. */
         VtcEventsRegistrationsWithdrawV0_2Payload: {
             eventId: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2EventId"];
             ext?: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2Ext"];
+            presentation?: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2MembershipPresentation"];
         };
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsRegistrationsWithdrawV0_2Registration: {

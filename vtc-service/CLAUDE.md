@@ -1239,8 +1239,8 @@ When adding a flow, add it here and a line to the root index.
   approve upholds (`community_events::uphold_reports` cancels the event), decline dismisses;
   the reporter is never on the item.
 - **Not yet**: the VTA calendar (`vta/calendar/*`), check-in, meetings, booking pages — see
-  the design note. Within phase 2: a host cannot revoke an invitation (no task), and a partner's
-  member cannot withdraw (`withdraw/0.2` carries no presentation).
+  the design note. `publish`/`cancel` are served at 0.2 only; a revoked invitation is kept, so
+  the sweeper never re-invites from it.
 - **Code**: `vtc-service/src/community_events/{mod,hosts,policy,invitations}.rs`,
   `vtc-service/src/trust_tasks/community_event_tasks.rs` (not `event_tasks.rs`, which is the
   console's live channel), `vtc-service/policies/default/events.rego`,

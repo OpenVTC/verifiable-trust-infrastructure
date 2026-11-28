@@ -629,14 +629,14 @@ spec_types! {
     EventsUpdate02Payload(events::update::v0_2::Payload);
     /// `vtc/events/update/0.2#response`.
     EventsUpdate02Response(events::update::v0_2::Response);
-    /// `vtc/events/publish/0.1` payload — a draft published.
-    EventsPublish01Payload(events::publish::v0_1::Payload);
-    /// `vtc/events/publish/0.1#response`.
-    EventsPublish01Response(events::publish::v0_1::Response);
-    /// `vtc/events/cancel/0.1` payload — a published event cancelled.
-    EventsCancel01Payload(events::cancel::v0_1::Payload);
-    /// `vtc/events/cancel/0.1#response`.
-    EventsCancel01Response(events::cancel::v0_1::Response);
+    /// `vtc/events/publish/0.2` payload — a draft published.
+    EventsPublish02Payload(events::publish::v0_2::Payload);
+    /// `vtc/events/publish/0.2#response`.
+    EventsPublish02Response(events::publish::v0_2::Response);
+    /// `vtc/events/cancel/0.2` payload — a published event cancelled.
+    EventsCancel02Payload(events::cancel::v0_2::Payload);
+    /// `vtc/events/cancel/0.2#response`.
+    EventsCancel02Response(events::cancel::v0_2::Response);
     /// `vtc/events/delete/0.1` payload — a draft deleted.
     EventsDelete01Payload(events::delete::v0_1::Payload);
     /// `vtc/events/delete/0.1#response`.
@@ -705,6 +705,10 @@ spec_types! {
     EventsInvitationsRespond01Payload(events::invitations::respond::v0_1::Payload);
     /// `vtc/events/invitations/respond/0.1#response`.
     EventsInvitationsRespond01Response(events::invitations::respond::v0_1::Response);
+    /// `vtc/events/invitations/revoke/0.1` payload — a host revokes an invitation.
+    EventsInvitationsRevoke01Payload(events::invitations::revoke::v0_1::Payload);
+    /// `vtc/events/invitations/revoke/0.1#response`.
+    EventsInvitationsRevoke01Response(events::invitations::revoke::v0_1::Response);
     /// `vtc/events/invitations/links/create/0.1` payload — an invitation link made.
     EventsInvitationsLinksCreate01Payload(events::invitations::links::create::v0_1::Payload);
     /// `vtc/events/invitations/links/create/0.1#response`.
@@ -1330,10 +1334,10 @@ mod tests {
         check::<EventsCreate02Response>();
         check::<EventsUpdate02Payload>();
         check::<EventsUpdate02Response>();
-        check::<EventsPublish01Payload>();
-        check::<EventsPublish01Response>();
-        check::<EventsCancel01Payload>();
-        check::<EventsCancel01Response>();
+        check::<EventsPublish02Payload>();
+        check::<EventsPublish02Response>();
+        check::<EventsCancel02Payload>();
+        check::<EventsCancel02Response>();
         check::<EventsDelete01Payload>();
         check::<EventsDelete01Response>();
         check::<EventsShow02Payload>();
@@ -1368,6 +1372,8 @@ mod tests {
         check::<EventsInvitationsList01Response>();
         check::<EventsInvitationsRespond01Payload>();
         check::<EventsInvitationsRespond01Response>();
+        check::<EventsInvitationsRevoke01Payload>();
+        check::<EventsInvitationsRevoke01Response>();
         check::<EventsInvitationsLinksCreate01Payload>();
         check::<EventsInvitationsLinksCreate01Response>();
         check::<EventsInvitationsLinksRevoke01Payload>();

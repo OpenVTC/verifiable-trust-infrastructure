@@ -29,7 +29,7 @@ use vti_specs::vtc::events::{
     access::show::v0_1 as access_show,
     announcements::{list::v0_1 as ann_list, send::v0_1 as ann_send},
     calendars::{create::v0_1 as cal_create, list::v0_1 as cal_list, update::v0_1 as cal_update},
-    cancel::v0_1 as ev_cancel,
+    cancel::v0_2 as ev_cancel,
     create::v0_2 as ev_create,
     delete::v0_1 as ev_delete,
     hosts::{
@@ -42,12 +42,13 @@ use vti_specs::vtc::events::{
         },
         list::v0_1 as inv_list,
         respond::v0_1 as inv_respond,
+        revoke::v0_1 as inv_revoke,
         send::v0_1 as inv_send,
     },
     list::v0_2 as ev_list,
     mine::list::v0_2 as mine_list,
     optouts::{list::v0_1 as opt_list, set::v0_1 as opt_set},
-    publish::v0_1 as ev_publish,
+    publish::v0_2 as ev_publish,
     registrations::{
         decide::v0_2 as reg_decide, list::v0_2 as reg_list, register::v0_2 as reg_register,
         remove::v0_2 as reg_remove, withdraw::v0_2 as reg_withdraw,
@@ -155,6 +156,8 @@ codes! {
     RESPOND_ERR_CODE_OF_CONDUCT_REQUIRED = inv_respond::CODE_OF_CONDUCT_REQUIRED;
     RESPOND_ERR_MAYBE_NOT_ACCEPTED = inv_respond::MAYBE_NOT_ACCEPTED;
     RESPOND_ERR_HOST_DECIDED = inv_respond::HOST_DECIDED;
+    REVOKE_ERR_INVITATION_NOT_FOUND = inv_revoke::INVITATION_NOT_FOUND;
+    REVOKE_ERR_ALREADY_REVOKED = inv_revoke::ALREADY_REVOKED;
     LINKS_CREATE_ERR_EVENT_CANCELLED = links_create::EVENT_CANCELLED;
     LINKS_CREATE_ERR_EXPIRY_INVALID = links_create::EXPIRY_INVALID;
     LINKS_REVOKE_ERR_LINK_NOT_FOUND = links_revoke::LINK_NOT_FOUND;
@@ -245,6 +248,8 @@ pub(super) fn register(routes: Routes) -> Routes {
         on!(routes, inv_list::Payload => |state, ctx, doc| handle_invitations(state, ctx, doc));
     let routes =
         on!(routes, inv_respond::Payload => |state, ctx, doc| handle_respond(state, ctx, doc));
+    let routes =
+        on!(routes, inv_revoke::Payload => |state, ctx, doc| handle_revoke(state, ctx, doc));
     let routes =
         on!(routes, links_create::Payload => |state, ctx, doc| handle_link_create(state, ctx, doc));
     let routes =
@@ -598,24 +603,6 @@ async fn wire_for(state: &AppState, seen: &Seen) -> Result<Value, AppError> {
     let regs = ce::registrations_of(&state.events_ks, &seen.ev.event_id).await?;
     let hosts = hosts::entries(state, &seen.ev.event_id).await?;
     Ok(ce::event_wire(&seen.ev, seen.host, &regs, &hosts))
-}
-
-/// `publish/0.1` and `cancel/0.1` answer the 0.1 `Event`, which has no invitation mode, no
-/// members-may-invite and no partners; those are read with `show/0.2`.
-async fn event_answer_v01(state: &AppState, doc: &Doc, seen: &Seen) -> TrustTaskOutcome {
-    match wire_for(state, seen).await {
-        Ok(mut w) => {
-            if let Some(o) = w.as_object_mut() {
-                o.remove("invite");
-                o.remove("membersMayInvite");
-            }
-            if let Some(a) = w.get_mut("audience").and_then(Value::as_object_mut) {
-                a.remove("partners");
-            }
-            success_response(doc, json!({ "event": w }))
-        }
-        Err(e) => app_error_to_reject(doc, &e),
-    }
 }
 
 async fn event_answer(state: &AppState, doc: &Doc, seen: &Seen) -> TrustTaskOutcome {
@@ -1517,7 +1504,7 @@ async fn handle_publish(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustT
         host: true,
         own: None,
     };
-    event_answer_v01(state, &doc, &seen).await
+    event_answer(state, &doc, &seen).await
 }
 
 async fn handle_cancel(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
@@ -1575,7 +1562,7 @@ async fn handle_cancel(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTa
         host: true,
         own: None,
     };
-    event_answer_v01(state, &doc, &seen).await
+    event_answer(state, &doc, &seen).await
 }
 
 async fn handle_delete(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
@@ -2147,7 +2134,7 @@ async fn register_as(
 }
 
 async fn handle_withdraw(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
-    let who = match member(state, ctx, &doc).await {
+    let who = match member_or_partner(state, ctx, &doc).await {
         Ok(w) => w,
         Err(r) => return r,
     };
@@ -3278,4 +3265,62 @@ async fn handle_announcements(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> 
         body["nextCursor"] = json!(n);
     }
     success_response(&doc, body)
+}
+
+/// `invitations/revoke/0.1` (VTI-EVT-103): a host revokes an invitation. It stops widening the
+/// audience, its notification is withdrawn by the events sweeper (the one sender, VTI-NTF-065),
+/// a registration the invitee made stands, and the kept record stops the invitation mode from
+/// inviting them again.
+async fn handle_revoke(state: &AppState, ctx: &JoinAuthCtx, doc: Doc) -> TrustTaskOutcome {
+    let who = match host_signer(state, ctx, &doc).await {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    if let Err(r) = parse_spec_payload::<inv_revoke::Payload>(&doc) {
+        return r;
+    }
+    let _guard = ce::WRITE_LOCK.lock().await;
+    let seen = match hosted(state, &who, &doc).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let ks = &state.events_ks;
+    let id = str_of(&doc.payload, "invitationId").unwrap_or_default();
+    let Some(mut inv) = tri!(&doc, ce::invitations::invitation_by_id(ks, id).await)
+        .filter(|i| i.event_id == seen.ev.event_id)
+    else {
+        return declared(
+            &doc,
+            REVOKE_ERR_INVITATION_NOT_FOUND,
+            "This event has no invitation with this identifier.",
+        );
+    };
+    if inv.revoked {
+        return declared(
+            &doc,
+            REVOKE_ERR_ALREADY_REVOKED,
+            "This invitation was already revoked.",
+        );
+    }
+    inv.revoked = true;
+    tri!(&doc, ce::invitations::put_invitation(ks, &inv).await);
+    drop(_guard);
+    ce::kick();
+    tri!(
+        &doc,
+        audit(
+            state,
+            &who.did,
+            EventChangedData {
+                entry_id: Some(inv.entry_id.clone()),
+                fields: vec![inv.invitation_id.clone()],
+                ..event_change(&inv.event_id, "invitationRevoked")
+            }
+        )
+        .await
+    );
+    success_response(
+        &doc,
+        json!({ "invitation": ce::invitations::invitation_wire(&inv, true) }),
+    )
 }
