@@ -49,7 +49,7 @@ pub const ELECTION_OPEN_WITH: &str = "https://trusttasks.org/spec/vtc/elections/
 pub const KIND_EVENT: &str = "event";
 
 /// The task that opens a notified event (VTI-NTF-064).
-pub const EVENT_OPEN_WITH: &str = "https://trusttasks.org/spec/vtc/events/show/0.2";
+pub const EVENT_OPEN_WITH: &str = "https://trusttasks.org/spec/vtc/events/show/0.3";
 
 /// Whether this build recognises `kind` (VTI-NTF-012): a recipient does nothing with an
 /// unrecognised kind beyond holding, listing and discarding it.

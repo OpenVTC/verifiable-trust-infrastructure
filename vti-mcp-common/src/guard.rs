@@ -625,6 +625,10 @@ const MUTATING_VERBS: &[&str] = &[
     // self-registered account is about to be disabled, has been, or is about to be
     // purged; the VTA records it and renews.
     "expiry-notice",
+    // `vtc/events/checkin/record`: records a registrant's arrival at an event (VTI-EVT-162 –
+    // 164), once, and adds to their attendance tally where it counts. Not undone, but it
+    // destroys nothing: a check-in only says someone came.
+    "record",
     // `vtc/events/hosts/appoint`: grants a member `vtc.events.manage` at one event, an
     // appointment its granter answers for (VTI-EVT-070). Withdrawn by `hosts/remove`.
     "appoint",

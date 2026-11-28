@@ -122,16 +122,23 @@ fn test(got: Option<&Value>, op: &str, value: Option<&Value>, values: Option<&Va
 
 /// The counts a badge group's rule may read (VTI-BDG-015), each from the
 /// community's own records: kudos the member accepted, ideas of theirs a board
-/// selected, elections it issued them a ticket in.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// selected, elections it issued them a ticket in, and the community events they
+/// checked in to that count, as monthly tallies per calendar (VTI-EVT-184, 185).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Counts {
     pub kudos_received: u64,
     pub ideas_selected: u64,
     pub election_tickets: u64,
+    pub attendance: Vec<crate::community_events::door::Tally>,
 }
 
-/// The facts only a badge group's rule reads (VTI-BDG-015).
-pub const COUNT_FACTS: [&str; 3] = ["kudosReceived", "ideasSelected", "electionTickets"];
+/// The facts only a badge group's rule reads (VTI-BDG-015, VTI-EVT-184).
+pub const COUNT_FACTS: [&str; 4] = [
+    "kudosReceived",
+    "ideasSelected",
+    "electionTickets",
+    "eventsAttended",
+];
 
 /// Whether `rule` reads any of [`COUNT_FACTS`].
 pub fn reads_counts(rule: &Value) -> bool {
@@ -189,6 +196,24 @@ pub fn admits_counting(
                     return subject.personhood;
                 }
                 Some(&personhood)
+            }
+            Some("eventsAttended") => {
+                // VTI-EVT-184: optionally one calendar, optionally a window before now.
+                let Some(counts) = counts else {
+                    return false;
+                };
+                let n = crate::community_events::door::attended(
+                    &counts.attendance,
+                    c.get("calendarId").and_then(Value::as_str),
+                    c.get("withinDays")
+                        .and_then(Value::as_u64)
+                        .map(|d| u32::try_from(d).unwrap_or(u32::MAX)),
+                    chrono::Utc::now(),
+                );
+                return op == "atLeast"
+                    && c.get("count")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|v| n >= v);
             }
             Some(fact @ ("kudosReceived" | "ideasSelected" | "electionTickets")) => {
                 let Some(counts) = counts else {
@@ -391,7 +416,7 @@ async fn recompute_over(
         .iter()
         .filter(|s| s.active && !excluded.contains(&s.card.entry_id))
         .filter(|s| {
-            let c = counts.get(&s.card.entry_id).copied().unwrap_or_default();
+            let c = counts.get(&s.card.entry_id).cloned().unwrap_or_default();
             admits_counting(rule, s, &schema, Some(&c))
         })
         .map(|s| s.card.entry_id.clone())

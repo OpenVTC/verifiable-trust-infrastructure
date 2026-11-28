@@ -149,11 +149,15 @@ pub enum Capability {
     GitRepoManage,
     /// The CI-accepted commit right.
     GitCommitSign,
+    /// Door staff for one community event (VTI-EVT-160): qualified `event:<eventId>`,
+    /// recording check-ins for that event and seeing the names its hosts see, and nothing
+    /// else. Not conferring: a check-in grants nothing (VTI-EVT-002).
+    EventsCheckIn,
 }
 
 impl Capability {
     /// Every capability, in registry order.
-    pub const ALL: [Capability; 31] = [
+    pub const ALL: [Capability; 32] = [
         Capability::RolesAssign,
         Capability::ApprovalsAdmin,
         Capability::PolicyAdmin,
@@ -185,6 +189,7 @@ impl Capability {
         Capability::GitNsAdmin,
         Capability::GitRepoManage,
         Capability::GitCommitSign,
+        Capability::EventsCheckIn,
     ];
 
     /// The registry identifier (`acl/_shared/0.2` `Capability` grammar).
@@ -221,6 +226,7 @@ impl Capability {
             Capability::GitNsAdmin => "git.ns.admin",
             Capability::GitRepoManage => "git.repo.manage",
             Capability::GitCommitSign => "git.commit.sign",
+            Capability::EventsCheckIn => "vtc.events.checkin",
         }
     }
 
@@ -277,6 +283,7 @@ impl Capability {
             }
             Capability::BoardsManage => matches!(resource, Q::Board(_)),
             Capability::EventsManage => matches!(resource, Q::Group(_) | Q::Event(_)),
+            Capability::EventsCheckIn => matches!(resource, Q::Event(_)),
             Capability::GitRepoManage | Capability::GitCommitSign => {
                 matches!(resource, Q::GitNs(_) | Q::GitRepo(_))
             }

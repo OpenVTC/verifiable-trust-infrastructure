@@ -334,3 +334,43 @@
   margin-top: 8px;
   max-width: 420px;
 }
+
+/* Checking in and the ticket (VTI-EVT-160 – 174). */
+.ev-checkin,
+.ev-ticket {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+}
+.ev-checkin h2,
+.ev-ticket h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 15px;
+}
+.ev-checkin p,
+.ev-ticket p {
+  margin: 0;
+  font-size: 13px;
+}
+.ev-did {
+  overflow-wrap: anywhere;
+}
+
+/* The member's attendance (VTI-EVT-185). */
+.ev-tally {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.ev-tally th,
+.ev-tally td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}

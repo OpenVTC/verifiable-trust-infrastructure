@@ -792,8 +792,27 @@ fn check_rule_reading(
         if count && !counts {
             return Err(bad(
                 None,
-                "only a badge's group reads kudosReceived, ideasSelected or electionTickets \
-                 (VTI-BDG-015)",
+                "only a badge's group reads kudosReceived, ideasSelected, electionTickets or \
+                 eventsAttended (VTI-BDG-015, VTI-EVT-184)",
+            ));
+        }
+        // `calendarId` and `withinDays` qualify `eventsAttended` alone (VTI-EVT-184).
+        if fact != "eventsAttended"
+            && (c.get("calendarId").is_some() || c.get("withinDays").is_some())
+        {
+            return Err(bad(
+                None,
+                "`calendarId` and `withinDays` go only with `eventsAttended`",
+            ));
+        }
+        if fact == "eventsAttended"
+            && (c.get("calendarId").is_some_and(|v| !v.is_string())
+                || c.get("withinDays")
+                    .is_some_and(|v| v.as_u64().is_none_or(|d| d < 1)))
+        {
+            return Err(bad(
+                None,
+                "`calendarId` is a calendar's identifier and `withinDays` a whole number of days",
             ));
         }
         match (fact, field) {
@@ -864,6 +883,26 @@ mod tests {
         assert!(Audience::GroupMembers < Audience::Members);
         for a in [Audience::Admins, Audience::GroupMembers, Audience::Members] {
             assert_eq!(Audience::parse(a.as_str()), Some(a));
+        }
+    }
+
+    /// VTI-EVT-184: `eventsAttended` is a badge group's count, qualified by `calendarId` and
+    /// `withinDays`, which qualify nothing else.
+    #[test]
+    fn vti_evt_184_events_attended_is_a_badge_rule_count() {
+        let rule = serde_json::json!({ "all": [{
+            "fact": "eventsAttended", "op": "atLeast", "count": 3,
+            "calendarId": "cal_ElectronicsCal00001", "withinDays": 365,
+        }] });
+        assert!(check_badge_rule(&rule, &[]).is_ok());
+        assert!(check_rule(&rule, &[]).is_err(), "only a badge group counts");
+        for bad in [
+            serde_json::json!({ "all": [{ "fact": "kudosReceived", "op": "atLeast", "count": 1, "withinDays": 30 }] }),
+            serde_json::json!({ "all": [{ "fact": "eventsAttended", "op": "atLeast", "count": 1, "withinDays": 0 }] }),
+            serde_json::json!({ "all": [{ "fact": "eventsAttended", "op": "atLeast", "count": 1, "calendarId": 7 }] }),
+            serde_json::json!({ "all": [{ "fact": "eventsAttended", "op": "equals", "value": 1 }] }),
+        ] {
+            assert!(check_badge_rule(&bad, &[]).is_err(), "{bad}");
         }
     }
 

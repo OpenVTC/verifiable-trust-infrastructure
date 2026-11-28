@@ -5,7 +5,9 @@
 //   #/events/join/<code>  An invitation link: redeemed, then the event it invites to.
 //   #/events/<id>     One event: its details and accessibility, its roster setting, registering,
 //                     changing and withdrawing, where it happens once you are going, who else is
-//                     going on a visible roster, adding it to your calendar, reporting it.
+//                     going on a visible roster, adding it to your calendar, reporting it; your
+//                     ticket, and checking in.
+//   #/events/<id>/checkin/<challenge>  The door's code, scanned: the event, ready to check in.
 //
 // Signed by this browser's portal key for the member, as the directory is. Only the member's own
 // acts go this way; hosts run events from the console. Nothing is shown that the community did
@@ -21,8 +23,10 @@ import {
   Clock,
   Eye,
   EyeOff,
+  DoorOpen,
   Flag,
   MapPin,
+  Ticket as TicketIcon,
   Users,
   X,
 } from "lucide-react";
@@ -49,7 +53,10 @@ import {
   register,
   reportEvent,
   showAccess,
+  showAttendance,
   showEvent,
+  showTicket,
+  checkIn,
   withdraw,
   type AccessDetails,
   type InvitationAnswer,
@@ -65,7 +72,7 @@ import { DirectoryError } from "./directory-api";
 import { Crumbs } from "./member-card";
 import "./events.css";
 
-type Tab = "upcoming" | "mine" | "invited" | "month";
+type Tab = "upcoming" | "mine" | "invited" | "month" | "attendance";
 
 const EVENTS_KEY = ["events"] as const;
 
@@ -197,6 +204,7 @@ export function EventsPage() {
             ["mine", "Mine"],
             ["invited", "Invitations"],
             ["month", "Month"],
+            ["attendance", "Attendance"],
           ] as const
         ).map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
@@ -271,6 +279,7 @@ export function EventsPage() {
       )}
       {tab === "invited" && <Invitations items={invited.data ?? []} pending={invited.isPending} error={invited.error} />}
       {tab === "month" && <Month items={items} />}
+      {tab === "attendance" && <Attendance calendars={calendars.data ?? []} />}
     </main>
   );
 }
@@ -510,7 +519,7 @@ function downloadIcs(ev: CommunityEvent, location: string | undefined) {
   URL.revokeObjectURL(url);
 }
 
-export function EventPage({ eventId }: { eventId: string }) {
+export function EventPage({ eventId, challenge }: { eventId: string; challenge?: string }) {
   const qc = useQueryClient();
   const shown = useQuery({ queryKey: [...EVENTS_KEY, "show", eventId], queryFn: () => showEvent(eventId), retry: false });
   const ev = shown.data?.event;
@@ -644,6 +653,8 @@ export function EventPage({ eventId }: { eventId: string }) {
         </div>
         <aside className="ev-aside">
           <Rsvp ev={ev} mine={mine} onChange={refresh} />
+          {going && ev.status === "published" && <CheckInPanel eventId={ev.eventId} challenge={challenge} />}
+          {going && ev.status === "published" && ev.tickets && <TicketPanel eventId={ev.eventId} />}
           <RosterNote roster={ev.roster} />
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => downloadIcs(ev, placeForIcs)}>
             <CalendarPlus size={14} aria-hidden="true" /> Add to calendar
@@ -934,3 +945,141 @@ function ReportForm({ eventId }: { eventId: string }) {
   );
 }
 
+// ─── the door, tickets and attendance (VTI-EVT-160 – 185) ─────────────────
+
+/** Checking in: with the door's code when it was scanned, or without one where the event's
+ *  calendar allows it while the event runs. The community decides; this says what it answered. */
+export function CheckInPanel({ eventId, challenge }: { eventId: string; challenge?: string }) {
+  const [done, setDone] = useState<string | null>(null);
+  const go = useMutation({
+    mutationFn: () => checkIn(eventId, challenge),
+    onSuccess: (r) =>
+      setDone(
+        r.checkIn.counts
+          ? "You're checked in. It counts toward your attendance."
+          : "You're checked in.",
+      ),
+  });
+  return (
+    <section className="ev-checkin" aria-label="Check in">
+      <h2>
+        <DoorOpen size={15} aria-hidden="true" /> Check in
+      </h2>
+      {done ? (
+        <p role="status">{done}</p>
+      ) : (
+        <>
+          <p className="muted">
+            {challenge
+              ? "You scanned the door's code. Check in with it now — it is accepted for a few minutes."
+              : "At the door, scan its code with this phone. Where the hosts allow it, you can check in here while the event runs."}
+          </p>
+          <button type="button" className="btn btn-primary btn-sm" disabled={go.isPending} onClick={() => go.mutate()}>
+            {go.isPending ? "Checking in…" : "Check in"}
+          </button>
+          {go.isError && <p className="muted" role="alert">{refusal(go.error)}</p>}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** The member's ticket: a credential the community issued them, read on demand and saved as a
+ *  file for their wallet. Nothing of it is shown that the community did not answer. */
+export function TicketPanel({ eventId }: { eventId: string }) {
+  const [open, setOpen] = useState(false);
+  const ticket = useQuery({
+    queryKey: [...EVENTS_KEY, "ticket", eventId],
+    queryFn: () => showTicket(eventId),
+    enabled: open,
+    retry: false,
+  });
+  const save = () => {
+    if (!ticket.data) return;
+    const blob = new Blob([JSON.stringify(ticket.data.credential, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ticket-${eventId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const vc = ticket.data?.credential as { issuer?: unknown } | undefined;
+  const issuer = typeof vc?.issuer === "string" ? vc.issuer : (vc?.issuer as { id?: string } | undefined)?.id;
+  return (
+    <section className="ev-ticket" aria-label="Your ticket">
+      <h2>
+        <TicketIcon size={15} aria-hidden="true" /> Your ticket
+      </h2>
+      {!open && (
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen(true)}>
+          Show my ticket
+        </button>
+      )}
+      {open && ticket.isPending && <p className="muted">Loading…</p>}
+      {open && ticket.isError && <p className="muted">{refusal(ticket.error)}</p>}
+      {ticket.data && (
+        <>
+          <p className="muted">
+            Valid until {new Date(ticket.data.validUntil).toLocaleString()}. It is revoked if you withdraw.
+            {issuer && (
+              <>
+                {" "}
+                Issued by <code className="ev-did">{issuer}</code>.
+              </>
+            )}
+          </p>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={save}>
+            Save for my wallet
+          </button>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** How many counted events the member checked in to, by calendar and month (VTI-EVT-185). Only
+ *  the member sees this; badge rules read the same tallies. */
+export function Attendance({ calendars }: { calendars: { calendarId: string; name: string }[] }) {
+  const att = useQuery({ queryKey: [...EVENTS_KEY, "attendance"], queryFn: showAttendance, retry: false });
+  const name = (id: string) => calendars.find((c) => c.calendarId === id)?.name ?? id;
+  return (
+    <section className="bw-section" aria-label="Your attendance">
+      {att.isPending && <p className="muted">Loading…</p>}
+      {att.isError && <p className="muted">{refusal(att.error)}</p>}
+      {att.data && (
+        <>
+          <p className="lead">
+            {att.data.total === 0
+              ? "No counted check-ins yet."
+              : `${att.data.total} event${att.data.total === 1 ? "" : "s"} attended.`}
+          </p>
+          {att.data.tallies.length > 0 && (
+            <table className="ev-tally">
+              <caption className="sr-only">Attendance by calendar and month</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Month</th>
+                  <th scope="col">Calendar</th>
+                  <th scope="col">Events</th>
+                </tr>
+              </thead>
+              <tbody>
+                {att.data.tallies
+                  .slice()
+                  .reverse()
+                  .map((t) => (
+                    <tr key={`${t.month}:${t.calendarId}`}>
+                      <td>{t.month}</td>
+                      <td>{name(t.calendarId)}</td>
+                      <td>{t.count}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+    </section>
+  );
+}

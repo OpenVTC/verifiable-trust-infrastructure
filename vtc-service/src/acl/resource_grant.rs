@@ -211,6 +211,8 @@ impl ResourceGrant {
             // (VTI-EVT-013, VTI-EVT-070). A group calendar's events are covered by the
             // events module, which reads the calendar, never by the qualifier.
             (Capability::EventsManage, _) => exact && cap == Capability::EventsManage,
+            // Door staff for that event, nothing else (VTI-EVT-160).
+            (Capability::EventsCheckIn, _) => exact && cap == Capability::EventsCheckIn,
             _ => false,
         }
     }

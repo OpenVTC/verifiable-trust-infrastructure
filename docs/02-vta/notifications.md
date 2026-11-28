@@ -127,7 +127,7 @@ sender, through the durable member push (`docs/03-vtc/elections.md`).
 ## The event kind
 
 A community notifies a member it invites to an event (VTI-NTF-064 – 067): the notification
-names the community (`heldBy`), the event id, `vtc/events/show/0.2`, the member's DID
+names the community (`heldBy`), the event id, `vtc/events/show/0.3`, the member's DID
 (`audience`) and the event's period, and nothing else — never the title, the place or an
 announcement. A change of time or place sends a higher revision; cancelling, revoking the
 invitation or the member leaving the event's audience withdraws it. A partner community named

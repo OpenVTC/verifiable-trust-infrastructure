@@ -7,12 +7,13 @@ each change with a signed reply the member's own agent keeps as a receipt. Event
 authority: nothing about an event, a registration or an attendance is read by an
 authorization decision.
 
-Specification: the VTI Community Events chapter (VTI-EVT-001 – 135) and the `event`
+Specification: the VTI Community Events chapter (VTI-EVT-001 – 186) and the `event`
 notification kind (VTI-NTF-064 – 067). Wire: the `vtc/events/*` Trust Tasks — `create`,
-`update`, `show`, `list`, `mine/list` and `registrations/*` at 0.2 (the 0.1 versions are no
-longer served), the rest at 0.1. Design: [`vtc-events.md`](../05-design-notes/vtc-events.md),
+`update`, `publish`, `cancel`, `show` and `list` at 0.3; `calendars/*`,
+`invitations/links/create`, `mine/list` and `registrations/*` at 0.2; the rest at 0.1. Earlier
+versions are no longer served. Design: [`vtc-events.md`](../05-design-notes/vtc-events.md),
 which also describes the later phases (the member's calendar across communities in their VTA,
-check-in and tickets, meetings, booking pages).
+meetings, booking pages).
 
 ## Who runs what
 
@@ -135,7 +136,7 @@ Every invitation is delivered as an `event` **notification** to the member's DID
 The community originates the `event` kind (VTI-NTF-064 – 067), as it does `election`: the
 notice row is written first, and the events sweeper is its only sender, through the durable
 member push (`notifications::push_signed`). A notification names the community, the event id,
-`vtc/events/show/0.2`, the audience (one member's DID, or a partner community's DID) and the
+`vtc/events/show/0.3`, the audience (one member's DID, or a partner community's DID) and the
 event's period — never its title, place, text or an announcement. A change of time or place
 (the event's `sequence`) sends a new revision; cancelling, an invitation revoked, or the member
 leaving the audience sends a withdrawal. Before each offering revision the sweeper re-checks
@@ -165,6 +166,71 @@ says only how many others are going), and receives no access detail they are not
 entitled to. They **withdraw** the same way, carrying the presentation in
 `registrations/withdraw` (VTI-EVT-037, 135); without one a party who is not a member has no
 standing at all.
+
+## An event's own identity
+
+An event may be given a DID of its own when it is made (`create` with `identity: true`,
+VTI-EVT-140 – 145) — never later. The community's VTA mints it from the `vtc-event` template,
+exactly as it mints a group's identity, and the community issues it an authority credential
+granting `issue-tickets`, with a slot in the community's revocation list. The VTC never holds
+its keys. Nothing is stored until both exist: with no VTA link the create is `noKeyHolder`, and
+a mint or credential the VTA does not complete is `keyHolderUnavailable` (naming the DID if one
+was minted) — either way no event is kept. Hosts see when the authority expires; everyone else
+sees only the DID. Cancelling or deleting the event revokes the authority, and the events
+sweeper renews it at half its life. The identity needs the `[groups]` configuration (the
+context at the VTA its keys are minted in).
+
+## Guests
+
+An event's `guests` setting admits parties who are **not members** (VTI-EVT-150 – 154):
+`none` (the default), `invited` — a guest holding a link made `forGuests`, which a member can
+never redeem, as a member's link admits no guest — or `open`. The audience never admits a
+guest. A guest registers and withdraws with `vtc/events/guests/register` and
+`guests/withdraw`, signing with their own DID; a member is refused (`alreadyMember`). A guest is
+held to the event's registration rules as a member is (capacity, window, plus-ones, questions,
+code of conduct, approval), is named by their DID, is never on the roster, and sees only the
+event they registered for. Each guest's operations are bounded: 30 an hour per DID.
+
+## The door
+
+**Door staff** are an event's hosts and anyone holding `vtc.events.checkin` at `event:<id>`
+(VTI-EVT-160). The console's *Door* tab, on a published event:
+
+- shows a **door challenge** (`checkin/challenge`): 128 random bits, accepted for five minutes,
+  replaced before it runs out. The QR code is a link to the member portal's check-in for the
+  event; a registrant scans it with their phone and the portal checks them in with the
+  challenge, signed by their portal key. A photo of an old code admits nobody.
+- checks a registrant in **by name** (`checkin/record` with a `registrationId`).
+- lists who has arrived, and how many (`checkin/list`), refreshed every ten seconds.
+
+Only a registrant who is going is checked in, once (`notGoing`, `alreadyCheckedIn`). A
+registrant may check in **without a challenge** only where the event's calendar allows it
+(`selfCheckIn`: `none`, `allowed`, `counting`) and only while the event runs
+(`selfCheckInNotAllowed`, `notDuringEvent`). Nothing is recorded about anyone who did not come.
+
+## Tickets
+
+An event may issue **tickets** (`tickets: true`, VTI-EVT-170 – 174): a W3C credential
+(`EventTicketCredential`) for each registrant who is going, signed by the event's identity
+where it has one and by the community otherwise, with a slot in the community's revocation
+list. The events sweeper issues them, and revokes a ticket when its registrant withdraws, is
+removed or the event is cancelled; `tickets/show` answers the registrant their own ticket,
+issuing it at once if it is owed. The portal shows it and saves it for the member's wallet. A
+ticket is the registrant's to present elsewhere: this community does not check tickets at its
+own door, where the check-in above stands in for it.
+
+## Attendance
+
+A check-in **counts** toward the member's attendance where the event counts
+(`countsAttendance` on the event, else its calendar's, else yes) and the check-in was over a
+challenge, by door staff, or by themselves on a calendar whose `selfCheckIn` is `counting`
+(VTI-EVT-180 – 183). A guest's or a partner's member's never counts. The community keeps only a
+tally per member, calendar and month (VTI-EVT-185), which the member reads with
+`attendance/show` (the portal's *Attendance* tab), and a badge group's rule reads as
+`eventsAttended` with `atLeast`, optionally one `calendarId` and a `withinDays` window
+(VTI-EVT-184). An event's **attendance badge** — an active community badge
+(`badgeNotFound` otherwise) — is offered to each member checked in, as an award they accept or
+decline (VTI-EVT-186).
 
 ## Configuration
 

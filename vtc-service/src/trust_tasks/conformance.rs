@@ -3370,32 +3370,32 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r##"{"eventId": "evt_IntroSoldering2611", "access": {"places": [{"name": "The Makerspace", "address": "Unit 4, Mill Lane, London", "description": "Door code 4719. Step-free entrance on the left."}], "revealAt": "2026-11-30T16:30:00Z"}, "sequence": 2}"##).unwrap()
         ),
         checked!(
-            s::events::calendars::create::v0_1::Payload,
-            s::events::calendars::create::v0_1::Response,
+            s::events::calendars::create::v0_2::Payload,
+            s::events::calendars::create::v0_2::Response,
             serde_json::from_str::<Value>(r##"{"name": "Electronics", "description": "Workshops and build nights run by the Electronics group.", "color": "#5B5BD6", "groupId": "grp_ElectronicsGrp00001", "defaultRoster": "hidden", "defaultReminderMinutes": [1440, 60]}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"calendar": {"calendarId": "cal_ElectronicsCal00001", "name": "Electronics", "description": "Workshops and build nights run by the Electronics group.", "color": "#5B5BD6", "groupId": "grp_ElectronicsGrp00001", "defaultRoster": "hidden", "defaultReminderMinutes": [1440, 60], "state": "active", "createdAt": "2026-11-19T15:00:01Z"}}"##).unwrap()
         ),
         checked!(
-            s::events::calendars::list::v0_1::Payload,
-            s::events::calendars::list::v0_1::Response,
+            s::events::calendars::list::v0_2::Payload,
+            s::events::calendars::list::v0_2::Response,
             serde_json::from_str::<Value>(r##"{}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"items": [{"calendarId": "cal_RiversideCommunity1", "name": "Riverside Makers", "community": true, "state": "active", "createdAt": "2026-11-01T10:00:00Z"}, {"calendarId": "cal_ElectronicsCal00001", "name": "Electronics", "description": "Workshops and build nights run by the Electronics group.", "color": "#5B5BD6", "groupId": "grp_ElectronicsGrp00001", "defaultRoster": "hidden", "defaultReminderMinutes": [1440, 60], "state": "active", "createdAt": "2026-11-19T15:00:01Z"}]}"##).unwrap()
         ),
         checked!(
-            s::events::calendars::update::v0_1::Payload,
-            s::events::calendars::update::v0_1::Response,
+            s::events::calendars::update::v0_2::Payload,
+            s::events::calendars::update::v0_2::Response,
             serde_json::from_str::<Value>(r##"{"calendarId": "cal_ElectronicsCal00001", "state": "archived"}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"calendar": {"calendarId": "cal_ElectronicsCal00001", "name": "Electronics", "description": "Workshops and build nights run by the Electronics group.", "color": "#5B5BD6", "groupId": "grp_ElectronicsGrp00001", "defaultRoster": "hidden", "defaultReminderMinutes": [1440, 60], "state": "archived", "createdAt": "2026-11-19T15:00:01Z"}}"##).unwrap()
         ),
         checked!(
-            s::events::cancel::v0_2::Payload,
-            s::events::cancel::v0_2::Response,
+            s::events::cancel::v0_3::Payload,
+            s::events::cancel::v0_3::Response,
             serde_json::from_str::<Value>(r##"{"eventId": "evt_S0lderIntroNov2026", "reason": "The workshop leader is unwell. We will run it again in January."}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"event": {"eventId": "evt_S0lderIntroNov2026", "calendarId": "cal_ElectronicsCal00001", "kind": "event", "status": "cancelled", "title": "Intro to Soldering", "description": "Learn to solder through-hole parts and build a blinking LED badge to take home. Suitable for complete beginners.", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "placeSummary": "Riverside, near the station", "access": {"places": [{"name": "The Makerspace", "address": "Unit 4, Mill Lane, Riverside", "description": "Ring the bell; the door code is in your confirmation."}], "notes": "Wear closed shoes. Irons, solder and kits are provided."}, "audience": {"scope": "groups", "groups": ["grp_ElectronicsGrp00001"]}, "registration": {"mode": "approval", "capacity": 12, "waitlist": true, "plusOnes": 1, "questions": [{"questionId": "dietary", "label": "Any dietary needs?", "kind": "text"}, {"questionId": "experience", "label": "Have you soldered before?", "kind": "choice", "choices": ["Never", "A little", "Often"], "required": true}]}, "roster": "hidden", "showCount": true, "countThreshold": 5, "listed": true, "accessibility": {"stepFree": true, "quietSpace": true}, "suggestedReminderMinutes": [1440, 60], "hosts": ["dir_Pr1yaNatarajan00"], "goingCount": {"exact": 9}, "full": false, "sequence": 1, "createdAt": "2026-11-20T09:00:01Z", "updatedAt": "2026-11-28T12:00:01Z", "publishedAt": "2026-11-20T09:30:01Z", "cancelReason": "The workshop leader is unwell. We will run it again in January.", "cancelledAt": "2026-11-28T12:00:01Z"}}"##).unwrap()
         ),
         checked!(
-            s::events::create::v0_2::Payload,
-            s::events::create::v0_2::Response,
+            s::events::create::v0_3::Payload,
+            s::events::create::v0_3::Response,
             serde_json::from_str::<Value>(r##"{"calendarId": "cal_ElectronicsCal00001", "kind": "event", "title": "Intro to Soldering", "description": "Learn to solder through-hole parts and build a blinking LED badge to take home. Suitable for complete beginners.", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "placeSummary": "Riverside, near the station", "access": {"places": [{"name": "The Makerspace", "address": "Unit 4, Mill Lane, Riverside", "description": "Ring the bell; the door code is in your confirmation."}], "notes": "Wear closed shoes. Irons, solder and kits are provided."}, "audience": {"scope": "groups", "groups": ["grp_ElectronicsGrp00001"]}, "registration": {"mode": "approval", "capacity": 12, "waitlist": true, "plusOnes": 1, "questions": [{"questionId": "dietary", "label": "Any dietary needs?", "kind": "text"}, {"questionId": "experience", "label": "Have you soldered before?", "kind": "choice", "choices": ["Never", "A little", "Often"], "required": true}]}, "roster": "hidden", "showCount": true, "accessibility": {"stepFree": true, "quietSpace": true}}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"event": {"eventId": "evt_S0lderIntroNov2026", "calendarId": "cal_ElectronicsCal00001", "kind": "event", "status": "draft", "title": "Intro to Soldering", "description": "Learn to solder through-hole parts and build a blinking LED badge to take home. Suitable for complete beginners.", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "placeSummary": "Riverside, near the station", "access": {"places": [{"name": "The Makerspace", "address": "Unit 4, Mill Lane, Riverside", "description": "Ring the bell; the door code is in your confirmation."}], "notes": "Wear closed shoes. Irons, solder and kits are provided."}, "audience": {"scope": "groups", "groups": ["grp_ElectronicsGrp00001"]}, "registration": {"mode": "approval", "capacity": 12, "waitlist": true, "plusOnes": 1, "questions": [{"questionId": "dietary", "label": "Any dietary needs?", "kind": "text"}, {"questionId": "experience", "label": "Have you soldered before?", "kind": "choice", "choices": ["Never", "A little", "Often"], "required": true}]}, "roster": "hidden", "showCount": true, "countThreshold": 5, "listed": true, "accessibility": {"stepFree": true, "quietSpace": true}, "suggestedReminderMinutes": [1440, 60], "hosts": ["dir_Pr1yaNatarajan00"], "goingCount": {"exact": 0}, "full": false, "sequence": 0, "createdAt": "2026-11-20T09:00:01Z", "updatedAt": "2026-11-20T09:00:01Z"}}"##).unwrap()
         ),
@@ -3424,8 +3424,8 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r##"{"eventId": "evt_IntroSoldering2611", "hosts": ["dir_PriyaNatarajan000"]}"##).unwrap()
         ),
         checked!(
-            s::events::list::v0_2::Payload,
-            s::events::list::v0_2::Response,
+            s::events::list::v0_3::Payload,
+            s::events::list::v0_3::Response,
             serde_json::from_str::<Value>(r##"{"from": "2026-11-30T00:00:00Z", "to": "2027-01-01T00:00:00Z", "limit": 50}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"items": [{"event": {"eventId": "evt_S0lderIntroNov2026", "calendarId": "cal_ElectronicsCal00001", "kind": "event", "status": "published", "title": "Intro to Soldering", "description": "Learn to solder through-hole parts and build a blinking LED badge to take home. Suitable for complete beginners.", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "placeSummary": "Riverside, near the station", "audience": {"scope": "groups", "groups": ["grp_ElectronicsGrp00001"]}, "registration": {"mode": "approval", "capacity": 12, "waitlist": true, "plusOnes": 1, "questions": [{"questionId": "dietary", "label": "Any dietary needs?", "kind": "text"}, {"questionId": "experience", "label": "Have you soldered before?", "kind": "choice", "choices": ["Never", "A little", "Often"], "required": true}]}, "roster": "hidden", "showCount": true, "countThreshold": 5, "listed": true, "accessibility": {"stepFree": true, "quietSpace": true}, "suggestedReminderMinutes": [1440, 60], "hosts": ["dir_Pr1yaNatarajan00"], "goingCount": {"exact": 9}, "full": false, "sequence": 0, "createdAt": "2026-11-20T09:00:01Z", "updatedAt": "2026-11-20T09:30:01Z", "publishedAt": "2026-11-20T09:30:01Z"}, "myStatus": "going"}]}"##).unwrap()
         ),
@@ -3436,8 +3436,8 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r##"{"items": [{"registration": {"registrationId": "reg_Kf3nP8qLs2Vx7Bd1", "eventId": "evt_IntroSoldering2611", "entryId": "dir_AdaLovelace000000", "status": "going", "guests": 1, "answers": {"dietary": "Vegetarian"}, "roster": "hidden", "eventSequence": 2, "createdAt": "2026-11-20T19:02:11Z", "updatedAt": "2026-11-27T09:15:40Z"}, "event": {"eventId": "evt_IntroSoldering2611", "title": "Intro to Soldering", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "status": "published", "sequence": 2}}]}"##).unwrap()
         ),
         checked!(
-            s::events::publish::v0_2::Payload,
-            s::events::publish::v0_2::Response,
+            s::events::publish::v0_3::Payload,
+            s::events::publish::v0_3::Response,
             serde_json::from_str::<Value>(r##"{"eventId": "evt_S0lderIntroNov2026"}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"event": {"eventId": "evt_S0lderIntroNov2026", "calendarId": "cal_ElectronicsCal00001", "kind": "event", "status": "published", "title": "Intro to Soldering", "description": "Learn to solder through-hole parts and build a blinking LED badge to take home. Suitable for complete beginners.", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "placeSummary": "Riverside, near the station", "access": {"places": [{"name": "The Makerspace", "address": "Unit 4, Mill Lane, Riverside", "description": "Ring the bell; the door code is in your confirmation."}], "notes": "Wear closed shoes. Irons, solder and kits are provided."}, "audience": {"scope": "groups", "groups": ["grp_ElectronicsGrp00001"]}, "registration": {"mode": "approval", "capacity": 12, "waitlist": true, "plusOnes": 1, "questions": [{"questionId": "dietary", "label": "Any dietary needs?", "kind": "text"}, {"questionId": "experience", "label": "Have you soldered before?", "kind": "choice", "choices": ["Never", "A little", "Often"], "required": true}]}, "roster": "hidden", "showCount": true, "countThreshold": 5, "listed": true, "accessibility": {"stepFree": true, "quietSpace": true}, "suggestedReminderMinutes": [1440, 60], "hosts": ["dir_Pr1yaNatarajan00"], "goingCount": {"exact": 0}, "full": false, "sequence": 0, "createdAt": "2026-11-20T09:00:01Z", "updatedAt": "2026-11-20T09:30:01Z", "publishedAt": "2026-11-20T09:30:01Z"}}"##).unwrap()
         ),
@@ -3472,6 +3472,48 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r##"{"registration": {"registrationId": "reg_Kf3nP8qLs2Vx7Bd1", "eventId": "evt_IntroSoldering2611", "entryId": "dir_AdaLovelace000000", "status": "withdrawn", "guests": 1, "roster": "hidden", "eventSequence": 2, "createdAt": "2026-11-20T19:02:11Z", "updatedAt": "2026-11-29T21:40:01Z"}, "event": {"eventId": "evt_IntroSoldering2611", "title": "Intro to Soldering", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "status": "published", "sequence": 2}, "changed": true}"##).unwrap()
         ),
         checked!(
+            s::events::attendance::show::v0_1::Payload,
+            s::events::attendance::show::v0_1::Response,
+            serde_json::from_str::<Value>(r##"{"calendarId": "cal_Rm4Kd9Vt2Nx6Pq8L", "sinceMonth": "2026-01"}"##).unwrap(),
+            serde_json::from_str::<Value>(r##"{"tallies": [{"calendarId": "cal_Rm4Kd9Vt2Nx6Pq8L", "month": "2026-10", "count": 3}, {"calendarId": "cal_Rm4Kd9Vt2Nx6Pq8L", "month": "2026-11", "count": 4}], "total": 7}"##).unwrap()
+        ),
+        checked!(
+            s::events::checkin::challenge::v0_1::Payload,
+            s::events::checkin::challenge::v0_1::Response,
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z"}"##).unwrap(),
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "challenge": "kQ3nV8xR2bZ7tL4pW9mD6sYc", "expiresAt": "2026-11-30T18:27:00Z"}"##).unwrap()
+        ),
+        checked!(
+            s::events::checkin::list::v0_1::Payload,
+            s::events::checkin::list::v0_1::Response,
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "limit": 50}"##).unwrap(),
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "items": [{"registrationId": "reg_Hk3Wq9Ls2Dn6Hy4B", "entryId": "dir_Pr1yaNatarajan00", "registrantKind": "member", "method": "challenge", "checkedInAt": "2026-11-30T18:25:01Z", "counts": true}], "checkedIn": 1}"##).unwrap()
+        ),
+        checked!(
+            s::events::checkin::record::v0_1::Payload,
+            s::events::checkin::record::v0_1::Response,
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "challenge": "kQ3nV8xR2bZ7tL4pW9mD6sYc"}"##).unwrap(),
+            serde_json::from_str::<Value>(r##"{"checkIn": {"registrationId": "reg_Hk3Wq9Ls2Dn6Hy4B", "entryId": "dir_Pr1yaNatarajan00", "registrantKind": "member", "method": "challenge", "checkedInAt": "2026-11-30T18:25:01Z", "counts": true}, "event": {"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "title": "Intro to Soldering", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "status": "published", "sequence": 1}, "badgeOffered": "awd_Q7m2K9xVb4Tz8LpR"}"##).unwrap()
+        ),
+        checked!(
+            s::events::guests::register::v0_1::Payload,
+            s::events::guests::register::v0_1::Response,
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "status": "going", "guests": 0}"##).unwrap(),
+            serde_json::from_str::<Value>(r##"{"registration": {"registrationId": "reg_Hk3Wq9Ls2Dn6Hy4B", "eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "registrantDid": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "status": "going", "guests": 0, "roster": "hidden", "eventSequence": 1, "createdAt": "2026-11-28T10:00:00Z", "updatedAt": "2026-11-28T10:00:00Z"}, "event": {"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "title": "Intro to Soldering", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "status": "published", "sequence": 1}, "wasCreated": true}"##).unwrap()
+        ),
+        checked!(
+            s::events::guests::withdraw::v0_1::Payload,
+            s::events::guests::withdraw::v0_1::Response,
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z"}"##).unwrap(),
+            serde_json::from_str::<Value>(r##"{"registration": {"registrationId": "reg_Hk3Wq9Ls2Dn6Hy4B", "eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "registrantDid": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "status": "withdrawn", "guests": 0, "roster": "hidden", "eventSequence": 1, "createdAt": "2026-11-28T10:00:00Z", "updatedAt": "2026-11-28T10:00:00Z"}, "event": {"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "title": "Intro to Soldering", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "status": "published", "sequence": 1}, "changed": true}"##).unwrap()
+        ),
+        checked!(
+            s::events::tickets::show::v0_1::Payload,
+            s::events::tickets::show::v0_1::Response,
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z"}"##).unwrap(),
+            serde_json::from_str::<Value>(r##"{"eventId": "evt_Sd8Kq2Lm4Rt8Vx1Z", "credential": {"@context": ["https://www.w3.org/ns/credentials/v2"], "type": ["VerifiableCredential", "EventTicket"], "issuer": "did:example:event", "validFrom": "2026-11-28T10:00:00Z", "validUntil": "2026-11-30T20:00:00Z", "credentialSubject": {"id": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK", "event": "evt_Sd8Kq2Lm4Rt8Vx1Z"}}, "validUntil": "2026-11-30T20:00:00Z"}"##).unwrap()
+        ),
+        checked!(
             s::events::report::v0_1::Payload,
             s::events::report::v0_1::Response,
             serde_json::from_str::<Value>(r##"{"eventId": "evt_FreeLaserCutting001", "reason": "misleading", "note": "Listed as a free workshop; the description asks people to pay a third party to book."}"##).unwrap(),
@@ -3502,8 +3544,8 @@ fn table() -> Vec<Conformance> {
             serde_json::from_str::<Value>(r##"{"invitation": {"invitationId": "inv_W5k2N8xRb3Qz7TpL", "eventId": "evt_IntroSoldering2611", "entryId": "dir_AdaLovelace0000000", "invitedBy": "host", "inviterEntryId": "dir_PriyaNatarajan000", "replyExpected": false, "answer": "none", "revoked": true, "createdAt": "2026-11-20T10:00:01Z"}}"##).unwrap()
         ),
         checked!(
-            s::events::invitations::links::create::v0_1::Payload,
-            s::events::invitations::links::create::v0_1::Response,
+            s::events::invitations::links::create::v0_2::Payload,
+            s::events::invitations::links::create::v0_2::Response,
             serde_json::from_str::<Value>(r##"{"eventId": "evt_IntroSoldering2611", "label": "Flyer at the library", "maxRedemptions": 20, "expiresAt": "2026-11-29T23:59:59Z"}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"link": {"linkId": "lnk_Fl7yerLibrary0000", "eventId": "evt_IntroSoldering2611", "label": "Flyer at the library", "maxRedemptions": 20, "redemptions": 0, "expiresAt": "2026-11-29T23:59:59Z", "createdAt": "2026-11-20T10:00:01Z"}, "code": "q8Zx2mN4vB7tR1yK9pL3wQ6sD0fH5jG8aC2eV7nM4bX"}"##).unwrap()
         ),
@@ -3545,14 +3587,14 @@ fn table() -> Vec<Conformance> {
         ),
 
         checked!(
-            s::events::show::v0_2::Payload,
-            s::events::show::v0_2::Response,
+            s::events::show::v0_3::Payload,
+            s::events::show::v0_3::Response,
             serde_json::from_str::<Value>(r##"{"eventId": "evt_S0lderIntroNov2026"}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"event": {"eventId": "evt_S0lderIntroNov2026", "calendarId": "cal_ElectronicsCal00001", "kind": "event", "status": "published", "title": "Intro to Soldering", "description": "Learn to solder through-hole parts and build a blinking LED badge to take home. Suitable for complete beginners.", "when": {"start": "2026-11-30T18:30:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "placeSummary": "Riverside, near the station", "audience": {"scope": "groups", "groups": ["grp_ElectronicsGrp00001"]}, "registration": {"mode": "approval", "capacity": 12, "waitlist": true, "plusOnes": 1, "questions": [{"questionId": "dietary", "label": "Any dietary needs?", "kind": "text"}, {"questionId": "experience", "label": "Have you soldered before?", "kind": "choice", "choices": ["Never", "A little", "Often"], "required": true}]}, "roster": "hidden", "showCount": true, "countThreshold": 5, "listed": true, "accessibility": {"stepFree": true, "quietSpace": true}, "suggestedReminderMinutes": [1440, 60], "hosts": ["dir_Pr1yaNatarajan00"], "goingCount": {"exact": 9}, "full": false, "sequence": 0, "createdAt": "2026-11-20T09:00:01Z", "updatedAt": "2026-11-20T09:30:01Z", "publishedAt": "2026-11-20T09:30:01Z"}, "myRegistration": {"registrationId": "reg_Ad4L0vel4ceNov2026", "eventId": "evt_S0lderIntroNov2026", "entryId": "dir_AdaLovelace000001", "status": "going", "guests": 1, "answers": {"dietary": "Vegetarian", "experience": "Never"}, "roster": "hidden", "eventSequence": 0, "createdAt": "2026-11-21T08:12:00Z", "updatedAt": "2026-11-22T10:00:00Z"}}"##).unwrap()
         ),
         checked!(
-            s::events::update::v0_2::Payload,
-            s::events::update::v0_2::Response,
+            s::events::update::v0_3::Payload,
+            s::events::update::v0_3::Response,
             serde_json::from_str::<Value>(r##"{"eventId": "evt_S0lderIntroNov2026", "when": {"start": "2026-11-30T19:00:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "reason": "The room is booked until 19:00."}"##).unwrap(),
             serde_json::from_str::<Value>(r##"{"event": {"eventId": "evt_S0lderIntroNov2026", "calendarId": "cal_ElectronicsCal00001", "kind": "event", "status": "published", "title": "Intro to Soldering", "description": "Learn to solder through-hole parts and build a blinking LED badge to take home. Suitable for complete beginners.", "when": {"start": "2026-11-30T19:00:00", "timeZone": "Europe/London", "duration": "PT1H30M"}, "placeSummary": "Riverside, near the station", "access": {"places": [{"name": "The Makerspace", "address": "Unit 4, Mill Lane, Riverside", "description": "Ring the bell; the door code is in your confirmation."}], "notes": "Wear closed shoes. Irons, solder and kits are provided."}, "audience": {"scope": "groups", "groups": ["grp_ElectronicsGrp00001"]}, "registration": {"mode": "approval", "capacity": 12, "waitlist": true, "plusOnes": 1, "questions": [{"questionId": "dietary", "label": "Any dietary needs?", "kind": "text"}, {"questionId": "experience", "label": "Have you soldered before?", "kind": "choice", "choices": ["Never", "A little", "Often"], "required": true}]}, "roster": "hidden", "showCount": true, "countThreshold": 5, "listed": true, "accessibility": {"stepFree": true, "quietSpace": true}, "suggestedReminderMinutes": [1440, 60], "hosts": ["dir_Pr1yaNatarajan00"], "goingCount": {"exact": 0}, "full": false, "sequence": 1, "createdAt": "2026-11-20T09:00:01Z", "updatedAt": "2026-11-24T08:00:01Z", "publishedAt": "2026-11-20T09:30:01Z"}}"##).unwrap()
         ),

@@ -157,6 +157,27 @@ pub async fn mint(
     setup: &Setup,
     issues_credentials: bool,
 ) -> Result<Minted, Failure> {
+    mint_as(
+        state,
+        setup,
+        "vtc-group",
+        "Community group",
+        issues_credentials.then_some(GROUP_AUTHORITY_ACTION),
+    )
+    .await
+}
+
+/// [`mint`] from `template`, labelled `label` at the VTA only, with the community's authority
+/// credential granting `authority_action` when one is named. Shared by groups (`vtc-group`)
+/// and events with an identity of their own (`vtc-event`, VTI-EVT-141), which are published
+/// where the community publishes its groups' identities.
+pub async fn mint_as(
+    state: &AppState,
+    setup: &Setup,
+    template: &str,
+    label: &str,
+    authority_action: Option<&str>,
+) -> Result<Minted, Failure> {
     let did_path = match &setup.publish {
         Publish::Served { .. } => Some(uuid::Uuid::new_v4().simple().to_string()),
         Publish::Server(_) => None,
@@ -172,10 +193,10 @@ pub async fn mint(
     // at a mediator the document does not name.
     let mut request = json!({
         "contextId": setup.context,
-        "template": "vtc-group",
+        "template": template,
         "templateVars": { "WEBVH_SERVER": webvh_server },
         "setPrimary": false,
-        "label": "Community group",
+        "label": label,
         "addMediatorService": false,
         "addTspService": false,
     });
@@ -217,8 +238,8 @@ pub async fn mint(
             .map_err(Failure::Local)?;
     }
 
-    let authority = if issues_credentials {
-        match issue_authority(state, setup, &group_did, Utc::now(), None).await {
+    let authority = if let Some(action) = authority_action {
+        match issue_authority_as(state, setup, &group_did, action, Utc::now(), None).await {
             Ok(a) => Some(a),
             Err(e) => {
                 if let Some(path) = &did_path {
@@ -257,6 +278,27 @@ pub async fn issue_authority(
     valid_from: DateTime<Utc>,
     slot: Option<u32>,
 ) -> Result<(Authority, Value), Failure> {
+    issue_authority_as(
+        state,
+        setup,
+        group_did,
+        GROUP_AUTHORITY_ACTION,
+        valid_from,
+        slot,
+    )
+    .await
+}
+
+/// [`issue_authority`] granting `action` — `issue-membership` for a group, `issue-tickets`
+/// for an event's identity (VTI-EVT-142).
+pub async fn issue_authority_as(
+    state: &AppState,
+    setup: &Setup,
+    group_did: &str,
+    action: &str,
+    valid_from: DateTime<Utc>,
+    slot: Option<u32>,
+) -> Result<(Authority, Value), Failure> {
     let valid_until = valid_from + Duration::days(i64::from(setup.authority_days));
     let slot = status_list::with_locked(
         &state.status_lists_ks,
@@ -282,7 +324,7 @@ pub async fn issue_authority(
         dtg_credentials::IssuerScope::Public,
         group_did.to_string(),
         setup.community_did.clone(),
-        vec![GROUP_AUTHORITY_ACTION.to_string()],
+        vec![action.to_string()],
         valid_from,
         valid_until,
     )

@@ -42,20 +42,25 @@ import type {
   EventInvitation,
   EventInvitationLink,
   EventAnnouncement,
+  EventCheckinChallengeResponse,
+  EventCheckinRecordResponse,
+  EventCheckinListResponse,
+  EventCheckIn,
+  EventSelfCheckIn,
 } from "./wire-types";
 
-export type { EventInvitation, EventInvitationLink, EventAnnouncement };
+export type { EventInvitation, EventInvitationLink, EventAnnouncement, EventCheckIn, EventSelfCheckIn };
 
-export const CALENDARS_CREATE = "https://trusttasks.org/spec/vtc/events/calendars/create/0.1";
-export const CALENDARS_UPDATE = "https://trusttasks.org/spec/vtc/events/calendars/update/0.1";
-export const CALENDARS_LIST = "https://trusttasks.org/spec/vtc/events/calendars/list/0.1";
-export const CREATE = "https://trusttasks.org/spec/vtc/events/create/0.2";
-export const UPDATE = "https://trusttasks.org/spec/vtc/events/update/0.2";
-export const PUBLISH = "https://trusttasks.org/spec/vtc/events/publish/0.2";
-export const CANCEL = "https://trusttasks.org/spec/vtc/events/cancel/0.2";
+export const CALENDARS_CREATE = "https://trusttasks.org/spec/vtc/events/calendars/create/0.2";
+export const CALENDARS_UPDATE = "https://trusttasks.org/spec/vtc/events/calendars/update/0.2";
+export const CALENDARS_LIST = "https://trusttasks.org/spec/vtc/events/calendars/list/0.2";
+export const CREATE = "https://trusttasks.org/spec/vtc/events/create/0.3";
+export const UPDATE = "https://trusttasks.org/spec/vtc/events/update/0.3";
+export const PUBLISH = "https://trusttasks.org/spec/vtc/events/publish/0.3";
+export const CANCEL = "https://trusttasks.org/spec/vtc/events/cancel/0.3";
 export const DELETE = "https://trusttasks.org/spec/vtc/events/delete/0.1";
-export const SHOW = "https://trusttasks.org/spec/vtc/events/show/0.2";
-export const LIST = "https://trusttasks.org/spec/vtc/events/list/0.2";
+export const SHOW = "https://trusttasks.org/spec/vtc/events/show/0.3";
+export const LIST = "https://trusttasks.org/spec/vtc/events/list/0.3";
 export const REGISTRATIONS_LIST = "https://trusttasks.org/spec/vtc/events/registrations/list/0.2";
 export const REGISTRATIONS_DECIDE = "https://trusttasks.org/spec/vtc/events/registrations/decide/0.2";
 export const REGISTRATIONS_REMOVE = "https://trusttasks.org/spec/vtc/events/registrations/remove/0.2";
@@ -65,10 +70,13 @@ export const HOSTS_LIST = "https://trusttasks.org/spec/vtc/events/hosts/list/0.1
 export const INVITATIONS_SEND = "https://trusttasks.org/spec/vtc/events/invitations/send/0.1";
 export const INVITATIONS_LIST = "https://trusttasks.org/spec/vtc/events/invitations/list/0.1";
 export const INVITATIONS_REVOKE = "https://trusttasks.org/spec/vtc/events/invitations/revoke/0.1";
-export const LINKS_CREATE = "https://trusttasks.org/spec/vtc/events/invitations/links/create/0.1";
+export const LINKS_CREATE = "https://trusttasks.org/spec/vtc/events/invitations/links/create/0.2";
 export const LINKS_REVOKE = "https://trusttasks.org/spec/vtc/events/invitations/links/revoke/0.1";
 export const ANNOUNCEMENTS_SEND = "https://trusttasks.org/spec/vtc/events/announcements/send/0.1";
 export const ANNOUNCEMENTS_LIST = "https://trusttasks.org/spec/vtc/events/announcements/list/0.1";
+export const CHECKIN_CHALLENGE = "https://trusttasks.org/spec/vtc/events/checkin/challenge/0.1";
+export const CHECKIN_RECORD = "https://trusttasks.org/spec/vtc/events/checkin/record/0.1";
+export const CHECKIN_LIST = "https://trusttasks.org/spec/vtc/events/checkin/list/0.1";
 
 /** Runs the community's calendars and every event (qualified: a group's calendar, or one event). */
 export const EVENTS_MANAGE = "vtc.events.manage";
@@ -89,6 +97,7 @@ export type Accessibility = NonNullable<EventCreatePayload["accessibility"]>;
 /** The listings' largest pages (`list-limits.json`). */
 const PAGE = 200;
 const REG_PAGE = 100;
+const CHECKIN_PAGE = 100;
 /** How many pages a full read follows before it stops. */
 const MAX_PAGES = 20;
 
@@ -236,13 +245,16 @@ export async function listInvitations(eventId: string): Promise<EventInvitation[
 export const revokeInvitation = (eventId: string, invitationId: string) =>
   postSignedTrustTask<EventInvitationsRevokeResponse>(INVITATIONS_REVOKE, { eventId, invitationId }).then((r) => r.invitation);
 
-/** A link and its code — the code answered this once and never again (VTI-EVT-107). */
-export const createLink = (eventId: string, maxRedemptions: number, expiresAt: string, label?: string) =>
+/** A link and its code — the code answered this once and never again (VTI-EVT-107). A link
+ *  `forGuests` admits only parties who are not members, and only to an event that admits invited
+ *  guests (VTI-EVT-151). */
+export const createLink = (eventId: string, maxRedemptions: number, expiresAt: string, label?: string, forGuests = false) =>
   postSignedTrustTask<EventInvitationLinksCreateResponse>(LINKS_CREATE, {
     eventId,
     maxRedemptions,
     expiresAt,
     ...(label ? { label } : {}),
+    ...(forGuests ? { forGuests: true } : {}),
   });
 
 export const revokeLink = (eventId: string, linkId: string) =>
@@ -253,6 +265,43 @@ export const sendAnnouncement = (eventId: string, text: string) =>
 
 export const listAnnouncements = (eventId: string) =>
   postSignedRead<EventAnnouncementsListResponse>(ANNOUNCEMENTS_LIST, { eventId, limit: INV_PAGE }).then((r) => r.items);
+
+// ── The door (VTI-EVT-160 – 165) ────────────────────────────────────────
+
+/** A fresh door challenge: shown at the door, signed by a registrant's wallet to check in. It is
+ *  accepted until `expiresAt`, by anyone going, as often as people arrive. */
+export const issueChallenge = (eventId: string) =>
+  postSignedTrustTask<EventCheckinChallengeResponse>(CHECKIN_CHALLENGE, { eventId });
+
+/** Door staff check a registrant in by name (VTI-EVT-163). */
+export const staffCheckIn = (eventId: string, registrationId: string) =>
+  postSignedTrustTask<EventCheckinRecordResponse>(CHECKIN_RECORD, { eventId, registrationId });
+
+/** Who has checked in, in arrival order, and how many (VTI-EVT-165). */
+export async function listCheckIns(eventId: string): Promise<{ items: EventCheckIn[]; checkedIn: number }> {
+  const items: EventCheckIn[] = [];
+  let checkedIn = 0;
+  let cursor: string | undefined;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const page = await postSignedRead<EventCheckinListResponse>(CHECKIN_LIST, {
+      eventId,
+      limit: CHECKIN_PAGE,
+      ...(cursor ? { cursor } : {}),
+    });
+    items.push(...page.items);
+    checkedIn = page.checkedIn;
+    cursor = page.nextCursor;
+    if (!cursor) break;
+  }
+  return { items, checkedIn };
+}
+
+/** What a calendar's self check-in setting means, in words (VTI-EVT-164). */
+export const SELF_CHECK_IN_LABEL: Record<EventSelfCheckIn, string> = {
+  none: "No: a door challenge or door staff only",
+  allowed: "Yes, while the event runs, but it does not count",
+  counting: "Yes, while the event runs, and it counts",
+};
 
 // ── Time ─────────────────────────────────────────────────────────────────
 

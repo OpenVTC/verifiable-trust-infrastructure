@@ -99,3 +99,42 @@
   justify-content: space-between;
   gap: var(--space-2);
 }
+
+/* The door (VTI-EVT-160 – 165): the code to scan beside the running count. */
+.ev-door {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4, 1.5rem);
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.ev-door-code {
+  flex: 1 1 18rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ev-door-code img {
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  padding: var(--space-2);
+  border-radius: 8px;
+}
+.ev-door-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+.ev-door-count {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 10rem;
+}
+.ev-door-count strong {
+  font-size: 3rem;
+  line-height: 1;
+}

@@ -30,6 +30,10 @@ import {
   EVENTS_ROSTER_TASK,
   EVENTS_SHOW_TASK,
   EVENTS_WITHDRAW_TASK,
+  EVENTS_TICKET_TASK,
+  EVENTS_CHECKIN_TASK,
+  EVENTS_ATTENDANCE_TASK,
+  checkInHref,
   eventHref,
 } from "./events-api";
 import { eventsAttention, eventsStatus } from "./home-status";
@@ -296,5 +300,85 @@ describe("invitations (VTI-EVT-104, 107, 110, 120)", () => {
     await waitFor(() =>
       expect(sent(EVENTS_OPTOUT_SET_TASK)).toEqual([{ scope: "event", eventId: EVENT_ID, optedOut: true }]),
     );
+  });
+});
+
+describe("the door, tickets and attendance (VTI-EVT-160 – 185)", () => {
+  const CHALLENGE = "Zm9vYmFyYmF6cXV4cXV1eA";
+
+  it("routes the door's code to the event, carrying the challenge", () => {
+    expect(routeOf(checkInHref(EVENT_ID, CHALLENGE))).toEqual({ page: "event", eventId: EVENT_ID, challenge: CHALLENGE });
+    expect(routeOf(`#/events/${EVENT_ID}/checkin/short`)).toEqual({ page: "home" });
+  });
+
+  it("checks in with the scanned challenge, and says whether it counted", async () => {
+    answer({
+      [EVENTS_SHOW_TASK]: { event: event(), myRegistration: registration() },
+      [EVENTS_ACCESS_TASK]: { eventId: EVENT_ID, access: {}, sequence: 0 },
+      [EVENTS_CHECKIN_TASK]: {
+        checkIn: { registrationId: "reg_R3g1stration00000AAAA", registrantKind: "member", entryId: ENTRY, method: "challenge", checkedInAt: "2099-11-30T18:31:00Z", counts: true },
+        event: { eventId: EVENT_ID },
+      },
+    });
+    renderPage(<EventPage eventId={EVENT_ID} challenge={CHALLENGE} />);
+    expect(await screen.findByText(/You scanned the door's code/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Check in" }));
+    expect(await screen.findByText(/It counts toward your attendance/)).toBeTruthy();
+    expect(sent(EVENTS_CHECKIN_TASK)).toEqual([{ eventId: EVENT_ID, challenge: CHALLENGE }]);
+  });
+
+  it("says what the community refused, and checks in without a challenge only when asked", async () => {
+    answer({
+      [EVENTS_SHOW_TASK]: { event: event(), myRegistration: registration() },
+      [EVENTS_ACCESS_TASK]: { eventId: EVENT_ID, access: {}, sequence: 0 },
+      [EVENTS_CHECKIN_TASK]: () => {
+        throw new DirectoryError("selfCheckInNotAllowed", "This event's calendar does not allow check-in without a door challenge.");
+      },
+    });
+    renderPage(<EventPage eventId={EVENT_ID} />);
+    expect(await screen.findByText(/At the door, scan its code/)).toBeTruthy();
+    expect(sent(EVENTS_CHECKIN_TASK)).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Check in" }));
+    expect(await screen.findByText(/does not allow check-in without a door challenge/)).toBeTruthy();
+    expect(sent(EVENTS_CHECKIN_TASK)).toEqual([{ eventId: EVENT_ID }]);
+  });
+
+  it("offers nobody who is not going a check-in or a ticket", async () => {
+    answer({ [EVENTS_SHOW_TASK]: { event: event({ tickets: true }), myRegistration: registration({ status: "maybe" }) } });
+    renderPage(<EventPage eventId={EVENT_ID} />);
+    expect(await screen.findByText("You said maybe")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check in" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show my ticket" })).toBeNull();
+  });
+
+  it("reads the ticket only when asked, and shows who issued it", async () => {
+    answer({
+      [EVENTS_SHOW_TASK]: { event: event({ tickets: true }), myRegistration: registration() },
+      [EVENTS_ACCESS_TASK]: { eventId: EVENT_ID, access: {}, sequence: 0 },
+      [EVENTS_TICKET_TASK]: {
+        eventId: EVENT_ID,
+        credential: { type: ["VerifiableCredential", "EventTicketCredential"], issuer: "did:webvh:QmEvent:events.example.com" },
+        validUntil: "2099-11-30T20:00:00Z",
+      },
+    });
+    renderPage(<EventPage eventId={EVENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Show my ticket" }));
+    expect(await screen.findByText("did:webvh:QmEvent:events.example.com")).toBeTruthy();
+    expect(sent(EVENTS_TICKET_TASK)).toEqual([{ eventId: EVENT_ID }]);
+  });
+
+  it("shows the member's attendance by month and calendar", async () => {
+    answer({
+      [EVENTS_CALENDARS_TASK]: { items: [{ calendarId: CAL, name: "Riverside Makers", community: true, state: "active", createdAt: "2099-01-01T00:00:00Z" }] },
+      [EVENTS_LIST_TASK]: { items: [] },
+      [EVENTS_MINE_TASK]: { items: [] },
+      [EVENTS_INVITATIONS_TASK]: { items: [] },
+      [EVENTS_ATTENDANCE_TASK]: { tallies: [{ calendarId: CAL, month: "2099-10", count: 2 }, { calendarId: CAL, month: "2099-11", count: 1 }], total: 3 },
+    });
+    renderPage(<EventsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Attendance" }));
+    expect(await screen.findByText("3 events attended.")).toBeTruthy();
+    expect(screen.getAllByText("Riverside Makers").length).toBeGreaterThan(0);
+    expect(screen.getByText("2099-10")).toBeTruthy();
   });
 });

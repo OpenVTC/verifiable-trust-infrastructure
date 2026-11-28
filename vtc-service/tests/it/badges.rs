@@ -3066,6 +3066,62 @@ async fn an_automatic_badge_counts_accepted_kudos_and_only_a_badge_may() {
     assert!(vtc_service::groups::check_badge_rule(&bad, &[]).is_err());
 }
 
+/// VTI-EVT-184, 185: an automatic badge's rule reads `eventsAttended` from the member's monthly
+/// attendance tallies, optionally one calendar's, optionally within a window before now.
+#[tokio::test]
+async fn vti_evt_184_an_automatic_badge_counts_events_attended() {
+    let fix = fixture().await;
+    set_settings(&fix, |s| s.automatic_badges = true).await;
+    let sha = fix.upload(&fix.admin).await;
+    let mut body = fix.community_body("Regular", &sha, false);
+    body["requestable"] = json!(false);
+    body["automatic"] = json!({ "rule": { "all": [
+        { "fact": "eventsAttended", "op": "atLeast", "count": 2,
+          "calendarId": "cal_ElectronicsCal00001", "withinDays": 90 }
+    ] } });
+    let (status, doc) = fix.as_admin("create", body).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let badge_id = doc["payload"]["badge"]["badgeId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let group = vtc_service::groups::get(
+        fix.vtc.state.directory.ks(),
+        doc["payload"]["badge"]["groupId"].as_str().unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let month = vtc_service::community_events::door::month_of(Utc::now());
+    let tally = |cal: &str, n: u64| {
+        (
+            format!("att:{}:{cal}:{month}", fix.member_entry),
+            n.to_string().into_bytes(),
+        )
+    };
+    // Two events attended, but in another calendar: not this badge.
+    let (k, v) = tally("cal_SomewhereElse000001", 2);
+    fix.vtc.state.events_ks.insert_raw(k, v).await.unwrap();
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 0);
+    // One in this calendar: not yet.
+    let (k, v) = tally("cal_ElectronicsCal00001", 1);
+    fix.vtc.state.events_ks.insert_raw(k, v).await.unwrap();
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 0);
+    // Two: the rule admits them.
+    let (k, v) = tally("cal_ElectronicsCal00001", 2);
+    fix.vtc.state.events_ks.insert_raw(k, v).await.unwrap();
+    vtc_service::groups::dynamic::recompute(&fix.vtc.state, &group, Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(holding_of(&fix, &fix.member, &badge_id).await, 1);
+}
+
 /// A list cursor is tagged under a key only the community holds, for one
 /// caller and one question. One made without the key, edited, or presented
 /// by another caller is refused, and an offset past any list (the largest

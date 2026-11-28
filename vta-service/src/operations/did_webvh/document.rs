@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn a_template_numbering_its_methods_from_one_is_followed() {
         let derived = fake_keys();
-        for template in ["room", "room-host", "vtc-group"] {
+        for template in ["room", "room-host", "vtc-group", "vtc-event"] {
             let doc = rendered(template, &derived);
             let ids = minted_vm_ids(&doc, DID, &derived.signing_pub, Some(&derived.ka_pub), &[]);
 
