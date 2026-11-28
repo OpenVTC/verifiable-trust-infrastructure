@@ -39,7 +39,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.96", default-features = false, features = [
+vta-sdk = { path = "../vta-sdk", version = "0.97", default-features = false, features = [
   "proof-verify",
 ], optional = true }
 affinidi-did-resolver-cache-sdk = { workspace = true, optional = true }

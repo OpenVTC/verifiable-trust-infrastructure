@@ -249,7 +249,7 @@ png = "0.18"
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.45" }
-vta-sdk = { path = "../vta-sdk", version = "0.96", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.97", features = [
   "didcomm",
   "session",
   "config-session",
