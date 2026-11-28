@@ -12137,7 +12137,6 @@ dependencies = [
  "dtg-credentials",
  "ed25519-dalek 3.0.0",
  "futures-util",
- "governor",
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
