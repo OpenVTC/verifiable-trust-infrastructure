@@ -525,6 +525,30 @@ type_uri = "https://trusttasks.org/spec/device/wipe/0.2"
 digest = "sha256:f06cc6b19500d89f5c4b5537da6ca9b159f4742662a55bdf67b7f0b2b2d51a41"
 
 [[task]]
+slug = "did-management/account/expiry-notice"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/did-management/account/expiry-notice/0.1"
+digest = "sha256:d10a28e13cc0f10ec703447cf6c72fb9958c77394704c96fd89205412e959060"
+
+[[task]]
+slug = "did-management/account/register"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/did-management/account/register/0.1"
+digest = "sha256:3492aa8239bb04e70bd264d94e1b82e2e33ad730653805b1468ec5e26e2653f7"
+
+[[task]]
+slug = "did-management/account/renew"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/did-management/account/renew/0.1"
+digest = "sha256:f50f9dcd36e5e284711381c1d118c821170cc71ba663fa951b269745cbe415c6"
+
+[[task]]
+slug = "did-management/account/status"
+version = "0.1"
+type_uri = "https://trusttasks.org/spec/did-management/account/status/0.1"
+digest = "sha256:7c83fee62b2d84bac45c148f3fb50106a913cdc17456dfc23d2bec652f11f031"
+
+[[task]]
 slug = "did-management/agent-name/check"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/did-management/agent-name/check/0.1"
@@ -667,6 +691,12 @@ slug = "did-management/server/health"
 version = "0.1"
 type_uri = "https://trusttasks.org/spec/did-management/server/health/0.1"
 digest = "sha256:e395b918740726ac137da10c70980c4902f9203e24d99e6445a9158d874f8cd9"
+
+[[task]]
+slug = "did-management/server/info"
+version = "0.2"
+type_uri = "https://trusttasks.org/spec/did-management/server/info/0.2"
+digest = "sha256:140332c925d619ec79d1551d4411e7e92317dc564bdf734546c1425e8c008115"
 
 [[task]]
 slug = "did-management/server/register"

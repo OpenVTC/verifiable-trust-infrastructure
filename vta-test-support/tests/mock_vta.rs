@@ -1878,3 +1878,171 @@ async fn versioned_memory_round_trips_through_the_client() {
         .expect("change feed");
     assert_eq!(changes["items"][0]["deleted"], true);
 }
+
+/// Self-registration with a DID hosting service this VTA is a stranger to
+/// (`did-management/account/*`), through the real `WebvhHostClient` against
+/// the stub host, which checks each request against the published schema and
+/// signs its answers:
+///
+/// - `server/info/0.2` asked anonymously (no proof, no issuer), as setup does
+///   before the VTA's DID exists, still verified against the host's key;
+/// - `account/register/0.1` with an invite, sent over HTTPS only;
+/// - a wrong invite refused as `admissionRefused` → 403;
+/// - `account/renew/0.1` and `account/status/0.1` read into one account record.
+#[tokio::test]
+async fn self_registration_round_trips_against_stub_host() {
+    use vta_service::webvh_host::{AccountAdmission, AccountReferral, WebvhHostClient};
+    use vta_test_support::{
+        STUB_INVITE_CLAIM_CODE, STUB_INVITE_TOKEN, STUB_SELF_REGISTRATION_PREFIX,
+        STUB_WEBVH_SERVER_DID,
+    };
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let resolver = mock
+        .ctx
+        .state
+        .did_resolver
+        .as_ref()
+        .expect("the mock carries a resolver");
+    let client = WebvhHostClient::for_server_offline(
+        STUB_WEBVH_SERVER_DID,
+        mock.vta_did(),
+        resolver,
+        &mock.ctx.state.didcomm_bridge,
+    )
+    .await
+    .expect("a client for the stub host");
+
+    let info =
+        serde_json::to_value(client.server_info_unsigned().await.expect("server/info")).unwrap();
+    assert_eq!(
+        info["selfRegistration"][0]["pathPrefixes"][0],
+        STUB_SELF_REGISTRATION_PREFIX
+    );
+
+    let path = format!("{STUB_SELF_REGISTRATION_PREFIX}/my-vta");
+    let invite = AccountAdmission::Invite {
+        token: STUB_INVITE_TOKEN.into(),
+        claim_code: STUB_INVITE_CLAIM_CODE.into(),
+    };
+    let referral = AccountReferral {
+        via: Some("did:example:community".into()),
+        label: Some("spring-onboarding".into()),
+    };
+    let (slot, account) = client
+        .register_account("webvh-host.test", &path, "{}\n", &invite, Some(&referral))
+        .await
+        .expect("account/register with a valid invite");
+    assert_eq!(slot.mnemonic, path);
+    assert_eq!(account.role.to_string(), "owner");
+
+    // A token the schema refuses (under 16 characters) never leaves this VTA.
+    let malformed = AccountAdmission::Invite {
+        token: "too-short".into(),
+        claim_code: STUB_INVITE_CLAIM_CODE.into(),
+    };
+    let err = client
+        .register_account("webvh-host.test", &path, "{}\n", &malformed, None)
+        .await
+        .expect_err("a malformed invite is refused locally");
+    assert!(
+        matches!(err, vta_service::error::AppError::Validation(_)),
+        "a schema refusal is the caller's input: {err:?}"
+    );
+
+    let wrong = AccountAdmission::Invite {
+        token: "a-well-formed-but-unknown-token".into(),
+        claim_code: STUB_INVITE_CLAIM_CODE.into(),
+    };
+    let err = client
+        .register_account("webvh-host.test", &path, "{}\n", &wrong, None)
+        .await
+        .expect_err("a wrong invite is refused");
+    assert!(
+        matches!(err, vta_service::error::AppError::Forbidden(_)),
+        "admissionRefused maps to 403: {err:?}"
+    );
+
+    let (renewed, changed) = client.renew_account().await.expect("account/renew");
+    assert!(!changed);
+    let status = client.account_status().await.expect("account/status");
+    assert_eq!(
+        serde_json::to_value(renewed.state).unwrap(),
+        serde_json::to_value(status.state).unwrap()
+    );
+
+    mock.shutdown().await;
+}
+
+/// The running VTA's side of a self-registered account (`hosting_account`):
+/// `refresh` reads `account/status` and renews against the stub host and
+/// records what it said; an expiry notice is kept only from the host the VTA
+/// registered with.
+#[tokio::test]
+async fn hosting_account_refresh_and_expiry_notices() {
+    use vta_service::hosting_account::{self, HostingAccountRecord};
+    use vta_test_support::STUB_WEBVH_SERVER_DID;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let state = &mock.ctx.state;
+    let ks = &state.service_state_ks;
+
+    // No record: nothing to renew.
+    assert!(matches!(
+        hosting_account::refresh(state, true).await,
+        Err(vta_service::error::AppError::NotFound(_))
+    ));
+
+    hosting_account::store(
+        ks,
+        &HostingAccountRecord::registered(
+            MockVta::WEBVH_SERVER_ID,
+            STUB_WEBVH_SERVER_DID,
+            "webvh-host.test",
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+
+    let record = hosting_account::refresh(state, true)
+        .await
+        .expect("renew against the stub host");
+    assert_eq!(record.account.as_ref().unwrap()["state"], "active");
+    assert!(record.renewed_at.is_some() && record.last_error.is_none());
+
+    // From anyone but the host: dropped, the record unchanged.
+    let kept = hosting_account::receive_notice(
+        state,
+        "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+        "disabled",
+        serde_json::json!({ "state": "disabled" }),
+    )
+    .await
+    .unwrap();
+    assert!(!kept);
+    assert!(
+        hosting_account::load(ks)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_notice
+            .is_none()
+    );
+
+    // From the host: kept.
+    let kept = hosting_account::receive_notice(
+        state,
+        STUB_WEBVH_SERVER_DID,
+        "disablePending",
+        serde_json::json!({ "state": "warned" }),
+    )
+    .await
+    .unwrap();
+    assert!(kept);
+    let record = hosting_account::load(ks).await.unwrap().unwrap();
+    assert_eq!(record.last_notice.unwrap().stage, "disablePending");
+    assert_eq!(record.account.unwrap()["state"], "warned");
+
+    mock.shutdown().await;
+}

@@ -1543,6 +1543,12 @@ pub async fn run_with(
             crate::scid_floors::spawn(app_state.acl_ks.clone(), resolver, shutdown_rx.clone());
         }
 
+        // A DID self-registered with a third-party host stays hosted only while
+        // its account shows activity: status and renew now, renew about daily
+        // (`hosting_account`). A no-op for a VTA that never self-registered.
+        #[cfg(feature = "webvh")]
+        crate::hosting_account::spawn(app_state.clone(), shutdown_rx.clone());
+
         // A room's revocation list that a registration left `pending` at its host is
         // delivered again by one sweeper, its single retry owner (`rooms/owner/register/0.2`
         // item 4). Off the startup path, and ended with everything else at shutdown.

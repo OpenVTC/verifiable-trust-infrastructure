@@ -115,6 +115,14 @@ pub(crate) async fn resolve_trust_task_sender(
             ceremony::ceremony_claims(sender_did),
             Standing::ZeroAuthority,
         )),
+        // The DID host this VTA self-registered with, warning of disable or purge
+        // (`account/expiry-notice/0.1`): a host holds no ACL entry, and the handler
+        // keeps the notice only from the host it registered with.
+        #[cfg(feature = "webvh")]
+        Some(uri) if crate::trust_tasks::hosting_account::is_counterparty_task(uri) => Ok((
+            ceremony::ceremony_claims(sender_did),
+            Standing::ZeroAuthority,
+        )),
         Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
             tracing::debug!(
                 sender = %sender_did,

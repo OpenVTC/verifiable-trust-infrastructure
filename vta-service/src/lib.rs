@@ -128,6 +128,10 @@ pub use vta_vault as vault;
 /// re-exported so every `crate::webvh_store::…` path is unchanged.
 #[cfg(feature = "webvh")]
 pub use vta_webvh::webvh_store;
+/// This VTA's self-registered account on a DID hosting service: renewal,
+/// status and expiry notices.
+#[cfg(feature = "webvh")]
+pub mod hosting_account;
 pub mod self_keys;
 /// `did:webs` DID records. The context purge is built in every build.
 pub mod webs_store;

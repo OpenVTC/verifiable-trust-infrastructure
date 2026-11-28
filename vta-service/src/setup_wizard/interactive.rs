@@ -979,6 +979,9 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
                 did_log_file,
                 signing_key_id,
                 ka_key_id,
+                // Self-registration with a third-party host is driven by an
+                // application (`vta_service::setup`), not this wizard.
+                hosting: None,
             })
         }
         1 => Ok(VtaDidInput::CreateDidKey),
@@ -1874,7 +1877,9 @@ mod tests {
                 ref did_log_file,
                 ref signing_key_id,
                 ref ka_key_id,
+                ref hosting,
             } => {
+                assert!(hosting.is_none());
                 assert_eq!(url, "https://t.example.com/dids/vta");
                 assert!(portable);
                 assert_eq!(pre_rotation_count, 2);

@@ -168,6 +168,8 @@ pub(crate) mod transport;
 // per-route op markers are gone with the config floors they read.
 /// `vta/collection/*` and what the VTA answers as a persona it collects for.
 pub(crate) mod collection;
+#[cfg(feature = "webvh")]
+pub(crate) mod hosting_account;
 pub(crate) mod notifications;
 pub(crate) mod step_up;
 mod vault;
@@ -3050,6 +3052,13 @@ dispatch_table! {
     // is dropped, answered with nothing.
     vta_sdk::trust_tasks::TASK_ROOMS_CHANGED_0_1 => room_changed::handle_changed
         [ None None false ],
+    // ─── DID hosting: this VTA's self-registered account ──────────
+    // A counterparty task (`hosting_account::is_counterparty_task`): the host this
+    // VTA registered with warns of disable / purge. Kept only from that host;
+    // one-way, answered with nothing.
+    #[cfg(feature = "webvh")]
+    hosting_account::TASK_ACCOUNT_EXPIRY_NOTICE_0_1 => hosting_account::handle_expiry_notice
+        [ Mutating None false ],
     // ─── Rooms: watching for a client (`rooms/keys/watch/0.1`) ────
     // `actsAsSubject`: arms `rooms/watch` at the host as the member, presenting the
     // member's own `read`. Mutating: keeps one record per armed watch until it fires, is

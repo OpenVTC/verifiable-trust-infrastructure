@@ -64,6 +64,13 @@ pub struct StubWebvhHost {
 
 /// The stub hosting service's DID. A valid-format `did:webvh`; resolution is
 /// served from the seeded cache, not the network.
+/// The invite token the stub host admits a self-registering VTA with.
+pub const STUB_INVITE_TOKEN: &str = "stub-invite-token";
+/// The claim code that goes with [`STUB_INVITE_TOKEN`].
+pub const STUB_INVITE_CLAIM_CODE: &str = "stub-claim-code";
+/// The path prefix the stub host's `server/info` opens to self-registration.
+pub const STUB_SELF_REGISTRATION_PREFIX: &str = "agents";
+
 pub const STUB_WEBVH_SERVER_DID: &str = "did:webvh:stubscid0000000000000000:webvh-host.test";
 
 /// The seed of the stub hosting service's signing key.
@@ -210,9 +217,13 @@ async fn stub_host_answer(
         })
     };
 
+    let task = type_uri.strip_prefix(DM).unwrap_or_default().to_string();
+
     // The control plane refuses an unsigned request, and an operational one
-    // signed for anything but `authentication`.
+    // signed for anything but `authentication` — except `server/info`, which
+    // it answers anyone (a VTA asks it before it has an identity).
     match doc["proof"]["proofPurpose"].as_str() {
+        None if task == "server/info/0.2" => {}
         None => return error("proofRequired", "a proof is required"),
         Some("authentication") => {}
         Some(_) => {
@@ -241,8 +252,67 @@ async fn stub_host_answer(
             "versionCount": 1,
         })
     };
-    let task = type_uri.strip_prefix(DM).unwrap_or_default();
-    let (valid, answer) = match task {
+    let account = |state: &str| {
+        json!({
+            "subject": vta_sdk::did_scid::identity(&requester),
+            "role": "owner",
+            "domain": "webvh-host.test",
+            "state": state,
+            "admission": "invite",
+            "registeredAt": CREATED,
+            "disableAt": "2027-01-01T00:00:00Z",
+        })
+    };
+    let (valid, answer) = match task.as_str() {
+        "server/info/0.2" => (
+            conforms::<dm::server::info::v0_2::Payload>(&payload),
+            json!({
+                "serviceDid": STUB_WEBVH_SERVER_DID,
+                "agentNames": false,
+                "serviceNames": [],
+                "selfRegistration": [{
+                    "domain": "webvh-host.test",
+                    "admissions": ["invite"],
+                    "pathPrefixes": [STUB_SELF_REGISTRATION_PREFIX],
+                }],
+            }),
+        ),
+        "account/register/0.1" => {
+            if payload["admission"]["invite"]["token"] != STUB_INVITE_TOKEN
+                || payload["admission"]["invite"]["claimCode"] != STUB_INVITE_CLAIM_CODE
+            {
+                return json!({
+                    "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                    "threadId": request_id,
+                    "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+                    "issuer": STUB_WEBVH_SERVER_DID,
+                    "recipient": requester,
+                    "issuedAt": chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "payload": {
+                        "code": "did-management/account/register:admissionRefused",
+                        "message": "unknown invite",
+                        "retryable": false,
+                        "details": { "reason": "unknownInvite" },
+                    },
+                });
+            }
+            (
+                conforms::<dm::account::register::v0_1::Payload>(&payload),
+                json!({
+                    "account": account("active"),
+                    "record": record(payload["path"].as_str().unwrap_or("stub-mnemonic")),
+                }),
+            )
+        }
+        "account/renew/0.1" => (
+            conforms::<dm::account::renew::v0_1::Payload>(&payload),
+            json!({ "account": account("active"), "changed": false }),
+        ),
+        "account/status/0.1" => (
+            conforms::<dm::account::status::v0_1::Payload>(&payload),
+            json!({ "account": account("active") }),
+        ),
         "did/check-name/0.1" => (
             conforms::<dm::did::check_name::v0_1::Payload>(&payload),
             json!({ "available": true, "reserved": true, "record": record("stub-mnemonic") }),
@@ -333,7 +403,7 @@ async fn stub_host_answer(
         return error("malformedRequest", "the payload does not match its schema");
     }
 
-    let mut reply: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+    let mut reply_doc = json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         "threadId": request_id,
         "type": format!("{type_uri}#response"),
@@ -341,8 +411,15 @@ async fn stub_host_answer(
         "recipient": requester,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": answer,
-    }))
-    .expect("the stub's reply is a Trust Task");
+    });
+    // An anonymous request (`server/info`) has no issuer to answer to.
+    if requester.is_empty()
+        && let Some(map) = reply_doc.as_object_mut()
+    {
+        map.remove("recipient");
+    }
+    let mut reply: trust_tasks_rs::TrustTask<Value> =
+        serde_json::from_value(reply_doc).expect("the stub's reply is a Trust Task");
     sign_with_vm(
         if forge {
             STUB_WEBVH_SERVER_SEED.wrapping_add(1)
