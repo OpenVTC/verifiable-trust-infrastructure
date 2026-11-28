@@ -25342,12 +25342,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsCheckinRecordV0_1EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsCheckinRecordV0_1PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsCheckinRecordV0_1EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsCheckinRecordV0_1ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsCheckinRecordV0_1EventTitle"
@@ -25431,10 +25443,22 @@
         },
         "additionalProperties": false
       },
+      "VtcEventsCheckinRecordV0_1PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
+      },
       "VtcEventsCheckinRecordV0_1RegistrationId": {
         "type": "string",
         "description": "Opaque identifier of one registrant's registration for one event: `reg_` followed by 16 to 64 base64url characters. Random and unique within the community; a registrant has at most one registration per event (VTI-EVT-030).",
         "pattern": "^reg_[A-Za-z0-9_-]{16,64}$"
+      },
+      "VtcEventsCheckinRecordV0_1ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsCheckinRecordV0_1Response": {
         "type": "object",
@@ -26448,12 +26472,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsGuestsRegisterV0_1EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsGuestsRegisterV0_1PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsGuestsRegisterV0_1EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsGuestsRegisterV0_1ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsGuestsRegisterV0_1EventTitle"
@@ -26533,6 +26569,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsGuestsRegisterV0_1PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsGuestsRegisterV0_1Registration": {
         "type": "object",
@@ -26651,6 +26693,12 @@
           "removed"
         ]
       },
+      "VtcEventsGuestsRegisterV0_1ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
+      },
       "VtcEventsGuestsRegisterV0_1Response": {
         "type": "object",
         "description": "The success response to a vtc/events/guests/register/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/guests/register/0.1#response.",
@@ -26753,12 +26801,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsGuestsWithdrawV0_1EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsGuestsWithdrawV0_1PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsGuestsWithdrawV0_1EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsGuestsWithdrawV0_1ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsGuestsWithdrawV0_1EventTitle"
@@ -26808,6 +26868,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsGuestsWithdrawV0_1PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsGuestsWithdrawV0_1Registration": {
         "type": "object",
@@ -26925,6 +26991,12 @@
           "declined",
           "removed"
         ]
+      },
+      "VtcEventsGuestsWithdrawV0_1ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsGuestsWithdrawV0_1Response": {
         "type": "object",
@@ -27427,12 +27499,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsInvitationsLinksRedeemV0_1EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsLinksRedeemV0_1PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsInvitationsLinksRedeemV0_1EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsInvitationsLinksRedeemV0_1ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsInvitationsLinksRedeemV0_1EventTitle"
@@ -27484,6 +27568,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsInvitationsLinksRedeemV0_1PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "VtcEventsInvitationsLinksRedeemV0_1ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsInvitationsLinksRedeemV0_1Response": {
         "type": "object",
@@ -27752,12 +27848,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsInvitationsListV0_1EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsListV0_1PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsInvitationsListV0_1EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsInvitationsListV0_1ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsInvitationsListV0_1EventTitle"
@@ -27826,6 +27934,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsInvitationsListV0_1PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
+      },
+      "VtcEventsInvitationsListV0_1ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsInvitationsListV0_1Response": {
         "type": "object",
@@ -28009,12 +28129,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsInvitationsRespondV0_1EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsInvitationsRespondV0_1PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsInvitationsRespondV0_1EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsInvitationsRespondV0_1ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsInvitationsRespondV0_1EventTitle"
@@ -28088,6 +28220,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsInvitationsRespondV0_1PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsInvitationsRespondV0_1Registration": {
         "type": "object",
@@ -28205,6 +28343,12 @@
           "declined",
           "removed"
         ]
+      },
+      "VtcEventsInvitationsRespondV0_1ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsInvitationsRespondV0_1Response": {
         "type": "object",
@@ -29442,12 +29586,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsMineListV0_2EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsMineListV0_2PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsMineListV0_2EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsMineListV0_2ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsMineListV0_2EventTitle"
@@ -29533,6 +29689,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsMineListV0_2PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsMineListV0_2Registration": {
         "type": "object",
@@ -29650,6 +29812,12 @@
           "declined",
           "removed"
         ]
+      },
+      "VtcEventsMineListV0_2ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsMineListV0_2Response": {
         "type": "object",
@@ -30759,12 +30927,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsDecideV0_2EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsRegistrationsDecideV0_2PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsDecideV0_2EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsRegistrationsDecideV0_2ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsDecideV0_2EventTitle"
@@ -30824,6 +31004,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsRegistrationsDecideV0_2PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsRegistrationsDecideV0_2Registration": {
         "type": "object",
@@ -30941,6 +31127,12 @@
           "declined",
           "removed"
         ]
+      },
+      "VtcEventsRegistrationsDecideV0_2ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsRegistrationsDecideV0_2Response": {
         "type": "object",
@@ -31311,12 +31503,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsRegisterV0_2EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsRegistrationsRegisterV0_2PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsRegisterV0_2EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsRegistrationsRegisterV0_2ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsRegisterV0_2EventTitle"
@@ -31407,6 +31611,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsRegistrationsRegisterV0_2PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsRegistrationsRegisterV0_2Registration": {
         "type": "object",
@@ -31525,6 +31735,12 @@
           "removed"
         ]
       },
+      "VtcEventsRegistrationsRegisterV0_2ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
+      },
       "VtcEventsRegistrationsRegisterV0_2Response": {
         "type": "object",
         "description": "The success response to a vtc/events/registrations/register/0.2 request: the member's receipt (VTI-EVT-092). Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/registrations/register/0.2#response.",
@@ -31627,12 +31843,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsRemoveV0_2EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsRegistrationsRemoveV0_2PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsRemoveV0_2EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsRegistrationsRemoveV0_2ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsRemoveV0_2EventTitle"
@@ -31688,6 +31916,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsRegistrationsRemoveV0_2PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsRegistrationsRemoveV0_2Registration": {
         "type": "object",
@@ -31806,6 +32040,12 @@
           "removed"
         ]
       },
+      "VtcEventsRegistrationsRemoveV0_2ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
+      },
       "VtcEventsRegistrationsRemoveV0_2Response": {
         "type": "object",
         "description": "The success response to a vtc/events/registrations/remove/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/registrations/remove/0.2#response.",
@@ -31909,12 +32149,24 @@
           "eventId": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsWithdrawV0_2EventId"
           },
+          "placeSummary": {
+            "$ref": "#/components/schemas/VtcEventsRegistrationsWithdrawV0_2PlaceSummary"
+          },
           "sequence": {
             "type": "integer",
             "minimum": 0
           },
           "status": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsWithdrawV0_2EventLifecycle"
+          },
+          "suggestedReminderMinutes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VtcEventsRegistrationsWithdrawV0_2ReminderMinutes"
+            },
+            "description": "The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none.",
+            "maxItems": 4,
+            "uniqueItems": true
           },
           "title": {
             "$ref": "#/components/schemas/VtcEventsRegistrationsWithdrawV0_2EventTitle"
@@ -31982,6 +32234,12 @@
           }
         },
         "additionalProperties": false
+      },
+      "VtcEventsRegistrationsWithdrawV0_2PlaceSummary": {
+        "type": "string",
+        "description": "A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text.",
+        "maxLength": 200,
+        "minLength": 1
       },
       "VtcEventsRegistrationsWithdrawV0_2Registration": {
         "type": "object",
@@ -32099,6 +32357,12 @@
           "declined",
           "removed"
         ]
+      },
+      "VtcEventsRegistrationsWithdrawV0_2ReminderMinutes": {
+        "type": "integer",
+        "description": "A reminder's offset: how many minutes before the event's start it is due. At most four weeks.",
+        "maximum": 40320,
+        "minimum": 1
       },
       "VtcEventsRegistrationsWithdrawV0_2Response": {
         "type": "object",

@@ -10547,8 +10547,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsCheckinRecordV0_1EventRef: {
             eventId: components["schemas"]["VtcEventsCheckinRecordV0_1EventId"];
+            placeSummary?: components["schemas"]["VtcEventsCheckinRecordV0_1PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsCheckinRecordV0_1EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsCheckinRecordV0_1ReminderMinutes"][];
             title: components["schemas"]["VtcEventsCheckinRecordV0_1EventTitle"];
             when: components["schemas"]["VtcEventsCheckinRecordV0_1When"];
         };
@@ -10577,8 +10580,12 @@ export interface components {
             presentation?: components["schemas"]["VtcEventsCheckinRecordV0_1MembershipPresentation"];
             registrationId?: components["schemas"]["VtcEventsCheckinRecordV0_1RegistrationId"];
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsCheckinRecordV0_1PlaceSummary: string;
         /** @description Opaque identifier of one registrant's registration for one event: `reg_` followed by 16 to 64 base64url characters. Random and unique within the community; a registrant has at most one registration per event (VTI-EVT-030). */
         VtcEventsCheckinRecordV0_1RegistrationId: string;
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsCheckinRecordV0_1ReminderMinutes: number;
         /** @description The success response to a vtc/events/checkin/record/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/checkin/record/0.1#response. */
         VtcEventsCheckinRecordV0_1Response: {
             badgeOffered?: components["schemas"]["VtcEventsCheckinRecordV0_1AwardId"];
@@ -10924,8 +10931,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsGuestsRegisterV0_1EventRef: {
             eventId: components["schemas"]["VtcEventsGuestsRegisterV0_1EventId"];
+            placeSummary?: components["schemas"]["VtcEventsGuestsRegisterV0_1PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsGuestsRegisterV0_1EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsGuestsRegisterV0_1ReminderMinutes"][];
             title: components["schemas"]["VtcEventsGuestsRegisterV0_1EventTitle"];
             when: components["schemas"]["VtcEventsGuestsRegisterV0_1When"];
         };
@@ -10956,6 +10966,8 @@ export interface components {
              */
             status: "going" | "maybe";
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsGuestsRegisterV0_1PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsGuestsRegisterV0_1Registration: {
             answers?: components["schemas"]["VtcEventsGuestsRegisterV0_1RegistrationAnswers"];
@@ -10994,6 +11006,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsGuestsRegisterV0_1RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsGuestsRegisterV0_1ReminderMinutes: number;
         /** @description The success response to a vtc/events/guests/register/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/guests/register/0.1#response. */
         VtcEventsGuestsRegisterV0_1Response: {
             event: components["schemas"]["VtcEventsGuestsRegisterV0_1EventRef"];
@@ -11034,8 +11048,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsGuestsWithdrawV0_1EventRef: {
             eventId: components["schemas"]["VtcEventsGuestsWithdrawV0_1EventId"];
+            placeSummary?: components["schemas"]["VtcEventsGuestsWithdrawV0_1PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsGuestsWithdrawV0_1EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsGuestsWithdrawV0_1ReminderMinutes"][];
             title: components["schemas"]["VtcEventsGuestsWithdrawV0_1EventTitle"];
             when: components["schemas"]["VtcEventsGuestsWithdrawV0_1When"];
         };
@@ -11054,6 +11071,8 @@ export interface components {
             eventId: components["schemas"]["VtcEventsGuestsWithdrawV0_1EventId"];
             ext?: components["schemas"]["VtcEventsGuestsWithdrawV0_1Ext"];
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsGuestsWithdrawV0_1PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsGuestsWithdrawV0_1Registration: {
             answers?: components["schemas"]["VtcEventsGuestsWithdrawV0_1RegistrationAnswers"];
@@ -11092,6 +11111,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsGuestsWithdrawV0_1RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsGuestsWithdrawV0_1ReminderMinutes: number;
         /** @description The success response to a vtc/events/guests/withdraw/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/guests/withdraw/0.1#response. */
         VtcEventsGuestsWithdrawV0_1Response: {
             /** @description False when the registration was already withdrawn or closed by a host. */
@@ -11273,8 +11294,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsInvitationsLinksRedeemV0_1EventRef: {
             eventId: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1EventId"];
+            placeSummary?: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1ReminderMinutes"][];
             title: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1EventTitle"];
             when: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1When"];
         };
@@ -11294,6 +11318,10 @@ export interface components {
             code: string;
             ext?: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1Ext"];
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsInvitationsLinksRedeemV0_1PlaceSummary: string;
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsInvitationsLinksRedeemV0_1ReminderMinutes: number;
         /** @description The success response to a vtc/events/invitations/links/redeem/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/invitations/links/redeem/0.1#response. */
         VtcEventsInvitationsLinksRedeemV0_1Response: {
             event: components["schemas"]["VtcEventsInvitationsLinksRedeemV0_1EventRef"];
@@ -11392,8 +11420,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsInvitationsListV0_1EventRef: {
             eventId: components["schemas"]["VtcEventsInvitationsListV0_1EventId"];
+            placeSummary?: components["schemas"]["VtcEventsInvitationsListV0_1PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsInvitationsListV0_1EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsInvitationsListV0_1ReminderMinutes"][];
             title: components["schemas"]["VtcEventsInvitationsListV0_1EventTitle"];
             when: components["schemas"]["VtcEventsInvitationsListV0_1When"];
         };
@@ -11418,6 +11449,10 @@ export interface components {
             /** @description The most items to return, at most 100; the responder chooses a default (50) and MAY return fewer. */
             limit?: number;
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsInvitationsListV0_1PlaceSummary: string;
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsInvitationsListV0_1ReminderMinutes: number;
         /** @description The success response to a vtc/events/invitations/list/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/invitations/list/0.1#response. */
         VtcEventsInvitationsListV0_1Response: {
             ext?: components["schemas"]["VtcEventsInvitationsListV0_1Ext"];
@@ -11483,8 +11518,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsInvitationsRespondV0_1EventRef: {
             eventId: components["schemas"]["VtcEventsInvitationsRespondV0_1EventId"];
+            placeSummary?: components["schemas"]["VtcEventsInvitationsRespondV0_1PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsInvitationsRespondV0_1EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsInvitationsRespondV0_1ReminderMinutes"][];
             title: components["schemas"]["VtcEventsInvitationsRespondV0_1EventTitle"];
             when: components["schemas"]["VtcEventsInvitationsRespondV0_1When"];
         };
@@ -11513,6 +11551,8 @@ export interface components {
             /** @description Going or maybe: plus-ones. */
             guests?: number;
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsInvitationsRespondV0_1PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsInvitationsRespondV0_1Registration: {
             answers?: components["schemas"]["VtcEventsInvitationsRespondV0_1RegistrationAnswers"];
@@ -11551,6 +11591,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsInvitationsRespondV0_1RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsInvitationsRespondV0_1ReminderMinutes: number;
         /** @description The success response to a vtc/events/invitations/respond/0.1 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/invitations/respond/0.1#response. */
         VtcEventsInvitationsRespondV0_1Response: {
             event: components["schemas"]["VtcEventsInvitationsRespondV0_1EventRef"];
@@ -11984,8 +12026,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsMineListV0_2EventRef: {
             eventId: components["schemas"]["VtcEventsMineListV0_2EventId"];
+            placeSummary?: components["schemas"]["VtcEventsMineListV0_2PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsMineListV0_2EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsMineListV0_2ReminderMinutes"][];
             title: components["schemas"]["VtcEventsMineListV0_2EventTitle"];
             when: components["schemas"]["VtcEventsMineListV0_2When"];
         };
@@ -12015,6 +12060,8 @@ export interface components {
             statuses?: components["schemas"]["VtcEventsMineListV0_2RegistrationStatus"][];
             updatedSince?: components["schemas"]["VtcEventsMineListV0_2EventInstant"];
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsMineListV0_2PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsMineListV0_2Registration: {
             answers?: components["schemas"]["VtcEventsMineListV0_2RegistrationAnswers"];
@@ -12053,6 +12100,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsMineListV0_2RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsMineListV0_2ReminderMinutes: number;
         /** @description The success response to a vtc/events/mine/list/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/mine/list/0.2#response. */
         VtcEventsMineListV0_2Response: {
             ext?: components["schemas"]["VtcEventsMineListV0_2Ext"];
@@ -12446,8 +12495,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsRegistrationsDecideV0_2EventRef: {
             eventId: components["schemas"]["VtcEventsRegistrationsDecideV0_2EventId"];
+            placeSummary?: components["schemas"]["VtcEventsRegistrationsDecideV0_2PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsRegistrationsDecideV0_2EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsRegistrationsDecideV0_2ReminderMinutes"][];
             title: components["schemas"]["VtcEventsRegistrationsDecideV0_2EventTitle"];
             when: components["schemas"]["VtcEventsRegistrationsDecideV0_2When"];
         };
@@ -12469,6 +12521,8 @@ export interface components {
             note?: string;
             registrationId: components["schemas"]["VtcEventsRegistrationsDecideV0_2RegistrationId"];
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsRegistrationsDecideV0_2PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsRegistrationsDecideV0_2Registration: {
             answers?: components["schemas"]["VtcEventsRegistrationsDecideV0_2RegistrationAnswers"];
@@ -12507,6 +12561,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsRegistrationsDecideV0_2RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsRegistrationsDecideV0_2ReminderMinutes: number;
         /** @description The success response to a vtc/events/registrations/decide/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/registrations/decide/0.2#response. A decline is a decision, answered here, never an error. */
         VtcEventsRegistrationsDecideV0_2Response: {
             decision: components["schemas"]["VtcEventsRegistrationsDecideV0_2Decision"];
@@ -12643,8 +12699,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsRegistrationsRegisterV0_2EventRef: {
             eventId: components["schemas"]["VtcEventsRegistrationsRegisterV0_2EventId"];
+            placeSummary?: components["schemas"]["VtcEventsRegistrationsRegisterV0_2PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsRegistrationsRegisterV0_2EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsRegistrationsRegisterV0_2ReminderMinutes"][];
             title: components["schemas"]["VtcEventsRegistrationsRegisterV0_2EventTitle"];
             when: components["schemas"]["VtcEventsRegistrationsRegisterV0_2When"];
         };
@@ -12676,6 +12735,8 @@ export interface components {
              */
             status: "going" | "maybe";
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsRegistrationsRegisterV0_2PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsRegistrationsRegisterV0_2Registration: {
             answers?: components["schemas"]["VtcEventsRegistrationsRegisterV0_2RegistrationAnswers"];
@@ -12714,6 +12775,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsRegistrationsRegisterV0_2RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsRegistrationsRegisterV0_2ReminderMinutes: number;
         /** @description The success response to a vtc/events/registrations/register/0.2 request: the member's receipt (VTI-EVT-092). Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/registrations/register/0.2#response. */
         VtcEventsRegistrationsRegisterV0_2Response: {
             event: components["schemas"]["VtcEventsRegistrationsRegisterV0_2EventRef"];
@@ -12754,8 +12817,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsRegistrationsRemoveV0_2EventRef: {
             eventId: components["schemas"]["VtcEventsRegistrationsRemoveV0_2EventId"];
+            placeSummary?: components["schemas"]["VtcEventsRegistrationsRemoveV0_2PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsRegistrationsRemoveV0_2EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsRegistrationsRemoveV0_2ReminderMinutes"][];
             title: components["schemas"]["VtcEventsRegistrationsRemoveV0_2EventTitle"];
             when: components["schemas"]["VtcEventsRegistrationsRemoveV0_2When"];
         };
@@ -12776,6 +12842,8 @@ export interface components {
             note?: string;
             registrationId: components["schemas"]["VtcEventsRegistrationsRemoveV0_2RegistrationId"];
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsRegistrationsRemoveV0_2PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsRegistrationsRemoveV0_2Registration: {
             answers?: components["schemas"]["VtcEventsRegistrationsRemoveV0_2RegistrationAnswers"];
@@ -12814,6 +12882,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsRegistrationsRemoveV0_2RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsRegistrationsRemoveV0_2ReminderMinutes: number;
         /** @description The success response to a vtc/events/registrations/remove/0.2 request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/registrations/remove/0.2#response. */
         VtcEventsRegistrationsRemoveV0_2Response: {
             /** @description False where the registration was already withdrawn, declined or removed, and nothing changed. */
@@ -12854,8 +12924,11 @@ export interface components {
         /** @description What a receipt says of the event a registration belongs to: enough for the registrant's agent to show it as it was when the community answered (VTI-EVT-092). */
         VtcEventsRegistrationsWithdrawV0_2EventRef: {
             eventId: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2EventId"];
+            placeSummary?: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2PlaceSummary"];
             sequence: number;
             status: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2EventLifecycle"];
+            /** @description The reminders the event's hosts suggest, as minutes before its start, so the registrant's agent can fire them without reading the event again (VTI-CAL-041). Absent where the hosts suggest none. */
+            suggestedReminderMinutes?: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2ReminderMinutes"][];
             title: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2EventTitle"];
             when: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2When"];
         };
@@ -12877,6 +12950,8 @@ export interface components {
             ext?: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2Ext"];
             presentation?: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2MembershipPresentation"];
         };
+        /** @description A coarse hint shown with the event to its whole audience — `Central London`, `Online` — never the address. Plain text. */
+        VtcEventsRegistrationsWithdrawV0_2PlaceSummary: string;
         /** @description One registrant's registration for one event. The registrant reads all of it; a host reads all of it; another registrant on a `visible` roster reads only `entryId`, `status` and `guests` (VTI-EVT-053). Exactly one of `entryId` (a member) and `registrantDid` (a partner's member, VTI-EVT-134) names the registrant. */
         VtcEventsRegistrationsWithdrawV0_2Registration: {
             answers?: components["schemas"]["VtcEventsRegistrationsWithdrawV0_2RegistrationAnswers"];
@@ -12915,6 +12990,8 @@ export interface components {
          * @enum {string}
          */
         VtcEventsRegistrationsWithdrawV0_2RegistrationStatus: "going" | "maybe" | "pending" | "waitlisted" | "withdrawn" | "declined" | "removed";
+        /** @description A reminder's offset: how many minutes before the event's start it is due. At most four weeks. */
+        VtcEventsRegistrationsWithdrawV0_2ReminderMinutes: number;
         /** @description The success response to a vtc/events/registrations/withdraw/0.2 request: the member's receipt (VTI-EVT-092). Carried in a Trust Task document whose type is https://trusttasks.org/spec/vtc/events/registrations/withdraw/0.2#response. */
         VtcEventsRegistrationsWithdrawV0_2Response: {
             /** @description False where the registration had already ended — withdrawn, declined or removed — or the event is cancelled, and nothing changed. */

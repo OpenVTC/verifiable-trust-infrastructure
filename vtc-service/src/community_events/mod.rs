@@ -1718,13 +1718,22 @@ pub fn roster_item(reg: &Registration) -> Value {
 /// `EventRef`: what a receipt says of the event (VTI-EVT-092).
 #[must_use]
 pub fn event_ref(ev: &EventRecord) -> Value {
-    json!({
+    let mut r = json!({
         "eventId": ev.event_id,
         "title": ev.title,
         "when": serde_json::to_value(&ev.when).unwrap_or(Value::Null),
         "status": ev.status.as_str(),
         "sequence": ev.sequence,
-    })
+    });
+    // What a registrant's agent needs to remind and to show where, without reading the event
+    // itself (VTI-CAL-041, VTI-CAL-011): the hosts' suggested reminders and the coarse place.
+    if !ev.suggested_reminder_minutes.is_empty() {
+        r["suggestedReminderMinutes"] = json!(ev.suggested_reminder_minutes);
+    }
+    if let Some(p) = &ev.place_summary {
+        r["placeSummary"] = json!(p);
+    }
+    r
 }
 
 #[cfg(test)]
@@ -1884,6 +1893,22 @@ mod tests {
                 .iter()
                 .all(|r| r.status == RegStatus::Going && r.event_sequence == 3)
         );
+    }
+
+    /// VTI-CAL-041: the receipt's and `mine/list`'s `EventRef` carries the hosts' suggested
+    /// reminders and the place hint, so a registrant's agent need not read the event; neither
+    /// appears when the event has none.
+    #[test]
+    fn vti_cal_041_event_ref_carries_reminders_and_place() {
+        let mut ev = event_with(json!({ "mode": "open" }));
+        let bare = event_ref(&ev);
+        assert!(bare.get("suggestedReminderMinutes").is_none());
+        assert!(bare.get("placeSummary").is_none());
+        ev.suggested_reminder_minutes = vec![1440, 60];
+        ev.place_summary = Some("Central London".into());
+        let r = event_ref(&ev);
+        assert_eq!(r["suggestedReminderMinutes"], json!([1440, 60]));
+        assert_eq!(r["placeSummary"], json!("Central London"));
     }
 
     /// VTI-EVT-054: hosts see the exact count; others only with `showCount`, and below the

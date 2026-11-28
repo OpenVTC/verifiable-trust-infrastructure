@@ -101,11 +101,6 @@ reminder (VTI-CAL-071).
 
 ## Not yet
 
-- **The event's own suggested reminders** (VTI-CAL-041) and **places in a feed**
-  (`titlesAndPlaces`): `vtc/events/mine/list` answers an `EventRef`, which carries neither, and
-  the VTA may not read the event any other way on its own (VTI-CAL-011, 021). Recorded as a
-  divergence; the resolution is an `EventRef` carrying `suggestedReminderMinutes` and
-  `placeSummary`.
 - **Sending busy times** (VTI-CAL-060 – 061): `busy/share` records the choice; sending the
   blocks needs a booking page's `busy/put` task (design phase 7).
 - **Reminders on devices without a wake channel** are seen at the device's next read.
