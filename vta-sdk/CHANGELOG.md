@@ -2,6 +2,83 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.97.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.96.0...vta-sdk-v0.97.0) — 2026-11-28
+
+
+### Added
+
+- **vtc**: Community events phase 4 — event identity, guests, the door, tickets, attendance (VTI-EVT-140 – 186) ([#2856](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2856))
+
+Pins vtc/events create/update/publish/cancel/show/list 0.3, calendars/* 0.2,
+  invitations/links/create 0.2, and the new checkin/{challenge,record,list},
+  tickets/show, attendance/show and guests/{register,withdraw} 0.1 (tt-tf #1413);
+  the earlier versions are no longer served.
+
+  - Event identity (VTI-EVT-140 – 145): minted from the new `vtc-event` DID
+    template through the community's VTA with an `issue-tickets` authority
+    credential, before the event is stored (Remote-First: noKeyHolder /
+    keyHolderUnavailable store nothing); revoked on cancel and delete, renewed
+    at half life.
+  - Guests (VTI-EVT-150 – 154): parties who are not members, admitted only by the
+    event's `guests` setting (`invited` via a link made `forGuests`, or `open`),
+    held to the registration rules, never on the roster.
+  - The door (VTI-EVT-160 – 166): 128-bit challenges accepted for 300 s, check-in
+    over a challenge, by door staff (hosts or the new `vtc.events.checkin`
+    capability at `event:<id>`), or by the registrant where the calendar's
+    `selfCheckIn` allows it while the event runs.
+  - Tickets (VTI-EVT-170 – 174): `EventTicketCredential` signed by the event's
+    identity or the community via keys/sign-document, with a slot in the
+    community's revocation list; issued and revoked by the events sweeper.
+  - Attendance (VTI-EVT-180 – 186): a per-member, per-calendar monthly tally;
+    `eventsAttended` (with `calendarId`, `withinDays`) for badge rules; the
+    attendance badge offered as an award.
+  - Console Door tab (QR code to the portal's check-in, check-in by name, live
+    count), guest/ticket/identity/attendance settings; portal check-in, ticket
+    and attendance views.
+  - The `event` notification now opens with `vtc/events/show/0.3`.
+
+  Recorded deviations: guests are bounded by an in-memory per-DID limiter
+  (30/hour) because the VTC has no VTI-TRN-029 operation budget (VTI-EVT-154);
+  the VTC does not check tickets by OpenID4VP at its own door (VTI-EVT-173).
+
+- **vta**: The member's calendar — vta/calendar/* 0.1, sync, reminders, private feeds, receipts (VTI-CAL-001 – 071) ([#2853](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2853))
+
+Phase 3 of the events design (docs/05-design-notes/vtc-events.md): the VTA keeps its
+  principal's calendar across every trust context, per dtgwg-vti-spec#128
+  (spec/10b-vta-calendar.md, VTI-CAL-001 – 071, VTI-OPS-111 – 113) and trust-tasks-tf#1409.
+
+  - Pins the thirteen vta/calendar/*/0.1 tasks in vti-specs-vta (registry trusttasks.org).
+  - `mine` entries read from each community with vtc/events/mine/list/0.2, signed as the
+    context's membership identifier, HTTPS only; `notified` entries from held `event`
+    notifications. Reading is per context and off until turned on (VTI-CAL-010).
+  - A listing answers only for contexts with standing and never says another holds anything
+    (VTI-CAL-002); overlaps marked (VTI-CAL-023).
+  - Reminders: alert, else the context default; once per offset per sequence; quiet hours; a
+    content-free device wake (VTI-CAL-040 – 043). One sweeper owns both retries (reminders each
+    minute, reads each fifteen), selected against shutdown.
+  - Private iCalendar feeds on GET /calendar/feeds/{token}: 256-bit token kept as a digest,
+    uniform 404, last-read recorded, titles and times only, per-feed UIDs, coverage follows the
+    creator's standing (VTI-CAL-050 – 055). A REST_EXCEPTIONS row (iCalendar subscription,
+    VTI-OPS-111) on its own `calendar-feed` limiter.
+  - Receipts deposited as received, verified as the issuer's, addressed to a held persona, kept
+    once (VTI-CAL-030 – 032); export.
+  - Audit of feeds, settings, sharing, alerts and reads, by reference only (VTI-CAL-071).
+  - New keyspace `calendar` (backed up, purged on context deletion — `Keyspaces` gains a
+    `calendar` field: breaking for vta-keyspaces); `Limiter::CalendarFeed`.
+  - `VtaClient::calendar_*`; `pnm calendar list|sync|settings|alerts|feeds|export`, with refusals
+    that print the fixing command.
+  - MCP guard verbs: `export` read, `sync` mutating, `clear` destructive.
+
+  Not met, recorded as divergences:
+  - VTI-CAL-041: the event's own suggested reminders, and places in a `titlesAndPlaces` feed —
+    `EventRef` from mine/list carries neither and VTI-CAL-011/021 forbid reading the event
+    otherwise. Resolution: an EventRef carrying suggestedReminderMinutes and placeSummary.
+  - VTI-CAL-060/061: busy/share records the choice; sending busy blocks needs the booking
+    page's busy/put task (phase 7).
+  - Reminders reach only devices with an ACL wake channel; others see them at their next read.
+
+
+
 ## [0.96.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.95.0...vta-sdk-v0.96.0) — 2026-11-28
 
 

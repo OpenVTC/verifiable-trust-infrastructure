@@ -2,6 +2,68 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.47.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.46.0...vta-keyspaces-v0.47.0) — 2026-11-28
+
+
+### Added
+
+- **hcp**: Skeleton vti-specs-hcp and vta-hcp crates behind the hcp feature (X0b) ([#2852](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2852))
+
+HCP V0 task X0b (docs/05-design-notes/hcp-tasks.md):
+
+  - vti-specs-hcp 0.1.0: the generated hcp/* wire-type crate on the
+    vti-specs-vtn pattern (trust-tasks-build 0.2.2, empty trust-tasks.toml and
+    lock); the hcp/* 0.1 pins and the vti-specs re-export are A1.
+  - vta-hcp 0.1.0: an empty subsystem crate with no dependencies, never on
+    vta-service.
+  - vta-service feature `hcp` = ["dep:vta-hcp"], off by default; cargo-machete
+    ignore until A2 uses it.
+  - vta-keyspaces: the hcp.md §10 names (HCP_GRANTS … HCP_NOTICES) and an HCP
+    slice, declared but not yet in ALL; each joins ALL with its backup,
+    DID-deletion and context-deletion decisions when first written.
+  - Workspace and default members, Dockerfile.nitro COPY lines, CLAUDE.md crate
+    map and table, publish counts (42 of 53), semver-report.sh exclusion of
+    vta-hcp, a feature-flags.md row and a `vta-service hcp` clippy step in
+    Feature combos (vta-service builds).
+
+- **vta**: The member's calendar — vta/calendar/* 0.1, sync, reminders, private feeds, receipts (VTI-CAL-001 – 071) ([#2853](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/2853))
+
+Phase 3 of the events design (docs/05-design-notes/vtc-events.md): the VTA keeps its
+  principal's calendar across every trust context, per dtgwg-vti-spec#128
+  (spec/10b-vta-calendar.md, VTI-CAL-001 – 071, VTI-OPS-111 – 113) and trust-tasks-tf#1409.
+
+  - Pins the thirteen vta/calendar/*/0.1 tasks in vti-specs-vta (registry trusttasks.org).
+  - `mine` entries read from each community with vtc/events/mine/list/0.2, signed as the
+    context's membership identifier, HTTPS only; `notified` entries from held `event`
+    notifications. Reading is per context and off until turned on (VTI-CAL-010).
+  - A listing answers only for contexts with standing and never says another holds anything
+    (VTI-CAL-002); overlaps marked (VTI-CAL-023).
+  - Reminders: alert, else the context default; once per offset per sequence; quiet hours; a
+    content-free device wake (VTI-CAL-040 – 043). One sweeper owns both retries (reminders each
+    minute, reads each fifteen), selected against shutdown.
+  - Private iCalendar feeds on GET /calendar/feeds/{token}: 256-bit token kept as a digest,
+    uniform 404, last-read recorded, titles and times only, per-feed UIDs, coverage follows the
+    creator's standing (VTI-CAL-050 – 055). A REST_EXCEPTIONS row (iCalendar subscription,
+    VTI-OPS-111) on its own `calendar-feed` limiter.
+  - Receipts deposited as received, verified as the issuer's, addressed to a held persona, kept
+    once (VTI-CAL-030 – 032); export.
+  - Audit of feeds, settings, sharing, alerts and reads, by reference only (VTI-CAL-071).
+  - New keyspace `calendar` (backed up, purged on context deletion — `Keyspaces` gains a
+    `calendar` field: breaking for vta-keyspaces); `Limiter::CalendarFeed`.
+  - `VtaClient::calendar_*`; `pnm calendar list|sync|settings|alerts|feeds|export`, with refusals
+    that print the fixing command.
+  - MCP guard verbs: `export` read, `sync` mutating, `clear` destructive.
+
+  Not met, recorded as divergences:
+  - VTI-CAL-041: the event's own suggested reminders, and places in a `titlesAndPlaces` feed —
+    `EventRef` from mine/list carries neither and VTI-CAL-011/021 forbid reading the event
+    otherwise. Resolution: an EventRef carrying suggestedReminderMinutes and placeSummary.
+  - VTI-CAL-060/061: busy/share records the choice; sending busy blocks needs the booking
+    page's busy/put task (phase 7).
+  - Reminders reach only devices with an ACL wake channel; others see them at their next read.
+
+
+
 ## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.45.0...vta-keyspaces-v0.46.0) — 2026-11-28
 
 
