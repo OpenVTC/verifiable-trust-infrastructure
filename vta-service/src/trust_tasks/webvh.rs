@@ -739,6 +739,10 @@ pub(super) async fn handle_dids_register_with_server(
             server_id: req.server_id,
             force: req.force,
             domain: req.domain.clone(),
+            // `vta/webvh/dids/register-with-server` carries no admission:
+            // self-registration goes through setup, not this task.
+            admission: None,
+            referral: None,
         },
         vta_did.as_deref(),
         TRANSPORT_TRUST_TASK,
@@ -775,7 +779,7 @@ fn map_register_err(e: RegisterDidWithServerError) -> AppError {
         // Pass the host's typed rejection through untouched — see
         // `RegisterDidWithServerError::Publish`.
         E::Publish(e) => e,
-        E::DidUrlParse { .. } => AppError::Validation(e.to_string()),
+        E::DidUrlParse { .. } | E::InvalidAdmission(_) => AppError::Validation(e.to_string()),
         E::Storage(msg) => AppError::Internal(msg),
     }
 }

@@ -901,6 +901,8 @@ pub async fn run_register_did(
             server_id: server,
             force,
             domain: None,
+            admission: None,
+            referral: None,
         },
         config.vta_did.as_deref(),
         "vta-cli-offline",

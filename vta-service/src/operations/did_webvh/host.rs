@@ -9,8 +9,8 @@ use vta_sdk::webvh::WebvhServerRecord;
 
 use crate::error::AppError;
 use crate::webvh_host::{
-    AgentNameAvailability, AgentNameEntry, HostDomains, HostedDidEntry, RequestUriResponse,
-    WebvhHostClient,
+    AccountAdmission, AccountReferral, AgentNameAvailability, AgentNameEntry, HostDomains,
+    HostedDidEntry, HostingAccount, RequestUriResponse, WebvhHostClient,
 };
 
 /// A client for `server`, issuing as `vta_did`.
@@ -56,6 +56,25 @@ pub async fn delete_log_on_server(
     host_client(deps, vta_did, server)
         .await?
         .delete_did(mnemonic, domain)
+        .await
+}
+
+/// Register with a host this VTA is a stranger to and publish `did_log` as
+/// its first DID, in one commit (`account/register/0.1`).
+#[allow(clippy::too_many_arguments)]
+pub async fn register_account_on_server(
+    deps: &super::WebvhDeps<'_>,
+    vta_did: &str,
+    server: &WebvhServerRecord,
+    domain: &str,
+    path: &str,
+    did_log: &str,
+    admission: &AccountAdmission,
+    referral: Option<&AccountReferral>,
+) -> Result<(RequestUriResponse, HostingAccount), AppError> {
+    host_client(deps, vta_did, server)
+        .await?
+        .register_account(domain, path, did_log, admission, referral)
         .await
 }
 

@@ -660,6 +660,47 @@ fn mediator_protocols(explicit: Option<&[Protocol]>, services: &ServicesConfig) 
     }
 }
 
+/// Self-registration of the VTA's `did:webvh` with a third-party DID hosting
+/// service (`VtaDidInput::CreateWebvh::hosting`).
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HostingRegistrationInput {
+    /// The hosting service's DID — its control plane, which signs its replies.
+    pub server_did: String,
+    /// The id this VTA records the server under. Default `vta-host`.
+    #[serde(default)]
+    pub server_id: Option<String>,
+    /// The invite's token, from the host's operator.
+    pub invite_token: String,
+    /// The invite's claim code, delivered separately from the token.
+    pub claim_code: String,
+    /// Where this VTA came from, e.g. the community that invited its user
+    /// (attribution only; the host never authorises on it).
+    #[serde(default)]
+    pub referral_via: Option<String>,
+    /// Free-text referral label, at most 128 characters.
+    #[serde(default)]
+    pub referral_label: Option<String>,
+}
+
+impl std::fmt::Debug for HostingRegistrationInput {
+    // The invite halves are a bearer credential: never in a log line or a
+    // `{:?}` of the setup inputs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostingRegistrationInput")
+            .field("server_did", &self.server_did)
+            .field("server_id", &self.server_id)
+            .field("invite_token", &"<redacted>")
+            .field("claim_code", &"<redacted>")
+            .field("referral_via", &self.referral_via)
+            .field("referral_label", &self.referral_label)
+            .finish()
+    }
+}
+
+/// The id setup records a self-registration host under by default.
+const DEFAULT_HOSTING_SERVER_ID: &str = "vta-host";
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VtaDidInput {
@@ -711,6 +752,14 @@ pub enum VtaDidInput {
         /// key-agreement verification method. Requires `signing_key_id`.
         #[serde(default)]
         ka_key_id: Option<String>,
+        /// Register the new DID with a third-party DID hosting service this
+        /// VTA is a stranger to (`did-management/account/register`), during
+        /// setup. `url` must then be `https://{domain}/{path}` with `path`
+        /// under one of the domain's self-registration prefixes; setup checks
+        /// both against the host's `server/info` before it mints anything.
+        /// Without it the DID is serverless: this VTA serves its own log.
+        #[serde(default)]
+        hosting: Option<HostingRegistrationInput>,
     },
     /// Mint a new `did:webs` for the VTA (alpha; VTI-KEY-001): a key-role
     /// identity — distinct attestation, operational and messaging keys
@@ -1177,7 +1226,14 @@ pub async fn apply_inputs(
             did_log_file,
             signing_key_id,
             ka_key_id,
+            hosting,
         } => {
+            // Before minting anything: the path is part of what the SCID
+            // commits to, so a host that would refuse it must be found out
+            // now, not after the DID exists.
+            if let Some(h) = hosting {
+                check_host_admits(url, h).await?;
+            }
             // Resolve the advanced-mode inputs (validated mutually exclusive in
             // `validate_inputs`): a DID-document template file is parsed as
             // JSON, a pre-signed log file is read verbatim.
@@ -1246,6 +1302,20 @@ pub async fn apply_inputs(
                 &wizard_config,
             )
             .await?;
+            if let Some(h) = hosting {
+                register_vta_did_on_host(
+                    &did,
+                    url,
+                    h,
+                    &keys_ks,
+                    &imported_ks,
+                    &contexts_ks,
+                    &webvh_ks,
+                    &audit,
+                    &*wizard_seed_store,
+                )
+                .await?;
+            }
             Some(did)
         }
     };
@@ -2009,6 +2079,223 @@ pub(crate) async fn create_vta_did_key(
     eprintln!("  Created DID: {did}");
 
     Ok(did)
+}
+
+/// Where a self-registering VTA's DID goes on its host: the domain, and the
+/// did-management path (`/`-separated, no surrounding slashes).
+fn hosting_slot(url: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let parsed = Url::parse(url).map_err(|e| format!("invalid DID URL {url:?}: {e}"))?;
+    // https, or http to a loopback host (a local DID hosting service in
+    // development) — the same rule the outbound transport applies.
+    if parsed.scheme() != "https" && !vta_sdk::protocol::matching::is_https_or_loopback(url) {
+        return Err(format!(
+            "vta_did.url {url:?} must be https:// (or http:// to a loopback host) to register \
+             with a DID hosting service"
+        )
+        .into());
+    }
+    let domain = parsed
+        .host_str()
+        .ok_or_else(|| format!("vta_did.url {url:?} has no host"))?;
+    let domain = match parsed.port() {
+        Some(port) => format!("{domain}:{port}"),
+        None => domain.to_string(),
+    };
+    let path = parsed
+        .path()
+        .trim_matches('/')
+        .trim_end_matches("did.jsonl")
+        .trim_matches('/')
+        .to_string();
+    if path.is_empty() {
+        return Err(format!(
+            "vta_did.url {url:?} needs a path under one of the host's self-registration \
+             prefixes (e.g. https://{domain}/agents/my-vta)"
+        )
+        .into());
+    }
+    Ok((domain, path))
+}
+
+/// Whether `path` sits under `prefix`, on whole `/`-separated segments: `agents`
+/// admits `agents/vta-1`, never `agentsx/vta-1` or `agents` itself.
+fn path_under_prefix(path: &str, prefix: &str) -> bool {
+    let prefix = prefix.trim_matches('/');
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with('/') && rest.len() > 1)
+}
+
+/// Refuse, before minting, a registration the host has said it would refuse:
+/// a domain it does not open to invite holders, or a path outside the
+/// domain's prefixes. Reads the host's `server/info/0.2`.
+async fn check_host_admits(
+    url: &str,
+    hosting: &HostingRegistrationInput,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (domain, path) = hosting_slot(url)?;
+    let resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
+    let bridge = crate::didcomm_bridge::DIDCommBridge::placeholder();
+    // Nothing is signed yet, so the issuer is only the `recipient` a reply is
+    // checked against; there is no identity to claim before the DID exists.
+    let client = crate::webvh_host::WebvhHostClient::for_server_offline(
+        &hosting.server_did,
+        &hosting.server_did,
+        &resolver,
+        &bridge,
+    )
+    .await?;
+    let info = serde_json::to_value(client.server_info_unsigned().await?)?;
+    let terms = info
+        .get("selfRegistration")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|domains| {
+            domains
+                .iter()
+                .find(|d| d.get("domain").and_then(serde_json::Value::as_str) == Some(&domain))
+        })
+        .ok_or_else(|| {
+            format!(
+                "the DID hosting service {} does not open {domain} to self-registration",
+                hosting.server_did
+            )
+        })?;
+    let admits_invites = terms
+        .get("admissions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|a| a.iter().any(|m| m.as_str() == Some("invite")));
+    if !admits_invites {
+        return Err(format!("{domain} on this DID hosting service does not admit invites").into());
+    }
+    if let Some(prefixes) = terms
+        .get("pathPrefixes")
+        .and_then(serde_json::Value::as_array)
+    {
+        let prefixes: Vec<&str> = prefixes
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        if !prefixes.is_empty() && !prefixes.iter().any(|p| path_under_prefix(&path, p)) {
+            return Err(format!(
+                "path {path:?} is not under any of {domain}'s self-registration prefixes \
+                 ({}); use https://{domain}/<prefix>/<name>",
+                prefixes.join(", ")
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Register the VTA's freshly minted, serverless `did:webvh` with its host as
+/// a stranger admitted by invite: the host opens an account for it and
+/// publishes the log, and the local record becomes server-managed, so every
+/// later update publishes there.
+#[allow(clippy::too_many_arguments)]
+async fn register_vta_did_on_host(
+    vta_did: &str,
+    url: &str,
+    hosting: &HostingRegistrationInput,
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
+    seed_store: &dyn SeedStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (domain, _) = hosting_slot(url)?;
+    let server_id = hosting
+        .server_id
+        .clone()
+        .unwrap_or_else(|| DEFAULT_HOSTING_SERVER_ID.to_string());
+
+    let now = Utc::now();
+    crate::webvh_store::store_server(
+        webvh_ks,
+        &vta_sdk::webvh::WebvhServerRecord {
+            id: server_id.clone(),
+            did: hosting.server_did.clone(),
+            label: Some("DID hosting (self-registered)".into()),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await?;
+
+    // The VTA signs as the DID it presents — its did:scid when `[dids]` says
+    // so — with the key its own log names for `authentication`.
+    let bridge = Arc::new(
+        crate::didcomm_bridge::DIDCommBridge::signing_only(
+            Some(vta_did),
+            keys_ks,
+            imported_ks,
+            contexts_ks,
+            Some(webvh_ks),
+            None,
+            seed_store,
+            audit,
+        )
+        .await
+        .map_err(|e| format!("load the VTA's signing key to register it: {e}"))?,
+    );
+    let resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
+    let deps = operations::did_webvh::WebvhDeps {
+        delete_cascade: None,
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        webvh_ks,
+        webs_ks: None,
+        audit,
+        seed_store,
+        did_resolver: &resolver,
+        didcomm_bridge: &bridge,
+        #[cfg(feature = "tsp")]
+        tsp: None,
+    };
+    // The local record is keyed by the log's did:webvh, whichever form the
+    // VTA presents.
+    let record_did = if vta_sdk::did_scid::is_scid(vta_did) {
+        vta_sdk::did_scid::webvh_did(vta_did)
+            .ok_or_else(|| format!("{vta_did} names no did:webvh log"))?
+    } else {
+        vta_did.to_string()
+    };
+    let referral =
+        (hosting.referral_via.is_some() || hosting.referral_label.is_some()).then(|| {
+            crate::webvh_host::AccountReferral {
+                via: hosting.referral_via.clone(),
+                label: hosting.referral_label.clone(),
+            }
+        });
+    let auth = vti_common::auth::AuthClaims::unsafe_local_cli_super_admin("setup");
+    let result = operations::did_webvh::register_did_with_server(
+        &deps,
+        &auth,
+        operations::did_webvh::RegisterDidWithServerParams {
+            did: record_did,
+            server_id,
+            force: false,
+            domain: Some(domain.clone()),
+            admission: Some(crate::webvh_host::AccountAdmission::Invite {
+                token: hosting.invite_token.clone(),
+                claim_code: hosting.claim_code.clone(),
+            }),
+            referral,
+        },
+        Some(vta_did),
+        "setup",
+    )
+    .await
+    .map_err(|e| format!("register the VTA DID with {}: {e}", hosting.server_did))?;
+    eprintln!(
+        "  Registered with DID hosting service {} on {domain}{}",
+        hosting.server_did,
+        match result.account.as_ref().map(|a| &a.state) {
+            Some(state) => format!(" (account {state:?})"),
+            None => String::new(),
+        }
+    );
+    Ok(())
 }
 
 /// Mint a `did:webvh` via the operations layer with no interactive
@@ -3734,6 +4021,75 @@ mod tests {
             other => panic!("expected CreateWebvh, got {other:?}"),
         }
         validate_inputs(&inputs).expect("simple create_webvh should validate");
+    }
+
+    /// A self-registering VTA's slot comes from its URL: the domain (with any
+    /// port) and the `/`-separated path, with `did.jsonl` and slashes trimmed.
+    #[test]
+    fn hosting_slot_reads_domain_and_path_from_the_url() {
+        assert_eq!(
+            hosting_slot("https://did.example.com/agents/my-vta").unwrap(),
+            ("did.example.com".into(), "agents/my-vta".into())
+        );
+        assert_eq!(
+            hosting_slot("https://did.example.com:8443/agents/my-vta/did.jsonl").unwrap(),
+            ("did.example.com:8443".into(), "agents/my-vta".into())
+        );
+        assert!(hosting_slot("http://did.example.com/agents/my-vta").is_err());
+        assert_eq!(
+            hosting_slot("http://localhost:8634/agents/my-vta").unwrap(),
+            ("localhost:8634".into(), "agents/my-vta".into())
+        );
+        assert!(hosting_slot("https://did.example.com/").is_err());
+    }
+
+    /// Prefixes match whole segments, and a prefix alone is not a slot.
+    #[test]
+    fn path_under_prefix_matches_whole_segments() {
+        assert!(path_under_prefix("agents/vta-1", "agents"));
+        assert!(path_under_prefix("agents/vta-1", "/agents/"));
+        assert!(!path_under_prefix("agentsx/vta-1", "agents"));
+        assert!(!path_under_prefix("agents", "agents"));
+        assert!(!path_under_prefix("agents/", "agents"));
+    }
+
+    /// The `hosting` block parses, and its invite never shows in `{:?}`.
+    #[test]
+    fn create_webvh_hosting_parses_and_redacts_the_invite() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://vta.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [vta_did]
+            kind = "create_webvh"
+            url  = "https://did.example.com/agents/my-vta"
+
+            [vta_did.hosting]
+            server_did     = "did:webvh:Qm:did.example.com"
+            invite_token   = "SECRET-TOKEN-0123456789"
+            claim_code     = "SECRET-CLAIM"
+            referral_via   = "did:webvh:Qc:community.example.com"
+        "#;
+        let inputs = parse(raw).expect("create_webvh with hosting parses");
+        let VtaDidInput::CreateWebvh {
+            hosting: Some(h), ..
+        } = &inputs.vta_did
+        else {
+            panic!("expected CreateWebvh with hosting");
+        };
+        assert_eq!(h.server_did, "did:webvh:Qm:did.example.com");
+        assert_eq!(h.server_id, None);
+        let shown = format!("{inputs:?}");
+        assert!(!shown.contains("SECRET-TOKEN"), "token leaked: {shown}");
+        assert!(
+            !shown.contains("SECRET-CLAIM"),
+            "claim code leaked: {shown}"
+        );
+        validate_inputs(&inputs).expect("validates");
     }
 
     /// Each advanced mode parses and, on its own, validates.

@@ -690,6 +690,8 @@ pub struct Outbound<'a> {
     https_base: Option<String>,
     /// Which peer endpoints a REST send may dial ([`send_rest_to`]).
     endpoint_policy: vta_sdk::http::EndpointPolicy,
+    /// Send over the Trust-Task HTTPS binding only ([`Outbound::rest_only`]).
+    rest_only: bool,
 }
 
 impl<'a> Outbound<'a> {
@@ -707,6 +709,21 @@ impl<'a> Outbound<'a> {
     #[must_use]
     pub fn with_https_base(mut self, base: Option<String>) -> Self {
         self.https_base = base;
+        self
+    }
+
+    /// Reach the peer over the Trust-Task HTTPS binding only, even when it
+    /// advertises TSP or DIDComm and a sender for them is wired.
+    ///
+    /// For a request whose reply cannot come back any other way: the HTTPS
+    /// reply is the response to the request, while a TSP or DIDComm reply is
+    /// routed to the issuer's own DID document. A VTA registering its first DID
+    /// with a host (`did-management/account/register`) has no resolvable
+    /// document yet — the registration is what publishes it — so only HTTPS
+    /// can carry the answer.
+    #[must_use]
+    pub fn rest_only(mut self) -> Self {
+        self.rest_only = true;
         self
     }
 
@@ -738,6 +755,7 @@ impl<'a> Outbound<'a> {
             bridge,
             https_base: None,
             endpoint_policy: vta_sdk::http::EndpointPolicy::process_default(),
+            rest_only: false,
         }
     }
 
@@ -763,6 +781,7 @@ impl<'a> Outbound<'a> {
             bridge: state.didcomm_bridge.as_ref(),
             https_base: None,
             endpoint_policy: state.endpoint_policy,
+            rest_only: false,
         }
     }
 }
@@ -1005,6 +1024,9 @@ impl Outbound<'_> {
     ///   DID — the peer refuses that as `identityMismatch`, as both bindings
     ///   require it to.
     pub(crate) fn initiable_protocols(&self, issuer: Option<&str>) -> Vec<Protocol> {
+        if self.rest_only {
+            return vec![Protocol::Rest];
+        }
         let (tsp, didcomm) = self.wired_senders();
         initiable_for(
             WiredSenders {

@@ -76,6 +76,60 @@ pub type AgentNameAvailability = dm::agent_name::check::v0_1::Response;
 /// The domains the host lets this VTA mint into, and its default.
 pub type HostDomains = dm::me::domains::v0_1::Response;
 
+/// This VTA's account on a host that admitted it by self-registration
+/// (`did-management/account/*`): its state, the dates its inactivity lifecycle
+/// will act on, and its limits. Every account task answers the same record;
+/// this is `status`'s copy, and the others are read into it.
+pub type HostingAccount = dm::account::status::v0_1::HostingAccount;
+
+/// What the host publishes about itself (`server/info/0.2`), including the
+/// domains a stranger may self-register on (`selfRegistration`).
+pub type HostServerInfo = dm::server::info::v0_2::Response;
+
+/// What entitles this VTA to register with a host it is a stranger to
+/// (`account/register`'s `admission`). Self-certifying the log proves the
+/// DID's identity, not an entitlement to the host's storage.
+#[derive(Clone, PartialEq, Eq)]
+pub enum AccountAdmission {
+    /// An operator-issued invite: the token and the claim code arrive
+    /// out of band, separately, and are both required.
+    Invite { token: String, claim_code: String },
+}
+
+impl std::fmt::Debug for AccountAdmission {
+    // The invite halves are a bearer credential: never in a log line.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invite { .. } => f.write_str("Invite { .. }"),
+        }
+    }
+}
+
+/// How this VTA came to the host (`account/register`'s `referral`), for the
+/// host's attribution only: nothing is authorised on it, and the host marks it
+/// unverified unless a voucher or the invite vouches for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountReferral {
+    /// Usually the DID of the community the user arrived through.
+    pub via: Option<String>,
+    /// Free text, at most 128 characters.
+    pub label: Option<String>,
+}
+
+impl AccountReferral {
+    fn is_empty(&self) -> bool {
+        self.via.is_none() && self.label.is_none()
+    }
+}
+
+/// Read one account task's copy of the record into [`HostingAccount`]. The
+/// generated modules each carry their own type for the one shared schema.
+fn same_account<T: Serialize>(account: &T) -> Result<HostingAccount, AppError> {
+    serde_json::to_value(account)
+        .and_then(serde_json::from_value)
+        .map_err(|e| bad_gateway_error(format!("the host's account record does not parse: {e}")))
+}
+
 /// Map a `trust-task-error` code to the status an operator can act on.
 ///
 /// Matched on the code's local part, so a spec-declared code
@@ -94,7 +148,18 @@ pub(crate) fn host_refusal(code: &str, message: &str) -> AppError {
         // request wanted it, not a clash: a context deletion counts it as the
         // host copy removed, so it must not read as a refusal.
         "alreadyDeleted" => AppError::Gone(detail),
-        "pathTaken" | "nameTaken" | "nameReserved" | "conflict" => AppError::Conflict(detail),
+        // `account/register:admissionRefused` is the invite or voucher, which
+        // the operator can replace; `renew:suspended` is an administrator's
+        // hold that no renewal lifts.
+        "admissionRefused" | "registrationClosed" | "suspended" => AppError::Forbidden(detail),
+        // A purged (or never-made) account: register again, with fresh admission.
+        "noAccount" => AppError::NotFound(detail),
+        // The host's capacity, or its rate limit (`unavailable`, with
+        // `retryAfter`): retryable, and nothing the caller should change.
+        "capacityReached" | "unavailable" => AppError::ResourceExhausted(detail),
+        "pathTaken" | "nameTaken" | "nameReserved" | "conflict" | "alreadyRegistered" => {
+            AppError::Conflict(detail)
+        }
         "invalidPath"
         | "invalidLog"
         | "invalidName"
@@ -102,6 +167,8 @@ pub(crate) fn host_refusal(code: &str, message: &str) -> AppError {
         | "hostMismatch"
         | "alsoKnownAsMismatch"
         | "unknownDomain"
+        | "pathNotAllowed"
+        | "issuerNotSubject"
         | "validationError" => AppError::Validation(detail),
         _ => bad_gateway_error(detail),
     }
@@ -174,10 +241,13 @@ fn build_request_document(type_uri: &str, issuer: &str, recipient: &str, payload
 /// answer must be addressed to this VTA (a signed answer to someone else's
 /// question is not an answer to this one), be of the type asked for, and parse
 /// as the generated response.
+/// `issuer` is `None` for an anonymous request, whose answer is addressed to
+/// no one in particular; it still has to carry the host's proof and thread to
+/// this request.
 fn read_reply<R: DeserializeOwned>(
     reply: &Value,
     request_id: &str,
-    issuer: &str,
+    issuer: Option<&str>,
     expected: &str,
 ) -> Result<R, AppError> {
     let doc_type = reply
@@ -207,7 +277,9 @@ fn read_reply<R: DeserializeOwned>(
     }
 
     let recipient = reply.get("recipient").and_then(Value::as_str);
-    if recipient != Some(issuer) {
+    if let Some(issuer) = issuer
+        && recipient != Some(issuer)
+    {
         return Err(bad_gateway_error(format!(
             "the DID hosting service addressed its answer to {recipient:?}, not to this VTA"
         )));
@@ -239,6 +311,19 @@ pub struct WebvhHostClient<'a> {
     https_base: Option<String>,
     #[cfg(feature = "tsp")]
     tsp: Option<crate::operations::outbound::TspSender>,
+}
+
+/// How [`WebvhHostClient::call`] may reach the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// The host's advertised transports, in the workspace order.
+    Advertised,
+    /// The Trust-Task HTTPS binding only: the issuer's DID does not resolve
+    /// yet, so a TSP or DIDComm reply would have nowhere to go.
+    HttpsOnly,
+    /// HTTPS, unsigned and with no `issuer`: a task the host answers anyone
+    /// (`server/info`), asked before this VTA has an identity to sign with.
+    Anonymous,
 }
 
 impl<'a> WebvhHostClient<'a> {
@@ -276,8 +361,34 @@ impl<'a> WebvhHostClient<'a> {
         })
     }
 
+    /// [`for_server`](Self::for_server) with no TSP sender: for setup, the
+    /// offline CLI and tests, which hold no mediator session to lend.
+    pub async fn for_server_offline(
+        server_did: &str,
+        issuer: &str,
+        resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+        bridge: &'a DIDCommBridge,
+    ) -> Result<Self, AppError> {
+        Self::for_server(
+            server_did,
+            issuer,
+            resolver,
+            bridge,
+            #[cfg(feature = "tsp")]
+            None,
+        )
+        .await
+    }
+
     /// Send one task and return its typed response.
     async fn call<P>(&self, request: &P) -> Result<P::Response, AppError>
+    where
+        P: RequestPayload + Serialize,
+    {
+        self.call_via(request, Reach::Advertised).await
+    }
+
+    async fn call_via<P>(&self, request: &P, reach: Reach) -> Result<P::Response, AppError>
     where
         P: RequestPayload + Serialize,
     {
@@ -285,30 +396,38 @@ impl<'a> WebvhHostClient<'a> {
             .map_err(|e| AppError::Internal(format!("serialise {}: {e}", P::TYPE_URI)))?;
         let mut doc = build_request_document(P::TYPE_URI, &self.issuer, &self.server_did, payload);
         let request_id = doc["id"].as_str().unwrap_or_default().to_string();
-        if !self.bridge.sign_outbound_request(&mut doc).await {
+        if reach == Reach::Anonymous {
+            if let Some(map) = doc.as_object_mut() {
+                map.remove("issuer");
+            }
+        } else if !self.bridge.sign_outbound_request(&mut doc).await {
             return Err(AppError::Internal(
                 "could not sign the DID-management task with this VTA's operational key".into(),
             ));
         }
 
-        let reply = crate::operations::outbound::Outbound::from_parts(
+        let mut outbound = crate::operations::outbound::Outbound::from_parts(
             self.resolver,
             self.bridge,
             #[cfg(feature = "tsp")]
             self.tsp.clone(),
         )
-        .with_https_base(self.https_base.clone())
-        .send(
-            &self.server_did,
-            doc,
-            crate::operations::outbound::ReplyTrust::SignedByRecipient,
-        )
-        .await?;
+        .with_https_base(self.https_base.clone());
+        if reach != Reach::Advertised {
+            outbound = outbound.rest_only();
+        }
+        let reply = outbound
+            .send(
+                &self.server_did,
+                doc,
+                crate::operations::outbound::ReplyTrust::SignedByRecipient,
+            )
+            .await?;
 
         read_reply(
             &reply,
             &request_id,
-            &self.issuer,
+            (reach != Reach::Anonymous).then_some(self.issuer.as_str()),
             <P::Response as trust_tasks_rs::Payload>::TYPE_URI,
         )
     }
@@ -480,6 +599,106 @@ impl<'a> WebvhHostClient<'a> {
         }
         let request: dm::agent_name::check::v0_1::Payload = payload("agent-name/check", body)?;
         self.call(&request).await
+    }
+
+    /// What the host publishes about itself (`server/info/0.2`), read before
+    /// minting a DID for it: which domains admit self-registration, on what
+    /// admission, and under which path prefixes — the path is part of what the
+    /// SCID commits to, so it has to be right before the log exists.
+    pub async fn server_info(&self) -> Result<HostServerInfo, AppError> {
+        let request: dm::server::info::v0_2::Payload =
+            payload("server/info", serde_json::json!({}))?;
+        self.call(&request).await
+    }
+
+    /// [`server_info`](Self::server_info) asked anonymously over HTTPS, for a
+    /// VTA that has no identity yet (setup, before the DID is minted). The
+    /// answer must still carry the host's proof.
+    pub async fn server_info_unsigned(&self) -> Result<HostServerInfo, AppError> {
+        let request: dm::server::info::v0_2::Payload =
+            payload("server/info", serde_json::json!({}))?;
+        self.call_via(&request, Reach::Anonymous).await
+    }
+
+    /// Register this VTA with a host it is a stranger to, publishing its first
+    /// log in the same commit (`account/register/0.1`).
+    ///
+    /// The host verifies the whole log offline, then the request's proof
+    /// against the document that log implies, so the issuer must be the slot's
+    /// DID (or its listed did:scid alias) signing with an `authentication`
+    /// key. Sent over HTTPS only: until this commits the issuer's DID does not
+    /// resolve, so no other transport could carry the reply.
+    ///
+    /// `path` is the did-management path (`g/agent-7f3a`): `/`-separated,
+    /// lowercase, and under one of the domain's `pathPrefixes`.
+    pub async fn register_account(
+        &self,
+        domain: &str,
+        path: &str,
+        did_log: &str,
+        admission: &AccountAdmission,
+        referral: Option<&AccountReferral>,
+    ) -> Result<(RequestUriResponse, HostingAccount), AppError> {
+        let mut body = serde_json::json!({
+            "domain": domain,
+            "path": path,
+            "method": HostedMethod::Webvh.as_str(),
+            "didData": did_log,
+            "admission": match admission {
+                AccountAdmission::Invite { token, claim_code } => serde_json::json!({
+                    "invite": { "token": token, "claimCode": claim_code }
+                }),
+            },
+        });
+        if let Some(r) = referral.filter(|r| !r.is_empty()) {
+            let mut referral = serde_json::Map::new();
+            if let Some(via) = &r.via {
+                referral.insert("via".into(), via.clone().into());
+            }
+            if let Some(label) = &r.label {
+                referral.insert("label".into(), label.clone().into());
+            }
+            body["referral"] = referral.into();
+        }
+        let request: dm::account::register::v0_1::Payload = payload("account/register", body)?;
+        let response = self.call_via(&request, Reach::HttpsOnly).await?;
+        let account = same_account(&response.account)?;
+        let did_url = response.record.did_url.ok_or_else(|| {
+            bad_gateway_error("the host registered the account but named no didUrl for its DID")
+        })?;
+        Ok((
+            RequestUriResponse {
+                did_url,
+                mnemonic: response.record.mnemonic,
+                did_id: response.record.did_id,
+            },
+            account,
+        ))
+    }
+
+    /// Keep this VTA's self-registered account alive (`account/renew/0.1`),
+    /// and restore it if the inactivity lifecycle had disabled it. Returns the
+    /// account and whether this renewal restored it.
+    ///
+    /// The one liveness signal a VTA sends on purpose: at every start and
+    /// about daily while running. `noAccount` (404) means the account was
+    /// purged and must be registered again.
+    pub async fn renew_account(&self) -> Result<(HostingAccount, bool), AppError> {
+        let request: dm::account::renew::v0_1::Payload =
+            payload("account/renew", serde_json::json!({}))?;
+        let response = self.call(&request).await?;
+        Ok((same_account(&response.account)?, response.changed))
+    }
+
+    /// This VTA's self-registered account as the host holds it
+    /// (`account/status/0.1`): its state, and `disableAt` / `purgeAt` while
+    /// the lifecycle applies. Read at start: an expiry notice sent while this
+    /// VTA was offline may have been lost, and this is what is authoritative.
+    /// Not a liveness signal — reading it keeps nothing alive.
+    pub async fn account_status(&self) -> Result<HostingAccount, AppError> {
+        let request: dm::account::status::v0_1::Payload =
+            payload("account/status", serde_json::json!({}))?;
+        Ok(self.call(&request).await?.account)
     }
 
     /// The domains the host lets this VTA mint into (`me/domains/0.1`).
@@ -717,7 +936,7 @@ mod tests {
                 json!({ "available": true, "reserved": true, "record": record("bob") }),
             ),
             REQ,
-            VTA,
+            Some(VTA),
             CHECK_NAME_RESPONSE,
         )
         .unwrap();
@@ -760,7 +979,7 @@ mod tests {
                     json!({ "code": code, "message": "no" }),
                 ),
                 REQ,
-                VTA,
+                Some(VTA),
                 CHECK_NAME_RESPONSE,
             )
             .expect_err("a refusal is an error");
@@ -785,7 +1004,7 @@ mod tests {
                 json!({ "code": "e.p.did.path-unavailable", "comment": "taken" }),
             ),
             REQ,
-            VTA,
+            Some(VTA),
             CHECK_NAME_RESPONSE,
         )
         .unwrap_err();
@@ -802,7 +1021,7 @@ mod tests {
             json!({ "available": true, "reserved": true, "record": record("bob") }),
         );
         r["threadId"] = json!("urn:uuid:someone-elses");
-        let err = read_reply::<CheckName>(&r, REQ, VTA, CHECK_NAME_RESPONSE).unwrap_err();
+        let err = read_reply::<CheckName>(&r, REQ, Some(VTA), CHECK_NAME_RESPONSE).unwrap_err();
         assert!(format!("{err:?}").contains("different request"), "{err:?}");
         // A refusal must thread too: an unrelated error cannot fail this call.
         let mut e = reply(
@@ -810,7 +1029,7 @@ mod tests {
             json!({ "code": "notFound", "message": "no" }),
         );
         e.as_object_mut().unwrap().remove("threadId");
-        let err = read_reply::<CheckName>(&e, REQ, VTA, CHECK_NAME_RESPONSE).unwrap_err();
+        let err = read_reply::<CheckName>(&e, REQ, Some(VTA), CHECK_NAME_RESPONSE).unwrap_err();
         assert!(!matches!(err, AppError::NotFound(_)), "{err:?}");
     }
 
@@ -821,7 +1040,7 @@ mod tests {
             json!({ "available": true, "reserved": true, "record": record("bob") }),
         );
         r["recipient"] = json!("did:key:z6MkOther");
-        let err = read_reply::<CheckName>(&r, REQ, VTA, CHECK_NAME_RESPONSE).unwrap_err();
+        let err = read_reply::<CheckName>(&r, REQ, Some(VTA), CHECK_NAME_RESPONSE).unwrap_err();
         assert!(format!("{err:?}").contains("addressed"), "{err:?}");
     }
 
@@ -831,13 +1050,13 @@ mod tests {
             "https://trusttasks.org/spec/did-management/did/delete/0.1#response",
             json!({ "record": record("bob") }),
         );
-        assert!(read_reply::<CheckName>(&other, REQ, VTA, CHECK_NAME_RESPONSE).is_err());
+        assert!(read_reply::<CheckName>(&other, REQ, Some(VTA), CHECK_NAME_RESPONSE).is_err());
         // An undeclared member is refused: the response schema is closed.
         let extra = reply(
             CHECK_NAME_RESPONSE,
             json!({ "available": true, "reserved": false, "dids": [] }),
         );
-        let err = read_reply::<CheckName>(&extra, REQ, VTA, CHECK_NAME_RESPONSE).unwrap_err();
+        let err = read_reply::<CheckName>(&extra, REQ, Some(VTA), CHECK_NAME_RESPONSE).unwrap_err();
         assert!(format!("{err:?}").contains("schema"), "{err:?}");
     }
 
@@ -849,7 +1068,7 @@ mod tests {
         if let Some(n) = next {
             body["nextCursor"] = json!(n);
         }
-        read_reply(&reply(LIST, body), REQ, VTA, LIST).expect("a did/list page")
+        read_reply(&reply(LIST, body), REQ, Some(VTA), LIST).expect("a did/list page")
     }
 
     /// The `did/list` response is `{records, nextCursor?}`; the old `{dids}`
@@ -862,7 +1081,7 @@ mod tests {
             read_reply::<dm::did::list::v0_2::Response>(
                 &reply(LIST, json!({ "dids": [record("bob")] })),
                 REQ,
-                VTA,
+                Some(VTA),
                 LIST,
             )
             .is_err()

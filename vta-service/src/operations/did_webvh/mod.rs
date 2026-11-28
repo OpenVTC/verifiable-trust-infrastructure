@@ -22,7 +22,7 @@ pub(crate) mod webvh_keys;
 pub(crate) use host::{
     agent_name_op_on_server, check_agent_name_on_server, delete_log_on_server,
     list_agent_names_on_server, list_dids_on_server, my_domains_on_server, publish_log_to_server,
-    register_did_atomic_on_server,
+    register_account_on_server, register_did_atomic_on_server,
 };
 
 pub(crate) use concurrency::{RaceDetected, RecordSnapshot};

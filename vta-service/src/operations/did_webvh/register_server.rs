@@ -52,6 +52,14 @@ pub struct RegisterDidWithServerParams {
     /// register call at a specific one. Defaults to the host's
     /// caller-default → system-default chain when omitted.
     pub domain: Option<String>,
+    /// Register as a stranger to the host (`account/register/0.1`) instead of
+    /// as a DID owner it already knows (`did/register/0.1`): the invite that
+    /// admits this VTA. Requires `domain`, and refuses `force` — a stranger
+    /// has no standing to take anyone's slot. On success this VTA is an owner
+    /// on the host, subject to the self-registration terms the domain sets.
+    pub admission: Option<crate::webvh_host::AccountAdmission>,
+    /// How this VTA came to the host, sent with `admission` (attribution only).
+    pub referral: Option<crate::webvh_host::AccountReferral>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +69,8 @@ pub struct RegisterDidWithServerResult {
     /// Number of log entries pushed to the host (informational —
     /// equals the local log's entry count).
     pub log_entry_count: u32,
+    /// The account the host opened, when this registered by `admission`.
+    pub account: Option<crate::webvh_host::HostingAccount>,
 }
 
 #[derive(Debug, Error)]
@@ -98,6 +108,10 @@ pub enum RegisterDidWithServerError {
     Storage(String),
     #[error("could not derive URL from DID `{did}`: {reason}")]
     DidUrlParse { did: String, reason: String },
+    /// A self-registration request that cannot be sent as asked: no domain,
+    /// or `force` alongside an admission.
+    #[error("invalid self-registration: {0}")]
+    InvalidAdmission(String),
     /// Optimistic-concurrency race: the local DID record changed
     /// between the initial read (where we asserted serverless +
     /// looked up server + fetched log) and the final store (where
@@ -185,22 +199,56 @@ pub async fn register_did_with_server(
                 .to_string(),
         )
     })?;
-    let response = super::register_did_atomic_on_server(
-        deps,
-        vta_did_value,
-        &server,
-        &request_path,
-        &did_log,
-        params.force,
-        // register-server is a follow-up call on an existing
-        // serverless DID — the operator didn't pick a domain at
-        // create time. Let the remote resolve via caller-default →
-        // system-default. A `pnm did-mgmt dids register --domain`
-        // override would flow through here as Some.
-        params.domain.as_deref(),
-    )
-    .await
-    .map_err(RegisterDidWithServerError::Publish)?;
+    let (response, account) = match &params.admission {
+        // A stranger to the host: the invite admits it, and the registration
+        // opens its account and publishes this log in one commit.
+        Some(admission) => {
+            if params.force {
+                return Err(RegisterDidWithServerError::InvalidAdmission(
+                    "`force` cannot be combined with an admission: a self-registering VTA \
+                     cannot take another DID's slot"
+                        .into(),
+                ));
+            }
+            let domain = params.domain.as_deref().ok_or_else(|| {
+                RegisterDidWithServerError::InvalidAdmission(
+                    "self-registration needs the domain to register on".into(),
+                )
+            })?;
+            let (response, account) = super::register_account_on_server(
+                deps,
+                vta_did_value,
+                &server,
+                domain,
+                &request_path,
+                &did_log,
+                admission,
+                params.referral.as_ref(),
+            )
+            .await
+            .map_err(RegisterDidWithServerError::Publish)?;
+            (response, Some(account))
+        }
+        None => {
+            let response = super::register_did_atomic_on_server(
+                deps,
+                vta_did_value,
+                &server,
+                &request_path,
+                &did_log,
+                params.force,
+                // register-server is a follow-up call on an existing
+                // serverless DID — the operator didn't pick a domain at
+                // create time. Let the remote resolve via caller-default →
+                // system-default. A `pnm did-mgmt dids register --domain`
+                // override would flow through here as Some.
+                params.domain.as_deref(),
+            )
+            .await
+            .map_err(RegisterDidWithServerError::Publish)?;
+            (response, None)
+        }
+    };
 
     // 6. Optimistic-concurrency check. Re-load the record and assert
     //    nothing changed between the initial read and now (where we're
@@ -287,6 +335,7 @@ pub async fn register_did_with_server(
         did: record.did,
         server_id: record.server_id,
         log_entry_count,
+        account,
     })
 }
 
@@ -430,6 +479,8 @@ mod tests {
                 server_id: "primary".into(),
                 force: false,
                 domain: None,
+                admission: None,
+                referral: None,
             },
             None,
             "test",
@@ -454,6 +505,8 @@ mod tests {
                 server_id: "primary".into(),
                 force: false,
                 domain: None,
+                admission: None,
+                referral: None,
             },
             None,
             "test",
@@ -483,6 +536,8 @@ mod tests {
                 server_id: "primary".into(),
                 force: false,
                 domain: None,
+                admission: None,
+                referral: None,
             },
             None,
             "test",
@@ -518,6 +573,8 @@ mod tests {
                 server_id: "missing-host".into(),
                 force: false,
                 domain: None,
+                admission: None,
+                referral: None,
             },
             None,
             "test",
@@ -551,6 +608,8 @@ mod tests {
                 server_id: "primary".into(),
                 force: false,
                 domain: None,
+                admission: None,
+                referral: None,
             },
             None,
             "test",
