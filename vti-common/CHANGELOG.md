@@ -2,7 +2,7 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.72.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.72.0...vti-common-v0.72.1) — 2026-11-28
+## [0.73.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.72.0...vti-common-v0.73.0) — 2026-11-28
 
 
 ## [0.72.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.71.0...vti-common-v0.72.0) — 2026-11-28

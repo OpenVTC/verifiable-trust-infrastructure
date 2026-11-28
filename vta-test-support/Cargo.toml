@@ -30,8 +30,8 @@ vta-service = { path = "../vta-service", version = "0.89", default-features = fa
     "didcomm",
 ] }
 vta-sdk = { path = "../vta-sdk", version = "0.97" }
-vti-common = { path = "../vti-common", version = "0.72" }
-vti-specs = { path = "../vti-specs", version = "0.19" }
+vti-common = { path = "../vti-common", version = "0.73" }
+vti-specs = { path = "../vti-specs", version = "0.20" }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 affinidi-messaging-core = { workspace = true }
 affinidi-messaging-sdk = { workspace = true, optional = true }

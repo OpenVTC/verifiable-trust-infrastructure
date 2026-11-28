@@ -2929,7 +2929,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.62.1"
+version = "0.63.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "base64 0.23.1",
@@ -11757,7 +11757,7 @@ dependencies = [
 
 [[package]]
 name = "vta-audit"
-version = "0.44.1"
+version = "0.45.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11834,7 +11834,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.49.1"
+version = "0.50.0"
 dependencies = [
  "affinidi-crypto",
  "ipnetwork",
@@ -11868,7 +11868,7 @@ dependencies = [
 
 [[package]]
 name = "vta-external"
-version = "0.33.1"
+version = "0.34.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -11895,7 +11895,7 @@ version = "0.1.0"
 
 [[package]]
 name = "vta-keys"
-version = "0.50.1"
+version = "0.51.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-crypto",
@@ -11988,7 +11988,7 @@ dependencies = [
 
 [[package]]
 name = "vta-persona"
-version = "0.50.0"
+version = "0.51.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -12009,7 +12009,7 @@ dependencies = [
 
 [[package]]
 name = "vta-policy"
-version = "0.45.1"
+version = "0.46.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -12233,7 +12233,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.47.1"
+version = "0.48.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "base64 0.23.1",
@@ -12258,7 +12258,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sweepers"
-version = "0.45.0"
+version = "0.46.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -12273,7 +12273,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.49.1"
+version = "0.50.0"
 dependencies = [
  "aes 0.9.4",
  "aes-gcm 0.11.1",
@@ -12340,7 +12340,7 @@ dependencies = [
 
 [[package]]
 name = "vta-vault"
-version = "0.48.1"
+version = "0.49.0"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -12374,7 +12374,7 @@ dependencies = [
 
 [[package]]
 name = "vta-webvh"
-version = "0.46.1"
+version = "0.47.0"
 dependencies = [
  "chrono",
  "serde",
@@ -12402,7 +12402,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.51.1"
+version = "0.52.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -12570,7 +12570,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.72.1"
+version = "0.73.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-did-resolver-cache-sdk",
@@ -12715,7 +12715,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms"
-version = "0.43.0"
+version = "0.44.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -12747,7 +12747,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms-dtg"
-version = "0.45.1"
+version = "0.46.0"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",
@@ -12770,7 +12770,7 @@ dependencies = [
 
 [[package]]
 name = "vti-rooms-host"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -12811,7 +12811,7 @@ dependencies = [
 
 [[package]]
 name = "vti-secrets"
-version = "0.45.1"
+version = "0.46.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2 0.6.0",
@@ -12846,7 +12846,7 @@ dependencies = [
 
 [[package]]
 name = "vti-specs"
-version = "0.19.1"
+version = "0.20.0"
 dependencies = [
  "trust-tasks-rs",
  "vti-specs-core",
@@ -12906,7 +12906,7 @@ dependencies = [
 
 [[package]]
 name = "vti-trust-task-server"
-version = "0.18.1"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -12930,7 +12930,7 @@ dependencies = [
 
 [[package]]
 name = "vti-vetting-pcs"
-version = "0.29.1"
+version = "0.30.0"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -12952,7 +12952,7 @@ dependencies = [
 
 [[package]]
 name = "vti-voting"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "ark-serialize",
  "chacha20poly1305 0.11.0",
