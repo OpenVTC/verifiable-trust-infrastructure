@@ -32,9 +32,9 @@ set when the previous release goes GA.
 | Banyan | — | — | — | 2026-06-22 (`Banyan`) | — | end of life |
 | Cypress | — | — | 2026-08-02 | 2026-08-18 (`Cypress`) | — | end of life |
 | Dogwood | — | — | 2026-08-29 | 2026-08-30 | `VTI-Dogwood-R1` 2026-09-01 | end of life — no branch (below) |
-| Eucalyptus | `release/eucalyptus` | standard | 2026-09-17 | 2026-10-07 | — | **supported (N)** |
-| Fig | `release/fig` | standard | 2026-11-25 (`VTI-Fig-RC-0`) | TBD | — | release candidate |
-| Ginkgo | — | — | TBD, 4–6 weeks after Fig GA | TBD | — | in development on `main` |
+| Eucalyptus | `release/eucalyptus` | standard | 2026-09-17 | 2026-10-07 | — | supported (N-1) |
+| Fig | `release/fig` | standard | 2026-11-25 (`VTI-Fig-RC-0`) | 2026-11-27 (`VTI-Fig`) | — | **supported (N)** |
+| Ginkgo | — | — | TBD | 2026-12-25 – 2027-01-08 (Fig GA + 4–6 weeks) | — | in development on `main` |
 
 Aspen to Eucalyptus went out as tags on `main`, before release branches
 existed. Eucalyptus was given its branch after the fact (`--released-as`):
@@ -46,6 +46,13 @@ anyway. If a deployment still needs a Dogwood fix, that is the work to do.
 `releases/<name>.toml` is the machine-readable side of a release — what it was
 cut from and which crate versions it owns. `scripts/cut-release.py` writes it;
 it is never edited by hand.
+
+**Which crate versions are in a release** is the bill of materials in its
+GitHub Release notes (`VTI-Fig`: `vta-sdk` 0.94.2, `vta-service` 0.87.2, …),
+not crates.io's newest version. `main` keeps publishing, so a crate's latest
+version on crates.io is usually ahead of the newest named release — `vta-sdk`
+0.95.0 was published from `main` before Fig went GA and is not in Fig. Pin
+the release's versions, not `latest`.
 
 ## Lifecycle of one release
 
